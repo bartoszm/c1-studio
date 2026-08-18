@@ -234,6 +234,43 @@ def white_balance_for(con, variant_pk: int) -> str | None:
     return row[1] if row else None
 
 
+def _volume_hint(wsl_path: str | None) -> str:
+    """A readable explanation when the volume holding the originals is not mounted."""
+    if not wsl_path:
+        return "the original file has no reachable path"
+    parts = Path(wsl_path).parts
+    volume = str(Path(*parts[:3])) if len(parts) > 2 else wsl_path
+    letter = parts[2].upper() if len(parts) > 2 else "?"
+    return (f"{volume} is not mounted - the originals live on drive {letter}:, "
+            "which is offline. Use --tier thumb or --tier preview instead.")
+
+
+def _reachable(path: Path) -> bool:
+    """exists() raises rather than returning False when the whole volume is gone."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
+def volume_of(wsl_path: str | None) -> Path | None:
+    """'/mnt/h/fotos/a.RAF' -> Path('/mnt/h')."""
+    if not wsl_path:
+        return None
+    parts = Path(wsl_path).parts
+    return Path(*parts[:3]) if len(parts) > 2 else None
+
+
+def _volume_mounted(path: Path) -> bool:
+    volume = volume_of(str(path))
+    if volume is None:
+        return True
+    try:
+        return volume.is_dir()
+    except OSError:
+        return False
+
+
 def _resolve_preview(stored: str | None) -> Path | None:
     """The index stores the derived path; confirm it here, tolerating a case mismatch.
 
@@ -273,10 +310,19 @@ def load(row, con=None, tier: str = "thumb", fallback: bool = True) -> tuple[obj
                     return load_preview(path, wb), "preview"
             else:
                 path = Path(row["path_wsl"]) if row["path_wsl"] else None
-                if path and path.exists():
+                if path and _reachable(path):
                     return load_original(path), "original"
+                if path and not _volume_mounted(path):
+                    errors.append(f"original: {_volume_hint(row['path_wsl'])}")
         except ImageError as exc:
             errors.append(f"{candidate}: {exc}")
+        except OSError as exc:
+            # ENODEV/ENOENT on the volume root means the drive holding the originals is
+            # not mounted - a normal state for an external drive, not a bug.
+            if exc.errno in (19, 2) and candidate == "original":
+                errors.append(f"original: {_volume_hint(row['path_wsl'])}")
+            else:
+                errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
         except Exception as exc:  # noqa: BLE001 - a corrupt cache file must not stop a batch
             errors.append(f"{candidate}: {type(exc).__name__}: {exc}")
 

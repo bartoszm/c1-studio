@@ -116,6 +116,31 @@ def cmd_doctor(args, ctx) -> int:
     checks.append({"check": "preview cache", "status": "ok" if previews.is_dir() else "warn",
                    "detail": str(previews)})
 
+    # Originals commonly live on an external drive that is not always plugged in.
+    try:
+        from . import images
+        volumes = {}
+        for row in ctx.mirror.execute(
+                "SELECT folder_wsl, COUNT(*) FROM v WHERE folder_wsl IS NOT NULL"
+                " GROUP BY folder_wsl ORDER BY COUNT(*) DESC LIMIT 200"):
+            volume = images.volume_of(row[0])
+            if volume:
+                volumes[str(volume)] = volumes.get(str(volume), 0) + row[1]
+        for volume in sorted(volumes, key=lambda v: -volumes[v]):
+            try:
+                # is_dir() raises ENODEV rather than returning False for an absent volume.
+                mounted = Path(volume).is_dir()
+            except OSError:
+                mounted = False
+            checks.append({
+                "check": f"originals on {volume}",
+                "status": "ok" if mounted else "warn",
+                "detail": f"mounted, {volumes[volume]:,} photos" if mounted
+                          else "NOT MOUNTED - the thumb and preview tiers still work",
+            })
+    except Exception as exc:  # noqa: BLE001 - doctor must never be the thing that breaks
+        checks.append({"check": "originals volume", "status": "warn", "detail": str(exc)[:60]})
+
     ok, detail = _probe_import("PIL")
     checks.append({"check": "Pillow", "status": "ok" if ok else "fail", "detail": detail})
     ok, detail = _probe_import("imagecodecs")
