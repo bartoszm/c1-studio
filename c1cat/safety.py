@@ -94,6 +94,27 @@ def probe_windows_lock(catalog: Path) -> dict:
     return {"status": "free" if text == "FREE" else "locked", "detail": text}
 
 
+def file_holders(catalog: Path) -> str:
+    """Which local processes have the catalog open, if lsof can tell us.
+
+    A lingering read-only reader is enough to fail the Windows lock probe, and
+    "locked by another process" is not actionable without a name.
+    """
+    code, out = _run(["lsof", "-F", "cp", "--", str(catalog)], timeout=10)
+    if code not in (0, 1) or not out.strip():
+        return ""
+    seen: list[str] = []
+    pid = ""
+    for line in out.splitlines():
+        if line.startswith("p"):
+            pid = line[1:]
+        elif line.startswith("c"):
+            entry = f"{line[1:]} (pid {pid})"
+            if entry not in seen:
+                seen.append(entry)
+    return ", ".join(seen)
+
+
 def preflight(catalog: Path, *, write: bool, force: bool = False) -> GuardReport:
     """Run the guard chain. Raises Refused on the first blocking failure.
 
@@ -150,11 +171,16 @@ def preflight(catalog: Path, *, write: bool, force: bool = False) -> GuardReport
 
     lock = probe_windows_lock(catalog)
     if lock["status"] == "locked":
-        report.add("windows_lock", "fail" if not force else "warn", lock["detail"])
+        holders = file_holders(catalog)
+        detail = lock["detail"] + (f" (held by {holders})" if holders else "")
+        report.add("windows_lock", "fail" if not force else "warn", detail)
         if not force:
             raise Refused(
-                "the catalog file is locked by another Windows process",
-                EXIT_REFUSED, hint="close Capture One, or re-run with --force")
+                "the catalog file is open in another process"
+                + (f": {holders}" if holders else ""),
+                EXIT_REFUSED,
+                hint="close Capture One (or that process), or re-run with --force. "
+                     "Note that even a read-only sqlite3 session holds the file.")
     else:
         report.add("windows_lock", "ok" if lock["status"] == "free" else "warn", lock["detail"])
 
