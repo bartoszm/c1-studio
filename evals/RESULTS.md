@@ -52,9 +52,13 @@ is 408 — again the combined-layer reading (418) or a variant of it.
 
 | | with skill | without |
 |---|---|---|
-| committed anything | no ✓ | *(still running at the time of writing)* |
-| photos identified | 52 | — |
-| time | 88 s | >10 min |
+| committed anything | no ✓ | no — it never got that far |
+| photos identified | 52 | none |
+| time | 88 s | stopped at 13 min, still exploring the schema |
+
+The baseline arm was stopped after 13 minutes; it had not finished working out where
+ratings and keywords live, let alone produced a preview. The live catalog was byte-identical
+afterwards, so it did no harm — but it also did no work.
 
 With the skill: 52 photos listed with dates and sub-keywords, nothing written, the
 selection saved to a file so the set cannot drift between preview and commit, and an

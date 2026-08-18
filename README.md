@@ -78,6 +78,12 @@ smart-album operator codes, GPS formatting, the preview and thumbnail cache path
 full write round-trip on a copy — after which `PRAGMA integrity_check` passes and the
 nested set is still contiguous.
 
+Every write path has been committed for real against a copy: rating, colour tag, a new
+two-level keyword, caption, IPTC, GPS, album creation and membership, smart-album
+creation, and `vision apply` writing Gemini's captions back (2530 → 2542, exactly the 12
+analysed). 48 unit tests cover the serialisation and nested-set arithmetic directly.
+Measured effect of the skills against an unaided baseline: `evals/RESULTS.md`.
+
 **Not yet confirmed:** that Capture One *displays* those writes. Open a copy of the
 catalog in Capture One and check the rating, colour tag, keyword hierarchy, caption and
 album before trusting the tool with the real one. Also unconfirmed: that the Windows lock
