@@ -1,0 +1,147 @@
+//! The contract between a data source and the rest of the app.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::change::{ApplyPlan, ApplyReport, Change};
+use crate::photo::{Collection, KeywordNode, Photo, PhotoId, SourceId};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SourceError {
+    #[error("source not found: {0}")]
+    NotFound(String),
+    #[error("source is locked by {by}; close it and try again")]
+    Locked { by: String },
+    #[error("not supported by this source: {0}")]
+    Unsupported(&'static str),
+    #[error("source schema is not the one this build understands: {0}")]
+    Schema(String),
+    #[error("plan is stale: the source changed after it was made")]
+    StalePlan,
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Other(String),
+}
+
+pub type Result<T, E = SourceError> = std::result::Result<T, E>;
+
+/// Opaque position in a source's history. Only the source that issued it reads it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cursor(pub String);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SourceInfo {
+    pub id: SourceId,
+    /// Human-readable, e.g. "Capture One · fiuji".
+    pub name: String,
+    /// Source-specific version, e.g. the catalog schema version.
+    pub version: String,
+}
+
+/// Fields a source can write back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Field {
+    Rating,
+    Color,
+    Keywords,
+    Iptc,
+    Place,
+    Geo,
+    Collections,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Capabilities {
+    pub writable: Vec<Field>,
+    pub tiers: Vec<ImageTier>,
+    /// Geo is stored per asset, so editing one variant moves all of them (Capture One).
+    pub geo_per_asset: bool,
+    pub collections: bool,
+}
+
+impl Capabilities {
+    pub fn can_write(&self, field: Field) -> bool {
+        self.writable.contains(&field)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WriteStatus {
+    Ready,
+    /// Another program holds the source; writing now would lose data.
+    Locked { by: String },
+    ReadOnly,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ImageTier {
+    /// Small, fast, already rendered with the photo's edits (~450 px).
+    Thumb,
+    /// Screen-sized render (~2000 px).
+    Preview,
+    /// The original file; may be offline.
+    Original,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImageFormat {
+    Jpeg,
+    JpegXl,
+    /// A camera raw; the reader extracts its embedded preview.
+    Raw,
+}
+
+/// Where to get the pixels, plus how to turn them into display-ready sRGB.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImageRef {
+    pub path: PathBuf,
+    pub format: ImageFormat,
+    /// Per-channel multipliers for linear camera-space data (Capture One previews).
+    pub white_balance: Option<[f32; 3]>,
+}
+
+/// One item of a snapshot, delivered in order.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SourceEvent {
+    /// A complete snapshot follows: anything the consumer holds for this source and
+    /// does not see again before [`SourceEvent::End`] has been deleted.
+    BeginFull,
+    /// Only changes follow.
+    BeginIncremental,
+    Upsert(Box<Photo>),
+    Delete(PhotoId),
+    Collections(Vec<Collection>),
+    Keywords(Vec<KeywordNode>),
+    End(Cursor),
+}
+
+/// A place photos come from. Implementations are blocking; callers that must not block
+/// (the UI) run them on a worker thread.
+pub trait PhotoSource: Send + Sync {
+    fn info(&self) -> SourceInfo;
+
+    fn capabilities(&self) -> Capabilities;
+
+    /// Streams the source's state into `sink`. With `since` set to a cursor from an
+    /// earlier call, a source may send only what changed; if nothing changed it sends
+    /// `BeginIncremental` then `End` with the same cursor.
+    fn snapshot(
+        &self,
+        since: Option<&Cursor>,
+        sink: &mut dyn FnMut(SourceEvent) -> Result<()>,
+    ) -> Result<()>;
+
+    /// Locates pixels for a photo. `Ok(None)` means this tier does not exist for it
+    /// (not rendered yet, or the original's volume is offline).
+    fn image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>>;
+
+    fn write_status(&self) -> WriteStatus;
+
+    /// Dry run: sorts changes into apply / conflict / no-op without writing.
+    fn plan(&self, changes: &[Change]) -> Result<ApplyPlan>;
+
+    /// Writes a plan produced by [`PhotoSource::plan`]. Atomic: all or nothing.
+    fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport>;
+}

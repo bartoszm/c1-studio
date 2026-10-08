@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Bartosz Michalik <bartosz.michalik@gmail.com>"]
+
+[workspace.dependencies]
+c1model = { path = "crates/c1model" }
+source-c1 = { path = "crates/source-c1" }
+c1index = { path = "crates/c1index" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+postcard = { version = "1", features = ["use-std"] }
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+redb = "4"
+tantivy = "0.26"
+clap = { version = "4", features = ["derive"] }
+rand = "0.10"
+tempfile = "3"
+
+# Dependencies are slow in debug builds (tantivy especially), which makes tests and
+# benchmarks misleading. Optimising them costs one slower first build.
+[profile.dev.package."*"]
+opt-level = 2

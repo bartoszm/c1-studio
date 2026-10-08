@@ -1,5 +1,11 @@
 #!/bin/sh
 # c1cat launcher: runs the package with the interpreter that has Pillow/imagecodecs.
+# From Git Bash on Windows, hand off to the WSL checkout (c1cat needs WSL paths and Python).
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*)
+    MSYS_NO_PATHCONV=1 exec wsl.exe -d Ubuntu -e /home/bartoszm/capture_one_playground/bin/c1cat "$@" ;;
+esac
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PY="${C1CAT_PYTHON:-/home/bartoszm/miniconda3/bin/python3}"
 [ -x "$PY" ] || PY=python3
-exec "$PY" -m c1cat "$@"
+PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}" exec "$PY" -m c1cat "$@"

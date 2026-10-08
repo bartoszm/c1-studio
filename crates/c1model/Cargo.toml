@@ -1,0 +1,12 @@
+[package]
+name = "c1model"
+description = "Canonical photo model and the PhotoSource contract every data source implements"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+postcard.workspace = true
+xxhash-rust.workspace = true

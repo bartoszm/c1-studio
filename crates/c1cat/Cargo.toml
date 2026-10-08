@@ -1,0 +1,17 @@
+[package]
+name = "c1cat"
+description = "Command-line access to the c1-studio library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+c1model.workspace = true
+source-c1.workspace = true
+c1index.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+rand.workspace = true
+tempfile.workspace = true

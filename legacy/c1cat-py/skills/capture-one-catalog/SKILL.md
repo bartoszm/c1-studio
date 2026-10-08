@@ -19,6 +19,9 @@ Use `${CLAUDE_PLUGIN_ROOT}/bin/c1cat` in every command. Do not query the catalog
 `sqlite3` directly: the schema is unobvious in ways that produce confidently wrong
 answers (see "Why not raw SQL" below).
 
+On Windows, `c1cat` runs inside WSL: paths it prints are WSL paths, readable through
+`\\wsl.localhost\Ubuntu` (e.g. `/home/bartoszm/x.jpg` → `\\wsl.localhost\Ubuntu\home\bartoszm\x.jpg`).
+
 ## Start here
 
 ```bash
