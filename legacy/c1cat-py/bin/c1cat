@@ -1,0 +1,5 @@
+#!/bin/sh
+# c1cat launcher: runs the package with the interpreter that has Pillow/imagecodecs.
+PY="${C1CAT_PYTHON:-/home/bartoszm/miniconda3/bin/python3}"
+[ -x "$PY" ] || PY=python3
+exec "$PY" -m c1cat "$@"

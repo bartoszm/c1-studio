@@ -1,0 +1,8 @@
+{
+  "name": "capture-one",
+  "version": "0.1.0",
+  "description": "Search, rate, keyword, caption, geo-locate and organise a Capture One catalog from the command line, report develop settings, and delegate visual photo analysis to Gemini.",
+  "author": { "name": "Bartosz Michalik", "email": "bartosz.michalik@gmail.com" },
+  "license": "MIT",
+  "keywords": ["capture-one", "photography", "catalog", "sqlite", "raw", "keywords", "metadata", "gemini"]
+}
