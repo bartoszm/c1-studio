@@ -17,6 +17,9 @@ c1cat=${CLAUDE_PLUGIN_ROOT}/bin/c1cat
 Selecting photos uses the same selector as the **capture-one-catalog** skill; read
 that skill for the filter grammar.
 
+On Windows, `c1cat` runs inside WSL: pass `--out` as a WSL path (`~/...`) and read the
+paths it prints through `\\wsl.localhost\Ubuntu` (e.g. `\\wsl.localhost\Ubuntu\home\bartoszm\c1-batches\...`).
+
 ## 1. Build the batch
 
 ```bash

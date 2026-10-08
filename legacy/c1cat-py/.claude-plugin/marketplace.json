@@ -1,0 +1,11 @@
+{
+  "name": "capture-one-local",
+  "owner": { "name": "Bartosz Michalik", "email": "bartosz.michalik@gmail.com" },
+  "plugins": [
+    {
+      "name": "capture-one",
+      "source": "./",
+      "description": "Search, tag and organise a Capture One catalog; delegate visual photo analysis to Gemini."
+    }
+  ]
+}
