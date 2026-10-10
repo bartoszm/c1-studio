@@ -1,0 +1,48 @@
+// How photo facts read in the UI.
+
+import type { Photo } from "./api";
+
+export const COLORS: Record<string, string> = {
+  red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
+  blue: "#4a90d9", pink: "#e87ab8", purple: "#9b6bd6", none: "transparent",
+};
+
+/** A space that keeps a unit with its number when the line wraps. */
+const NB = String.fromCharCode(0xa0);
+
+/** `23 mm · f/2 · 1/250 s · ISO 400`, leaving out what is unknown. */
+export function exposure(p: Photo): string {
+  const e = p.exif;
+  return [
+    e.focal && `${Math.round(e.focal)}${NB}mm`,
+    e.aperture && `f/${+e.aperture.toFixed(1)}`,
+    e.shutter && (e.shutter >= 1 ? `${+e.shutter.toFixed(1)}${NB}s` : `1/${Math.round(1 / e.shutter)}${NB}s`),
+    e.iso && `ISO${NB}${e.iso}`,
+  ].filter(Boolean).join("  ·  ");
+}
+
+export function date(ms: number | null): string {
+  return ms === null ? "" : new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "medium" });
+}
+
+export function bytes(n: number | null): string {
+  if (n === null) return "";
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} kB`;
+}
+
+/**
+ * The folder holding a file, as the folder tree names it: `H:\fotos\a.raf` → `H:/fotos`
+ * (crates/c1index/src/schema.rs, `folder_tree`).
+ */
+export function folderOf(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  parts.pop();
+  return (/^[\\/]/.test(path) ? "/" : "") + parts.join("/");
+}
+
+export function camera(p: Photo): string {
+  const { camera_make: make, camera_model: model } = p.exif;
+  // Models often repeat the make ("Canon EOS 6D"); say it once.
+  if (make && model && !model.toLowerCase().startsWith(make.toLowerCase().split(" ")[0])) return `${make} ${model}`;
+  return model ?? make ?? "";
+}

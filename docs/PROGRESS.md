@@ -314,10 +314,25 @@ go. Open branches and folded sections are remembered between runs.
   gained `rule`). A store written by another version is dropped and refilled by the
   next sync, which takes a few seconds for the real catalog.
 
+### Selection and the details panel
+
+- **Click selects, double-click or Enter opens** the viewer, as in Capture One. Arrow
+  keys, Page Up/Down, Home and End move the selection and keep it on screen.
+- **The details panel** (right, toggled with `i` or the Details button, remembered)
+  shows the selected photo:
+  - rating, colour label, edited and in-trash marks;
+  - capture time, camera, lens, exposure, pixel size;
+  - keywords, albums, place and GPS (with where the position came from), IPTC caption
+    fields, folder, file size, import time, styles, layers and the catalog id.
+- **Links filter the grid:** each level of a keyword, an album, the folder and the
+  camera. The tree opens the branches above what was picked so it shows.
+- **The viewer shows the same panel** at its side while it is on, and stepping with
+  ← → updates both.
+
 ### Next
 
 1. Push to GitHub so CI runs. `.github/workflows/ci.yml` runs on Windows: UI check and
    build, then `cargo fmt --check`, `clippy -D warnings` and `cargo test`. `rustfmt.toml`
    keeps the 120-column style, and the code is formatted with it.
 2. Check the original tier on real RAF/DNG files once H: is mounted.
-3. Stage 1, continued: a metadata and EXIF panel, originals at 100% from H:.
+3. Stage 1, continued: originals at 100% from H: (needs the drive mounted).

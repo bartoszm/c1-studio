@@ -1,11 +1,15 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import * as api from "./lib/api";
+  import { exposure } from "./lib/format";
 
-  let { row, next, onclose, onstep }: {
+  let { row, next, onclose, onstep, children }: {
     row: number;
     next?: number;
     onclose: () => void;
     onstep: (delta: number) => void;
+    /** A side panel, when shown. */
+    children?: Snippet;
   } = $props();
 
   let info = $state<api.Photo | null>(null);
@@ -28,21 +32,11 @@
     else if (e.key === "ArrowRight") onstep(1);
     else if (e.key === "ArrowLeft") onstep(-1);
   }
-
-  function exposure(p: api.Photo) {
-    const e = p.exif;
-    return [
-      e.focal && `${Math.round(e.focal)} mm`,
-      e.aperture && `f/${e.aperture}`,
-      e.shutter && (e.shutter >= 1 ? `${e.shutter} s` : `1/${Math.round(1 / e.shutter)} s`),
-      e.iso && `ISO ${e.iso}`,
-    ].filter(Boolean).join("  ·  ");
-  }
 </script>
 
 <svelte:window onkeydown={onkey} />
 
-<div class="viewer" role="dialog" aria-label="Photo">
+<div class="viewer" class:side={!!children} role="dialog" aria-label="Photo">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="stage" onclick={onclose}>
     {#key row}
@@ -60,6 +54,7 @@
       {#if info.place.city || info.place.country}<span>{[info.place.city, info.place.country].filter(Boolean).join(", ")}</span>{/if}
       {#if info.keywords.length}<span class="kw">{info.keywords.map((k) => k.join(" › ")).join("   ")}</span>{/if}
     {/if}
-    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc</span>
+    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i</span>
   </div>
+  {@render children?.()}
 </div>
