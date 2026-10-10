@@ -44,22 +44,47 @@ export type QueryResult = {
 
 export type Status = { catalog: string; source: string; photos: number; writes: string };
 
+export type GeoOrigin = "Exif" | "Manual" | "Gpx" | "Geocoded";
+
 export type Photo = {
   id: { source: string; ext: string };
-  file: { name: string; ext: string; path: string | null };
+  asset: string;
+  variant_index: number;
+  file: { name: string; ext: string; path: string | null; size: number | null };
   captured_at: number | null;
+  imported_at: number | null;
   exif: {
+    camera_make: string | null;
     camera_model: string | null;
     lens: string | null;
     iso: number | null;
     aperture: number | null;
     shutter: number | null;
     focal: number | null;
+    width: number | null;
+    height: number | null;
   };
   rating: number | null;
   color: Color | null;
   keywords: string[][];
-  place: { city: string | null; country: string | null };
+  iptc: {
+    title: string | null;
+    headline: string | null;
+    description: string | null;
+    creator: string | null;
+    copyright: string | null;
+  };
+  place: {
+    city: string | null;
+    state: string | null;
+    country: string | null;
+    country_code: string | null;
+    location: string | null;
+  };
+  geo: { lat: number; lon: number; alt: number | null; origin: GeoOrigin } | null;
+  collections: string[];
+  edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number };
+  trashed: boolean;
 };
 
 export type CollectionKind = "Album" | "Smart" | "Group" | "Project" | "Folder" | "Other";

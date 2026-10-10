@@ -4,8 +4,10 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
+  import { COLORS } from "./lib/format";
   import { albumTree, pathTree, type Node } from "./lib/tree";
   import Grid from "./Grid.svelte";
+  import Info from "./Info.svelte";
   import Tree from "./Tree.svelte";
   import Viewer from "./Viewer.svelte";
 
@@ -13,10 +15,6 @@
   const DIMS: Dim[] = ["rating", "color", "year", "camera", "country", "keyword_tree", "collection", "folder"];
   /** Groups listed as plain values; the rest are trees. */
   const FLAT: Dim[] = ["rating", "color", "year", "camera", "country"];
-  const COLORS: Record<string, string> = {
-    red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
-    blue: "#4a90d9", pink: "#e87ab8", purple: "#9b6bd6", none: "transparent",
-  };
 
   let status = $state<api.Status | null>(null);
   let error = $state<string | null>(null);
@@ -25,7 +23,9 @@
   let result = $state<QueryResult | null>(null);
   let collections = $state<api.Collection[]>([]);
   let smart = $state<Map<string, number> | null>(null);
-  let viewing = $state<number | null>(null);
+  /** Position of the photo picked in the grid; the viewer and the panel show it. */
+  let selected = $state<number | null>(null);
+  let viewing = $state(false);
   let syncNote = $state("syncing…");
   let grid: Grid;
 
@@ -39,10 +39,11 @@
   }
   const expanded = new SvelteSet<string>(remembered("expanded"));
   const folded = new SvelteSet<string>(remembered("folded"));
+  let showInfo = $state(!remembered("folded").includes("info"));
   $effect(() => {
     try {
       localStorage.setItem("expanded", JSON.stringify([...expanded]));
-      localStorage.setItem("folded", JSON.stringify([...folded]));
+      localStorage.setItem("folded", JSON.stringify([...folded, ...(showInfo ? [] : ["info"])]));
     } catch {
       // Storage unavailable: the layout just isn't remembered.
     }
@@ -68,6 +69,8 @@
       pages = new SvelteMap([[0, r.rows]]);
       loading = new Map();
       error = null;
+      selected = null;
+      viewing = false;
       grid?.reset();
     } catch (e) {
       if (mine === generation) error = String(e);
@@ -197,17 +200,48 @@
   let active = $derived(Object.values(filter).some((v) => v !== undefined));
 
   async function step(d: number) {
-    if (viewing === null || !result) return;
-    const to = viewing + d;
+    if (selected === null || !result) return;
+    const to = selected + d;
     if (to < 0 || to >= result.total) return;
     await need(to, to + 2);
-    viewing = to;
+    selected = to;
   }
 
   function close() {
-    if (viewing !== null) grid?.reveal(viewing);
-    viewing = null;
+    if (selected !== null) grid?.reveal(selected);
+    viewing = false;
   }
+
+  function onkey(e: KeyboardEvent) {
+    if (e.target instanceof HTMLInputElement || e.ctrlKey || e.altKey || e.metaKey) return;
+    if (e.key === "i") showInfo = !showInfo;
+    else if (viewing) return; // the viewer has its own keys
+    else if (e.key === "Enter" && selected !== null) viewing = true;
+    else if (grid?.move(e.key)) e.preventDefault();
+  }
+
+  // Links in the info panel: filter by what was clicked.
+  function only(f: Filter) {
+    filter = { ...filter, ...f };
+    run();
+  }
+  function showKeyword(path: string) {
+    // Open the branches above it so the pick is visible in the tree.
+    const parts = path.split("|");
+    for (let i = 1; i < parts.length; i++) expanded.add("k:" + parts.slice(0, i).join("|"));
+    only({ keywords_under: [path] });
+  }
+  function showFolder(path: string) {
+    const parts = path.split("/");
+    for (let i = 1; i < parts.length; i++) expanded.add("f:" + parts.slice(0, i).join("/"));
+    only({ folder: path });
+  }
+  function showAlbum(id: string) {
+    for (let c = byId.get(id); c?.parent; c = byId.get(c.parent)) expanded.add("a:" + c.parent);
+    only({ collections: [id] });
+  }
+
+  let byId = $derived(new Map(collections.map((c) => [c.id, c])));
 
   function fold(key: string) {
     if (folded.has(key)) folded.delete(key);
@@ -221,11 +255,25 @@
   </button>
 {/snippet}
 
-<div class="app">
+{#snippet details()}
+  <Info
+    row={selected === null ? undefined : rowAt(selected)}
+    collections={byId}
+    onkeyword={showKeyword}
+    onalbum={showAlbum}
+    onfolder={showFolder}
+    oncamera={(camera) => only({ camera })}
+  />
+{/snippet}
+
+<svelte:window onkeydown={onkey} />
+
+<div class="app" class:with-info={showInfo}>
   <header>
     <span class="brand">C1 Studio</span>
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     {#if active}<button class="clear" onclick={clearAll}>Clear filters</button>{/if}
+    <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
     </span>
@@ -269,13 +317,23 @@
     {/each}
   </aside>
 
-  <Grid bind:this={grid} total={result?.total ?? 0} {rowAt} {need} onopen={(i) => (viewing = i)}>
+  <Grid
+    bind:this={grid}
+    total={result?.total ?? 0}
+    {rowAt}
+    {need}
+    {selected}
+    onselect={(i) => (selected = i)}
+    onopen={(i) => { selected = i; viewing = true; }}
+  >
     {#if error}
       <p class="error">{error}</p>
     {:else if result && result.total === 0}
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
+
+  {#if showInfo && !viewing}{@render details()}{/if}
 
   <footer>
     {#if status}
@@ -287,6 +345,8 @@
   </footer>
 </div>
 
-{#if viewing !== null && rowAt(viewing) !== undefined}
-  <Viewer row={rowAt(viewing)!} next={rowAt(viewing + 1)} onclose={close} onstep={step} />
+{#if viewing && selected !== null && rowAt(selected) !== undefined}
+  <Viewer row={rowAt(selected)!} next={rowAt(selected + 1)} onclose={close} onstep={step}>
+    {#if showInfo}{@render details()}{/if}
+  </Viewer>
 {/if}

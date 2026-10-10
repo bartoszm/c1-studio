@@ -4,12 +4,14 @@
 
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
-  let { total, rowAt, need, onopen, children }: {
+  let { total, rowAt, need, selected, onselect, onopen, children }: {
     total: number;
     /** The photo at a position, once its page has loaded. */
     rowAt: (i: number) => number | undefined;
     /** Positions [from, to) are about to show. */
     need: (from: number, to: number) => void;
+    selected: number | null;
+    onselect: (i: number) => void;
     onopen: (i: number) => void;
     children?: Snippet;
   } = $props();
@@ -45,6 +47,25 @@
     top = 0;
   }
 
+  /** Moves the selection by arrow key; returns false for keys it does not handle. */
+  export function move(key: string): boolean {
+    const step: Record<string, number> = {
+      ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols,
+      PageUp: -cols * Math.max(1, Math.floor(height / lineH)), PageDown: cols * Math.max(1, Math.floor(height / lineH)),
+    };
+    let to: number;
+    if (key === "Home") to = 0;
+    else if (key === "End") to = total - 1;
+    else if (key in step) to = (selected ?? -step[key]) + step[key];
+    else return false;
+    to = Math.max(0, Math.min(total - 1, to));
+    if (total) {
+      onselect(to);
+      reveal(to);
+    }
+    return true;
+  }
+
   /** Scrolls just enough to bring position `i` into view. */
   export function reveal(i: number) {
     if (!el) return;
@@ -61,10 +82,12 @@
       {@const row = rowAt(i)}
       <button
         class="cell"
+        class:sel={selected === i}
         style:width="{cellW}px"
         style:height="{cellH}px"
         style:transform="translate({PAD + (i % cols) * (cellW + GAP)}px, {PAD + Math.floor(i / cols) * lineH}px)"
-        onclick={() => onopen(i)}
+        onclick={() => onselect(i)}
+        ondblclick={() => onopen(i)}
       >
         {#if row !== undefined}<img src={api.thumbUrl(row)} alt="" decoding="async" />{/if}
       </button>
