@@ -87,6 +87,47 @@ pub(crate) fn thumbnail_path(catalog_dir: &Path, variant_pk: i64) -> PathBuf {
     catalog_dir.join("Cache").join("Thumbnails").join(format!("{variant_pk:08}.cot"))
 }
 
+/// Capture One's screen preview: `Cache\Previews\<ZIMAGE.ZSIDECARPATH>.cop`, a JPEG-XL
+/// of linear camera RGB before white balance. The sidecar path is sometimes lower-cased
+/// relative to the file on disk, so a miss falls back to a case-insensitive look through
+/// that one folder.
+pub(crate) fn preview_path(catalog_dir: &Path, sidecar: &str) -> Option<PathBuf> {
+    if sidecar.is_empty() {
+        return None;
+    }
+    let mut path = catalog_dir.join("Cache").join("Previews");
+    path.extend(sidecar.split(['\\', '/']).filter(|s| !s.is_empty()));
+    let mut name = path.file_name()?.to_os_string();
+    name.push(".cop");
+    path.set_file_name(&name);
+    if path.is_file() {
+        return Some(path);
+    }
+    let wanted = name.to_string_lossy().to_lowercase();
+    std::fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .find(|e| e.file_name().to_string_lossy().to_lowercase() == wanted)
+        .map(|e| e.path())
+}
+
+/// `ZWHITEBALANCE`: `R;G;B` multipliers with G normalised to 1.
+pub(crate) fn parse_white_balance(text: &str) -> Option<[f32; 3]> {
+    let values: Vec<f32> = text.split(';').map(|v| v.trim().parse::<f32>()).collect::<Result<_, _>>().ok()?;
+    match values.as_slice() {
+        [r, g, b, ..] if [r, g, b].iter().all(|v| v.is_finite() && **v > 0.0) => Some([*r, *g, *b]),
+        _ => None,
+    }
+}
+
+/// Degrees to the nearest quarter turn, in 0..360.
+pub(crate) fn quarter_turn(degrees: f64) -> u16 {
+    if !degrees.is_finite() {
+        return 0;
+    }
+    ((degrees / 90.0).round().rem_euclid(4.0) * 90.0) as u16
+}
+
 /// The original's Windows path. `is_relative` images live inside the catalog folder
 /// (imported into the catalog); the rest hang off a drive root such as `H:\`.
 pub(crate) fn original_path(win_root: &str, relative: &str, filename: &str, is_relative: bool, catalog_dir: &Path) -> String {
@@ -144,6 +185,38 @@ mod tests {
         assert_eq!(original_path(r"H:\", r"fotos\2026", "A.RAF", false, dir), r"H:\fotos\2026\A.RAF");
         assert_eq!(original_path(r"H:\", "", "A.RAF", false, dir), r"H:\A.RAF");
         assert_eq!(original_path("", r"Originals\x", "A.RAF", true, dir), r"C:\c1_catalogs\fuji\Originals\x\A.RAF");
+    }
+
+    #[test]
+    fn white_balance_parses_or_is_absent() {
+        assert_eq!(parse_white_balance("1.887000;1.000000;1.844000"), Some([1.887, 1.0, 1.844]));
+        assert_eq!(parse_white_balance(""), None);
+        assert_eq!(parse_white_balance("1;0;1"), None);
+        assert_eq!(parse_white_balance("a;b;c"), None);
+    }
+
+    #[test]
+    fn rotation_snaps_to_quarter_turns() {
+        assert_eq!(quarter_turn(0.0), 0);
+        assert_eq!(quarter_turn(270.0), 270);
+        assert_eq!(quarter_turn(269.59), 270);
+        assert_eq!(quarter_turn(358.42), 0);
+        assert_eq!(quarter_turn(-90.0), 270);
+        assert_eq!(quarter_turn(f64::NAN), 0);
+    }
+
+    #[test]
+    fn preview_path_tolerates_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Cache").join("Previews").join("2026").join("9");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("DSCF8638.RAF.cop"), b"").unwrap();
+        // Windows finds it directly; case-sensitive filesystems through the folder scan.
+        let found = preview_path(dir.path(), "2026/9/dscf8638.raf").unwrap();
+        assert!(found.is_file());
+        assert!(found.file_name().unwrap().eq_ignore_ascii_case("DSCF8638.RAF.cop"));
+        assert_eq!(preview_path(dir.path(), "2026/9/missing.raf"), None);
+        assert_eq!(preview_path(dir.path(), ""), None);
     }
 
     #[test]

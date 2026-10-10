@@ -75,11 +75,9 @@ impl PhotoSource for CaptureOne {
 
     fn capabilities(&self) -> Capabilities {
         // Read-only until the write path is ported with differential tests (stage 2).
-        // Previews need white balance from the develop settings before they display
-        // correctly, so they are offered once that rendering exists.
         Capabilities {
             writable: vec![],
-            tiers: vec![ImageTier::Thumb, ImageTier::Original],
+            tiers: vec![ImageTier::Thumb, ImageTier::Preview, ImageTier::Original],
             geo_per_asset: true,
             collections: true,
         }
@@ -120,7 +118,17 @@ impl PhotoSource for CaptureOne {
                 let con = catalog::open_live(&self.catalog)?;
                 catalog::original_path(&con, self.catalog_dir(), vpk)?.map(PathBuf::from)
             }
-            ImageTier::Preview => return Err(SourceError::Unsupported("preview rendering")),
+            ImageTier::Preview => {
+                let con = catalog::open_live(&self.catalog)?;
+                let Some(preview) = catalog::preview_source(&con, vpk)? else { return Ok(None) };
+                let path = config::preview_path(self.catalog_dir(), &preview.sidecar);
+                return Ok(path.map(|path| ImageRef {
+                    path,
+                    format: ImageFormat::JpegXl,
+                    white_balance: preview.white_balance,
+                    rotation: preview.rotation,
+                }));
+            }
         };
         let ext = path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase());
         let format = match (tier, ext.as_deref()) {
@@ -128,7 +136,7 @@ impl PhotoSource for CaptureOne {
             (_, Some("jxl")) => ImageFormat::JpegXl,
             _ => ImageFormat::Raw,
         };
-        Ok(path.filter(|p| p.is_file()).map(|path| ImageRef { path, format, white_balance: None }))
+        Ok(path.filter(|p| p.is_file()).map(|path| ImageRef { path, format, white_balance: None, rotation: 0 }))
     }
 
     fn write_status(&self) -> WriteStatus {

@@ -12,6 +12,7 @@ authors = ["Bartosz Michalik <bartosz.michalik@gmail.com>"]
 c1model = { path = "crates/c1model" }
 source-c1 = { path = "crates/source-c1" }
 c1index = { path = "crates/c1index" }
+c1image = { path = "crates/c1image" }
 
 anyhow = "1"
 thiserror = "2"
@@ -24,6 +25,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 redb = "4"
 tantivy = "0.26"
 clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+jxl-oxide = "0.12"
 rand = "0.10"
 tempfile = "3"
 

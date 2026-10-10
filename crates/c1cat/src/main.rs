@@ -4,10 +4,11 @@ mod bench;
 mod selector;
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::Context;
 use c1index::{Dim, Library, QueryOptions, Sort};
-use c1model::PhotoSource;
+use c1model::{ImageTier, PhotoSource};
 use clap::{Parser, Subcommand};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 
@@ -68,6 +69,25 @@ enum Command {
         /// Values shown per dimension.
         #[arg(long, default_value_t = 15)]
         top: usize,
+        #[arg(long)]
+        no_sync: bool,
+    },
+    /// Write viewable JPEGs of matching photos, from Capture One's thumbnail, its
+    /// preview (white-balanced here) or the original's embedded JPEG.
+    Image {
+        #[command(flatten)]
+        select: Selector,
+        /// thumb, preview or original.
+        #[arg(long, default_value = "preview")]
+        tier: String,
+        /// Folder to write into.
+        #[arg(long, short)]
+        out: PathBuf,
+        /// Longer edge in pixels; 0 keeps the size.
+        #[arg(long, default_value_t = 0)]
+        size: u32,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
         #[arg(long)]
         no_sync: bool,
     },
@@ -134,6 +154,39 @@ fn parse_dims(text: &str) -> anyhow::Result<Vec<Dim>> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Image { select, tier, out, size, limit, no_sync } => {
+            let tier = match tier.as_str() {
+                "thumb" => ImageTier::Thumb,
+                "preview" => ImageTier::Preview,
+                "original" => ImageTier::Original,
+                other => anyhow::bail!("--tier is thumb, preview or original, not {other:?}"),
+            };
+            let session = open(cli.catalog.as_ref())?;
+            if !no_sync {
+                sync(&session, false)?;
+            }
+            let filter = select.to_filter(&session.library)?;
+            let result = session.library.query(&filter, &QueryOptions { limit: Some(limit), ..QueryOptions::default() })?;
+            std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
+            for row in result.rows {
+                let Some(id) = session.library.photo_id(row) else { continue };
+                let started = Instant::now();
+                let Some(source) = session.source.image(&id, tier)? else {
+                    eprintln!("{}: no {tier:?} image", id.ext);
+                    continue;
+                };
+                match c1image::load_fitted(&source, size) {
+                    Ok(pixels) => {
+                        let path = out.join(format!("{}-{}.jpg", id.ext, format!("{tier:?}").to_lowercase()));
+                        let file = std::io::BufWriter::new(std::fs::File::create(&path)?);
+                        image::codecs::jpeg::JpegEncoder::new_with_quality(file, 90).encode_image(&pixels)?;
+                        let ms = started.elapsed().as_secs_f64() * 1000.0;
+                        println!("{}  {}×{}  {ms:.0} ms", path.display(), pixels.width(), pixels.height());
+                    }
+                    Err(e) => eprintln!("{}: {e}", id.ext),
+                }
+            }
+        }
         Command::Bench { photos, keywords, queries, seed, dir, rebuild, dims } => {
             bench::bench(&bench::Config { photos, keywords, queries, seed, dir, rebuild, dims: parse_dims(&dims)? })?;
         }

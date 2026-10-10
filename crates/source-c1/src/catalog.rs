@@ -106,6 +106,49 @@ pub(crate) fn copy_for_reading(catalog: &Path, work_dir: &Path) -> Result<TempCo
 }
 
 /// Where the original file lives, in Windows form.
+pub(crate) struct PreviewSource {
+    pub sidecar: String,
+    pub white_balance: Option<[f32; 3]>,
+    /// Clockwise degrees, a multiple of 90.
+    pub rotation: u16,
+}
+
+/// Where the variant's `.cop` preview should be, and how to render it.
+///
+/// White balance comes from the combined layer when it has one: that is what Capture One
+/// renders, styles included, and across 300 sampled variants it matched Capture One's own
+/// thumbnails best (48% closest; the default layer, 25%).
+///
+/// The preview is stored in sensor orientation. `ZROTATION` on the combined layer is the
+/// clockwise turn Capture One shows it with, the user's own rotation included; a few
+/// values carry straightening too (`358.42`), which is dropped to the nearest quarter.
+pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option<PreviewSource>> {
+    con.query_row(
+        "SELECT i.ZSIDECARPATH, c.ZROTATION, c.ZWHITEBALANCE, a.ZWHITEBALANCE, d.ZWHITEBALANCE
+           FROM ZVARIANT v
+           JOIN ZIMAGE i             ON i.Z_PK = v.ZIMAGE
+           LEFT JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
+           LEFT JOIN ZVARIANTLAYER a ON a.Z_PK = v.ZADJUSTMENTLAYER
+           LEFT JOIN ZVARIANTLAYER d ON d.Z_PK = v.ZDEFAULTLAYER
+          WHERE v.Z_PK = ?",
+        [variant_pk],
+        |r| {
+            let sidecar = r.get::<_, Option<String>>(0)?.unwrap_or_default();
+            let rotation = config::quarter_turn(r.get::<_, Option<f64>>(1)?.unwrap_or(0.0));
+            let mut white_balance = None;
+            for column in 2..=4 {
+                if let Some(wb) = r.get::<_, Option<String>>(column)?.as_deref().and_then(config::parse_white_balance) {
+                    white_balance = Some(wb);
+                    break;
+                }
+            }
+            Ok(PreviewSource { sidecar, white_balance, rotation })
+        },
+    )
+    .optional()
+    .map_err(db_err)
+}
+
 pub(crate) fn original_path(con: &Connection, catalog_dir: &Path, variant_pk: i64) -> Result<Option<String>> {
     con.query_row(
         "SELECT p.ZWINROOT, p.ZRELATIVEPATH, p.ZISRELATIVE, i.ZIMAGEFILENAME
