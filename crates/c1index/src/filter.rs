@@ -215,6 +215,35 @@ impl Filter {
         *self == Filter::default()
     }
 
+    /// This filter with the parts that pick values of `dim` left out: what a sidebar
+    /// group counts over, so that picking one value leaves its alternatives visible.
+    /// Exclusions (`keywords_not`, `not_in_collections`) stay, as they hide rather than pick.
+    pub fn without(&self, dim: Dim) -> Filter {
+        let mut f = self.clone();
+        match dim {
+            Dim::Source => f.sources.clear(),
+            Dim::Keyword => {
+                f.keywords.clear();
+                f.keywords_any.clear();
+            }
+            Dim::KeywordTree => f.keywords_under.clear(),
+            Dim::Collection => f.collections.clear(),
+            Dim::Camera => f.camera = None,
+            Dim::Lens => f.lens = None,
+            Dim::Country => f.country = None,
+            Dim::State => f.state = None,
+            Dim::City => f.city = None,
+            Dim::Year => f.year = None,
+            Dim::Month => f.month = None,
+            Dim::Rating => f.rating = None,
+            Dim::Color => f.color = None,
+            Dim::Ext => f.ext.clear(),
+            Dim::Style => f.style = None,
+            Dim::Flag => {}
+        }
+        f
+    }
+
     pub fn to_query(&self, index: &Index, f: &Fields, distinct: &Distinct) -> anyhow::Result<Box<dyn Query>> {
         let mut must: Vec<Box<dyn Query>> = Vec::new();
         let mut must_not: Vec<Box<dyn Query>> = Vec::new();

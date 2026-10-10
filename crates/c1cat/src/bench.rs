@@ -598,7 +598,14 @@ pub fn bench(c: &Config) -> anyhow::Result<()> {
         })
         .collect();
 
-    let options = QueryOptions { sort: Sort::DateDesc, limit: Some(PAGE), offset: 0, facets: c.dims.clone() };
+    // As the app asks: each sidebar group counted without its own filter.
+    let options = QueryOptions {
+        sort: Sort::DateDesc,
+        limit: Some(PAGE),
+        offset: 0,
+        facets: c.dims.clone(),
+        facets_ignore_own: true,
+    };
     let classes = [
         run(&library, "browse", &browse, &options, None)?,
         run(&library, "1 filter", &broad, &options, None)?,

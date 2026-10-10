@@ -213,7 +213,7 @@ fn main() -> anyhow::Result<()> {
                 sync(&session, print_ids || json)?;
             }
             let filter = select.to_filter(&session.library)?;
-            let options = QueryOptions { sort: Sort::parse(&sort)?, limit, offset, facets: vec![] };
+            let options = QueryOptions { sort: Sort::parse(&sort)?, limit, offset, ..QueryOptions::default() };
             let result = session.library.query(&filter, &options)?;
             if print_ids {
                 for row in &result.rows {

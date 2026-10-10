@@ -84,10 +84,12 @@ aside h3 {
 .trail button:hover { color: var(--text); }
 .trail button + button::before { content: "› "; color: var(--muted); }
 
-main { grid-area: main; overflow-y: auto; padding: 10px; }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 6px; }
+main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps the measured width true */
+.space { position: relative; }
 .cell {
-  aspect-ratio: 3 / 2;
+  position: absolute;
+  top: 0;
+  left: 0;
   padding: 4px;
   background: var(--panel);
   border-radius: 3px;
@@ -95,8 +97,8 @@ main { grid-area: main; overflow-y: auto; padding: 10px; }
 }
 .cell:hover { outline-color: #555; }
 .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
-.more, .empty { padding: 24px; text-align: center; color: var(--muted); }
-.error { color: var(--error); white-space: pre-wrap; }
+.empty { padding: 24px; text-align: center; color: var(--muted); }
+.error { padding: 16px; color: var(--error); white-space: pre-wrap; }
 
 footer {
   grid-area: foot;

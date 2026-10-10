@@ -1,11 +1,13 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
+  import { SvelteMap } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
+  import Grid from "./Grid.svelte";
   import Viewer from "./Viewer.svelte";
 
-  const PAGE = 300;
+  const PAGE = 500;
   const DIMS: Dim[] = ["rating", "color", "year", "camera", "keyword_tree", "collection", "country"];
   const COLORS: Record<string, string> = {
     red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
@@ -17,38 +19,55 @@
   let filter = $state<Filter>({});
   let search = $state("");
   let result = $state<QueryResult | null>(null);
-  let rows = $state<number[]>([]);
-  let loadingMore = $state(false);
   let names = $state(new Map<string, string>());
   let viewing = $state<number | null>(null);
   let syncNote = $state("syncing…");
+  let grid: Grid;
 
   // Each query gets a number; answers to older ones are dropped.
   let generation = 0;
+  // The result's photos, fetched a page at a time as the grid reaches them.
+  let pages = new SvelteMap<number, number[]>();
+  let loading = new Map<number, Promise<void>>();
 
   async function run() {
     const mine = ++generation;
     try {
-      const r = await api.query($state.snapshot(filter), { sort: "DateDesc", limit: PAGE, offset: 0, facets: DIMS });
+      const r = await api.query($state.snapshot(filter), {
+        sort: "DateDesc", limit: PAGE, offset: 0, facets: DIMS, facets_ignore_own: true,
+      });
       if (mine !== generation) return;
       result = r;
-      rows = r.rows;
+      pages = new SvelteMap([[0, r.rows]]);
+      loading = new Map();
       error = null;
+      grid?.reset();
     } catch (e) {
       if (mine === generation) error = String(e);
     }
   }
 
-  async function more() {
-    if (loadingMore || !result || rows.length >= result.total) return;
-    loadingMore = true;
+  const rowAt = (i: number) => pages.get(Math.floor(i / PAGE))?.[i % PAGE];
+
+  function load(page: number): Promise<void> {
+    const pending = loading.get(page);
+    if (pending) return pending;
     const mine = generation;
-    try {
-      const r = await api.query($state.snapshot(filter), { sort: "DateDesc", limit: PAGE, offset: rows.length });
-      if (mine === generation) rows = [...rows, ...r.rows];
-    } finally {
-      loadingMore = false;
+    const into = pages;
+    const p = api.query($state.snapshot(filter), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
+      .then((r) => { if (mine === generation) into.set(page, r.rows); })
+      .catch((e) => { if (mine === generation) error = String(e); });
+    loading.set(page, p);
+    return p;
+  }
+
+  /** Loads whatever of positions [from, to) is missing. */
+  function need(from: number, to: number): Promise<unknown> {
+    const wanted = [];
+    for (let page = Math.floor(from / PAGE); page * PAGE < to; page++) {
+      if (!pages.has(page)) wanted.push(load(page));
     }
+    return Promise.all(wanted);
   }
 
   async function refresh() {
@@ -156,10 +175,17 @@
 
   let active = $derived(Object.values(filter).some((v) => v !== undefined));
 
-  function sentinel(node: HTMLElement) {
-    const io = new IntersectionObserver((e) => { if (e[0].isIntersecting) more(); }, { rootMargin: "800px" });
-    io.observe(node);
-    return { destroy: () => io.disconnect() };
+  async function step(d: number) {
+    if (viewing === null || !result) return;
+    const to = viewing + d;
+    if (to < 0 || to >= result.total) return;
+    await need(to, to + 2);
+    viewing = to;
+  }
+
+  function close() {
+    if (viewing !== null) grid?.reveal(viewing);
+    viewing = null;
   }
 </script>
 
@@ -198,21 +224,13 @@
     {/each}
   </aside>
 
-  <main>
+  <Grid bind:this={grid} total={result?.total ?? 0} {rowAt} {need} onopen={(i) => (viewing = i)}>
     {#if error}
       <p class="error">{error}</p>
     {:else if result && result.total === 0}
       <p class="empty">Nothing matches.</p>
     {/if}
-    <div class="grid">
-      {#each rows as row, i (row)}
-        <button class="cell" onclick={() => (viewing = i)}>
-          <img src={api.thumbUrl(row)} alt="" loading="lazy" decoding="async" />
-        </button>
-      {/each}
-    </div>
-    {#if result && rows.length < result.total}<div class="more" use:sentinel>Loading…</div>{/if}
-  </main>
+  </Grid>
 
   <footer>
     {#if status}
@@ -224,15 +242,6 @@
   </footer>
 </div>
 
-{#if viewing !== null && rows[viewing] !== undefined}
-  <Viewer
-    row={rows[viewing]}
-    next={rows[viewing + 1]}
-    onclose={() => (viewing = null)}
-    onstep={(d) => {
-      const to = (viewing ?? 0) + d;
-      if (to >= 0 && to < rows.length) viewing = to;
-      if (to >= rows.length - 5) more();
-    }}
-  />
+{#if viewing !== null && rowAt(viewing) !== undefined}
+  <Viewer row={rowAt(viewing)!} next={rowAt(viewing + 1)} onclose={close} onstep={step} />
 {/if}

@@ -65,6 +65,9 @@ pub struct QueryOptions {
     pub offset: usize,
     /// Dimensions to count over the matches.
     pub facets: Vec<Dim>,
+    /// Count each dimension as if the filter did not pick values of it (see
+    /// [`Filter::without`]), so a sidebar group keeps showing its alternatives.
+    pub facets_ignore_own: bool,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -279,9 +282,23 @@ impl Library {
 
     pub fn query(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
         let started = Instant::now();
-        let query = filter.to_query(&self.index, &self.fields, &self.distinct.read().unwrap())?;
+        let distinct = self.distinct.read().unwrap();
+        let query = filter.to_query(&self.index, &self.fields, &distinct)?;
         let searcher = self.reader.searcher();
         let mut result = self.run(&searcher, query.as_ref(), options)?;
+        if options.facets_ignore_own {
+            // One more counting pass per group the filter picks from; the rest are
+            // already right.
+            for &dim in &options.facets {
+                let own = filter.without(dim);
+                if own == *filter {
+                    continue;
+                }
+                let query = own.to_query(&self.index, &self.fields, &distinct)?;
+                let mut counts = searcher.search(query.as_ref(), &FacetCollector::new(&[dim]))?;
+                result.facets.insert(dim, counts.remove(&dim).unwrap_or_default());
+            }
+        }
         result.micros = started.elapsed().as_micros();
         Ok(result)
     }
