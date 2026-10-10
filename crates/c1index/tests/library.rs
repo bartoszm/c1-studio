@@ -187,3 +187,40 @@ fn sorting_and_paging() {
     assert_eq!(page(0), ["10", "8", "7"]);
     assert_eq!(page(3), ["6", "5", "4"]);
 }
+
+#[test]
+fn facets_match_brute_force_across_segments() {
+    // Thousands of distinct keyword paths span many dictionary blocks, and two sources
+    // synced separately give two segments: the case where ordinals are easiest to mix up.
+    let make = |source: &str, n: u32| -> Photo {
+        let mut p = photo(n);
+        p.id = PhotoId::new(&SourceId(source.into()), n.to_string());
+        p.keywords = (0..n % 4)
+            .map(|k| KeywordPath(vec![format!("root{}", n % 7), format!("branch{}", (n + k) % 50), format!("leaf-{n}-{k}")]))
+            .collect();
+        p.trashed = false;
+        p
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let a: Vec<Photo> = (0..1500).map(|n| make("a", n)).collect();
+    let b: Vec<Photo> = (1500..3000).map(|n| make("b", n)).collect();
+    lib.sync(&MemorySource::new("a", a.clone(), vec![])).unwrap();
+    lib.sync(&MemorySource::new("b", b.clone(), vec![])).unwrap();
+    assert!(lib.searcher().segment_readers().len() >= 2);
+
+    let mut expected: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    for p in a.iter().chain(&b) {
+        let mut paths: Vec<String> = p.keywords.iter().flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>()).collect();
+        paths.sort();
+        paths.dedup();
+        for path in paths {
+            *expected.entry(path).or_default() += 1;
+        }
+    }
+    let options = QueryOptions { facets: vec![Dim::KeywordTree], limit: Some(0), ..QueryOptions::default() };
+    let result = lib.query(&Filter::default(), &options).unwrap();
+    let got: std::collections::HashMap<String, u64> = result.facets[&Dim::KeywordTree].iter().cloned().collect();
+    assert_eq!(got.len(), expected.len());
+    assert_eq!(got, expected);
+}

@@ -1,9 +1,9 @@
-﻿//! The search document: one per photo.
+//! The search document: one per photo.
 //!
 //! Most dimensions are raw string fields that are both indexed (exact-term filters) and
 //! fast (columnar, for counting values per facet). Numeric fields are indexed for range
 //! filters and fast for sorting. A value that is missing is simply not added, so a range
-//! filter never matches a photo without that value â€” the same as SQL `NULL`.
+//! filter never matches a photo without that value — the same as SQL `NULL`.
 
 use c1model::Photo;
 use chrono::{Datelike, Local, TimeZone};
@@ -17,7 +17,7 @@ use tantivy::{Index, TantivyDocument};
 pub const SCHEMA_VERSION: u32 = 1;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
-/// so `wroclaw` finds `WrocÅ‚aw` (as FTS5's `remove_diacritics 2` did in the Python index).
+/// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
 pub const FOLDED: &str = "folded";
 
 /// A dimension that can be filtered by exact value and counted.
@@ -167,7 +167,7 @@ pub fn register_tokenizers(index: &Index) {
     index.tokenizers().register(FOLDED, folded);
 }
 
-/// `H:\fotos\2026` â†’ `h:/fotos/2026`: the form folder filters compare in.
+/// `H:\fotos\2026` → `h:/fotos/2026`: the form folder filters compare in.
 pub fn normalise_folder(path: &str) -> String {
     path.replace('\\', "/").trim_end_matches('/').to_lowercase()
 }

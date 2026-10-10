@@ -1,5 +1,6 @@
-﻿//! `c1cat`: the c1-studio library from the command line.
+//! `c1cat`: the c1-studio library from the command line.
 
+mod bench;
 mod selector;
 
 use std::path::PathBuf;
@@ -70,6 +71,27 @@ enum Command {
         #[arg(long)]
         no_sync: bool,
     },
+    /// Time the library against the stage-0 speed gate on synthetic photos.
+    Bench {
+        #[arg(long, default_value_t = 250_000)]
+        photos: usize,
+        #[arg(long, default_value_t = 2_000)]
+        keywords: usize,
+        /// Queries timed per class.
+        #[arg(long, default_value_t = 500)]
+        queries: usize,
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Library directory; kept and reused across runs with the same size and seed.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+        /// Build the library again even if one is there.
+        #[arg(long)]
+        rebuild: bool,
+        /// Dimensions counted with every query, as the sidebar would.
+        #[arg(long, default_value = "rating,color,year,camera,lens,keyword_tree,collection,country")]
+        dims: String,
+    },
 }
 
 struct Session {
@@ -112,6 +134,9 @@ fn parse_dims(text: &str) -> anyhow::Result<Vec<Dim>> {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Bench { photos, keywords, queries, seed, dir, rebuild, dims } => {
+            bench::bench(&bench::Config { photos, keywords, queries, seed, dir, rebuild, dims: parse_dims(&dims)? })?;
+        }
         Command::Sync => {
             let session = open(cli.catalog.as_ref())?;
             let report = session.library.sync(&session.source)?;
@@ -150,7 +175,7 @@ fn main() -> anyhow::Result<()> {
                             .and_then(chrono::DateTime::from_timestamp_millis)
                             .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
                             .unwrap_or_default();
-                        let stars = p.rating.map_or(String::new(), |r| "â˜…".repeat(r.into()));
+                        let stars = p.rating.map_or(String::new(), |r| "★".repeat(r.into()));
                         let kws: Vec<String> = p.keywords.iter().map(|k| k.to_pipe()).collect();
                         println!("{:>7}  {}  {:<16}  {:<5}  {}", p.id.ext, date, p.file.name, stars, kws.join(", "));
                     }

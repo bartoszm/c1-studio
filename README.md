@@ -22,6 +22,7 @@ $c1 = '.\target\release\c1cat.exe'
 & $c1 find --rating '>=4' --keyword street --limit 20
 & $c1 count --year 2026 --unkeyworded
 & $c1 facets --year 2026 --dims rating,camera,keyword_tree
+& $c1 bench                                    # speed gate on 250k synthetic photos
 ```
 
 The catalog is located from `--catalog`, then `C1_CATALOG`, then
