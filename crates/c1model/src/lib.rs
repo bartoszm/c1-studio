@@ -12,13 +12,14 @@ pub mod source;
 
 pub use change::{ApplyPlan, ApplyReport, Change, Conflict, Op};
 pub use photo::{
-    AssetId, Collection, CollectionId, CollectionKind, ColorLabel, EditInfo, Exif, FileInfo, GeoOrigin, GeoPoint, Iptc,
-    KeywordNode, KeywordPath, Photo, PhotoId, Place, SourceId,
+    AssetId, Collection, CollectionId, CollectionKind, ColorLabel, Condition, EditInfo, Exif, FileInfo, GeoOrigin,
+    GeoPoint, Iptc, KeywordNode, KeywordPath, Photo, PhotoId, Place, SmartRule, SourceId,
 };
 pub use source::{
     Capabilities, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError, SourceEvent, SourceInfo,
     WriteStatus,
 };
 
-/// Bumped whenever a serialised [`Photo`] changes shape, so stored copies are rebuilt.
-pub const MODEL_VERSION: u32 = 1;
+/// Bumped whenever a serialised [`Photo`] or [`Collection`] changes shape, so stored copies
+/// are rebuilt.
+pub const MODEL_VERSION: u32 = 2;

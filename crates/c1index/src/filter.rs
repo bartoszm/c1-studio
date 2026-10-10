@@ -123,6 +123,9 @@ pub struct Filter {
     /// Each of these, or anything beneath it.
     pub keywords_under: Vec<String>,
     pub keywords_not: Vec<String>,
+    /// For each of these, some keyword with a name containing it at any level of its
+    /// path, ignoring case (Capture One's "keywords contains").
+    pub keywords_containing: Vec<String>,
     pub unkeyworded: bool,
     /// Substring of the camera model, case-insensitive.
     pub camera: Option<String>,
@@ -151,6 +154,10 @@ pub struct Filter {
     pub has_local_layers: bool,
     pub trashed: Trashed,
     pub variant_index: Option<u32>,
+    /// Each of these too.
+    pub all_of: Vec<Filter>,
+    /// At least one of these, when any are given.
+    pub any_of: Vec<Filter>,
 }
 
 /// Values known per dimension, for turning substring filters into exact terms.
@@ -239,6 +246,7 @@ impl Filter {
             Dim::Color => f.color = None,
             Dim::Ext => f.ext.clear(),
             Dim::Style => f.style = None,
+            Dim::Folder => f.folder = None,
             Dim::Flag => {}
         }
         f
@@ -297,6 +305,19 @@ impl Filter {
         }
         for path in &self.keywords_not {
             must_not.push(term(kw, path));
+        }
+        for needle in &self.keywords_containing {
+            let needle = needle.to_lowercase();
+            // Every node of the keyword tree is a value, so testing each one's own name
+            // covers every level.
+            let values: Vec<String> = distinct
+                .get(&Dim::KeywordTree)
+                .into_iter()
+                .flatten()
+                .filter(|v| v.rsplit('|').next().is_some_and(|name| name.to_lowercase().contains(&needle)))
+                .cloned()
+                .collect();
+            must.push(any_of(tree, values));
         }
         if self.unkeyworded {
             must_not.push(has(flag::KEYWORDED));
@@ -388,6 +409,17 @@ impl Filter {
         if let Some(i) = self.variant_index {
             let i = f64::from(i);
             must.push(range_u64(f.variant_index, &Range { min: Some(i), max: Some(i), ..Range::default() }));
+        }
+
+        for sub in &self.all_of {
+            must.push(sub.to_query(index, f, distinct)?);
+        }
+        if !self.any_of.is_empty() {
+            let mut either = Vec::new();
+            for sub in &self.any_of {
+                either.push((Occur::Should, sub.to_query(index, f, distinct)?));
+            }
+            must.push(Box::new(BooleanQuery::new(either)));
         }
 
         if must.is_empty() {

@@ -62,6 +62,12 @@ async fn query(app: State<'_, App>, filter: Filter, options: QueryOptions) -> Re
     app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))
 }
 
+/// Smart album id → how many photos it holds under `filter` (its album pick aside).
+#[tauri::command]
+async fn smart_counts(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, u64)>, String> {
+    app.session()?.library.smart_counts(&filter).map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 async fn photo(app: State<'_, App>, row: u64) -> Result<Option<Photo>, String> {
     app.session()?.library.photo(row).map_err(text)
@@ -146,7 +152,7 @@ pub fn run() {
             let path = request.uri().path().to_owned();
             tauri::async_runtime::spawn_blocking(move || responder.respond(image_response(&app, &path)));
         })
-        .invoke_handler(tauri::generate_handler![status, query, photo, collections, sync])
+        .invoke_handler(tauri::generate_handler![status, query, smart_counts, photo, collections, sync])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");
 }

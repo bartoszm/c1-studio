@@ -225,6 +225,36 @@ pub struct Collection {
     pub parent: Option<CollectionId>,
     /// Display path from the root, `Group / Album`.
     pub path: String,
+    /// What a smart album selects. Its members are not stored, only this.
+    pub rule: Option<SmartRule>,
+}
+
+/// A smart album's rule, in terms the library can evaluate.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SmartRule {
+    /// Every condition must hold, or any one of them.
+    pub match_all: bool,
+    pub conditions: Vec<Condition>,
+}
+
+impl SmartRule {
+    /// False when some condition is one the library cannot evaluate.
+    pub fn supported(&self) -> bool {
+        !self.conditions.iter().any(|c| matches!(c, Condition::Unsupported(_)))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Condition {
+    /// Some keyword, at any level of its path, has a name containing this text
+    /// (ignoring case).
+    KeywordContains(String),
+    /// Rating within these bounds, inclusive.
+    Rating { min: u8, max: u8 },
+    /// Captured in this (local) year.
+    Year(i32),
+    /// A condition the source could read but the library cannot evaluate, described.
+    Unsupported(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

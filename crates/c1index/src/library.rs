@@ -1,12 +1,14 @@
 //! The library: a store and a search index kept in step, fed by [`PhotoSource`]s.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::Instant;
 
 use anyhow::{Context, bail};
-use c1model::{Collection, Cursor, Photo, PhotoId, PhotoSource, SourceError, SourceEvent};
+use c1model::{
+    Collection, Condition, Cursor, MODEL_VERSION, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
+};
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, TopDocs};
 use tantivy::directory::MmapDirectory;
@@ -14,12 +16,13 @@ use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
 
 use crate::facets::{Counts, FacetCollector};
-use crate::filter::{Distinct, Filter};
+use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 
 /// Dimensions whose values substring filters match against.
-const SUBSTRING_DIMS: [Dim; 6] = [Dim::Camera, Dim::Lens, Dim::City, Dim::State, Dim::Country, Dim::Style];
+const SUBSTRING_DIMS: [Dim; 7] =
+    [Dim::Camera, Dim::Lens, Dim::City, Dim::State, Dim::Country, Dim::Style, Dim::KeywordTree];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sort {
@@ -98,6 +101,8 @@ pub struct Library {
     /// row → photo key, for turning results into ids without touching the store.
     keys: RwLock<Vec<Option<String>>>,
     distinct: RwLock<Distinct>,
+    /// Smart album id → its rule, for expanding a filter that picks one.
+    smart: RwLock<HashMap<String, SmartRule>>,
 }
 
 fn source_err(e: anyhow::Error) -> SourceError {
@@ -108,8 +113,24 @@ impl Library {
     pub fn open(dir: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        let store = Store::open(&dir.join("store.redb"))?;
+        let store_path = dir.join("store.redb");
         let index_dir = dir.join("index");
+        // A store written with another model cannot be read back. It only copies the
+        // sources, so it is dropped and the next sync fills it again.
+        let mut store = Store::open(&store_path)?;
+        if store.meta("model")?.and_then(|v| v.parse::<u32>().ok()) != Some(MODEL_VERSION) {
+            if !store.keys()?.is_empty() || store.meta("index_schema")?.is_some() {
+                drop(store);
+                std::fs::remove_file(&store_path)?;
+                if index_dir.exists() {
+                    std::fs::remove_dir_all(&index_dir)?;
+                }
+                store = Store::open(&store_path)?;
+            }
+            let mut batch = store.batch()?;
+            batch.set_meta("model", &MODEL_VERSION.to_string())?;
+            batch.commit()?;
+        }
 
         let current = store.meta("index_schema")?.and_then(|v| v.parse::<u32>().ok());
         let rebuild = current != Some(SCHEMA_VERSION);
@@ -133,6 +154,7 @@ impl Library {
             reader,
             keys: RwLock::new(Vec::new()),
             distinct: RwLock::new(Distinct::new()),
+            smart: RwLock::new(HashMap::new()),
         };
         if rebuild {
             library.reindex()?;
@@ -180,6 +202,8 @@ impl Library {
         let counts = searcher.search(&AllQuery, &FacetCollector::new(&SUBSTRING_DIMS))?;
         *self.distinct.write().unwrap() =
             counts.into_iter().map(|(dim, values)| (dim, values.into_iter().map(|(v, _)| v).collect())).collect();
+        *self.smart.write().unwrap() =
+            self.store.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
         Ok(())
     }
 
@@ -283,7 +307,9 @@ impl Library {
     pub fn query(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
         let started = Instant::now();
         let distinct = self.distinct.read().unwrap();
-        let query = filter.to_query(&self.index, &self.fields, &distinct)?;
+        let smart = self.smart.read().unwrap();
+        let compile = |f: &Filter| expand(f, &smart).and_then(|f| f.to_query(&self.index, &self.fields, &distinct));
+        let query = compile(filter)?;
         let searcher = self.reader.searcher();
         let mut result = self.run(&searcher, query.as_ref(), options)?;
         if options.facets_ignore_own {
@@ -294,13 +320,29 @@ impl Library {
                 if own == *filter {
                     continue;
                 }
-                let query = own.to_query(&self.index, &self.fields, &distinct)?;
+                let query = compile(&own)?;
                 let mut counts = searcher.search(query.as_ref(), &FacetCollector::new(&[dim]))?;
                 result.facets.insert(dim, counts.remove(&dim).unwrap_or_default());
             }
         }
         result.micros = started.elapsed().as_micros();
         Ok(result)
+    }
+
+    /// How many photos each smart album holds among those `filter` selects, setting
+    /// aside the albums it picks. Albums whose rule cannot be evaluated are left out.
+    pub fn smart_counts(&self, filter: &Filter) -> anyhow::Result<Vec<(String, u64)>> {
+        let distinct = self.distinct.read().unwrap();
+        let smart = self.smart.read().unwrap();
+        let searcher = self.reader.searcher();
+        let base = filter.without(Dim::Collection);
+        let mut out = Vec::new();
+        for id in smart.iter().filter(|(_, rule)| rule.supported()).map(|(id, _)| id) {
+            let f = Filter { collections: vec![id.clone()], ..base.clone() };
+            let query = expand(&f, &smart)?.to_query(&self.index, &self.fields, &distinct)?;
+            out.push((id.clone(), searcher.search(query.as_ref(), &Count)? as u64));
+        }
+        Ok(out)
     }
 
     fn run(&self, searcher: &Searcher, query: &dyn Query, options: &QueryOptions) -> anyhow::Result<QueryResult> {
@@ -396,4 +438,49 @@ impl Library {
         }
         bail!("no collection named {name:?}")
     }
+}
+
+/// Replaces smart albums picked in `filter.collections` (here and in nested filters)
+/// with their rules.
+fn expand(filter: &Filter, smart: &HashMap<String, SmartRule>) -> anyhow::Result<Filter> {
+    let mut f = filter.clone();
+    let mut rules = Vec::new();
+    f.collections.retain(|id| match smart.get(id) {
+        Some(rule) => {
+            rules.push((id.clone(), rule));
+            false
+        }
+        None => true,
+    });
+    for (id, rule) in rules {
+        f.all_of.push(smart_filter(rule).with_context(|| format!("smart album #{id}"))?);
+    }
+    f.all_of = f.all_of.iter().map(|s| expand(s, smart)).collect::<anyhow::Result<_>>()?;
+    f.any_of = f.any_of.iter().map(|s| expand(s, smart)).collect::<anyhow::Result<_>>()?;
+    Ok(f)
+}
+
+/// A smart album's rule as a filter. Trashed photos are left to the outer filter.
+pub fn smart_filter(rule: &SmartRule) -> anyhow::Result<Filter> {
+    let mut parts = Vec::new();
+    for condition in &rule.conditions {
+        let mut f = Filter { trashed: Trashed::Include, ..Filter::default() };
+        match condition {
+            Condition::KeywordContains(text) => f.keywords_containing = vec![text.clone()],
+            Condition::Rating { min, max } => {
+                let range = Range { min: Some(f64::from(*min)), max: Some(f64::from(*max)), ..Range::default() };
+                f.rating = Some(Presence::Values(range));
+            }
+            Condition::Year(year) => f.year = Some(*year),
+            Condition::Unsupported(what) => bail!("cannot evaluate the condition {what}"),
+        }
+        parts.push(f);
+    }
+    let mut f = Filter { trashed: Trashed::Include, ..Filter::default() };
+    if rule.match_all {
+        f.all_of = parts;
+    } else {
+        f.any_of = parts;
+    }
+    Ok(f)
 }

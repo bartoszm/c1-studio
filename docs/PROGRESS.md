@@ -284,11 +284,40 @@ Known gaps, for stage 1 (the first two fixed below):
   - The scrollbar is always present: WebView2 did not report the width change when it
     appeared, which left the last column under it.
 
+### The library tree: albums, smart albums, folders, keywords
+
+The sidebar now starts with three trees, each node counted with the other filters
+applied (its own pick aside). Picking a node filters by it, and picking it again lets
+go. Open branches and folded sections are remembered between runs.
+
+- **Albums:** groups, projects, albums and smart albums, nested as in Capture One.
+  Groups only expand. The catalog's hidden root ("[Collection]", pk 1) is no longer
+  reported as a collection.
+- **Smart albums.** Capture One stores their rules (`ZSMARTCRITERIA`), not their
+  members. `source-c1/src/smart.rs` reads the rules into `c1model::SmartRule`, and the
+  library expands a picked smart album into a filter.
+  - The catalog's 27 smart albums use three kinds of condition, and all three are
+    supported: keyword contains (substring of a keyword's name at any level, ignoring
+    case), rating (is / at least / greater than) and capture year. Anything else is
+    kept as `Unsupported`, and the album shows disabled with the reason.
+  - "street 4+" selects 5 084 photos, the same as the equivalent filter written by hand.
+  - Counting all 27 under a filter takes 14 ms, in a separate call so it never delays
+    the grid.
+- **Folders:** a new `folder` dimension (schema 2) holds every folder above each photo
+  in the path's own case (`H:`, `H:/fotos`, `H:/fotos/2026_06`). Names sort naturally,
+  ignoring the leading spaces some folder names on H: have.
+- **Keywords:** the whole tree from the counts, replacing the one-level list and
+  breadcrumb.
+- **Filters gained** `keywords_containing`, and `all_of` / `any_of` groups of nested
+  filters (what smart albums expand into).
+- **The store now records its model version** (`MODEL_VERSION` 2, as `Collection`
+  gained `rule`). A store written by another version is dropped and refilled by the
+  next sync, which takes a few seconds for the real catalog.
+
 ### Next
 
 1. Push to GitHub so CI runs. `.github/workflows/ci.yml` runs on Windows: UI check and
    build, then `cargo fmt --check`, `clippy -D warnings` and `cargo test`. `rustfmt.toml`
    keeps the 120-column style, and the code is formatted with it.
 2. Check the original tier on real RAF/DNG files once H: is mounted.
-3. Stage 1, continued: a tree on the left (albums, folders, keywords, smart albums), a
-   metadata and EXIF panel, originals at 100% from H:.
+3. Stage 1, continued: a metadata and EXIF panel, originals at 100% from H:.

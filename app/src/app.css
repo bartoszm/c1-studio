@@ -57,21 +57,54 @@ aside {
   background: var(--panel);
   border-right: 1px solid var(--line);
 }
-aside section { padding: 6px 0; }
-aside h3 {
-  margin: 4px 14px 4px;
+aside section { padding: 4px 0; }
+.head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  padding: 4px 8px;
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--muted);
 }
+.head:hover { color: var(--text); }
+.chev {
+  flex: none;
+  width: 14px;
+  color: var(--muted);
+  text-align: center;
+  transition: transform 80ms;
+}
+.chev.open { transform: rotate(90deg); }
+
+/* Tree rows: an expander, then the pickable label. */
+.node { display: flex; align-items: center; padding-right: 8px; }
+.node:hover { background: var(--hover); }
+.node.on { background: var(--on); }
+.node.empty .name, .node.empty .n { color: #666; }
+.node .label {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+}
+.node .label:disabled { cursor: default; opacity: 0.45; }
+.node .name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.node .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.node.on .icon { color: var(--text); }
+
 .facet {
   display: flex;
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 3px 14px;
+  padding: 3px 8px 3px 26px;
   text-align: left;
 }
 .facet:hover { background: var(--hover); }
@@ -80,9 +113,6 @@ aside h3 {
 .facet .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .stars { color: var(--star); letter-spacing: 1px; }
 .dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid #555; }
-.trail { display: flex; flex-wrap: wrap; gap: 2px 6px; padding: 4px 14px 8px; color: var(--muted); }
-.trail button:hover { color: var(--text); }
-.trail button + button::before { content: "› "; color: var(--muted); }
 
 main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps the measured width true */
 .space { position: relative; }
