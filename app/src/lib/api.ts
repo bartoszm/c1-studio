@@ -23,7 +23,14 @@ export type Filter = {
 
 export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
 
-export type QueryOptions = { sort?: Sort; limit?: number; offset?: number; facets?: Dim[] };
+export type QueryOptions = {
+  sort?: Sort;
+  limit?: number;
+  offset?: number;
+  facets?: Dim[];
+  /** Count each group as if its own value weren't picked, so the alternatives stay visible. */
+  facets_ignore_own?: boolean;
+};
 
 export type QueryResult = {
   total: number;

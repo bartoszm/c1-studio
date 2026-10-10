@@ -256,7 +256,7 @@ Checked on the real catalog by driving the WebView over its DevTools port:
 The viewer showed the black-and-white preview, and no errors appeared. A cold debug
 build of the app takes 4.5 min.
 
-Known gaps, for stage 1:
+Known gaps, for stage 1 (the first two fixed below):
 
 - **Selecting a value hides the others in its group.** Counts follow the current filter,
   so with 2025 picked, Year lists only 2025. The fix is counting each group without its
@@ -264,10 +264,31 @@ Known gaps, for stage 1:
 - **The grid is not virtualised.** It only appends pages of 300.
 - **No thumbnail cache headers beyond `max-age`.**
 
+## Stage 1: the browser
+
+### Sidebar counts per group, and a virtual grid
+
+- **Each group counts without its own filter** (`QueryOptions::facets_ignore_own`,
+  `Filter::without`). With 2025 picked, Year still lists every year, counted over the
+  other filters; the other groups count over everything picked. It costs one more
+  counting pass per group the filter picks from.
+  - Benchmark at 250k photos, counting this way: 3–5 filters p95 4.9 ms (was 1.7 ms
+    counting over the matches only), text p95 2.6 ms, everything p95 8.4 ms. Gates pass.
+- **The grid keeps only what is on screen** (`app/src/Grid.svelte`): about 60–85
+  cells at any scroll position, absolutely placed inside a box as tall as the whole
+  result. Photo rows load in pages of 500 as the grid reaches them, and the viewer
+  loads the next page when stepping past one.
+  - On the real catalog (99 716 photos, a 2.2 million px tall grid), jumping to the
+    middle or the end fills the screen with thumbnails in about 70 ms.
+  - Closing the viewer scrolls the grid to the photo last shown.
+  - The scrollbar is always present: WebView2 did not report the width change when it
+    appeared, which left the last column under it.
+
 ### Next
 
 1. Push to GitHub so CI runs. `.github/workflows/ci.yml` runs on Windows: UI check and
    build, then `cargo fmt --check`, `clippy -D warnings` and `cargo test`. `rustfmt.toml`
    keeps the 120-column style, and the code is formatted with it.
 2. Check the original tier on real RAF/DNG files once H: is mounted.
-3. Stage 1: the browser. Start with the facet gap above and a virtualised grid.
+3. Stage 1, continued: a tree on the left (albums, folders, keywords, smart albums), a
+   metadata and EXIF panel, originals at 100% from H:.

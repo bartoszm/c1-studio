@@ -150,6 +150,33 @@ fn facets_count_the_matches() {
 }
 
 #[test]
+fn facets_can_ignore_their_own_filter() {
+    let (_d, lib, _s) = setup();
+    let filter = Filter { camera: Some("X100VI".into()), keywords_under: vec!["street".into()], ..Filter::default() };
+    let options = QueryOptions {
+        facets: vec![Dim::Camera, Dim::KeywordTree, Dim::Rating],
+        limit: Some(0),
+        facets_ignore_own: true,
+        ..QueryOptions::default()
+    };
+    let result = lib.query(&filter, &options).unwrap();
+    assert_eq!(result.total, ids(&lib, &filter).len());
+    // Camera counts over "street" alone: both cameras stay visible.
+    let street = ids(&lib, &Filter { keywords_under: vec!["street".into()], ..Filter::default() });
+    let cameras: u64 = result.facets[&Dim::Camera].iter().map(|(_, n)| n).sum();
+    assert_eq!(cameras as usize, street.len());
+    assert_eq!(result.facets[&Dim::Camera].len(), 2);
+    // Keywords count over the camera alone.
+    let x100 = ids(&lib, &Filter { camera: Some("X100VI".into()), ..Filter::default() });
+    let unkeyworded = ids(&lib, &Filter { camera: Some("X100VI".into()), unkeyworded: true, ..Filter::default() });
+    let street_n = result.facets[&Dim::KeywordTree].iter().find(|(v, _)| v == "street").unwrap().1;
+    assert_eq!(street_n as usize, x100.len() - unkeyworded.len());
+    // Rating is not filtered, so it counts the matches themselves.
+    let rated: u64 = result.facets[&Dim::Rating].iter().map(|(_, n)| n).sum();
+    assert_eq!(rated as usize, result.total);
+}
+
+#[test]
 fn resync_detects_changes_and_deletions() {
     let (_d, lib, source) = setup();
     // Untouched source: incremental, nothing to do.
