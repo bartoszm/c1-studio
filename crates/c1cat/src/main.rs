@@ -147,7 +147,10 @@ fn parse_dims(text: &str) -> anyhow::Result<Vec<Dim>> {
     text.split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(|s| serde_json::from_value(serde_json::Value::String(s.to_owned())).with_context(|| format!("unknown dimension {s:?}")))
+        .map(|s| {
+            serde_json::from_value(serde_json::Value::String(s.to_owned()))
+                .with_context(|| format!("unknown dimension {s:?}"))
+        })
         .collect()
 }
 
@@ -166,7 +169,8 @@ fn main() -> anyhow::Result<()> {
                 sync(&session, false)?;
             }
             let filter = select.to_filter(&session.library)?;
-            let result = session.library.query(&filter, &QueryOptions { limit: Some(limit), ..QueryOptions::default() })?;
+            let result =
+                session.library.query(&filter, &QueryOptions { limit: Some(limit), ..QueryOptions::default() })?;
             std::fs::create_dir_all(&out).with_context(|| format!("creating {}", out.display()))?;
             for row in result.rows {
                 let Some(id) = session.library.photo_id(row) else { continue };
@@ -218,7 +222,11 @@ fn main() -> anyhow::Result<()> {
                     }
                 }
             } else if json {
-                let photos: Vec<_> = result.rows.iter().filter_map(|r| session.library.photo(*r).transpose()).collect::<Result<_, _>>()?;
+                let photos: Vec<_> = result
+                    .rows
+                    .iter()
+                    .filter_map(|r| session.library.photo(*r).transpose())
+                    .collect::<Result<_, _>>()?;
                 println!("{}", serde_json::to_string_pretty(&photos)?);
             } else {
                 for row in &result.rows {

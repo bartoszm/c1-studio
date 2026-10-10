@@ -90,7 +90,8 @@ impl SegmentCollector for FacetSegment {
                 // One pass over the dictionary in ordinal order: looking ordinals up one
                 // at a time re-decodes a dictionary block for each, which on a 2 000-node
                 // keyword tree cost more than the counting itself.
-                let hits: Vec<(u64, u32)> = counts.iter().enumerate().filter(|(_, n)| **n > 0).map(|(o, n)| (o as u64, *n)).collect();
+                let hits: Vec<(u64, u32)> =
+                    counts.iter().enumerate().filter(|(_, n)| **n > 0).map(|(o, n)| (o as u64, *n)).collect();
                 let mut counts = hits.iter().map(|(_, n)| u64::from(*n));
                 let _ = column.dictionary().sorted_ords_to_term_cb(hits.iter().map(|(o, _)| *o), |term| {
                     if let Some(n) = counts.next() {

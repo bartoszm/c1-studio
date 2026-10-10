@@ -77,9 +77,8 @@ pub fn check_write(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
         return Vec::new();
     }
     let mut problems = Vec::new();
-    let current = |source: &dyn PhotoSource| -> Option<Photo> {
-        collect(source).ok()?.0.into_iter().find(|p| &p.id == probe)
-    };
+    let current =
+        |source: &dyn PhotoSource| -> Option<Photo> { collect(source).ok()?.0.into_iter().find(|p| &p.id == probe) };
     let Some(before) = current(source) else {
         return vec![format!("probe {probe} not in snapshot")];
     };
@@ -189,9 +188,7 @@ mod tests {
     fn locked_source_refuses_to_apply() {
         let s = source();
         let probe = PhotoId::new(&SourceId("mem".into()), "2");
-        let plan = s
-            .plan(&[Change { photo: probe, op: Op::SetRating { base: Some(3), value: Some(5) } }])
-            .unwrap();
+        let plan = s.plan(&[Change { photo: probe, op: Op::SetRating { base: Some(3), value: Some(5) } }]).unwrap();
         s.set_locked(Some("CaptureOne.exe"));
         assert!(matches!(s.apply(&plan), Err(SourceError::Locked { .. })));
     }
@@ -200,9 +197,8 @@ mod tests {
     fn external_edit_makes_plan_stale() {
         let s = source();
         let probe = PhotoId::new(&SourceId("mem".into()), "2");
-        let plan = s
-            .plan(&[Change { photo: probe.clone(), op: Op::SetRating { base: Some(3), value: Some(5) } }])
-            .unwrap();
+        let plan =
+            s.plan(&[Change { photo: probe.clone(), op: Op::SetRating { base: Some(3), value: Some(5) } }]).unwrap();
         s.edit_externally(&probe, |p| p.rating = Some(1));
         assert!(matches!(s.apply(&plan), Err(SourceError::StalePlan)));
     }

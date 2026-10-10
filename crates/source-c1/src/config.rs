@@ -130,7 +130,13 @@ pub(crate) fn quarter_turn(degrees: f64) -> u16 {
 
 /// The original's Windows path. `is_relative` images live inside the catalog folder
 /// (imported into the catalog); the rest hang off a drive root such as `H:\`.
-pub(crate) fn original_path(win_root: &str, relative: &str, filename: &str, is_relative: bool, catalog_dir: &Path) -> String {
+pub(crate) fn original_path(
+    win_root: &str,
+    relative: &str,
+    filename: &str,
+    is_relative: bool,
+    catalog_dir: &Path,
+) -> String {
     let rel = relative.trim_matches(['\\', '/']);
     if is_relative {
         let mut path = catalog_dir.to_path_buf();

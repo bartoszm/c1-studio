@@ -53,16 +53,32 @@ impl Op {
             Op::SetPlace { base, value } => compare(base, value, &photo.place),
             Op::SetGeo { base, value } => compare(base, value, &photo.geo),
             Op::AddKeywords { paths } => {
-                if paths.iter().all(|p| photo.keywords.contains(p)) { Check::NoOp } else { Check::Apply }
+                if paths.iter().all(|p| photo.keywords.contains(p)) {
+                    Check::NoOp
+                } else {
+                    Check::Apply
+                }
             }
             Op::RemoveKeywords { paths } => {
-                if paths.iter().any(|p| photo.keywords.contains(p)) { Check::Apply } else { Check::NoOp }
+                if paths.iter().any(|p| photo.keywords.contains(p)) {
+                    Check::Apply
+                } else {
+                    Check::NoOp
+                }
             }
             Op::AddToCollection { collection } => {
-                if photo.collections.contains(collection) { Check::NoOp } else { Check::Apply }
+                if photo.collections.contains(collection) {
+                    Check::NoOp
+                } else {
+                    Check::Apply
+                }
             }
             Op::RemoveFromCollection { collection } => {
-                if photo.collections.contains(collection) { Check::Apply } else { Check::NoOp }
+                if photo.collections.contains(collection) {
+                    Check::Apply
+                } else {
+                    Check::NoOp
+                }
             }
         }
     }
@@ -95,10 +111,7 @@ impl Op {
 }
 
 /// Sorts changes into a plan using [`Op::check`]. `lookup` returns the current photo.
-pub fn plan_with<'a>(
-    changes: &[Change],
-    mut lookup: impl FnMut(&PhotoId) -> Option<&'a Photo>,
-) -> ApplyPlan {
+pub fn plan_with<'a>(changes: &[Change], mut lookup: impl FnMut(&PhotoId) -> Option<&'a Photo>) -> ApplyPlan {
     let mut plan = ApplyPlan::default();
     for change in changes {
         match lookup(&change.photo) {

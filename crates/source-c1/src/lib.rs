@@ -15,8 +15,8 @@ use std::sync::Mutex;
 
 use c1model::source::Result;
 use c1model::{
-    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, ImageFormat, ImageRef, ImageTier, PhotoId,
-    PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
+    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, ImageFormat, ImageRef, ImageTier, PhotoId, PhotoSource,
+    SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;

@@ -300,26 +300,31 @@ impl Library {
         let (total, docs, facets) = match options.sort {
             Sort::Date | Sort::DateDesc => {
                 let order = if options.sort == Sort::Date { Order::Asc } else { Order::Desc };
-                let (n, hits, f) = searcher.search(query, &(Count, top.order_by_fast_field::<i64>("captured_sort", order), facets))?;
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_fast_field::<i64>("captured_sort", order), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Imported | Sort::ImportedDesc => {
                 let order = if options.sort == Sort::Imported { Order::Asc } else { Order::Desc };
-                let (n, hits, f) = searcher.search(query, &(Count, top.order_by_fast_field::<i64>("imported", order), facets))?;
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_fast_field::<i64>("imported", order), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Rating | Sort::RatingDesc => {
                 let order = if options.sort == Sort::Rating { Order::Asc } else { Order::Desc };
-                let (n, hits, f) = searcher.search(query, &(Count, top.order_by_fast_field::<u64>("rating", order), facets))?;
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_fast_field::<u64>("rating", order), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Filename | Sort::FilenameDesc => {
                 let order = if options.sort == Sort::Filename { Order::Asc } else { Order::Desc };
-                let (n, hits, f) = searcher.search(query, &(Count, top.order_by_string_fast_field("filename", order), facets))?;
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_string_fast_field("filename", order), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Row => {
-                let (n, hits, f) = searcher.search(query, &(Count, top.order_by_fast_field::<u64>("row", Order::Asc), facets))?;
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_fast_field::<u64>("row", Order::Asc), facets))?;
                 (n, addrs(hits), f)
             }
         };
@@ -331,10 +336,7 @@ impl Library {
         for segment in searcher.segment_readers() {
             columns.push(segment.fast_fields().u64("row")?);
         }
-        Ok(docs
-            .iter()
-            .filter_map(|a| columns[a.segment_ord as usize].first(a.doc_id))
-            .collect())
+        Ok(docs.iter().filter_map(|a| columns[a.segment_ord as usize].first(a.doc_id)).collect())
     }
 
     pub fn photo_id(&self, row: u64) -> Option<PhotoId> {
@@ -362,11 +364,8 @@ impl Library {
         }
         let all = self.collections()?;
         let lower = name.to_lowercase();
-        let tries: [&dyn Fn(&Collection) -> bool; 3] = [
-            &|c| c.name == name,
-            &|c| c.name.to_lowercase() == lower,
-            &|c| c.path.to_lowercase().ends_with(&lower),
-        ];
+        let tries: [&dyn Fn(&Collection) -> bool; 3] =
+            [&|c| c.name == name, &|c| c.name.to_lowercase() == lower, &|c| c.path.to_lowercase().ends_with(&lower)];
         for matches in tries {
             let found: Vec<&Collection> = all.iter().filter(|c| matches(c)).collect();
             match found.as_slice() {

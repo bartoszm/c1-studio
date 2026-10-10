@@ -71,7 +71,9 @@ impl Capabilities {
 pub enum WriteStatus {
     Ready,
     /// Another program holds the source; writing now would lose data.
-    Locked { by: String },
+    Locked {
+        by: String,
+    },
     ReadOnly,
 }
 
@@ -135,11 +137,7 @@ pub trait PhotoSource: Send + Sync {
     /// Streams the source's state into `sink`. With `since` set to a cursor from an
     /// earlier call, a source may send only what changed; if nothing changed it sends
     /// `BeginIncremental` then `End` with the same cursor.
-    fn snapshot(
-        &self,
-        since: Option<&Cursor>,
-        sink: &mut dyn FnMut(SourceEvent) -> Result<()>,
-    ) -> Result<()>;
+    fn snapshot(&self, since: Option<&Cursor>, sink: &mut dyn FnMut(SourceEvent) -> Result<()>) -> Result<()>;
 
     /// Locates pixels for a photo. `Ok(None)` means this tier does not exist for it
     /// (not rendered yet, or the original's volume is offline).

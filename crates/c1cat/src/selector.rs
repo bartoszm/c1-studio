@@ -128,7 +128,13 @@ pub fn local_bound(text: &str, end: bool) -> anyhow::Result<i64> {
     } else {
         let next = match (month, day) {
             (Some(_), Some(_)) => start.succ_opt(),
-            (Some(m), None) => if m == 12 { NaiveDate::from_ymd_opt(year + 1, 1, 1) } else { NaiveDate::from_ymd_opt(year, m + 1, 1) },
+            (Some(m), None) => {
+                if m == 12 {
+                    NaiveDate::from_ymd_opt(year + 1, 1, 1)
+                } else {
+                    NaiveDate::from_ymd_opt(year, m + 1, 1)
+                }
+            }
             _ => NaiveDate::from_ymd_opt(start.year() + 1, 1, 1),
         };
         next.context("date out of range")?
@@ -196,7 +202,11 @@ impl Selector {
             Some(other) => bail!("--gps expects has or none, not {other:?}"),
         };
         if let Some(near) = &self.near {
-            let parts: Vec<f64> = near.split(',').map(|p| p.trim().parse()).collect::<Result<_, _>>().context("--near expects LAT,LON,KM")?;
+            let parts: Vec<f64> = near
+                .split(',')
+                .map(|p| p.trim().parse())
+                .collect::<Result<_, _>>()
+                .context("--near expects LAT,LON,KM")?;
             let [lat, lon, km] = parts.as_slice() else { bail!("--near expects LAT,LON,KM") };
             f.within = Some(BBox::around(*lat, *lon, *km));
         }

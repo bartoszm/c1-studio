@@ -121,7 +121,8 @@ impl Vocab {
         let mut words = Words { seen: HashSet::new() };
 
         // A keyword tree up to four deep; random parents grow a few big branches.
-        let mut keywords: Vec<KeywordPath> = (0..20.min(keyword_count)).map(|_| KeywordPath(vec![words.next(rng)])).collect();
+        let mut keywords: Vec<KeywordPath> =
+            (0..20.min(keyword_count)).map(|_| KeywordPath(vec![words.next(rng)])).collect();
         while keywords.len() < keyword_count {
             let parent = &keywords[rng.random_range(0..keywords.len())];
             if parent.0.len() < 4 {
@@ -223,7 +224,11 @@ impl Shoot {
             city: rng.random_bool(0.6).then(|| skewed(rng, v.cities.len())),
             geo: rng.random_bool(0.3),
             keywords,
-            albums: if rng.random_bool(0.5) { vec![] } else { (0..rng.random_range(1..=3)).map(|_| skewed(rng, v.albums.len())).collect() },
+            albums: if rng.random_bool(0.5) {
+                vec![]
+            } else {
+                (0..rng.random_range(1..=3)).map(|_| skewed(rng, v.albums.len())).collect()
+            },
             style: rng.random_bool(0.15).then(|| rng.random_range(0..v.styles.len())),
         }
     }
@@ -231,8 +236,14 @@ impl Shoot {
 
 fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
     let source = SourceId("bench".into());
-    let start = chrono::NaiveDate::from_ymd_opt(2008, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis();
-    let end = chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis();
+    let start =
+        chrono::NaiveDate::from_ymd_opt(2008, 1, 1).unwrap().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp_millis();
+    let end = chrono::NaiveDate::from_ymd_opt(2026, 10, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc()
+        .timestamp_millis();
     let mean_gap = (end - start) / count.max(1) as i64;
 
     let mut out = Vec::with_capacity(count);
@@ -259,7 +270,8 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
         let (lens, focal) = &v.lenses[*pick(rng, &shoot.lenses)];
         let city = shoot.city.map(|c| &v.cities[c]);
 
-        let mut keywords: Vec<KeywordPath> = shoot.keywords.iter().filter(|_| rng.random_bool(0.8)).map(|&k| v.keywords[k].clone()).collect();
+        let mut keywords: Vec<KeywordPath> =
+            shoot.keywords.iter().filter(|_| rng.random_bool(0.8)).map(|&k| v.keywords[k].clone()).collect();
         if !shoot.keywords.is_empty() && rng.random_bool(0.2) {
             keywords.push(v.keywords[skewed(rng, v.keywords.len())].clone());
         }
@@ -343,7 +355,10 @@ fn add_constraint(rng: &mut SmallRng, p: &Photo, f: &mut Filter, kind: u8) -> bo
     let one = |rng: &mut SmallRng, n: usize| rng.random_range(0..n);
     match kind {
         0 => match p.rating {
-            Some(r) => f.rating = Some(Presence::Values(Range { min: Some(f64::from(rng.random_range(1..=r))), ..Range::default() })),
+            Some(r) => {
+                f.rating =
+                    Some(Presence::Values(Range { min: Some(f64::from(rng.random_range(1..=r))), ..Range::default() }))
+            }
             None => return false,
         },
         1 => match p.color {
@@ -378,7 +393,12 @@ fn add_constraint(rng: &mut SmallRng, p: &Photo, f: &mut Filter, kind: u8) -> bo
         9 if p.geo.is_some() => f.gps = Some(true),
         10 => f.edited = Some(p.edit.edited),
         11 => match p.exif.iso {
-            Some(iso) => f.iso = Some(Range { min: Some(f64::from(*pick(rng, &ISOS[..=ISOS.iter().position(|&i| i == iso).unwrap_or(0)]))), ..Range::default() }),
+            Some(iso) => {
+                f.iso = Some(Range {
+                    min: Some(f64::from(*pick(rng, &ISOS[..=ISOS.iter().position(|&i| i == iso).unwrap_or(0)]))),
+                    ..Range::default()
+                })
+            }
             None => return false,
         },
         12 => match p.exif.aperture {
@@ -386,7 +406,12 @@ fn add_constraint(rng: &mut SmallRng, p: &Photo, f: &mut Filter, kind: u8) -> bo
             None => return false,
         },
         13 => match p.captured_at {
-            Some(t) => f.captured = Some(TimeRange { from: Some(t - rng.random_range(0..90) * DAY), to: Some(t + rng.random_range(0..90) * DAY) }),
+            Some(t) => {
+                f.captured = Some(TimeRange {
+                    from: Some(t - rng.random_range(0..90) * DAY),
+                    to: Some(t + rng.random_range(0..90) * DAY),
+                })
+            }
             None => return false,
         },
         _ => return false,
@@ -463,11 +488,18 @@ impl Stats {
     }
 }
 
-fn run(library: &Library, name: &'static str, filters: &[Filter], options: &QueryOptions, gate: Option<f64>) -> anyhow::Result<Stats> {
+fn run(
+    library: &Library,
+    name: &'static str,
+    filters: &[Filter],
+    options: &QueryOptions,
+    gate: Option<f64>,
+) -> anyhow::Result<Stats> {
     for f in filters.iter().take(WARMUP) {
         library.query(f, options)?;
     }
-    let mut stats = Stats { name, times: Vec::with_capacity(filters.len()), hits: Vec::with_capacity(filters.len()), gate };
+    let mut stats =
+        Stats { name, times: Vec::with_capacity(filters.len()), hits: Vec::with_capacity(filters.len()), gate };
     for f in filters {
         let started = Instant::now();
         let result = library.query(f, options)?;
@@ -509,7 +541,8 @@ pub fn bench(c: &Config) -> anyhow::Result<()> {
     let mut rng = SmallRng::seed_from_u64(c.seed);
     let vocab = Vocab::new(&mut rng, c.keywords);
 
-    let reuse = !c.rebuild && dir.exists() && Library::open(&dir).map(|l| l.len() as usize == c.photos).unwrap_or(false);
+    let reuse =
+        !c.rebuild && dir.exists() && Library::open(&dir).map(|l| l.len() as usize == c.photos).unwrap_or(false);
     if reuse {
         println!("library   reusing {}", dir.display());
     } else {
@@ -577,8 +610,22 @@ pub fn bench(c: &Config) -> anyhow::Result<()> {
     println!("queries   first {PAGE} by date, counts over: {}", dims.join(", "));
     println!();
     let open_ok = open_ms < OPEN_MAX;
-    println!("{:<9} {:>7} {:>8} {:>8} {:>8} {:>8} {:>10} {:>6}  gate", "", "queries", "p50", "p95", "p99", "max", "avg hits", "empty");
-    println!("{:<9} {:>7} {:>8.1} {:>8} {:>8} {:>8} {:>10} {:>6}  p100 < {OPEN_MAX:.0} ms {}", "open", 1, open_ms, "", "", "", "", "", verdict(open_ok));
+    println!(
+        "{:<9} {:>7} {:>8} {:>8} {:>8} {:>8} {:>10} {:>6}  gate",
+        "", "queries", "p50", "p95", "p99", "max", "avg hits", "empty"
+    );
+    println!(
+        "{:<9} {:>7} {:>8.1} {:>8} {:>8} {:>8} {:>10} {:>6}  p100 < {OPEN_MAX:.0} ms {}",
+        "open",
+        1,
+        open_ms,
+        "",
+        "",
+        "",
+        "",
+        "",
+        verdict(open_ok)
+    );
     for s in &classes {
         let avg_hits = s.hits.iter().sum::<usize>() as f64 / s.hits.len() as f64;
         let empty = s.hits.iter().filter(|&&h| h == 0).count() as f64 / s.hits.len() as f64 * 100.0;
