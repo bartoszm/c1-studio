@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use crate::change::{ApplyPlan, ApplyReport, Change, plan_with};
 use crate::photo::{Collection, Photo, PhotoId, SourceId};
 use crate::source::{
-    Capabilities, Cursor, Field, ImageRef, ImageTier, PhotoSource, Result, SourceError, SourceEvent,
-    SourceInfo, WriteStatus,
+    Capabilities, Cursor, Field, ImageRef, ImageTier, PhotoSource, Result, SourceError, SourceEvent, SourceInfo,
+    WriteStatus,
 };
 
 #[derive(Default)]
@@ -28,10 +28,7 @@ pub struct MemorySource {
 impl MemorySource {
     pub fn new(id: &str, photos: Vec<Photo>, collections: Vec<Collection>) -> Self {
         let photos = photos.into_iter().map(|p| (p.id.clone(), p)).collect();
-        Self {
-            id: SourceId(id.to_owned()),
-            state: Mutex::new(State { photos, collections, ..State::default() }),
-        }
+        Self { id: SourceId(id.to_owned()), state: Mutex::new(State { photos, collections, ..State::default() }) }
     }
 
     /// Simulates another program holding the source open.
@@ -60,7 +57,15 @@ impl PhotoSource for MemorySource {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            writable: vec![Field::Rating, Field::Color, Field::Keywords, Field::Iptc, Field::Place, Field::Geo, Field::Collections],
+            writable: vec![
+                Field::Rating,
+                Field::Color,
+                Field::Keywords,
+                Field::Iptc,
+                Field::Place,
+                Field::Geo,
+                Field::Collections,
+            ],
             tiers: vec![],
             geo_per_asset: false,
             collections: true,

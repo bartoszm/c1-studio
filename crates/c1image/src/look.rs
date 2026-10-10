@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use crate::{RgbImage, Result};
+use crate::{Result, RgbImage};
 
 /// Mean |R−G| + |B−G| below this (out of 255) is a black-and-white render; JPEG noise
 /// leaves a true grey at 0–0.5, the least colourful colour photos sampled sit above 3.

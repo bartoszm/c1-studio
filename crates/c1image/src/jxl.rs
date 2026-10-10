@@ -9,7 +9,7 @@ use jxl_oxide::JxlImage;
 use jxl_oxide::color::{EnumColourEncoding, RenderingIntent, TransferFunction};
 
 use crate::look::Look;
-use crate::{Error, RgbImage, Result, decode_err};
+use crate::{Error, Result, RgbImage, decode_err};
 
 /// The preview has no film curve, so its own maximum is not white. Scale so that this
 /// percentile of all channel values is, and let the brightest half percent clip.

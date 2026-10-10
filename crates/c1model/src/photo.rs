@@ -79,15 +79,8 @@ pub enum ColorLabel {
 }
 
 impl ColorLabel {
-    pub const ALL: [ColorLabel; 7] = [
-        Self::Red,
-        Self::Orange,
-        Self::Yellow,
-        Self::Green,
-        Self::Blue,
-        Self::Pink,
-        Self::Purple,
-    ];
+    pub const ALL: [ColorLabel; 7] =
+        [Self::Red, Self::Orange, Self::Yellow, Self::Green, Self::Blue, Self::Pink, Self::Purple];
 
     pub fn name(self) -> &'static str {
         match self {

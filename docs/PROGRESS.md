@@ -266,7 +266,8 @@ Known gaps, for stage 1:
 
 ### Next
 
-1. CI (`cargo fmt`, `clippy`, `test`, `pnpm check`), with a `rustfmt.toml` matching the
-   120-column style. Needs a GitHub remote to run.
+1. Push to GitHub so CI runs. `.github/workflows/ci.yml` runs on Windows: UI check and
+   build, then `cargo fmt --check`, `clippy -D warnings` and `cargo test`. `rustfmt.toml`
+   keeps the 120-column style, and the code is formatted with it.
 2. Check the original tier on real RAF/DNG files once H: is mounted.
 3. Stage 1: the browser. Start with the facet gap above and a virtualised grid.

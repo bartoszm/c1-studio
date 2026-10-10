@@ -7,9 +7,7 @@
 
 use c1model::Photo;
 use chrono::{Datelike, Local, TimeZone};
-use tantivy::schema::{
-    FAST, Field, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions,
-};
+use tantivy::schema::{FAST, Field, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAnalyzer};
 use tantivy::{Index, TantivyDocument};
 
@@ -163,7 +161,8 @@ pub fn build_schema() -> (Schema, Fields) {
 }
 
 pub fn register_tokenizers(index: &Index) {
-    let folded = TextAnalyzer::builder(SimpleTokenizer::default()).filter(LowerCaser).filter(AsciiFoldingFilter).build();
+    let folded =
+        TextAnalyzer::builder(SimpleTokenizer::default()).filter(LowerCaser).filter(AsciiFoldingFilter).build();
     index.tokenizers().register(FOLDED, folded);
 }
 
@@ -183,7 +182,8 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
     for kw in &photo.keywords {
         dim(Dim::Keyword, &kw.to_pipe());
     }
-    let mut tree: Vec<String> = photo.keywords.iter().flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>()).collect();
+    let mut tree: Vec<String> =
+        photo.keywords.iter().flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>()).collect();
     tree.sort();
     tree.dedup();
     for path in &tree {
@@ -272,7 +272,9 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
     if let Some(v) = photo.exif.iso {
         doc.add_u64(f.iso, u64::from(v));
     }
-    for (field, value) in [(f.aperture, photo.exif.aperture), (f.shutter, photo.exif.shutter), (f.focal, photo.exif.focal)] {
+    for (field, value) in
+        [(f.aperture, photo.exif.aperture), (f.shutter, photo.exif.shutter), (f.focal, photo.exif.focal)]
+    {
         if let Some(v) = value {
             doc.add_f64(field, v);
         }

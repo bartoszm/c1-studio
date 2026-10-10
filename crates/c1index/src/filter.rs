@@ -7,7 +7,9 @@ use std::ops::Bound;
 use anyhow::{Context, bail};
 use c1model::ColorLabel;
 use serde::{Deserialize, Serialize};
-use tantivy::query::{AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, RegexQuery, TermQuery, TermSetQuery};
+use tantivy::query::{
+    AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, RegexQuery, TermQuery, TermSetQuery,
+};
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, Term};
 
@@ -377,7 +379,9 @@ pub fn parse_color(text: &str) -> anyhow::Result<Presence<Vec<ColorLabel>>> {
             for name in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 match ColorLabel::from_name(name) {
                     Some(c) => colors.push(c),
-                    None => bail!("unknown colour {name:?}; choose from red, orange, yellow, green, blue, pink, purple"),
+                    None => {
+                        bail!("unknown colour {name:?}; choose from red, orange, yellow, green, blue, pink, purple")
+                    }
                 }
             }
             Ok(Presence::Values(colors))

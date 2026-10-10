@@ -12,12 +12,12 @@ pub mod source;
 
 pub use change::{ApplyPlan, ApplyReport, Change, Conflict, Op};
 pub use photo::{
-    AssetId, ColorLabel, Collection, CollectionId, CollectionKind, EditInfo, Exif, FileInfo,
-    GeoOrigin, GeoPoint, Iptc, KeywordNode, KeywordPath, Photo, PhotoId, Place, SourceId,
+    AssetId, Collection, CollectionId, CollectionKind, ColorLabel, EditInfo, Exif, FileInfo, GeoOrigin, GeoPoint, Iptc,
+    KeywordNode, KeywordPath, Photo, PhotoId, Place, SourceId,
 };
 pub use source::{
-    Capabilities, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError,
-    SourceEvent, SourceInfo, WriteStatus,
+    Capabilities, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError, SourceEvent, SourceInfo,
+    WriteStatus,
 };
 
 /// Bumped whenever a serialised [`Photo`] changes shape, so stored copies are rebuilt.

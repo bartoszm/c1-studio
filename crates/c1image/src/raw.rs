@@ -58,7 +58,10 @@ fn tiff(head: &[u8]) -> Vec<(u32, u32)> {
         Some(b"MM") => false,
         _ => return vec![],
     };
-    let u16_at = |at: usize| head.get(at..at + 2).map(|b| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) });
+    let u16_at = |at: usize| {
+        head.get(at..at + 2)
+            .map(|b| if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+    };
     let u32_at = |at: usize| {
         head.get(at..at + 4).map(|b| {
             let a = [b[0], b[1], b[2], b[3]];

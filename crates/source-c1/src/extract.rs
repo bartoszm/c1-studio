@@ -8,8 +8,8 @@ use std::path::Path;
 
 use c1model::source::Result;
 use c1model::{
-    AssetId, Collection, CollectionId, CollectionKind, ColorLabel, EditInfo, Exif, FileInfo, GeoOrigin,
-    GeoPoint, Iptc, KeywordNode, KeywordPath, Photo, PhotoId, Place, SourceError, SourceId,
+    AssetId, Collection, CollectionId, CollectionKind, ColorLabel, EditInfo, Exif, FileInfo, GeoOrigin, GeoPoint, Iptc,
+    KeywordNode, KeywordPath, Photo, PhotoId, Place, SourceError, SourceId,
 };
 use rusqlite::Connection;
 
@@ -89,9 +89,8 @@ struct Layers {
 
 fn load_layers(con: &Connection) -> Result<Layers> {
     let mut layers = Layers::default();
-    let mut stmt = con
-        .prepare("SELECT ZVARIANT, Z_ENT, ZNAME FROM ZVARIANTLAYER WHERE Z_ENT IN (?1, ?2)")
-        .map_err(db_err)?;
+    let mut stmt =
+        con.prepare("SELECT ZVARIANT, Z_ENT, ZNAME FROM ZVARIANTLAYER WHERE Z_ENT IN (?1, ?2)").map_err(db_err)?;
     let mut rows = stmt.query([ENT_STYLE_LAYER, ENT_LOCAL_LAYER]).map_err(db_err)?;
     while let Some(r) = rows.next().map_err(db_err)? {
         let variant: i64 = r.get(0).map_err(db_err)?;
@@ -237,7 +236,12 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
     let mut stmt = con.prepare("SELECT Z_PK, Z_ENT, ZNAME, ZPARENT FROM ZCOLLECTION").map_err(db_err)?;
     let rows: Vec<Row> = stmt
         .query_map([], |r| {
-            Ok(Row { pk: r.get(0)?, ent: r.get(1)?, name: r.get::<_, Option<String>>(2)?.unwrap_or_default(), parent: r.get(3)? })
+            Ok(Row {
+                pk: r.get(0)?,
+                ent: r.get(1)?,
+                name: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                parent: r.get(3)?,
+            })
         })
         .map_err(db_err)?
         .collect::<rusqlite::Result<_>>()
@@ -245,7 +249,8 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
     let by_pk: HashMap<i64, &Row> = rows.iter().map(|r| (r.pk, r)).collect();
 
     // The root collection (pk 1) and parent -1 both mean "top level".
-    let real_parent = |parent: Option<i64>| parent.filter(|p| *p != -1 && *p != ROOT_COLLECTION_PK && by_pk.contains_key(p));
+    let real_parent =
+        |parent: Option<i64>| parent.filter(|p| *p != -1 && *p != ROOT_COLLECTION_PK && by_pk.contains_key(p));
     let path_of = |row: &Row| {
         let mut names = vec![row.name.clone()];
         let mut seen = vec![row.pk];

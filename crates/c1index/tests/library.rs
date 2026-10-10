@@ -133,7 +133,11 @@ fn numeric_collection_and_edit_filters() {
 #[test]
 fn facets_count_the_matches() {
     let (_d, lib, _s) = setup();
-    let options = QueryOptions { facets: vec![Dim::Camera, Dim::KeywordTree, Dim::Rating], limit: Some(0), ..QueryOptions::default() };
+    let options = QueryOptions {
+        facets: vec![Dim::Camera, Dim::KeywordTree, Dim::Rating],
+        limit: Some(0),
+        ..QueryOptions::default()
+    };
     let result = lib.query(&Filter::default(), &options).unwrap();
     assert_eq!(result.total, 9);
     assert!(result.rows.is_empty());
@@ -196,7 +200,9 @@ fn facets_match_brute_force_across_segments() {
         let mut p = photo(n);
         p.id = PhotoId::new(&SourceId(source.into()), n.to_string());
         p.keywords = (0..n % 4)
-            .map(|k| KeywordPath(vec![format!("root{}", n % 7), format!("branch{}", (n + k) % 50), format!("leaf-{n}-{k}")]))
+            .map(|k| {
+                KeywordPath(vec![format!("root{}", n % 7), format!("branch{}", (n + k) % 50), format!("leaf-{n}-{k}")])
+            })
             .collect();
         p.trashed = false;
         p
@@ -211,7 +217,8 @@ fn facets_match_brute_force_across_segments() {
 
     let mut expected: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for p in a.iter().chain(&b) {
-        let mut paths: Vec<String> = p.keywords.iter().flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>()).collect();
+        let mut paths: Vec<String> =
+            p.keywords.iter().flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>()).collect();
         paths.sort();
         paths.dedup();
         for path in paths {
