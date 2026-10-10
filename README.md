@@ -9,6 +9,7 @@ A fast browser and indexer for Capture One catalogs, written in Rust. The plan i
 crates/c1model/    canonical photo model + the PhotoSource contract + conformance checks
 crates/source-c1/  Capture One catalog as a PhotoSource (read-only for now)
 crates/c1index/    the library: redb store + tantivy index, filters, facet counts, sync
+crates/c1image/    display-ready pixels: thumbnails, white-balanced JPEG-XL previews, raw-embedded JPEGs
 crates/c1cat/      CLI over the library
 legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests
 ```
@@ -22,6 +23,7 @@ $c1 = '.\target\release\c1cat.exe'
 & $c1 find --rating '>=4' --keyword street --limit 20
 & $c1 count --year 2026 --unkeyworded
 & $c1 facets --year 2026 --dims rating,camera,keyword_tree
+& $c1 image --tier preview -o out --rating 5 --limit 5   # render previews to JPEG
 & $c1 bench                                    # speed gate on 250k synthetic photos
 ```
 

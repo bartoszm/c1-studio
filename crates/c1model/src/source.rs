@@ -100,6 +100,9 @@ pub struct ImageRef {
     pub format: ImageFormat,
     /// Per-channel multipliers for linear camera-space data (Capture One previews).
     pub white_balance: Option<[f32; 3]>,
+    /// Clockwise degrees to turn the decoded pixels, 0, 90, 180 or 270: for files stored
+    /// in sensor orientation (Capture One previews). EXIF orientation is applied anyway.
+    pub rotation: u16,
 }
 
 /// One item of a snapshot, delivered in order.

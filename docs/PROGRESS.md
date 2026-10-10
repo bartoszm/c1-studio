@@ -139,9 +139,51 @@ variant ids.
 Run it with `python tools/difftest/difftest.py` after `cargo build --release -p c1cat`;
 `-k NAME` runs a subset. A run takes ~18 s.
 
+### Preview tier: Capture One's `.cop`, rendered in Rust
+
+- **`c1image`**, a new crate, turns any source's `ImageRef` into sRGB pixels:
+  - `.cot` thumbnails and JPEGs are decoded with their EXIF orientation applied;
+  - `.cop` previews get white balance, then highlight scaling (the 99.5th percentile
+    becomes white, as in Python), then the sRGB curve;
+  - for raws, it takes the camera's embedded JPEG: the RAF header offset, or the
+    largest IFD preview in DNG/CR2/NEF/ARW, skipping lossless-JPEG raw data.
+- **`source-c1`** now serves the preview tier. `.cop` is at
+  `Cache\Previews\<ZIMAGE.ZSIDECARPATH>.cop`, with a case-insensitive fallback.
+- **`c1cat image --tier thumb|preview|original -o DIR [selector]`** writes JPEGs, to
+  check the result by eye.
+- Speed: a 2560 px preview takes ~265 ms, a thumbnail ~5 ms.
+
+Three findings, each checked against Capture One's own thumbnails:
+
+- **jxl-oxide tone-maps by default.** Capture One declares a 2 000-nit intensity target.
+  Asked for SDR, jxl-oxide applies Rec. 2408 tone mapping, which bends the linear data;
+  its values came out ~7.7× libjxl's, and not proportionally. We ask for PQ output and
+  invert PQ ourselves. The result equals libjxl's (imagecodecs) to within float rounding
+  at every pixel checked.
+- **White balance comes from the combined layer.** The other candidates are the
+  adjustment layer (user overrides, set on 7 986 variants) and the default layer
+  (Python's choice). Styles also change white balance, so the combined layer differs
+  from both on 6 800 variants. On 300 such variants, combined matched Capture One's
+  thumbnail best 144 times, against 80 for adjustment and 76 for default (median
+  channel-balance error 0.198 / 0.225 / 0.234). The fallback order is combined, then
+  adjustment, then default.
+- **Previews are stored unrotated.** `ZROTATION` on the combined layer is the
+  clockwise turn to apply (270 on 3 135 variants, 90 on 402, 180 on 22, the user's own
+  rotation included). A few values carry straightening (`358.42`); they snap to the
+  nearest quarter turn. `ImageRef` gained a `rotation` field for this. Python never
+  rotated previews.
+
+Not done here:
+
+- **Originals are untested on real files.** Drive H: is offline; the RAF and TIFF parsers
+  are only tested on synthetic files.
+- **Originals use EXIF orientation, not `ZROTATION`.** A user's rotation in Capture One
+  will not show on them yet.
+- **No crop, film curve or black-and-white conversion,** as documented for the Python
+  version. A preview shows the uncropped, flat frame.
+
 ### Next (rest of stage 0)
 
-1. The preview tier: `.cop` JPEG-XL with white balance taken from develop settings
-   (`images.py`).
-2. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`, a
+1. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`, a
    `rustfmt.toml` matching the ~120-column style).
+2. Check the original tier on real RAF/DNG files once H: is mounted.

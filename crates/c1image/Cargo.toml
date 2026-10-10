@@ -1,0 +1,15 @@
+[package]
+name = "c1image"
+description = "Turns an ImageRef from any PhotoSource into display-ready sRGB pixels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+c1model.workspace = true
+thiserror.workspace = true
+image.workspace = true
+jxl-oxide.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
