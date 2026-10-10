@@ -34,4 +34,5 @@ Library data lives in `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 ```powershell
 cargo test --workspace
 cargo test -p source-c1 --test live -- --ignored   # against the real catalog, read-only
+python tools/difftest/difftest.py                   # Rust vs the Python oracle in WSL, same catalog
 ```
