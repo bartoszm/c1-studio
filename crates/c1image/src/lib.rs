@@ -4,11 +4,13 @@
 //! - JPEG (Capture One's `.cot` thumbnails, JPEG originals): decoded, EXIF orientation
 //!   applied.
 //! - JPEG-XL holding linear camera-space RGB before white balance (Capture One's `.cop`
-//!   previews): white balance, highlight scaling and the sRGB curve are applied here.
+//!   previews): white balance, highlight scaling and the sRGB curve are applied here,
+//!   then black and white and the tone curve of the source's own small render.
 //! - Camera raws: the full-size JPEG the camera embedded. Not a raw conversion, so no
 //!   edits show.
 
 mod jxl;
+mod look;
 mod raw;
 
 use std::io::Cursor;
@@ -19,7 +21,8 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
 pub use image::RgbImage;
-pub use jxl::decode_linear;
+pub use jxl::{decode_linear, render_preview};
+pub use look::Look;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -43,8 +46,8 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 
 pub fn load(r: &ImageRef) -> Result<RgbImage> {
     let image = match r.format {
-        ImageFormat::Jpeg => jpeg(&std::fs::read(&r.path).map_err(io_err(&r.path))?, &r.path),
-        ImageFormat::JpegXl => jxl::render(&r.path, r.white_balance),
+        ImageFormat::Jpeg => load_jpeg(&r.path),
+        ImageFormat::JpegXl => render_preview(r, true),
         ImageFormat::Raw => match raw::embedded_jpeg(&r.path)? {
             Some(bytes) => jpeg(&bytes, &r.path),
             None => Err(Error::NoPreview { path: r.path.clone() }),
@@ -76,6 +79,10 @@ pub fn fit(image: RgbImage, long_edge: u32) -> RgbImage {
     let scale = f64::from(long_edge) / f64::from(w.max(h));
     let size = |n: u32| ((f64::from(n) * scale).round() as u32).max(1);
     image::imageops::resize(&image, size(w), size(h), FilterType::CatmullRom)
+}
+
+pub(crate) fn load_jpeg(path: &Path) -> Result<RgbImage> {
+    jpeg(&std::fs::read(path).map_err(io_err(path))?, path)
 }
 
 fn jpeg(bytes: &[u8], path: &Path) -> Result<RgbImage> {

@@ -179,8 +179,49 @@ Not done here:
   are only tested on synthetic files.
 - **Originals use EXIF orientation, not `ZROTATION`.** A user's rotation in Capture One
   will not show on them yet.
-- **No crop, film curve or black-and-white conversion,** as documented for the Python
-  version. A preview shows the uncropped, flat frame.
+
+### Previews take Capture One's look from its thumbnail
+
+What Capture One keeps in `Cache\`:
+
+| File | What it is |
+|---|---|
+| `Thumbnails\*.cot` | JPEG, 450 px on the long edge (all 3 000 sampled), with every edit applied. |
+| `Previews\*.cop` | JPEG-XL, 2560 px, linear sensor data before white balance and tone. **Already cropped and straightened** (a 2.26 crop gives a 2560×1133 `.cop`); quarter turns are not applied. |
+| `Previews\*.cof` | 1000×667 greyscale detail map, not a picture. Possibly free sharpness data for stage 3. |
+| `Browser\*.bc` | 34-byte records. |
+
+So Capture One stores no large render with edits: it develops the `.cop` on the GPU
+whenever it shows one. The preview now borrows what it lacks from the `.cot`, which is
+Capture One's own finished render:
+
+- **Black and white** when the thumbnail is grey, or, without a thumbnail (4% of
+  variants), when `ZBWENABLED` is set or the film curve is ACROS/Monochrome/Sepia.
+  - The flags alone miss many: in a sample, 434 of 481 grey thumbnails had `ZBWENABLED`
+    off.
+  - A raw shot in ACROS with the curve on "Auto" takes the simulation from the raw file,
+    which the catalog does not record.
+- **The tone curve:** the preview's brightness distribution is matched to the
+  thumbnail's, keeping each pixel's colour ratios.
+
+Measured with `cargo run --release -p c1cat --example lookcheck` (120 random photos,
+median absolute difference from the thumbnail per channel, out of 255):
+
+| | before | + b&w | + b&w + tones |
+|---|---|---|---|
+| black-and-white photos (48) | 32.7 | 32.5 | 8.1 |
+| colour photos (72) | 27.6 | 27.6 | 6.8 |
+
+Two limits:
+
+- **Matching aims at the thumbnail, which is itself the target**, so the numbers flatter
+  it a little. But the match is one global curve, which cannot copy detail, and side by
+  side the previews look like Capture One's.
+- **A stale thumbnail skews the curve slightly.** For example, one straightened photo
+  still has a thumbnail with black corners. Colour saturation and colour grading are not
+  matched.
+
+`ImageRef` gained `monochrome` and `look` (a path to the small render).
 
 ### Next (rest of stage 0)
 

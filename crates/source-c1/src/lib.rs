@@ -122,11 +122,15 @@ impl PhotoSource for CaptureOne {
                 let con = catalog::open_live(&self.catalog)?;
                 let Some(preview) = catalog::preview_source(&con, vpk)? else { return Ok(None) };
                 let path = config::preview_path(self.catalog_dir(), &preview.sidecar);
+                // Capture One's own render of the edits, for the look the preview lacks.
+                let thumb = config::thumbnail_path(self.catalog_dir(), vpk);
                 return Ok(path.map(|path| ImageRef {
                     path,
                     format: ImageFormat::JpegXl,
                     white_balance: preview.white_balance,
                     rotation: preview.rotation,
+                    monochrome: preview.monochrome,
+                    look: thumb.is_file().then_some(thumb),
                 }));
             }
         };
@@ -136,7 +140,14 @@ impl PhotoSource for CaptureOne {
             (_, Some("jxl")) => ImageFormat::JpegXl,
             _ => ImageFormat::Raw,
         };
-        Ok(path.filter(|p| p.is_file()).map(|path| ImageRef { path, format, white_balance: None, rotation: 0 }))
+        Ok(path.filter(|p| p.is_file()).map(|path| ImageRef {
+            path,
+            format,
+            white_balance: None,
+            rotation: 0,
+            monochrome: false,
+            look: None,
+        }))
     }
 
     fn write_status(&self) -> WriteStatus {
