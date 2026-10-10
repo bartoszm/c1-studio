@@ -118,12 +118,30 @@ On the real catalog, counts over all 99 716 photos dropped from 8.8 ms to 3.6 ms
 The synthetic build itself takes about 14 s for 250 k photos (sync 13.6 s), and the
 library is 135 MB of store plus 99 MB of index in 13 segments.
 
+### Differential test: Rust matches the Python oracle
+
+`tools/difftest/difftest.py` sends the same selector flags through the Rust
+`c1cat find --ids` and through the legacy Python selector in WSL (`oracle.py`, which
+imports `legacy/c1cat-py` and runs every case in one process). It compares the sets of
+variant ids.
+
+- 75 cases cover every selector flag, combinations of them, and cases built from real
+  photos (ids, image ids, folders, exact filenames).
+- The result on the real catalog: 72 identical, 3 different by design (`--gps has`,
+  `--gps none`, `--near`: the GPS parsing bug above; Python sees 6 photos with GPS,
+  Rust 808).
+- One more bug in the oracle: its comparison regex takes whole numbers only, so
+  `--aperture '<=2.8'` (the example in its own help) and `--rating '>2.5'` fail there.
+  Those two cases go to Python as `0-2.8` and `3-5`. Fixed in Rust only.
+- WSL and Windows are both in Europe/Warsaw time, so `--year`, `--month`, `--from` and
+  `--to` agree.
+
+Run it with `python tools/difftest/difftest.py` after `cargo build --release -p c1cat`;
+`-k NAME` runs a subset. A run takes ~18 s.
+
 ### Next (rest of stage 0)
 
-1. A differential test script: the same selector flags through the Rust `c1cat find --ids`
-   and through the Python oracle in WSL, comparing the id sets. Excluded by design:
-   `--gps`/`--near` (GPS bug above). Also check WSL's timezone, which drives
-   `--year`/`--month` in Python.
-2. The preview tier: `.cop` JPEG-XL with white balance taken from develop settings
+1. The preview tier: `.cop` JPEG-XL with white balance taken from develop settings
    (`images.py`).
-3. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`).
+2. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`, a
+   `rustfmt.toml` matching the ~120-column style).
