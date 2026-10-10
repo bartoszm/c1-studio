@@ -103,6 +103,11 @@ pub struct ImageRef {
     /// Clockwise degrees to turn the decoded pixels, 0, 90, 180 or 270: for files stored
     /// in sensor orientation (Capture One previews). EXIF orientation is applied anyway.
     pub rotation: u16,
+    /// Render in black and white (the source's develop settings say so).
+    pub monochrome: bool,
+    /// A small render of the same picture with the source's edits applied (Capture One's
+    /// thumbnail). Its tones are matched onto this image, and if it is grey, so is this.
+    pub look: Option<PathBuf>,
 }
 
 /// One item of a snapshot, delivered in order.

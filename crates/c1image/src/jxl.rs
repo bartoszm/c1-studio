@@ -4,9 +4,11 @@
 
 use std::path::Path;
 
+use c1model::ImageRef;
 use jxl_oxide::JxlImage;
 use jxl_oxide::color::{EnumColourEncoding, RenderingIntent, TransferFunction};
 
+use crate::look::Look;
 use crate::{Error, RgbImage, Result, decode_err};
 
 /// The preview has no film curve, so its own maximum is not white. Scale so that this
@@ -16,13 +18,26 @@ const HIGHLIGHT_PERCENTILE: f64 = 99.5;
 /// Every n-th value is enough to place the percentile; 7 is coprime with 3 channels.
 const PERCENTILE_STRIDE: usize = 7;
 
-pub(crate) fn render(path: &Path, white_balance: Option<[f32; 3]>) -> Result<RgbImage> {
+/// A linear preview made displayable, before rotation. `tones` borrows the tone curve of
+/// `r.look`; without it the result is as flat as the preview itself.
+pub fn render_preview(r: &ImageRef, tones: bool) -> Result<RgbImage> {
+    let path = r.path.as_path();
+    // A missing or broken thumbnail only costs the look, not the preview.
+    let look = r.look.as_deref().and_then(|p| Look::load(p).ok());
+    let monochrome = r.monochrome || look.as_ref().is_some_and(|l| l.grey);
+
     let (width, height, mut rgb) = decode_linear(path)?;
-    if let Some(wb) = white_balance {
-        for px in rgb.as_chunks_mut::<3>().0 {
-            px[0] *= wb[0];
-            px[1] *= wb[1];
-            px[2] *= wb[2];
+    let px = rgb.as_chunks_mut::<3>().0;
+    if let Some(wb) = r.white_balance {
+        for p in px.iter_mut() {
+            p[0] *= wb[0];
+            p[1] *= wb[1];
+            p[2] *= wb[2];
+        }
+    }
+    if monochrome {
+        for p in px.iter_mut() {
+            *p = [0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]; 3];
         }
     }
     let ceiling = percentile(&rgb, HIGHLIGHT_PERCENTILE);
@@ -30,7 +45,12 @@ pub(crate) fn render(path: &Path, white_balance: Option<[f32; 3]>) -> Result<Rgb
     let lut = srgb_lut();
     let last = (lut.len() - 1) as f32;
     let bytes = rgb.iter().map(|&v| lut[((v * scale).clamp(0.0, 1.0) * last + 0.5) as usize]).collect();
-    RgbImage::from_raw(width, height, bytes).ok_or_else(|| decode_err(path, "pixel buffer has the wrong size"))
+    let mut image =
+        RgbImage::from_raw(width, height, bytes).ok_or_else(|| decode_err(path, "pixel buffer has the wrong size"))?;
+    if tones && let Some(look) = &look {
+        look.apply_tones(&mut image);
+    }
+    Ok(image)
 }
 
 /// Width, height and interleaved linear RGB, where 1.0 is the file's intensity target —

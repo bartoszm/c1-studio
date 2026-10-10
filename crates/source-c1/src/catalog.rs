@@ -111,6 +111,8 @@ pub(crate) struct PreviewSource {
     pub white_balance: Option<[f32; 3]>,
     /// Clockwise degrees, a multiple of 90.
     pub rotation: u16,
+    /// Black and white is switched on, or the film curve is a monochrome simulation.
+    pub monochrome: bool,
 }
 
 /// Where the variant's `.cop` preview should be, and how to render it.
@@ -119,12 +121,18 @@ pub(crate) struct PreviewSource {
 /// renders, styles included, and across 300 sampled variants it matched Capture One's own
 /// thumbnails best (48% closest; the default layer, 25%).
 ///
-/// The preview is stored in sensor orientation. `ZROTATION` on the combined layer is the
-/// clockwise turn Capture One shows it with, the user's own rotation included; a few
-/// values carry straightening too (`358.42`), which is dropped to the nearest quarter.
+/// The preview is already cropped and straightened, but stored before quarter turns.
+/// `ZROTATION` on the combined layer is the clockwise turn Capture One shows it with, the
+/// user's own rotation included; its fraction is the straightening, already applied.
+///
+/// Black and white is either `ZBWENABLED` or a monochrome film simulation (Fuji ACROS,
+/// Monochrome, Sepia) as the film curve. Neither catches a raw shot in ACROS whose curve
+/// is "Auto": the simulation is then read from the raw file, which the catalog does not
+/// record. Capture One's thumbnail shows it, so callers should check that as well.
 pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option<PreviewSource>> {
     con.query_row(
-        "SELECT i.ZSIDECARPATH, c.ZROTATION, c.ZWHITEBALANCE, a.ZWHITEBALANCE, d.ZWHITEBALANCE
+        "SELECT i.ZSIDECARPATH, c.ZROTATION, c.ZBWENABLED, c.ZFILMCURVE,
+                c.ZWHITEBALANCE, a.ZWHITEBALANCE, d.ZWHITEBALANCE
            FROM ZVARIANT v
            JOIN ZIMAGE i             ON i.Z_PK = v.ZIMAGE
            LEFT JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
@@ -135,14 +143,17 @@ pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option
         |r| {
             let sidecar = r.get::<_, Option<String>>(0)?.unwrap_or_default();
             let rotation = config::quarter_turn(r.get::<_, Option<f64>>(1)?.unwrap_or(0.0));
+            let curve = r.get::<_, Option<String>>(3)?.unwrap_or_default().to_lowercase();
+            let monochrome = r.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0
+                || ["acros", "monochrome", "sepia"].iter().any(|k| curve.contains(k));
             let mut white_balance = None;
-            for column in 2..=4 {
+            for column in 4..=6 {
                 if let Some(wb) = r.get::<_, Option<String>>(column)?.as_deref().and_then(config::parse_white_balance) {
                     white_balance = Some(wb);
                     break;
                 }
             }
-            Ok(PreviewSource { sidecar, white_balance, rotation })
+            Ok(PreviewSource { sidecar, white_balance, rotation, monochrome })
         },
     )
     .optional()
