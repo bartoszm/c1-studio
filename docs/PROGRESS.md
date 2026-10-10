@@ -73,15 +73,57 @@ Two more tests run against the live catalog and are `#[ignore]`d by default:
 - The Python oracle runs in WSL (where it already works) rather than getting a Windows
   platform layer.
 
+## 2026-10-10 — stage 0, the speed gate
+
+### Done
+
+- **`c1cat bench`** builds a synthetic library and times it against the gate.
+  - The library has 250 k photos and 2 000 keywords. It is shaped like a real catalog:
+    photos come in shoots that share a camera, a place and keywords; use is skewed
+    towards a few keywords, cameras and places; most photos are unrated.
+  - It is fed through the normal `Library::sync`. It lives in
+    `%LOCALAPPDATA%\c1studio\bench\<photos>-<keywords>-<seed>` and is reused on later
+    runs.
+  - Every query asks for the first 200 photos by date, plus counts over the 8 sidebar
+    dimensions (rating, colour, year, camera, lens, keyword tree, album, country).
+  - Each filter is built around a real photo in the library, so it always has at least
+    one hit.
+  - A failed gate exits non-zero.
+- **Facet counting fixed.** Ordinals were turned back into strings with one random
+  dictionary lookup each; on a 2 000-node keyword tree that took 150 ms per query. The
+  collector now reads the dictionary once, in ordinal order
+  (`sorted_ords_to_term_cb`).
+- **Segments are searched in parallel** (tantivy's multithread executor). This mainly
+  helps queries that match most of the library.
+- A test now compares facet counts with a brute-force count, across two segments and
+  thousands of distinct keywords.
+- Four source files had been saved with a BOM and double-encoded UTF-8: `find` printed
+  `â˜…` for each star. They are repaired.
+
+### Gate: passed (release build, i7-1365U, 250 000 photos)
+
+| Query | p50 | p95 | Gate |
+|---|---|---|---|
+| Open the library | 50 ms | | < 1 s ✓ |
+| Browse everything, 8 counts | 6.1 ms | 6.7 ms | — |
+| 1 filter | 2.2 ms | 5.9 ms | — |
+| 3–5 filters | 0.8 ms | 1.7 ms | p95 < 10 ms ✓ |
+| Text plus 1–3 filters | 0.5 ms | 1.4 ms | p95 < 30 ms ✓ |
+
+Before the two fixes, 3–5 filters took 30.9 ms at p95 and browsing everything took
+224 ms at p50. Roaring bitmaps, the plan's fallback, are not needed.
+
+On the real catalog, counts over all 99 716 photos dropped from 8.8 ms to 3.6 ms.
+
+The synthetic build itself takes about 14 s for 250 k photos (sync 13.6 s), and the
+library is 135 MB of store plus 99 MB of index in 13 segments.
+
 ### Next (rest of stage 0)
 
-1. `c1cat bench`: a synthetic library of 250 k photos × 2 000 keywords, checked against
-   the gate (p95 < 10 ms for 3–5 filters with facets, < 30 ms for text with filters,
-   open < 1 s).
-2. A differential test script: the same selector flags through the Rust `c1cat find --ids`
+1. A differential test script: the same selector flags through the Rust `c1cat find --ids`
    and through the Python oracle in WSL, comparing the id sets. Excluded by design:
    `--gps`/`--near` (GPS bug above). Also check WSL's timezone, which drives
    `--year`/`--month` in Python.
-3. The preview tier: `.cop` JPEG-XL with white balance taken from develop settings
+2. The preview tier: `.cop` JPEG-XL with white balance taken from develop settings
    (`images.py`).
-4. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`).
+3. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`).

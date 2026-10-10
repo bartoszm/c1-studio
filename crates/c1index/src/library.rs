@@ -114,7 +114,10 @@ impl Library {
         }
         std::fs::create_dir_all(&index_dir)?;
         let (schema, fields) = schema::build_schema();
-        let index = Index::open_or_create(MmapDirectory::open(&index_dir)?, schema)?;
+        let mut index = Index::open_or_create(MmapDirectory::open(&index_dir)?, schema)?;
+        // Search segments in parallel: queries matching most of the library are bound by
+        // counting facets, which splits cleanly across segments.
+        index.set_default_multithread_executor()?;
         schema::register_tokenizers(&index);
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
 

@@ -1,4 +1,4 @@
-﻿//! What to select. Every set field narrows the result (AND), as in the Python selector
+//! What to select. Every set field narrows the result (AND), as in the Python selector
 //! (`legacy/c1cat-py/c1cat/selector.py`), whose semantics this follows.
 
 use std::collections::HashMap;
@@ -188,7 +188,7 @@ fn range_i64(field: Field, from: Option<i64>, to: Option<i64>) -> Box<dyn Query>
     Box::new(RangeQuery::new(lo, hi))
 }
 
-/// `dscf*.raf` â†’ an anchored regex over the whole term.
+/// `dscf*.raf` → an anchored regex over the whole term.
 fn glob_to_regex(glob: &str) -> String {
     let mut out = String::new();
     for c in glob.chars() {
