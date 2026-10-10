@@ -57,6 +57,7 @@ impl Sort {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct QueryOptions {
     pub sort: Sort,
     /// `None` returns every match.

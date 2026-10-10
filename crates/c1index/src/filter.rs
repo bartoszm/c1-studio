@@ -15,6 +15,7 @@ use crate::schema::{Dim, Fields, flag, normalise_folder};
 
 /// A numeric constraint: `>=4`, `<=2.8`, `2-4`, `3`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Range {
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -98,7 +99,9 @@ impl BBox {
     }
 }
 
+/// Fields left out of a JSON filter take their defaults, so callers send only what they set.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Filter {
     /// Source-side ids (`PhotoId::ext`), e.g. Capture One variant keys.
     pub ids: Vec<String>,

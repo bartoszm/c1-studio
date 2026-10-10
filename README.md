@@ -11,6 +11,7 @@ crates/source-c1/  Capture One catalog as a PhotoSource (read-only for now)
 crates/c1index/    the library: redb store + tantivy index, filters, facet counts, sync
 crates/c1image/    display-ready pixels: thumbnails, white-balanced JPEG-XL previews, raw-embedded JPEGs
 crates/c1cat/      CLI over the library
+app/               the desktop app: Tauri 2 (app/src-tauri) + Svelte 5 (app/src)
 legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests
 ```
 
@@ -30,6 +31,15 @@ $c1 = '.\target\release\c1cat.exe'
 The catalog is located from `--catalog`, then `C1_CATALOG`, then
 `%APPDATA%\c1studio\config.json` (`{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`).
 Library data lives in `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+
+## App
+
+```powershell
+cd app
+pnpm install
+pnpm tauri dev                          # live-reloading window
+pnpm tauri build --debug --no-bundle    # target\debug\c1studio.exe
+```
 
 ## Test
 

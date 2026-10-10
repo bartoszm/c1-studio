@@ -223,8 +223,50 @@ Two limits:
 
 `ImageRef` gained `monochrome` and `look` (a path to the small render).
 
-### Next (rest of stage 0)
+### The app skeleton: Tauri 2 + Svelte 5
 
-1. The Tauri 2 + Svelte app skeleton in `app/`, and CI (`cargo test`, `clippy`, a
-   `rustfmt.toml` matching the ~120-column style).
+`app/` holds the window (`app/src-tauri`, a workspace member) and the UI (`app/src`:
+Svelte 5, Vite 8, TypeScript 5.9; `svelte-check` does not support TypeScript 7 yet).
+
+- **Commands:** `status`, `query` (any `Filter` as JSON, plus `QueryOptions`), `photo`,
+  `collections`, `sync`. `Filter`, `Range` and `QueryOptions` now take serde defaults,
+  so the UI sends only the fields it sets.
+- **The `c1img:` protocol:**
+  - `/thumb/<row>` sends Capture One's `.cot` as stored, without decoding it;
+  - `/preview/<row>` renders the `.cop` (~250 ms) and sends a JPEG;
+  - on Windows the page reaches it as `http://c1img.localhost/...`.
+- **Startup:** the app opens the catalog and library, and syncs in the background.
+  A `library-changed` event refreshes the window when anything moved.
+- **UI, dark like Capture One:**
+  - a search bar;
+  - the sidebar counts rating, colour, year, camera, keyword tree (one level at a time,
+    with a breadcrumb), albums and country; click a value to filter by it;
+  - a grid of thumbnails that loads 300 at a time as you scroll;
+  - a viewer that shows the thumbnail at once and swaps in the preview, with ← → Esc and
+    EXIF, rating, place and keywords.
+
+Checked on the real catalog by driving the WebView over its DevTools port:
+
+| Query | Photos | Time |
+|---|---|---|
+| Everything | 99 716 | 9.9 ms |
+| Year 2025 + keyword street | 8 743 | 16.7 ms |
+| + text "tokyo" | 689 | 5.1 ms |
+
+The viewer showed the black-and-white preview, and no errors appeared. A cold debug
+build of the app takes 4.5 min.
+
+Known gaps, for stage 1:
+
+- **Selecting a value hides the others in its group.** Counts follow the current filter,
+  so with 2025 picked, Year lists only 2025. The fix is counting each group without its
+  own constraint.
+- **The grid is not virtualised.** It only appends pages of 300.
+- **No thumbnail cache headers beyond `max-age`.**
+
+### Next
+
+1. CI (`cargo fmt`, `clippy`, `test`, `pnpm check`), with a `rustfmt.toml` matching the
+   120-column style. Needs a GitHub remote to run.
 2. Check the original tier on real RAF/DNG files once H: is mounted.
+3. Stage 1: the browser. Start with the facet gap above and a virtualised grid.
