@@ -1,14 +1,18 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
-  import { SvelteMap } from "svelte/reactivity";
+  import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
+  import { albumTree, pathTree, type Node } from "./lib/tree";
   import Grid from "./Grid.svelte";
+  import Tree from "./Tree.svelte";
   import Viewer from "./Viewer.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = ["rating", "color", "year", "camera", "keyword_tree", "collection", "country"];
+  const DIMS: Dim[] = ["rating", "color", "year", "camera", "country", "keyword_tree", "collection", "folder"];
+  /** Groups listed as plain values; the rest are trees. */
+  const FLAT: Dim[] = ["rating", "color", "year", "camera", "country"];
   const COLORS: Record<string, string> = {
     red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
     blue: "#4a90d9", pink: "#e87ab8", purple: "#9b6bd6", none: "transparent",
@@ -19,10 +23,30 @@
   let filter = $state<Filter>({});
   let search = $state("");
   let result = $state<QueryResult | null>(null);
-  let names = $state(new Map<string, string>());
+  let collections = $state<api.Collection[]>([]);
+  let smart = $state<Map<string, number> | null>(null);
   let viewing = $state<number | null>(null);
   let syncNote = $state("syncing…");
   let grid: Grid;
+
+  // Sidebar layout survives restarts: which branches are open, which sections folded.
+  function remembered(key: string): string[] {
+    try {
+      return JSON.parse(localStorage.getItem(key) ?? "[]");
+    } catch {
+      return [];
+    }
+  }
+  const expanded = new SvelteSet<string>(remembered("expanded"));
+  const folded = new SvelteSet<string>(remembered("folded"));
+  $effect(() => {
+    try {
+      localStorage.setItem("expanded", JSON.stringify([...expanded]));
+      localStorage.setItem("folded", JSON.stringify([...folded]));
+    } catch {
+      // Storage unavailable: the layout just isn't remembered.
+    }
+  });
 
   // Each query gets a number; answers to older ones are dropped.
   let generation = 0;
@@ -32,8 +56,11 @@
 
   async function run() {
     const mine = ++generation;
+    const asked = $state.snapshot(filter);
+    // Smart albums are counted apart: one query each, so they never hold up the grid.
+    api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
-      const r = await api.query($state.snapshot(filter), {
+      const r = await api.query(asked, {
         sort: "DateDesc", limit: PAGE, offset: 0, facets: DIMS, facets_ignore_own: true,
       });
       if (mine !== generation) return;
@@ -73,7 +100,7 @@
   async function refresh() {
     try {
       status = await api.status();
-      names = new Map((await api.collections()).map((c) => [c.id, c.path]));
+      collections = await api.collections();
       await run();
     } catch (e) {
       error = String(e);
@@ -101,7 +128,7 @@
     }, 150);
   }
 
-  // Sidebar values ↔ filter fields.
+  // Flat sidebar values ↔ filter fields.
   function filterFor(dim: Dim, value: string): Filter {
     switch (dim) {
       case "rating": return { rating: value === "none" ? "None" : { Values: { min: +value, max: +value } } };
@@ -109,8 +136,6 @@
       case "year": return { year: +value };
       case "camera": return { camera: value };
       case "country": return { country: value };
-      case "keyword_tree": return { keywords_under: [value] };
-      case "collection": return { collections: [value] };
       default: return {};
     }
   }
@@ -124,13 +149,21 @@
   function toggle(dim: Dim, value: string) {
     const want = filterFor(dim, value);
     const key = Object.keys(want)[0] as keyof Filter;
-    if (isActive(dim, value)) {
-      // Clicking an active keyword steps back up its tree instead of clearing it.
-      const parent = dim === "keyword_tree" && value.includes("|") ? value.slice(0, value.lastIndexOf("|")) : null;
-      filter = { ...filter, [key]: parent ? [parent] : undefined };
-    } else {
-      filter = { ...filter, ...want };
-    }
+    filter = isActive(dim, value) ? { ...filter, [key]: undefined } : { ...filter, ...want };
+    run();
+  }
+
+  // Trees: picking a node filters by it, picking it again lets go.
+  function pickAlbum(n: Node) {
+    filter = { ...filter, collections: filter.collections?.[0] === n.value ? undefined : [n.value] };
+    run();
+  }
+  function pickFolder(n: Node) {
+    filter = { ...filter, folder: filter.folder === n.value ? undefined : n.value };
+    run();
+  }
+  function pickKeyword(n: Node) {
+    filter = { ...filter, keywords_under: filter.keywords_under?.[0] === n.value ? undefined : [n.value] };
     run();
   }
 
@@ -140,38 +173,26 @@
     run();
   }
 
-  /** The values a sidebar group shows: keywords one level below the current one. */
+  /** The values a flat group shows. */
   function values(dim: Dim): [string, number][] {
     const all = result?.facets[dim] ?? [];
-    if (dim === "year") return [...all].sort((a, b) => b[0].localeCompare(a[0]));
-    if (dim === "rating") return [...all].sort((a, b) => b[0].localeCompare(a[0]));
-    if (dim === "keyword_tree") {
-      const at = filter.keywords_under?.[0];
-      const depth = at ? at.split("|").length : 0;
-      return all.filter(([v]) => v.split("|").length === depth + 1 && (!at || v.startsWith(at + "|"))).slice(0, 20);
-    }
-    return all.slice(0, dim === "collection" ? 15 : 10);
+    if (dim === "year" || dim === "rating") return [...all].sort((a, b) => b[0].localeCompare(a[0]));
+    return all.slice(0, 10);
   }
 
   function label(dim: Dim, value: string) {
     if (dim === "rating") return value === "none" ? "unrated" : "★".repeat(+value);
-    if (dim === "collection") return names.get(value) ?? `#${value}`;
-    if (dim === "keyword_tree") return value.split("|").pop();
     return value;
   }
 
   const TITLES: Record<string, string> = {
-    rating: "Rating", color: "Colour", year: "Year", camera: "Camera",
-    keyword_tree: "Keywords", collection: "Albums", country: "Country",
+    rating: "Rating", color: "Colour", year: "Year", camera: "Camera", country: "Country",
+    albums: "Albums", folders: "Folders", keywords: "Keywords",
   };
 
-  /** Breadcrumb of the keyword branch being browsed. */
-  function keywordTrail(): { name: string; path: string | null }[] {
-    const at = filter.keywords_under?.[0];
-    if (!at) return [];
-    const parts = at.split("|");
-    return [{ name: "All keywords", path: null }, ...parts.map((p, i) => ({ name: p, path: parts.slice(0, i + 1).join("|") }))];
-  }
+  let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart));
+  let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
+  let keywords = $derived(pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword"));
 
   let active = $derived(Object.values(filter).some((v) => v !== undefined));
 
@@ -187,7 +208,18 @@
     if (viewing !== null) grid?.reveal(viewing);
     viewing = null;
   }
+
+  function fold(key: string) {
+    if (folded.has(key)) folded.delete(key);
+    else folded.add(key);
+  }
 </script>
+
+{#snippet head(key: string)}
+  <button class="head" onclick={() => fold(key)}>
+    <span class="chev" class:open={!folded.has(key)}>›</span>{TITLES[key]}
+  </button>
+{/snippet}
 
 <div class="app">
   <header>
@@ -200,25 +232,38 @@
   </header>
 
   <aside>
-    {#if keywordTrail().length}
-      <div class="trail">
-        {#each keywordTrail() as step}
-          <button onclick={() => { filter = { ...filter, keywords_under: step.path ? [step.path] : undefined }; run(); }}>{step.name}</button>
-        {/each}
-      </div>
-    {/if}
-    {#each DIMS as dim}
+    <section>
+      {@render head("albums")}
+      {#if !folded.has("albums")}
+        <Tree nodes={albums} selected={filter.collections && "a:" + filter.collections[0]} {expanded} onpick={pickAlbum} />
+      {/if}
+    </section>
+    <section>
+      {@render head("folders")}
+      {#if !folded.has("folders")}
+        <Tree nodes={folders} selected={filter.folder && "f:" + filter.folder} {expanded} onpick={pickFolder} />
+      {/if}
+    </section>
+    <section>
+      {@render head("keywords")}
+      {#if !folded.has("keywords")}
+        <Tree nodes={keywords} selected={filter.keywords_under && "k:" + filter.keywords_under[0]} {expanded} onpick={pickKeyword} />
+      {/if}
+    </section>
+    {#each FLAT as dim}
       {@const list = values(dim)}
       {#if list.length}
         <section>
-          <h3>{TITLES[dim]}</h3>
-          {#each list as [value, n]}
-            <button class="facet" class:on={isActive(dim, value)} onclick={() => toggle(dim, value)}>
-              {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
-              <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
-              <span class="n">{n.toLocaleString()}</span>
-            </button>
-          {/each}
+          {@render head(dim)}
+          {#if !folded.has(dim)}
+            {#each list as [value, n]}
+              <button class="facet" class:on={isActive(dim, value)} onclick={() => toggle(dim, value)}>
+                {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
+                <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
+                <span class="n">{n.toLocaleString()}</span>
+              </button>
+            {/each}
+          {/if}
         </section>
       {/if}
     {/each}

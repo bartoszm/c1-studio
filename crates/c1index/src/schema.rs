@@ -12,7 +12,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -42,10 +42,13 @@ pub enum Dim {
     Ext,
     Style,
     Flag,
+    /// The photo's folder and every folder above it, `H:/fotos/2026`, in the path's own
+    /// case: counting this gives "photos at or under".
+    Folder,
 }
 
 impl Dim {
-    pub const ALL: [Dim; 16] = [
+    pub const ALL: [Dim; 17] = [
         Dim::Source,
         Dim::Keyword,
         Dim::KeywordTree,
@@ -62,6 +65,7 @@ impl Dim {
         Dim::Ext,
         Dim::Style,
         Dim::Flag,
+        Dim::Folder,
     ];
 
     pub fn field_name(self) -> &'static str {
@@ -82,6 +86,7 @@ impl Dim {
             Dim::Ext => "ext",
             Dim::Style => "style",
             Dim::Flag => "flag",
+            Dim::Folder => "folder_tree",
         }
     }
 }
@@ -171,6 +176,23 @@ pub fn normalise_folder(path: &str) -> String {
     path.replace('\\', "/").trim_end_matches('/').to_lowercase()
 }
 
+/// `H:\fotos\2026\a.raf` → `H:`, `H:/fotos`, `H:/fotos/2026`: the folders holding a
+/// file, outermost first, with forward slashes and the path's own case.
+pub fn folder_tree(path: &str) -> Vec<String> {
+    let mut parts: Vec<&str> = path.split(['\\', '/']).filter(|p| !p.is_empty()).collect();
+    parts.pop();
+    let mut prefix = if path.starts_with(['\\', '/']) { "/".to_owned() } else { String::new() };
+    let mut out = Vec::new();
+    for part in parts {
+        if !prefix.is_empty() && !prefix.ends_with('/') {
+            prefix.push('/');
+        }
+        prefix.push_str(part);
+        out.push(prefix.clone());
+    }
+    out
+}
+
 fn local_date(ms: i64) -> Option<chrono::DateTime<Local>> {
     Local.timestamp_millis_opt(ms).single()
 }
@@ -235,6 +257,9 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
     doc.add_text(f.asset, &photo.asset.0);
     doc.add_text(f.filename, photo.file.name.to_lowercase());
     if let Some(path) = &photo.file.path {
+        for folder in folder_tree(path) {
+            doc.add_text(f.dim(Dim::Folder), &folder);
+        }
         let folder = normalise_folder(path.rsplit_once(['\\', '/']).map_or("", |(dir, _)| dir));
         let mut prefix = String::new();
         for (i, part) in folder.split('/').enumerate() {
@@ -290,4 +315,18 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
 
 fn doc_add_str(doc: &mut TantivyDocument, field: Field, value: &str) {
     doc.add_text(field, value);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folders_above_a_file() {
+        assert_eq!(folder_tree(r"H:\fotos\2026\a.raf"), ["H:", "H:/fotos", "H:/fotos/2026"]);
+        assert_eq!(folder_tree("/home/me/a.jpg"), ["/home", "/home/me"]);
+        assert!(folder_tree("a.jpg").is_empty());
+        // Each one, normalised, is what a folder filter compares against.
+        assert_eq!(normalise_folder("H:/fotos/2026"), "h:/fotos/2026");
+    }
 }

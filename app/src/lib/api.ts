@@ -3,7 +3,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-export type Dim = "rating" | "color" | "year" | "camera" | "lens" | "keyword_tree" | "collection" | "country" | "city";
+export type Dim =
+  | "rating" | "color" | "year" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -19,6 +20,8 @@ export type Filter = {
   country?: string;
   keywords_under?: string[];
   collections?: string[];
+  /** Folder subtree, `H:/fotos/2026`. */
+  folder?: string;
 };
 
 export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
@@ -59,10 +62,24 @@ export type Photo = {
   place: { city: string | null; country: string | null };
 };
 
-export type Collection = { id: string; name: string; path: string };
+export type CollectionKind = "Album" | "Smart" | "Group" | "Project" | "Folder" | "Other";
+export type Condition =
+  | { KeywordContains: string }
+  | { Rating: { min: number; max: number } }
+  | { Year: number }
+  | { Unsupported: string };
+export type Collection = {
+  id: string;
+  name: string;
+  kind: CollectionKind;
+  parent: string | null;
+  path: string;
+  rule: { match_all: boolean; conditions: Condition[] } | null;
+};
 
 export const status = () => invoke<Status>("status");
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
+export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");

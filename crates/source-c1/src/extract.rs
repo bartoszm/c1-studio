@@ -15,6 +15,7 @@ use rusqlite::Connection;
 
 use crate::catalog::db_err;
 use crate::config;
+use crate::smart;
 
 const ENT_STYLE_LAYER: i64 = 19;
 const ENT_LOCAL_LAYER: i64 = 23;
@@ -232,8 +233,10 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
         ent: i64,
         name: String,
         parent: Option<i64>,
+        smart: Option<String>,
     }
-    let mut stmt = con.prepare("SELECT Z_PK, Z_ENT, ZNAME, ZPARENT FROM ZCOLLECTION").map_err(db_err)?;
+    let mut stmt =
+        con.prepare("SELECT Z_PK, Z_ENT, ZNAME, ZPARENT, ZSMARTCRITERIA FROM ZCOLLECTION").map_err(db_err)?;
     let rows: Vec<Row> = stmt
         .query_map([], |r| {
             Ok(Row {
@@ -241,6 +244,7 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
                 ent: r.get(1)?,
                 name: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
                 parent: r.get(3)?,
+                smart: r.get(4)?,
             })
         })
         .map_err(db_err)?
@@ -268,14 +272,17 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
         names.join(" / ")
     };
 
+    // The root (pk 1, "[Collection]") holds the catalog's tree; it is not a collection.
     Ok(rows
         .iter()
+        .filter(|row| row.pk != ROOT_COLLECTION_PK)
         .map(|row| Collection {
             id: CollectionId(row.pk.to_string()),
             name: row.name.clone(),
             kind: kind_of(row.ent),
             parent: real_parent(row.parent).map(|p| CollectionId(p.to_string())),
             path: path_of(row),
+            rule: (kind_of(row.ent) == CollectionKind::Smart).then(|| smart::parse(row.smart.as_deref().unwrap_or(""))),
         })
         .collect())
 }

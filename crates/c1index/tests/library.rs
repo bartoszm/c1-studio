@@ -49,6 +49,7 @@ fn setup() -> (tempfile::TempDir, Library, MemorySource) {
         kind: CollectionKind::Album,
         parent: None,
         path: "Best / for street".into(),
+        rule: None,
     };
     let source = MemorySource::new("mem", (1..=10).map(photo).collect(), vec![album]);
     let report = library.sync(&source).unwrap();
@@ -257,4 +258,85 @@ fn facets_match_brute_force_across_segments() {
     let got: std::collections::HashMap<String, u64> = result.facets[&Dim::KeywordTree].iter().cloned().collect();
     assert_eq!(got.len(), expected.len());
     assert_eq!(got, expected);
+}
+
+#[test]
+fn smart_albums_follow_their_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let smart = |id: &str, match_all, conditions| Collection {
+        id: CollectionId(id.into()),
+        name: id.into(),
+        kind: CollectionKind::Smart,
+        parent: None,
+        path: id.into(),
+        rule: Some(SmartRule { match_all, conditions }),
+    };
+    let source = MemorySource::new(
+        "mem",
+        (1..=10).map(photo).collect(),
+        vec![
+            // Keyword names match ignoring case; "best" matches "best" and "best|best2018".
+            smart(
+                "street3",
+                true,
+                vec![Condition::KeywordContains("STREE".into()), Condition::Rating { min: 3, max: 5 }],
+            ),
+            smart(
+                "best-or-4",
+                false,
+                vec![Condition::KeywordContains("best".into()), Condition::Rating { min: 4, max: 4 }],
+            ),
+            smart("odd", true, vec![Condition::Unsupported("file name contains DSCF".into())]),
+        ],
+    );
+    lib.sync(&source).unwrap();
+    let pick = |id: &str| Filter { collections: vec![id.into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &pick("street3")), [3, 4]);
+    assert_eq!(ids(&lib, &pick("best-or-4")), [3, 4, 6]);
+    assert!(lib.query(&pick("odd"), &QueryOptions::default()).is_err());
+
+    // Counts under other filters, setting aside the album picked.
+    let even = Filter { camera: Some("X100VI".into()), collections: vec!["best-or-4".into()], ..Filter::default() };
+    let mut counts = lib.smart_counts(&even).unwrap();
+    counts.sort();
+    assert_eq!(counts, [("best-or-4".to_owned(), 2), ("street3".to_owned(), 1)]);
+}
+
+#[test]
+fn folders_count_and_filter_as_a_tree() {
+    let (_d, lib, _s) = setup();
+    let options = QueryOptions { facets: vec![Dim::Folder], limit: Some(0), ..QueryOptions::default() };
+    let result = lib.query(&Filter::default(), &options).unwrap();
+    let got: std::collections::HashMap<String, u64> = result.facets[&Dim::Folder].iter().cloned().collect();
+    assert_eq!(got["H:"], 9);
+    assert_eq!(got["H:/fotos"], 9);
+    assert_eq!(got["H:/fotos/2020"], 2);
+    let in_2021 = Filter { folder: Some("H:/fotos/2021".into()), ..Filter::default() };
+    assert_eq!(ids(&lib, &in_2021), [1, 4, 7, 10]);
+    // Picking a folder leaves its siblings counted.
+    let options = QueryOptions { facets_ignore_own: true, ..options };
+    let result = lib.query(&in_2021, &options).unwrap();
+    assert_eq!(result.facets[&Dim::Folder].len(), 5);
+}
+
+#[test]
+fn filters_nest() {
+    let (_d, lib, _s) = setup();
+    let rated = |n: f64| Filter {
+        rating: Some(Presence::Values(Range { min: Some(n), max: Some(n), ..Range::default() })),
+        ..Filter::default()
+    };
+    let either = Filter { any_of: vec![rated(1.0), rated(4.0)], ..Filter::default() };
+    assert_eq!(ids(&lib, &either), [1, 4, 6]);
+    let both = Filter {
+        all_of: vec![either.clone(), Filter { keywords_containing: vec!["Street".into()], ..Filter::default() }],
+        ..Filter::default()
+    };
+    assert_eq!(ids(&lib, &both), [1, 4, 6]);
+    let none = Filter {
+        all_of: vec![either, Filter { keywords_containing: vec!["best2018".into()], ..Filter::default() }],
+        ..Filter::default()
+    };
+    assert_eq!(ids(&lib, &none), [6]);
 }

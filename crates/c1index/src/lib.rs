@@ -9,5 +9,5 @@ mod store;
 
 pub use facets::Counts;
 pub use filter::{BBox, Filter, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
-pub use library::{Library, QueryOptions, QueryResult, Sort, SyncReport};
+pub use library::{Library, QueryOptions, QueryResult, Sort, SyncReport, smart_filter};
 pub use schema::Dim;

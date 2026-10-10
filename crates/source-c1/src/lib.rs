@@ -9,6 +9,7 @@ mod catalog;
 mod config;
 mod extract;
 mod process;
+mod smart;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
