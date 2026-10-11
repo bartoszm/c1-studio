@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
-    Change, Collection, ColorLabel, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo,
-    PhotoSource, Pick, Place, SourceSpec, WriteStatus,
+    Change, Collection, ColorLabel, Compatibility, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op,
+    Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
 };
 use serde::{Deserialize, Serialize};
 use sources::Recent;
@@ -102,6 +102,8 @@ struct Status {
     photos: u64,
     writes: String,
     sync_error: Option<String>,
+    /// What made the source and how far the app is checked against it.
+    compatibility: Compatibility,
 }
 
 #[tauri::command]
@@ -113,6 +115,7 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         photos: s.library.len(),
         writes: format!("{:?}", s.source.write_status()),
         sync_error: s.sync_error.lock().unwrap().clone(),
+        compatibility: s.source.info().compatibility,
     })
 }
 
@@ -480,6 +483,8 @@ async fn resolve(app: State<'_, App>, keys: Vec<String>, keep_mine: bool) -> Res
 #[derive(Serialize)]
 struct WritePlan {
     status: WriteStatus,
+    /// Why a read-only source is read-only.
+    compatibility: Compatibility,
     /// Edits that would be written.
     apply: Vec<PendingEdit>,
     /// Edits Capture One already matches; writing drops them from the queue.
@@ -523,6 +528,7 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>),
         .collect();
     let out = WritePlan {
         status: s.source.write_status(),
+        compatibility: s.source.info().compatibility,
         apply: pick(&plan.apply),
         unchanged: pick(&plan.no_ops),
         conflicts,
@@ -668,7 +674,9 @@ fn autosave_loop(app: AppHandle) {
                 continue;
             }
             WriteStatus::ReadOnly => {
-                let error = "this catalog's format is not one the app was checked against".to_owned();
+                let compat = s.source.info().compatibility;
+                let error =
+                    format!("not written to this catalog ({}): {}", compat.format, compat.note.unwrap_or_default());
                 report_autosave(&app, &s, AutosaveState::Failed { error });
                 continue;
             }
@@ -792,6 +800,8 @@ struct ProviderView {
 #[derive(Serialize)]
 struct SourcesView {
     current: Option<SourceEntry>,
+    /// The open source's, when one is open.
+    compatibility: Option<Compatibility>,
     /// Why nothing is open, when nothing is.
     error: Option<String>,
     recent: Vec<SourceEntry>,
@@ -804,6 +814,7 @@ async fn sources(app: State<'_, App>) -> Result<SourcesView, String> {
     let current = app.0.read().unwrap();
     Ok(SourcesView {
         current: current.spec.as_ref().and_then(entry),
+        compatibility: current.session.as_ref().ok().map(|s| s.source.info().compatibility),
         error: current.session.as_ref().err().cloned(),
         recent: Recent::load().list.iter().filter(|s| Some(*s) != current.spec.as_ref()).filter_map(entry).collect(),
         providers: sources::providers()

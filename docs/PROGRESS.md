@@ -655,6 +655,25 @@ in `<data dir>/settings.json`) writes the queue by itself.
   line, a typed folder, a bad path, back through Recent, and a restart reopening the
   last source.
 
+### Older Capture One catalogs: read, and say which version
+
+- **Version:** `ZVERSIONINFO` keeps a row per Capture One that opened the catalog
+  (`ZAUTHOR` "16.5.5.2701 Pro Win", `ZVERSION` 1650). The newest row is the catalog now;
+  the oldest says what made it. `source-c1/src/compat.rs` turns that into "Capture One
+  16.5.5 Pro (Windows), catalog schema 1650 (created with 16.4.5)", re-read on each
+  full read since a newer Capture One upgrades a catalog in place.
+- **What is checked:** schema 160800 (16.8) read and written; 1650 (16.5, the
+  other catalog) read, writing off. Any other schema is tried for reading and
+  marked untested, writing off. 1650 lacks `ZRETOUCHINGLAYER`: a missing table now
+  means no retouching layers.
+- **`Compatibility`** (c1model, in `SourceInfo`): format, read and write support
+  (`Tested`/`Untested`/`Off`) and a note, so any provider can say the same.
+- **In the app:** a footer badge ("read-only · 16.5", "untested version · 15.3") with the
+  details on hover and in the source menu; the write dialog and autosave say why a
+  catalog is not written. A read that fails names the version and the versions the app
+  reads, shown in full in the empty grid ("sync failed" in the footer). Why the last
+  sync failed is kept in the session, so the window shows it however late it asks.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

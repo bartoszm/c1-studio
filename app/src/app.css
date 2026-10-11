@@ -441,3 +441,15 @@ footer .edit-error { color: var(--error); }
 .source-path input:focus { outline: none; border-color: var(--queued); }
 .source-note { margin: 4px 12px 6px; color: var(--muted); overflow-wrap: anywhere; }
 .source-note.error { color: var(--error); }
+
+/* Which version a source is, when the app is not fully checked against it. */
+footer .compat { padding: 0 6px; border: 1px solid #6b5a2a; border-radius: 3px; color: #e8b03a; font-size: 11px; }
+footer .compat.untested { border-color: #7a3a3a; color: var(--error); }
+.compat-detail { display: grid; gap: 2px; margin: 0 12px 6px; padding: 6px 8px; font-size: 12px; color: var(--muted); background: var(--bg); border-radius: 3px; }
+.compat-detail b { font-weight: 600; }
+.compat-detail .Tested { color: #5cb85c; }
+.compat-detail .Untested { color: #e8b03a; }
+.compat-detail .Off { color: var(--text); }
+.compat-detail .note { color: var(--text); }
+footer .sync.failed { color: var(--error); cursor: help; }
+footer > span { white-space: nowrap; }

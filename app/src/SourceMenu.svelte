@@ -12,6 +12,8 @@
   let failed = $state<string | null>(null);
   let typed = $state("");
 
+  const SUPPORT: Record<api.Support, string> = { Tested: "checked", Untested: "not checked, tried", Off: "off" };
+
   async function load() {
     try {
       view = await api.sources();
@@ -78,9 +80,18 @@
       <div class="source-row current">
         <span class="what"><b>{view.current.name}</b><small>{view.current.kind} · {view.current.location}</small></span>
       </div>
-    {:else if view.error}
-      <p class="source-note">{view.error}</p>
+      {#if view.compatibility}
+        {@const c = view.compatibility}
+        <div class="compat-detail">
+          <div>{c.format}</div>
+          <div>
+            Reading: <b class={c.read}>{SUPPORT[c.read]}</b> · Writing: <b class={c.write}>{SUPPORT[c.write]}</b>
+          </div>
+          {#if c.note}<div class="note">{c.note}</div>{/if}
+        </div>
+      {/if}
     {/if}
+    {#if view.error}<p class="source-note error">{view.error}</p>{/if}
     {#if view.recent.length}
       <div class="menu-title">Recent</div>
       {#each view.recent as r (r.provider + r.location)}

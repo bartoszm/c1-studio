@@ -7,8 +7,8 @@ use std::sync::Mutex;
 use crate::change::{ApplyPlan, ApplyReport, Change, KeywordRemap, plan_with};
 use crate::photo::{Collection, KeywordNode, KeywordPath, Photo, PhotoId, SourceId};
 use crate::source::{
-    Capabilities, Cursor, Field, ImageRef, ImageTier, PhotoSource, Result, SourceError, SourceEvent, SourceInfo,
-    WriteStatus,
+    Capabilities, Compatibility, Cursor, Field, ImageRef, ImageTier, PhotoSource, Result, SourceError, SourceEvent,
+    SourceInfo, WriteStatus,
 };
 
 #[derive(Default)]
@@ -52,7 +52,12 @@ impl MemorySource {
 
 impl PhotoSource for MemorySource {
     fn info(&self) -> SourceInfo {
-        SourceInfo { id: self.id.clone(), name: format!("memory · {}", self.id.0), version: "1".into() }
+        SourceInfo {
+            id: self.id.clone(),
+            name: format!("memory · {}", self.id.0),
+            version: "1".into(),
+            compatibility: Compatibility::tested("in memory"),
+        }
     }
 
     fn capabilities(&self) -> Capabilities {

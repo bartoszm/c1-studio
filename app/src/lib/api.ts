@@ -50,7 +50,18 @@ export type QueryResult = {
   micros: number;
 };
 
-export type Status = { catalog: string; source: string; photos: number; writes: string; sync_error: string | null };
+export type Status = {
+  catalog: string;
+  source: string;
+  photos: number;
+  writes: string;
+  sync_error: string | null;
+  compatibility: Compatibility;
+};
+
+/** How far the app is checked against a source's format, each way. */
+export type Support = "Tested" | "Untested" | "Off";
+export type Compatibility = { format: string; read: Support; write: Support; note: string | null };
 
 /** What to open: which provider (`capture-one`), and where. An empty provider lets the
  *  first that recognises the location open it. */
@@ -63,6 +74,7 @@ export type ProviderView = {
 };
 export type SourcesView = {
   current: SourceEntry | null;
+  compatibility: Compatibility | null;
   error: string | null;
   recent: SourceEntry[];
   providers: ProviderView[];
@@ -144,6 +156,7 @@ export type PendingEdit = {
 export type WriteStatus = "Ready" | "ReadOnly" | { Locked: { by: string } };
 export type WritePlan = {
   status: WriteStatus;
+  compatibility: Compatibility;
   apply: PendingEdit[];
   unchanged: PendingEdit[];
   conflicts: PendingEdit[];
