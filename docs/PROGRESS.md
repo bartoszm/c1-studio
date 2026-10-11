@@ -621,6 +621,19 @@ in `<data dir>/settings.json`) writes the queue by itself.
   the app crate. In a second app instance on a catalog copy: typed fields, bad GPS, copy,
   paste to two photos, undo, redo, then a write checked in the copy's database.
 
+### Filter summary and date filters (issues #1, #2)
+
+- **Filter summary:** a bar of chips above the grid, one per active filter value, each
+  with its ×, and Clear filters at its end. Only there while something is filtered.
+- **Date** (second in the sidebar, under Albums): a tree of years › months › weeks with
+  counts. A week is the days of one ISO week inside one month (`Dim::Week`,
+  `2025-01-W05`), so a week across two months shows under each with its own days and
+  the weeks add up to the month. Picking a node opens it; picking it again goes up a
+  level. The tree counts as if no date were picked, so all of it stays reachable.
+- **Custom range…** opens From and To (each optional) with "Last 7/30/90/365 days";
+  Apply sets `captured`. A range and a tree pick replace each other.
+- Index schema 4 (the week facet): rebuilt from the store on the first start, no resync.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

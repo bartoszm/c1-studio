@@ -3,7 +3,7 @@
 
 import type { Collection } from "./api";
 
-export type Icon = "album" | "smart" | "group" | "project" | "folder" | "keyword";
+export type Icon = "album" | "smart" | "group" | "project" | "folder" | "keyword" | "date";
 
 export type Node = {
   /** Unique across all trees: `a:<id>`, `f:<path>`, `k:<path>`. */

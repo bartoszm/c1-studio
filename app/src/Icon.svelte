@@ -16,6 +16,8 @@
     <rect x="1.5" y="5.5" width="13" height="8" rx="1" /><path d="M5.5 5.5v-2h5v2" />
   {:else if name === "folder"}
     <path d="M1.5 3.5v9h13v-7.5h-7l-1.5-1.5z" />
+  {:else if name === "date"}
+    <rect x="2.5" y="3.5" width="11" height="10" rx="1" /><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
   {:else}
     <path d="M2.5 2.5h5l6 6-5 5-6-6z" /><circle cx="5.5" cy="5.5" r="1" />
   {/if}

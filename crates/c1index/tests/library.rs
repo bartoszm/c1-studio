@@ -200,6 +200,12 @@ fn years_stay_visible_when_a_month_is_picked() {
     let range = |from, to| Filter { captured: Some(TimeRange { from, to }), ..Filter::default() };
     assert_eq!(ids(&lib, &range(at(2), at(4))), [2, 3, 4]);
     assert_eq!(ids(&lib, &range(at(8), None)), [8, 10]);
+    // Weeks nest in months: photo n is taken on 14+n November 2023 (local), so ISO
+    // week 47 holds 20 to 24 November.
+    let weeks = lib.query(&Filter::default(), &QueryOptions { facets: vec![Dim::Week], ..options.clone() }).unwrap();
+    let w47 = Filter { week: Some("2023-11-W47".into()), ..Filter::default() };
+    assert_eq!(ids(&lib, &w47), ids(&lib, &range(at(6), at(10))));
+    assert!(weeks.facets[&Dim::Week].iter().any(|(k, n)| k == "2023-11-W47" && *n == ids(&lib, &w47).len() as u64));
 }
 
 #[test]

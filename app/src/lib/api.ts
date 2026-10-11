@@ -4,7 +4,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Dim =
-  | "rating" | "color" | "year" | "month" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city";
+  | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -20,6 +20,8 @@ export type Filter = {
   year?: number;
   /** `YYYY-MM`, a local month. */
   month?: string;
+  /** `YYYY-MM-Www`: the days of an ISO week inside a month. */
+  week?: string;
   /** Capture time. */
   captured?: TimeRange;
   camera?: string;

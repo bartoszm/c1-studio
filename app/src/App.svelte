@@ -5,6 +5,7 @@
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS, FIELD_NAMES, stars } from "./lib/format";
+  import { dateTree, weekText } from "./lib/dates";
   import { albumTree, pathTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import CopyDialog from "./CopyDialog.svelte";
@@ -15,9 +16,9 @@
   import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = ["rating", "color", "year", "month", "camera", "country", "keyword_tree", "collection", "folder"];
+  const DIMS: Dim[] = ["rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder"];
   /** Groups listed as plain values; the rest are trees. */
-  const FLAT: Dim[] = ["rating", "color", "year", "camera", "country"];
+  const FLAT: Dim[] = ["rating", "color", "camera", "country"];
 
   let status = $state<api.Status | null>(null);
   let error = $state<string | null>(null);
@@ -451,26 +452,32 @@
     run();
   }
 
-  // Dates: a year, a month in it, or a range of days. Picking one lets go of the others,
-  // so the filter never asks for dates that contradict.
-  const MONTHS = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1));
-  /** The year whose months show: the one picked, or the one holding the picked month. */
-  let dateYear = $derived(filter.year ?? (filter.month ? +filter.month.slice(0, 4) : undefined));
-  let monthCounts = $derived(new Map(result?.facets.month ?? []));
-  const monthKey = (year: number, i: number) => `${year}-${String(i + 1).padStart(2, "0")}`;
+  // Dates: the tree of years, months and weeks, or a custom range of days. Picking one
+  // lets go of the other, so the filter never asks for dates that contradict.
+  let dateNodes = $derived(
+    dateTree(result?.facets.year ?? [], result?.facets.month ?? [], result?.facets.week ?? []),
+  );
+  let dateSelected = $derived(
+    filter.week ? "d:" + filter.week : filter.month ? "d:" + filter.month : filter.year ? "d:" + filter.year : undefined,
+  );
 
-  /** Picking the year again goes back from its month to the whole year, then lets go. */
-  function pickYear(year: number) {
-    if (filter.month && dateYear === year) filter = { ...filter, year, month: undefined };
-    else if (filter.year === year) filter = { ...filter, year: undefined, month: undefined };
-    else filter = { ...filter, year, month: undefined, captured: undefined };
-    run();
-  }
-
-  function pickMonth(key: string) {
-    filter = filter.month === key
-      ? { ...filter, month: undefined }
-      : { ...filter, year: +key.slice(0, 4), month: key, captured: undefined };
+  /** A year, month or week: it opens to show what is under it. Picking the one picked
+   *  goes up a level. */
+  function pickDate(node: Node) {
+    const v = node.value;
+    const at = (key: string) => ({
+      year: +key.slice(0, 4),
+      month: key.length >= 7 ? key.slice(0, 7) : undefined,
+      week: key.length > 7 ? key : undefined,
+      captured: undefined,
+    });
+    if (dateSelected === node.key) {
+      const up = v.length > 7 ? v.slice(0, 7) : v.length > 4 ? v.slice(0, 4) : "";
+      filter = { ...filter, ...(up ? at(up) : { year: undefined, month: undefined, week: undefined }) };
+    } else {
+      filter = { ...filter, ...at(v) };
+      expanded.add(node.key);
+    }
     run();
   }
 
@@ -499,8 +506,25 @@
     const captured = from || to
       ? { from: from ? dayStart(from) : undefined, to: to ? dayStart(to, 1) - 1 : undefined }
       : undefined;
-    filter = captured ? { ...filter, captured, year: undefined, month: undefined } : { ...filter, captured };
+    filter = captured
+      ? { ...filter, captured, year: undefined, month: undefined, week: undefined }
+      : { ...filter, captured };
     run();
+  }
+
+  /** The custom range being typed, both ends optional; null while closed. */
+  let custom = $state<{ from: string; to: string } | null>(null);
+  function openCustom() {
+    custom = custom ? null : { from: rangeFrom, to: rangeTo };
+  }
+  function closeOnEscape(e: KeyboardEvent) {
+    if (e.key === "Escape") custom = null;
+  }
+  function applyCustom(e?: Event) {
+    e?.preventDefault();
+    if (!custom) return;
+    setRange(custom.from, custom.to);
+    custom = null;
   }
 
   // Ranges ending today, left open so photos taken later today join.
@@ -671,9 +695,10 @@
             const rest = without(v.Values, c);
             return { what: "Colour", text: c.toLowerCase(), dot: COLORS[c.toLowerCase()], rest: rest && { Values: rest } };
           }),
-    // A month carries its year: one chip, and dropping it goes back to the whole year.
+    // A week carries its month and year: one chip, and dropping it goes up a level.
     year: (v) => (filter.month ? [] : [{ text: String(v) }]),
-    month: (v) => [{ text: monthText(v) }],
+    month: (v) => (filter.week ? [] : [{ text: monthText(v) }]),
+    week: (v) => [{ text: weekText(v) }],
     captured: (v) => [{ what: "Dates", text: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
     country: (v) => [{ what: "Country", text: v }],
@@ -716,45 +741,40 @@
   </button>
 {/snippet}
 
-{#snippet dates(years: [string, number][])}
+{#snippet dates()}
   <section>
     {@render head("date")}
     {#if !folded.has("date")}
-      {#each years as [value, n]}
-        {@const year = +value}
-        <button class="facet" class:on={filter.year === year} onclick={() => pickYear(year)}>
-          <span class="name">{value}</span>
-          <span class="n">{n.toLocaleString()}</span>
-        </button>
-        {#if dateYear === year}
-          <div class="months">
-            {#each MONTHS as date, i}
-              {@const key = monthKey(year, i)}
-              {@const count = monthCounts.get(key) ?? 0}
-              <button
-                class:on={filter.month === key}
-                disabled={!count && filter.month !== key}
-                title="{date.toLocaleDateString(undefined, { month: 'long' })} {year}"
-                onclick={() => pickMonth(key)}
-              >
-                {date.toLocaleDateString(undefined, { month: "short" })}
-                <span class="n">{count ? count.toLocaleString() : "–"}</span>
+      <Tree nodes={dateNodes} selected={dateSelected} {expanded} onpick={pickDate} />
+      <div class="custom">
+        {#if filter.captured}
+          <button class="range-on" class:open={custom} title="Change the range" onclick={openCustom}>
+            {rangeText(filter.captured)}
+          </button>
+          <button class="drop" title="Any date" onclick={() => { custom = null; setRange("", ""); }}>×</button>
+        {:else}
+          <button class:open={custom} onclick={openCustom}>Custom range…</button>
+        {/if}
+      </div>
+      {#if custom}
+        <form class="range" onsubmit={applyCustom}>
+          <label>From <input type="date" bind:value={custom.from} onkeydown={closeOnEscape} /></label>
+          <label>To <input type="date" bind:value={custom.to} onkeydown={closeOnEscape} /></label>
+          <p class="hint">Either end can stay empty: from a day on, or up to one.</p>
+          <div class="presets">
+            Last
+            {#each PRESETS as [name, days]}
+              <button type="button" class:on={isPreset(days)} onclick={() => { custom = null; setRange(presetFrom(days), ""); }}>
+                {name}
               </button>
             {/each}
           </div>
-        {/if}
-      {/each}
-      <div class="range">
-        <label>From <input type="date" value={rangeFrom} onchange={(e) => setRange(e.currentTarget.value, rangeTo)} /></label>
-        <label>To <input type="date" value={rangeTo} onchange={(e) => setRange(rangeFrom, e.currentTarget.value)} /></label>
-      </div>
-      <div class="presets">
-        Last
-        {#each PRESETS as [name, days]}
-          <button class:on={isPreset(days)} onclick={() => setRange(isPreset(days) ? "" : presetFrom(days), "")}>{name}</button>
-        {/each}
-        {#if filter.captured}<button class="drop" title="Any date" onclick={() => setRange("", "")}>×</button>{/if}
-      </div>
+          <div class="actions">
+            <button type="button" onclick={() => (custom = null)}>Cancel</button>
+            <button type="submit" class="primary">Apply</button>
+          </div>
+        </form>
+      {/if}
     {/if}
   </section>
 {/snippet}
@@ -836,6 +856,7 @@
         <Tree nodes={albums} selected={filter.collections && "a:" + filter.collections[0]} {expanded} onpick={pickAlbum} />
       {/if}
     </section>
+    {@render dates()}
     <section>
       {@render head("folders")}
       {#if !folded.has("folders")}
@@ -865,9 +886,7 @@
     </section>
     {#each FLAT as dim}
       {@const list = values(dim)}
-      {#if dim === "year"}
-        {@render dates(list)}
-      {:else if list.length}
+      {#if list.length}
         <section>
           {@render head(dim)}
           {#if !folded.has(dim)}
