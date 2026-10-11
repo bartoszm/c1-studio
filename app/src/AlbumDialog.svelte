@@ -22,7 +22,7 @@
   // Make an album, smart album or group; rename one; change a smart album's rule; or
   // delete one. Queued like any edit: it shows at once and is written on demand.
   let { mode, kind = "Album", collection, collections, keywords, picked = 0, onclose, ondone }: {
-    mode: "create" | "rename" | "rule" | "delete";
+    mode: "create" | "rename" | "rule" | "delete" | "move";
     /** What `create` makes. */
     kind?: "Album" | "Smart" | "Group";
     /** The collection it was opened on: the one to change, or for `create`, where to
@@ -39,14 +39,29 @@
   } = $props();
 
   const holds = (c: api.Collection | undefined) => !!c && (c.kind === "Group" || c.kind === "Project") && !c.system;
-  /** Where a new collection can go: the top level, or a group or project. */
-  let places = $derived(collections.filter(holds).sort((a, b) => a.path.localeCompare(b.path)));
+  /** Where a collection can go: the top level, or a group or project (when moving, not
+   *  into itself or what is under it). */
+  let inside = $derived.by(() => {
+    if (mode !== "move" || !collection) return new Set<string>();
+    const out = new Set([collection.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const c of collections) if (c.parent && out.has(c.parent) && !out.has(c.id)) out.add(c.id), (grew = true);
+    }
+    return out;
+  });
+  let places = $derived(
+    collections.filter((c) => holds(c) && !inside.has(c.id)).sort((a, b) => a.path.localeCompare(b.path)),
+  );
 
   // svelte-ignore state_referenced_locally
   let name = $state(mode === "rename" ? (collection?.name ?? "") : "");
   // svelte-ignore state_referenced_locally
   let parent = $state<string>(
-    holds(collection) ? collection!.id : collection?.parent && holds(collections.find((c) => c.id === collection!.parent)) ? collection.parent : "",
+    mode === "move" ? (collection?.parent ?? "")
+    : holds(collection) ? collection!.id
+    : collection?.parent && holds(collections.find((c) => c.id === collection!.parent)) ? collection.parent : "",
   );
   // svelte-ignore state_referenced_locally
   let matchAll = $state(collection?.rule?.match_all ?? true);
@@ -89,6 +104,14 @@
 
   let change = $derived.by((): api.CollectionChange | string => {
     if (mode === "delete") return collection ? { Delete: { id: collection.id } } : "Nothing to delete.";
+    if (mode === "move") {
+      if (!collection) return "Nothing to move.";
+      const to = parent || null;
+      if (to === (collection.parent ?? null)) return "It is there already.";
+      const same = collections.find((c) => (c.parent ?? null) === to && c.id !== collection.id && c.name.toLowerCase() === collection.name.toLowerCase());
+      if (same) return `“${same.path}” is there already.`;
+      return { Move: { id: collection.id, parent: to } };
+    }
     if (mode === "rule") {
       if (typeof rule === "string") return rule;
       return { SetRule: { id: collection!.id, rule } };
@@ -127,9 +150,10 @@
     mode === "create" ? `New ${NOUN[kind]}`
     : mode === "rename" ? `Rename ${NOUN[collection?.kind ?? "Other"]}`
     : mode === "rule" ? `Rule of “${collection?.name}”`
+    : mode === "move" ? `Move “${collection?.name}”`
     : `Delete ${NOUN[collection?.kind ?? "Other"]}`,
   );
-  const ACTION = { create: "Create", rename: "Rename", rule: "Save rule", delete: "Delete" };
+  const ACTION = { create: "Create", rename: "Rename", rule: "Save rule", delete: "Delete", move: "Move" };
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
@@ -163,16 +187,16 @@
       {/if}
     {:else}
       <form onsubmit={submit}>
-        {#if mode !== "rule"}
+        {#if mode !== "rule" && mode !== "move"}
           <label>
             Name
             <!-- svelte-ignore a11y_autofocus -->
             <input bind:value={name} autofocus spellcheck="false" />
           </label>
         {/if}
-        {#if mode === "create"}
+        {#if mode === "create" || mode === "move"}
           <label>
-            In
+            {mode === "move" ? "Into" : "In"}
             <select bind:value={parent}>
               <option value="">the top level</option>
               {#each places as p (p.id)}<option value={p.id}>{p.path}</option>{/each}
@@ -227,7 +251,7 @@
       {#if mode !== "delete"}<p class="muted">Queued until you write to Capture One; Ctrl+Z takes it back.</p>{/if}
     {/if}
 
-    {#if typeof change === "string" && (name || mode === "rule")}<p class="warn">{change}</p>{/if}
+    {#if typeof change === "string" && (name || mode === "rule" || mode === "move")}<p class="warn">{change}</p>{/if}
     {#if error}<p class="error">{error}</p>{/if}
 
     <div class="buttons">

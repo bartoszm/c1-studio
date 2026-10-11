@@ -291,6 +291,9 @@ mod collection_tests {
         CollectionChange::Rename { id: id("1"), name: "travel".into() }.apply_to(&mut all);
         assert_eq!(all[1].path, "travel / japan");
         assert_eq!(all[2].path, "travel / tokyo");
+        CollectionChange::Move { id: new.clone(), parent: None }.apply_to(&mut all);
+        assert_eq!(all[2].path, "tokyo");
+        CollectionChange::Move { id: new.clone(), parent: Some(id("1")) }.apply_to(&mut all);
         // A group goes with everything in it.
         CollectionChange::Delete { id: id("1") }.apply_to(&mut all);
         assert!(all.is_empty());
@@ -318,6 +321,12 @@ mod collection_tests {
         assert!(collection_problem(&all, &CollectionChange::SetRule { id: id("2"), rule }).is_some());
         assert!(collection_problem(&all, &CollectionChange::Rename { id: id("2"), name: " ".into() }).is_some());
         assert!(collection_problem(&all, &CollectionChange::Delete { id: id("9") }).is_some());
+        // Moving: not into itself or what is under it, not where it is.
+        let mv = |what: &str, to: Option<&str>| CollectionChange::Move { id: id(what), parent: to.map(id) };
+        assert!(collection_problem(&all, &mv("2", None)).is_none());
+        assert!(collection_problem(&all, &mv("2", Some("1"))).is_some(), "there already");
+        assert!(collection_problem(&all, &mv("1", Some("1"))).is_some(), "into itself");
+        assert!(collection_problem(&all, &mv("3", Some("2"))).is_some(), "an album holds no albums");
         // Only albums hold photos.
         assert_eq!(membership_problem(&all, &id("2")), None);
         assert!(membership_problem(&all, &id("3")).unwrap().contains("smart album"));
@@ -530,12 +539,21 @@ pub enum CollectionChange {
     Delete {
         id: CollectionId,
     },
+    /// Into a group or project (`None`: the top level), with everything under it.
+    Move {
+        id: CollectionId,
+        parent: Option<CollectionId>,
+    },
 }
 
 impl CollectionChange {
     pub fn id(&self) -> &CollectionId {
         match self {
-            Self::Create { id, .. } | Self::Rename { id, .. } | Self::SetRule { id, .. } | Self::Delete { id } => id,
+            Self::Create { id, .. }
+            | Self::Rename { id, .. }
+            | Self::SetRule { id, .. }
+            | Self::Delete { id }
+            | Self::Move { id, .. } => id,
         }
     }
 
@@ -560,6 +578,8 @@ impl CollectionChange {
             Self::Rename { id, name: new } => format!("Rename {} to “{new}”", name(id)),
             Self::SetRule { id, .. } => format!("Change the rule of {}", name(id)),
             Self::Delete { id } => format!("Delete {}", name(id)),
+            Self::Move { id, parent: Some(p) } => format!("Move {} into {}", name(id), name(p)),
+            Self::Move { id, parent: None } => format!("Move {} to the top level", name(id)),
         }
     }
 
@@ -590,6 +610,11 @@ impl CollectionChange {
                 let gone = descendants(collections, id);
                 collections.retain(|c| !gone.contains(&c.id));
             }
+            Self::Move { id, parent } => {
+                if let Some(c) = collections.iter_mut().find(|c| c.id == *id) {
+                    c.parent = parent.clone();
+                }
+            }
         }
         set_paths(collections);
     }
@@ -612,14 +637,7 @@ pub fn collection_problem(collections: &[Collection], change: &CollectionChange)
             if (*kind == CollectionKind::Smart) != rule.is_some() {
                 return Some("only a smart album has a rule, and it must have one".into());
             }
-            match parent.as_ref().map(find) {
-                Some(None) => Some("the group it goes in is gone".into()),
-                Some(Some(p)) if p.system => Some(format!("“{}” is Capture One's own", p.path)),
-                Some(Some(p)) if !matches!(p.kind, CollectionKind::Group | CollectionKind::Project) => {
-                    Some(format!("“{}” cannot hold albums", p.path))
-                }
-                _ => None,
-            }
+            place_problem(collections, parent.as_ref())
         }
         CollectionChange::Rename { id, name } => match find(id) {
             None => Some("the album is gone".into()),
@@ -645,6 +663,35 @@ pub fn collection_problem(collections: &[Collection], change: &CollectionChange)
                 .find(|c| c.kind == CollectionKind::Project)
                 .map(|c| format!("“{}” is a project; projects are deleted in Capture One", c.path))
         }
+        CollectionChange::Move { id, parent } => match find(id) {
+            None => Some("the album is gone".into()),
+            Some(c) if c.system => Some(format!("“{}” is Capture One's own", c.path)),
+            Some(c) if c.kind == CollectionKind::Project => {
+                Some(format!("“{}” is a project; projects are moved in Capture One", c.path))
+            }
+            Some(c) if c.parent == *parent => Some(format!("“{}” is there already", c.path)),
+            Some(_) if parent.as_ref().is_some_and(|p| descendants(collections, id).contains(p)) => {
+                Some("a group cannot go into itself".into())
+            }
+            Some(_)
+                if descendants(collections, id).iter().filter_map(find).any(|c| c.kind == CollectionKind::Project) =>
+            {
+                Some("it holds a project; projects are moved in Capture One".into())
+            }
+            Some(_) => place_problem(collections, parent.as_ref()),
+        },
+    }
+}
+
+/// Why a collection cannot go into `parent` (`None`: the top level), or `None` if it can.
+fn place_problem(collections: &[Collection], parent: Option<&CollectionId>) -> Option<String> {
+    match parent.map(|p| collections.iter().find(|c| c.id == *p)) {
+        Some(None) => Some("the group it goes in is gone".into()),
+        Some(Some(p)) if p.system => Some(format!("“{}” is Capture One's own", p.path)),
+        Some(Some(p)) if !matches!(p.kind, CollectionKind::Group | CollectionKind::Project) => {
+            Some(format!("“{}” cannot hold albums", p.path))
+        }
+        _ => None,
     }
 }
 

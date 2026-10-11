@@ -81,8 +81,8 @@ as if its own pick were not made, so the alternatives stay visible: with *2025* 
 the Date tree still shows every year.
 
 - **Albums:** albums, smart albums and their groups. Smart albums are counted by their
-  own rules. The + beside the title and a right-click on an album make and change them
-  (see [Albums](#albums)).
+  own rules. *+ Album*, *+ Smart album* and *+ Group* under the title, drag and drop, and
+  a right-click on an album make and change them (see [Albums](#albums)).
 - **Date:** years › months › weeks. Picking one opens it; picking it again goes up a
   level. A week is the days of one ISO week inside one month, so a week that spans two
   months shows under each with its own days. *Custom range…* takes a From and a To day
@@ -145,25 +145,34 @@ photos with edits not yet written, and the panel lists which fields.
 | Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
-| Albums | The panel's *Put in an album* field (completes from the albums) or *New album…*; × takes the photos out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. Or right-click an album in the sidebar: *Put the N selected photos here*. Only albums take photos; see [Albums](#albums). |
+| Albums | Drag the photos onto an album in the sidebar (several picked go together). The panel lists the albums a photo is in; × takes it out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. While the grid shows an album, Delete takes the picked photos out of it. Only albums take photos; see [Albums](#albums). |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
 
 **Title is not a caption.** Capture One follows the strict IPTC meaning: Title is the
 *Object Name*, a short formal identifier of the image (a file or job code), and sits
 under IPTC – Image. The caption is the Description.
 
-**Copy and paste.** *Copy…* in the panel (Ctrl+Shift+C) lists the focused photo's
-rating, colour, keywords, location, GPS and IPTC fields with their values. Tick what
-to copy; for keywords, choose *add to theirs* or *replace theirs*. *Paste* (Ctrl+Shift+V)
-puts them on the picked photos as one edit, replacing their values; a ticked field that
-is empty on the source clears it on the targets. *Fill* (Ctrl+Alt+V) only fills the
-fields the targets leave empty and adds the keywords they lack; nothing of theirs is
-replaced or cleared. The clipboard keeps the photo as it was when copied, and survives
+**Copy and paste.** As on Capture One's thumbnails, each tile shows **↑** and **↓**
+when the pointer is over it:
+
+- **↑** copies from that photo at once (the fields chosen last time, or all of them).
+- **↓** opens *Paste from …*: tick what to put on the photo (or on all the picked
+  photos, if it is one of them) and choose **Overwrite** (their values are replaced) or
+  **Merge** (only what they leave empty is filled, and keywords are added; nothing of
+  theirs is replaced or cleared). The choice is remembered for the next paste.
+
+The panel has the same: *Copy…* (Ctrl+C, or Ctrl+Shift+C) lists the focused photo's
+rating, colour, keywords, location, GPS and IPTC fields with their values to tick; for
+keywords, choose *add to theirs* or *replace theirs*. *Paste* (Ctrl+V) puts the chosen
+fields on the picked photos, overwriting, *Merge* (Ctrl+Alt+V) merges, and *Paste…*
+(Ctrl+Shift+V) asks first. With Overwrite, a ticked field that is empty on the source
+clears it on the targets. The footer says what a paste did, or that the photos already
+held those values. The clipboard keeps the photo as it was when copied, and survives
 restarts.
 
 **Sync.** With several photos picked, *Sync to N…* (Ctrl+Shift+S) takes fields from the
 focused photo straight onto the rest of the selection: the same grouped list as *Copy…*
-(a group's box ticks all of it, e.g. the whole Location), plus *Overwrite* or *Fill*
+(a group's box ticks all of it, e.g. the whole Location), plus *Overwrite* or *Merge*
 as above. The choice also lands on the clipboard, for pasting elsewhere.
 
 **Undo.** Ctrl+Z undoes the last edit, however many photos it touched; Ctrl+Y or
@@ -202,8 +211,16 @@ Capture One has two kinds of album, and so does the app:
 **Groups** hold albums, smart albums and other groups; **projects** (made in Capture One)
 hold them too.
 
-The **+** beside the Albums title makes a new album, smart album or group at the top
-level or in a group. Right-click an album, smart album or group for:
+*+ Album*, *+ Smart album* and *+ Group* under the Albums title make one at the top
+level (or choose a group in the dialog). In the tree:
+
+- **Drag photos** from the grid onto an album to put them in it (all the picked photos,
+  if the one dragged is picked).
+- **Drag an album or group** onto a group (or project) to move it there, with what is
+  inside; onto the Albums title for the top level.
+- While the grid shows an album, **Delete** takes the picked photos out of it.
+
+Right-click an album, smart album or group for:
 
 - **Put the N selected photos here** (albums).
 - **Edit rule…** (smart albums): match *all* or *any* of the conditions; each is
@@ -213,12 +230,14 @@ level or in a group. Right-click an album, smart album or group for:
   is shown greyed out and edited in Capture One.
 - **New album / smart album / group…**, in the group (or beside the album) clicked.
   A new album can take the selected photos at once.
-- **Rename…** and **Delete…**. Deleting a group takes everything in it. The photos stay
-  in the catalog; only their place in the album goes.
+- **Rename…**, **Move to…** (a group, project or the top level), **Move to the top
+  level**, and **Delete…**. Deleting a group takes everything in it. The photos stay in
+  the catalog; only their place in the album goes.
 
 Capture One's own *Recent Captures* and *Recent Imports* are left alone: they cannot be
 renamed or deleted here, nor given new albums (the albums Capture One made in Recent
-Imports can). Projects are deleted in Capture One.
+Imports can). Projects are moved and deleted in Capture One, and so is a group with a
+project in it.
 
 Every album change shows at once (in blue until written), is queued like any edit,
 written before the photo edits, and undone with Ctrl+Z.
@@ -281,7 +300,9 @@ The queue is saved with the library and survives restarts.
 | `0`–`5` | Rating (0 clears) |
 | `-` `+` `*` | Red, green, yellow tag |
 | Ctrl+K | Add a keyword (details panel shown) |
-| Ctrl+Shift+C, Ctrl+Shift+V, Ctrl+Alt+V | Copy…, paste (overwrite), fill empty fields |
+| Ctrl+C (or Ctrl+Shift+C) | Copy… from the focused photo |
+| Ctrl+V, Ctrl+Alt+V, Ctrl+Shift+V | Paste (overwrite), merge, Paste… (choose what and how) |
+| Delete | Take the picked photos out of the album the grid shows |
 | Ctrl+Shift+S | Sync the focused photo's fields to the other picked photos |
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
@@ -297,4 +318,3 @@ Keys do not act while you type in a field.
 
 ## Not yet
 
-- Moving an album into another group, and dragging photos onto an album.

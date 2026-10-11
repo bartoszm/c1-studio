@@ -840,6 +840,42 @@ in `<data dir>/settings.json`) writes the queue by itself.
   written took them away, the replaced catalog showed at the top, and restoring it
   brought them back.
 
+### Albums in the left panel, drag and drop, moving
+
+- Asked for (2026-10-11): album management in the left panel, photos added by drag and
+  drop, taken out from the photo's album list or the album itself.
+- **Left panel:** *+ Album*, *+ Smart album*, *+ Group* under the title (the + menu went),
+  and a hint line. The details panel keeps the photo's albums with × (and 3/5 with +
+  for several); its *Put in an album* field and *New album…* went.
+- **Drag and drop** (`dragDropEnabled: false` in the Tauri window, which otherwise takes
+  drops for files on Windows): grid tiles onto an album put them in (the picked photos
+  if the tile is picked); an album or group onto a group or project moves it, onto
+  the Albums title to the top level. Drop targets light up.
+- **Delete** while the grid shows an album takes the picked photos out of it.
+- **Moving:** `CollectionChange::Move` (model: not into itself or what is under it, not
+  where it is, not a project or a group holding one, not Capture One's own). Capture One:
+  `ZPARENT`, `ZCOLLECTIONINDEX` after the new siblings, and `ZPROJECT` set again for it
+  and everything under it (into a project and out tested). Menu: *Move to…* (a dialog
+  with the places it can go) and *Move to the top level*.
+- **Fixed:** the album menu's *Put the N selected photos here* (and the new *Move to the
+  top level*) did nothing: the menu was closed before the album was read, and Svelte 5's
+  `{@const}` then read an empty menu.
+
+### Copy and paste like Capture One
+
+- Reported: "copying properties between photos does not work". The paste itself worked
+  (checked in the sandbox with real keys and clicks); what failed was silence. A paste
+  onto photos already holding the values changed nothing and said nothing, and Ctrl+C /
+  Ctrl+V did nothing (only Ctrl+Shift+C / V did).
+- **Tiles** show ↑ (copy at once) and ↓ (Paste from …) on hover, as Capture One's do.
+- **Paste…** (↓, the panel, Ctrl+Shift+V) chooses the fields and **Overwrite** or
+  **Merge** (was "Fill": empty fields filled, keywords added); the choice is
+  remembered for Ctrl+V. Ctrl+C copies, Ctrl+V pastes, Ctrl+Alt+V merges.
+- The footer says what a paste did ("Pasted onto 3 photos") or that nothing changed.
+- **Tested** in the sandbox on the fuji copy: ↑ and ↓, the paste dialog with Merge,
+  two photos dragged onto an album, an album dragged into a group and moved back from
+  the menu, Delete in an album; all written, `integrity_check` ok.
+
 ### Next
 
-1. Albums: move one into another group; drag photos onto an album.
+1. Stage 3: local analysis (orientation, colours, exposure, sharpness, duplicates).

@@ -101,6 +101,35 @@ pub(crate) fn write(con: &Connection, change: &CollectionChange) -> Result<()> {
                 .map_err(db_err)?;
             touch(con, pk)?;
         }
+        CollectionChange::Move { id, parent } => {
+            let pk = row(con, id)?;
+            let parent = match parent {
+                Some(p) => row(con, p)?,
+                None => ROOT,
+            };
+            con.execute(
+                "UPDATE ZCOLLECTION SET ZPARENT = ?1, ZCOLLECTIONINDEX = ?2 WHERE Z_PK = ?3",
+                params![parent, next_index(con, parent)?, pk],
+            )
+            .map_err(db_err)?;
+            // Its project, and that of everything under it, follow the new place.
+            let mut todo = vec![pk];
+            while let Some(pk) = todo.pop() {
+                let parent: i64 = con
+                    .query_row("SELECT ZPARENT FROM ZCOLLECTION WHERE Z_PK = ?1", [pk], |r| r.get(0))
+                    .map_err(db_err)?;
+                con.execute(
+                    "UPDATE ZCOLLECTION SET ZPROJECT = ?1 WHERE Z_PK = ?2",
+                    params![project_for(con, parent)?, pk],
+                )
+                .map_err(db_err)?;
+                let mut stmt = con.prepare_cached("SELECT Z_PK FROM ZCOLLECTION WHERE ZPARENT = ?1").map_err(db_err)?;
+                for child in stmt.query_map([pk], |r| r.get::<_, i64>(0)).map_err(db_err)? {
+                    todo.push(child.map_err(db_err)?);
+                }
+            }
+            touch(con, pk)?;
+        }
         CollectionChange::Delete { id } => {
             let pk = row(con, id)?;
             // Children first, as the Python `album delete --force-children` does.
@@ -127,19 +156,8 @@ pub(crate) fn write(con: &Connection, change: &CollectionChange) -> Result<()> {
 /// Inserts a collection row as the Python `create` does; Z_PK is a rowid alias, so
 /// SQLite assigns it.
 fn create(con: &Connection, uuid: &str, name: &str, ent: i64, parent: i64, smart: Option<&str>) -> Result<i64> {
-    let (parent_project, parent_ent): (Option<i64>, i64) = con
-        .query_row("SELECT ZPROJECT, Z_ENT FROM ZCOLLECTION WHERE Z_PK = ?1", [parent], |r| Ok((r.get(0)?, r.get(1)?)))
-        .optional()
-        .map_err(db_err)?
-        .ok_or_else(|| SourceError::Other(format!("parent collection {parent} does not exist")))?;
-    let project = if parent_ent == ENT_PROJECT { parent } else { parent_project.filter(|p| *p != -1).unwrap_or(ROOT) };
-    let index: i64 = con
-        .query_row(
-            "SELECT COALESCE(MAX(ZCOLLECTIONINDEX), -1) + 1 FROM ZCOLLECTION WHERE ZPARENT = ?1",
-            [parent],
-            |r| r.get(0),
-        )
-        .map_err(db_err)?;
+    let project = project_for(con, parent)?;
+    let index = next_index(con, parent)?;
     let now = unix_now();
     con.execute(
         "INSERT INTO ZCOLLECTION (Z_ENT, ZUUID, ZNAME, ZPARENT, ZPROJECT, ZDOCUMENT,
@@ -151,6 +169,25 @@ fn create(con: &Connection, uuid: &str, name: &str, ent: i64, parent: i64, smart
     )
     .map_err(db_err)?;
     Ok(con.last_insert_rowid())
+}
+
+/// The project a collection in `parent` belongs to: the parent if it is one, else the
+/// parent's own (the root, a project, for the top level).
+fn project_for(con: &Connection, parent: i64) -> Result<i64> {
+    let (parent_project, parent_ent): (Option<i64>, i64) = con
+        .query_row("SELECT ZPROJECT, Z_ENT FROM ZCOLLECTION WHERE Z_PK = ?1", [parent], |r| Ok((r.get(0)?, r.get(1)?)))
+        .optional()
+        .map_err(db_err)?
+        .ok_or_else(|| SourceError::Other(format!("parent collection {parent} does not exist")))?;
+    Ok(if parent_ent == ENT_PROJECT { parent } else { parent_project.filter(|p| *p != -1).unwrap_or(ROOT) })
+}
+
+/// After the last of `parent`'s collections.
+fn next_index(con: &Connection, parent: i64) -> Result<i64> {
+    con.query_row("SELECT COALESCE(MAX(ZCOLLECTIONINDEX), -1) + 1 FROM ZCOLLECTION WHERE ZPARENT = ?1", [parent], |r| {
+        r.get(0)
+    })
+    .map_err(db_err)
 }
 
 fn touch(con: &Connection, pk: i64) -> Result<()> {
@@ -354,6 +391,55 @@ mod tests {
         let selected: Option<i64> =
             con.query_row("SELECT ZSELECTEDCOLLECTION FROM ZDOCUMENTCONTENT", [], |r| r.get(0)).unwrap();
         assert_eq!(selected, None, "the fixture's root names no All Images");
+    }
+
+    #[test]
+    fn moved_into_a_project_and_out_with_what_is_inside() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        con.execute_batch(
+            "INSERT INTO ZCOLLECTION (Z_ENT, Z_PK, ZNAME, ZPARENT, ZPROJECT, ZDOCUMENT, ZCOLLECTIONINDEX)
+               VALUES (7, 30, 'proj', 1, 1, 1, 0);
+             INSERT INTO ZCOLLECTION (Z_ENT, Z_PK, ZNAME, ZPARENT, ZPROJECT, ZDOCUMENT, ZCOLLECTIONINDEX)
+               VALUES (2, 31, 'already in it', 30, 30, 1, 0);",
+        )
+        .unwrap();
+        let (group, album) = (CollectionId::new_local("g-1"), CollectionId::new_local("a-1"));
+        let made = [
+            create(&group, "trips", CollectionKind::Group, None),
+            create(&album, "japan", CollectionKind::Album, Some(&group)),
+        ];
+        let mut p = plan(&con, &[], &made, &[], pk).unwrap();
+        p.collections = made.to_vec();
+        write_plan(&mut con, &p, pk).unwrap();
+        let (g, a) = (resolve(&con, &group).unwrap().unwrap(), resolve(&con, &album).unwrap().unwrap());
+        let place = |con: &Connection, pk: i64| -> (i64, i64, i64) {
+            con.query_row("SELECT ZPARENT, ZPROJECT, ZCOLLECTIONINDEX FROM ZCOLLECTION WHERE Z_PK = ?1", [pk], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap()
+        };
+        assert_eq!(place(&con, a), (g, ROOT, 0));
+
+        let moves = |to: Option<&str>| {
+            [CollectionChange::Move { id: CollectionId(g.to_string()), parent: to.map(|t| CollectionId(t.into())) }]
+        };
+        for (to, project) in [(Some("30"), 30), (None, ROOT)] {
+            let changes = moves(to);
+            assert_eq!(check(&con, &[], &changes[0]).unwrap(), None);
+            let mut p = plan(&con, &[], &changes, &[], pk).unwrap();
+            p.collections = changes.to_vec();
+            write_plan(&mut con, &p, pk).unwrap();
+            let parent = to.map_or(ROOT, |t| t.parse().unwrap());
+            // After what was there, and the album inside follows to the project.
+            assert_eq!(place(&con, g).0, parent);
+            assert_eq!(place(&con, g).1, project);
+            assert_eq!(place(&con, a), (g, project, 0));
+        }
+        assert_eq!(place(&con, g).2, 1, "after the project at the top level");
+        // Into an album, or into itself, is refused.
+        let bad = CollectionChange::Move { id: CollectionId(g.to_string()), parent: Some(CollectionId(a.to_string())) };
+        assert!(check(&con, &[], &bad).unwrap().is_some());
     }
 
     #[test]
