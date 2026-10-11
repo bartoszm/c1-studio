@@ -377,13 +377,63 @@ and colour tags as writable.
     identical: 33 changes, 32 metadata rows differ from the original, and nothing else
     changed.
 
+### Editing in the app, the queue, and writing to Capture One
+
+- **Editing:**
+  - Click picks a photo; Ctrl+click adds or removes one; Shift+click adds a range;
+    Ctrl+A picks the whole result; Esc goes back to one.
+  - Capture One's keys: 0–5 set the stars (0 clears); `-`, `+` and `*` tag red, green
+    and yellow.
+  - The details panel's stars and colour dots edit too, and say how many photos an
+    edit applies to.
+  - Ctrl+Z undoes an edit and Ctrl+Y (or Ctrl+Shift+Z) redoes it, one key press or
+    click at a time, however many photos it touched.
+- **The library shows an edit at once** (filters, counts, panel), whether Capture One
+  is open or not. A blue dot marks photos with edits not yet written, and the footer
+  says how many are waiting.
+- **The queue** (`c1index/src/edits.rs`) lives in `edits.redb`, beside the store and not
+  in it. The store is a copy of the sources and is dropped on a format change; this is
+  the user's own work.
+  - One entry per photo and field. `base` is what Capture One held when the field was
+    first edited.
+  - Editing a field back to that value removes the entry.
+  - Values are JSON, so an old queue still reads after `Op` grows.
+- **Syncs keep queued edits on top** of what Capture One sends:
+  - Capture One already holding the wanted value settles the entry.
+  - Capture One changing the field to something else marks a conflict (`theirs`), and
+    the user's value keeps showing until they choose.
+- **Event log:** every edit made here, and every rating, colour, keyword and album
+  change a sync brings in, goes to an event log (for the history views of stage 4).
+- **"Write to Capture One…"** pulls Capture One's state, then shows:
+  - what would be written;
+  - conflicts, each with *Keep mine* or *Take Capture One's*, one by one or all;
+  - edits that can no longer be written;
+  - edits already matching.
+
+  It writes only while Capture One is closed and every conflict is settled. On
+  success the queue empties and the backup's path is shown. *Undo all…* drops the
+  queue.
+- **Tests:**
+  - Seven library tests on a memory source:
+    - an edit shows and is queued;
+    - queued edits stay on top of a sync;
+    - a conflict is marked, then kept or taken;
+    - the same change made in the source settles the queue;
+    - the queue is written to the source and settled;
+    - discarding shows the source's value again;
+    - the queue outlives a dropped store.
+  - In the app, against the live library: rate, Ctrl+click, tag, undo, redo, and the
+    dialog's plan. Nothing was written, and the queue was left as found.
+  - End to end on a copy of the catalog, in a second app instance:
+    - two edits, then a rating changed in the copy behind the app's back;
+    - the dialog shows the conflict, *Keep mine*, write;
+    - the copy holds both values on the adjustment and combined rows only;
+    - the backup holds the state before the write;
+    - both pass `PRAGMA integrity_check`.
+
 ### Next
 
-1. The change queue in the app:
-   - multi-select;
-   - Capture One's keys (0–5 for stars, colour keys);
-   - edits kept in `redb` and shown at once, while Capture One is open too.
-2. Sync to C1: a preview of the differences, conflicts to resolve, then write. Changes
-   made in Capture One flow back through the normal sync.
-3. Keywords (nested-set tree) and albums, each with a differential test.
-4. A list of backups, with restore.
+1. Keywords: add and remove in the app (with completion from the tree) and in the
+   queue; the nested-set tree writes ported with a differential test.
+2. Albums: add and remove photos, create albums, with a differential test.
+3. A list of backups, with restore.

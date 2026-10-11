@@ -74,6 +74,11 @@ impl Store {
         Ok(())
     }
 
+    pub fn row_of(&self, key: &str) -> anyhow::Result<Option<u64>> {
+        let tx = self.db.begin_read()?;
+        Ok(tx.open_table(KEYS)?.get(key)?.map(|v| v.value()))
+    }
+
     /// Row → photo key, for every row.
     pub fn keys(&self) -> anyhow::Result<Vec<(u64, String)>> {
         let tx = self.db.begin_read()?;
@@ -107,6 +112,13 @@ impl Store {
 impl Batch<'_> {
     pub fn row_of(&self, key: &str) -> anyhow::Result<Option<u64>> {
         Ok(self.tx.open_table(KEYS)?.get(key)?.map(|v| v.value()))
+    }
+
+    /// The photo as this batch would leave it.
+    pub fn photo(&self, row: u64) -> anyhow::Result<Option<Photo>> {
+        let table = self.tx.open_table(PHOTOS)?;
+        let Some(bytes) = table.get(row)? else { return Ok(None) };
+        Ok(Some(postcard::from_bytes(bytes.value())?))
     }
 
     pub fn fingerprint(&self, row: u64) -> anyhow::Result<Option<u64>> {

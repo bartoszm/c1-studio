@@ -2,11 +2,21 @@
   import * as api from "./lib/api";
   import { COLORS, bytes, camera, date, exposure, folderOf } from "./lib/format";
 
+  const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
+
   // Everything the library holds about one photo. Keywords, albums, the folder and the
-  // camera are links: following one filters the grid by it.
-  let { row, collections, onkeyword, onalbum, onfolder, oncamera }: {
+  // camera are links: following one filters the grid by it. Stars and colours edit.
+  let { row, version, picked, queued, collections, onrate, oncolor, onkeyword, onalbum, onfolder, oncamera }: {
     row: number | undefined;
+    /** Bumped after edits, to read the photo again. */
+    version: number;
+    /** How many photos an edit here applies to. */
+    picked: number;
+    /** Fields of this photo edited here and not yet written to Capture One. */
+    queued: string[];
     collections: Map<string, api.Collection>;
+    onrate: (stars: number | null) => void;
+    oncolor: (color: api.Color | null) => void;
     onkeyword: (path: string) => void;
     onalbum: (id: string) => void;
     onfolder: (path: string) => void;
@@ -18,6 +28,7 @@
 
   $effect(() => {
     const current = row;
+    void version;
     failed = null;
     if (current === undefined) {
       photo = null;
@@ -46,11 +57,35 @@
     {@const p = photo}
     <h2 title={p.file.name}>{p.file.name}</h2>
     <div class="marks">
-      {#if p.rating}<span class="stars">{"★".repeat(p.rating)}</span>{:else}<span class="muted">unrated</span>{/if}
-      {#if p.color}<i class="dot" style:background={COLORS[p.color.toLowerCase()]} title={p.color}></i>{/if}
+      <span class="rate" role="group" aria-label="Rating">
+        {#each [1, 2, 3, 4, 5] as n}
+          <button
+            class="star"
+            class:on={(p.rating ?? 0) >= n}
+            title={p.rating === n ? "Clear the rating (0)" : `${n} star${n > 1 ? "s" : ""} (${n})`}
+            onclick={() => onrate(p.rating === n ? null : n)}>★</button
+          >
+        {/each}
+      </span>
       {#if p.trashed}<span class="tag">in trash</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
     </div>
+    <div class="colors" role="group" aria-label="Colour tag">
+      {#each COLOR_TAGS as c}
+        <button
+          class="dot"
+          class:on={p.color === c}
+          style:background={COLORS[c.toLowerCase()]}
+          title={p.color === c ? "Clear the colour" : c}
+          aria-label={c}
+          onclick={() => oncolor(p.color === c ? null : c)}
+        ></button>
+      {/each}
+    </div>
+    {#if picked > 1}<p class="hint">Edits apply to the {picked.toLocaleString()} selected photos.</p>{/if}
+    {#if queued.length}
+      <p class="queued-note">Edited here ({queued.map((f) => (f === "color" ? "colour" : f)).join(", ")}), not yet written to Capture One.</p>
+    {/if}
 
     <dl>
       {#if p.captured_at !== null}<dt>Captured</dt><dd>{date(p.captured_at)}</dd>{/if}

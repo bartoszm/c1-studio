@@ -2,12 +2,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
+use c1model::change::{Check, diff};
 use c1model::{
-    Collection, Condition, Cursor, MODEL_VERSION, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
+    Change, Collection, Condition, Cursor, MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError,
+    SourceEvent,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, TopDocs};
@@ -15,6 +17,7 @@ use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
 
+use crate::edits::{self, Edits, Event, Origin, Pending, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
@@ -82,6 +85,17 @@ pub struct QueryResult {
     pub micros: u128,
 }
 
+/// A queued edit, with the row of its photo if the library still has it.
+#[derive(Clone, Debug, Serialize)]
+pub struct PendingEdit {
+    pub key: String,
+    pub row: Option<u64>,
+    /// The photo's file name, for showing the edit.
+    pub name: Option<String>,
+    #[serde(flatten)]
+    pub pending: Pending,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SyncReport {
     pub full: bool,
@@ -103,6 +117,10 @@ pub struct Library {
     distinct: RwLock<Distinct>,
     /// Smart album id → its rule, for expanding a filter that picks one.
     smart: RwLock<HashMap<String, SmartRule>>,
+    /// Edits made here and not yet written to their source, and the change log.
+    edits: Edits,
+    /// One writer at a time: syncs and edits both rewrite documents.
+    writing: Mutex<()>,
 }
 
 fn source_err(e: anyhow::Error) -> SourceError {
@@ -145,6 +163,7 @@ impl Library {
         index.set_default_multithread_executor()?;
         schema::register_tokenizers(&index);
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
+        let edits = Edits::open(&dir.join("edits.redb"))?;
 
         let library = Self {
             dir,
@@ -155,6 +174,8 @@ impl Library {
             keys: RwLock::new(Vec::new()),
             distinct: RwLock::new(Distinct::new()),
             smart: RwLock::new(HashMap::new()),
+            edits,
+            writing: Mutex::new(()),
         };
         if rebuild {
             library.reindex()?;
@@ -173,6 +194,7 @@ impl Library {
 
     /// Rebuilds the search index from the store (after a schema change).
     pub fn reindex(&self) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
         let mut writer = self.writer()?;
         writer.delete_all_documents()?;
         self.store.for_each_photo(|row, photo| {
@@ -209,7 +231,15 @@ impl Library {
 
     /// Pulls a source's current state into the library.
     pub fn sync(&self, source: &dyn PhotoSource) -> anyhow::Result<SyncReport> {
+        let _writing = self.writing.lock().unwrap();
         let started = Instant::now();
+        // Queued edits stay on top of whatever the source sends.
+        let mut queued: HashMap<String, Vec<(String, Pending)>> = HashMap::new();
+        for (key, pending) in self.edits.pending()? {
+            queued.entry(edits::photo_key(&key).to_owned()).or_default().push((key, pending));
+        }
+        let mut edits = self.edits.batch()?;
+        let now = now_ms();
         let source_id = source.info().id.0;
         let cursor_key = format!("cursor:{source_id}");
         let since = self.store.meta(&cursor_key)?.map(Cursor);
@@ -226,10 +256,11 @@ impl Library {
             match event {
                 SourceEvent::BeginFull => report.full = true,
                 SourceEvent::BeginIncremental => {}
-                SourceEvent::Upsert(photo) => {
+                SourceEvent::Upsert(mut photo) => {
                     let key = photo.id.key();
+                    // The source's own state; queued edits laid over it below do not count.
                     let fingerprint = photo.fingerprint();
-                    let row = match batch.row_of(&key).map_err(source_err)? {
+                    let (row, old) = match batch.row_of(&key).map_err(source_err)? {
                         Some(row) if batch.fingerprint(row).map_err(source_err)? == Some(fingerprint) => {
                             report.unchanged += 1;
                             seen.insert(row);
@@ -238,13 +269,40 @@ impl Library {
                         Some(row) => {
                             writer.delete_term(Term::from_field_u64(row_field, row));
                             report.updated += 1;
-                            row
+                            (row, batch.photo(row).map_err(source_err)?)
                         }
                         None => {
                             report.added += 1;
-                            batch.next_row().map_err(source_err)?
+                            (batch.next_row().map_err(source_err)?, None)
                         }
                     };
+                    for (pending_key, mut pending) in queued.remove(&key).unwrap_or_default() {
+                        match pending.change.op.check(&photo) {
+                            // The source holds what the user wants: nothing left to write.
+                            Check::NoOp => edits.remove(&pending_key).map_err(source_err)?,
+                            Check::Apply => {
+                                if pending.theirs.take().is_some() {
+                                    edits.put(&pending_key, &pending).map_err(source_err)?;
+                                }
+                                pending.change.op.apply_to(&mut photo);
+                            }
+                            // Changed on both sides: keep the user's value until they choose.
+                            Check::Conflict(_) => {
+                                let theirs = pending.change.op.valued_from(&photo);
+                                if pending.theirs.as_ref() != Some(&theirs) {
+                                    pending.theirs = Some(theirs);
+                                    edits.put(&pending_key, &pending).map_err(source_err)?;
+                                }
+                                pending.change.op.apply_to(&mut photo);
+                            }
+                        }
+                    }
+                    if let Some(old) = old {
+                        for op in diff(&old, &photo) {
+                            let change = Change { photo: photo.id.clone(), op };
+                            edits.log(&Event { at: now, origin: Origin::Source, change }).map_err(source_err)?;
+                        }
+                    }
                     seen.insert(row);
                     batch.put_photo(row, &photo, fingerprint).map_err(source_err)?;
                     writer
@@ -287,9 +345,158 @@ impl Library {
         // fingerprints, so the next sync redoes the work instead of losing it.
         writer.commit()?;
         batch.commit()?;
+        edits.commit()?;
         self.refresh()?;
         report.millis = started.elapsed().as_millis();
         Ok(report)
+    }
+
+    /// Applies set-field edits (rating, colour, ...) to photos by row and queues them for
+    /// their source. The library shows them at once. Returns, per row, the op that puts
+    /// back what the photo showed before, for undo.
+    pub fn edit(&self, changes: &[(u64, Op)]) -> anyhow::Result<Vec<(u64, Op)>> {
+        let _writing = self.writing.lock().unwrap();
+        let mut writer = self.writer()?;
+        let mut batch = self.store.batch()?;
+        let mut edits = self.edits.batch()?;
+        let now = now_ms();
+        let mut undo = Vec::new();
+        for (row, op) in changes {
+            let Some(field) = op.field() else { bail!("only fields are edited so far, not {op:?}") };
+            let Some(mut photo) = batch.photo(*row)? else { continue };
+            // From what the photo shows now to what was asked.
+            let shown = op.based_on(&photo);
+            if shown.is_identity() {
+                continue;
+            }
+            let key = pending_key(&photo.id, field);
+            let previous = edits.get(&key)?;
+            // The base stays what the source held when the field was first edited.
+            let wanted = match &previous {
+                Some(p) => p.change.op.retarget(op),
+                None => shown.clone(),
+            };
+            match previous {
+                Some(p) if wanted.is_identity() && p.theirs.is_none() => edits.remove(&key)?,
+                previous => {
+                    let theirs = previous.and_then(|p| p.theirs);
+                    let change = Change { photo: photo.id.clone(), op: wanted };
+                    edits.put(&key, &Pending { change, at: now, theirs })?;
+                }
+            }
+            undo.push((*row, shown.reverted()));
+            edits.log(&Event {
+                at: now,
+                origin: Origin::App,
+                change: Change { photo: photo.id.clone(), op: shown },
+            })?;
+            op.apply_to(&mut photo);
+            let fingerprint = batch.fingerprint(*row)?.unwrap_or_default();
+            batch.put_photo(*row, &photo, fingerprint)?;
+            writer.delete_term(Term::from_field_u64(self.fields.row, *row));
+            writer.add_document(schema::document(&self.fields, *row, &photo))?;
+        }
+        writer.commit()?;
+        batch.commit()?;
+        edits.commit()?;
+        self.reader.reload()?;
+        Ok(undo)
+    }
+
+    /// Every queued edit, a photo's fields together.
+    pub fn pending(&self) -> anyhow::Result<Vec<PendingEdit>> {
+        self.edits
+            .pending()?
+            .into_iter()
+            .map(|(key, pending)| {
+                let row = self.store.row_of(edits::photo_key(&key))?;
+                let name = match row {
+                    Some(row) => self.store.photo(row)?.map(|p| p.file.name),
+                    None => None,
+                };
+                Ok(PendingEdit { key, row, name, pending })
+            })
+            .collect()
+    }
+
+    /// The newest `limit` entries of the change log, newest first.
+    pub fn events(&self, limit: usize) -> anyhow::Result<Vec<Event>> {
+        self.edits.events(limit)
+    }
+
+    /// Drops queued edits and shows the source's value again: the one it held when the
+    /// field was first edited, or its newer one if it changed meanwhile.
+    pub fn discard(&self, keys: &[String]) -> anyhow::Result<()> {
+        self.drop_queued(keys, |pending| pending.theirs.clone().unwrap_or_else(|| pending.change.op.reverted()))
+    }
+
+    /// For edits the source changed too: keep the user's value (it will be written over
+    /// the source's) or take the source's (the edit is dropped).
+    pub fn resolve(&self, keys: &[String], keep_mine: bool) -> anyhow::Result<()> {
+        if !keep_mine {
+            return self.discard(keys);
+        }
+        let _writing = self.writing.lock().unwrap();
+        let mut edits = self.edits.batch()?;
+        for key in keys {
+            let Some(mut pending) = edits.get(key)? else { continue };
+            if let Some(theirs) = pending.theirs.take() {
+                // From the source's value now to the user's.
+                pending.change.op = theirs.reverted().retarget(&pending.change.op);
+                edits.put(key, &pending)?;
+            }
+        }
+        edits.commit()
+    }
+
+    /// After a source took `written`: the queued edits it covers are done.
+    pub fn settle(&self, written: &[Change]) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        let mut edits = self.edits.batch()?;
+        for change in written {
+            if let Some(field) = change.op.field() {
+                let key = pending_key(&change.photo, field);
+                if edits.get(&key)?.is_some_and(|p| p.change == *change) {
+                    edits.remove(&key)?;
+                }
+            }
+        }
+        edits.commit()
+    }
+
+    /// Removes queued edits and applies to each shown photo the op `restore` gives.
+    fn drop_queued(&self, keys: &[String], restore: impl Fn(&Pending) -> Op) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        let mut writer = self.writer()?;
+        let mut batch = self.store.batch()?;
+        let mut edits = self.edits.batch()?;
+        let now = now_ms();
+        for key in keys {
+            let Some(pending) = edits.get(key)? else { continue };
+            edits.remove(key)?;
+            let Some(row) = batch.row_of(edits::photo_key(key))? else { continue };
+            let Some(mut photo) = batch.photo(row)? else { continue };
+            let op = restore(&pending);
+            let shown = op.based_on(&photo);
+            if shown.is_identity() {
+                continue;
+            }
+            edits.log(&Event {
+                at: now,
+                origin: Origin::App,
+                change: Change { photo: photo.id.clone(), op: shown },
+            })?;
+            op.apply_to(&mut photo);
+            let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
+            batch.put_photo(row, &photo, fingerprint)?;
+            writer.delete_term(Term::from_field_u64(self.fields.row, row));
+            writer.add_document(schema::document(&self.fields, row, &photo))?;
+        }
+        writer.commit()?;
+        batch.commit()?;
+        edits.commit()?;
+        self.reader.reload()?;
+        Ok(())
     }
 
     pub fn searcher(&self) -> Searcher {

@@ -3,9 +3,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use c1index::{Filter, Library, QueryOptions, QueryResult, SyncReport};
-use c1model::{Collection, ImageTier, Photo, PhotoSource};
-use serde::Serialize;
+use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
+use c1model::{Change, Collection, ColorLabel, ImageTier, Op, Photo, PhotoSource, WriteStatus};
+use serde::{Deserialize, Serialize};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 struct Session {
     source: CaptureOne,
     library: Library,
-    /// One sync at a time: the search index has a single writer.
+    /// One sync or write to Capture One at a time.
     syncing: Mutex<()>,
 }
 
@@ -94,6 +94,133 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     Ok(report)
 }
 
+/// An edit from the UI, applied to every photo it names.
+#[derive(Deserialize)]
+enum Edit {
+    Rating(Option<u8>),
+    Color(Option<ColorLabel>),
+}
+
+/// Edits photos in the library and queues the edits for Capture One. Returns the ops
+/// that undo it.
+#[tauri::command]
+async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u64, Op)>, String> {
+    // The library takes each base from the photo; these are placeholders.
+    let op = match edit {
+        Edit::Rating(value) => Op::SetRating { base: None, value: value.filter(|&v| v > 0) },
+        Edit::Color(value) => Op::SetColor { base: None, value },
+    };
+    let changes: Vec<(u64, Op)> = rows.into_iter().map(|row| (row, op.clone())).collect();
+    app.session()?.library.edit(&changes).map_err(|e| format!("{e:#}"))
+}
+
+/// Applies ops returned by [`edit`] (undo and redo).
+#[tauri::command]
+async fn edit_ops(app: State<'_, App>, changes: Vec<(u64, Op)>) -> Result<Vec<(u64, Op)>, String> {
+    app.session()?.library.edit(&changes).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn pending(app: State<'_, App>) -> Result<Vec<PendingEdit>, String> {
+    app.session()?.library.pending().map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn discard(app: State<'_, App>, keys: Vec<String>) -> Result<(), String> {
+    app.session()?.library.discard(&keys).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn resolve(app: State<'_, App>, keys: Vec<String>, keep_mine: bool) -> Result<(), String> {
+    app.session()?.library.resolve(&keys, keep_mine).map_err(|e| format!("{e:#}"))
+}
+
+/// What writing the queue to Capture One would do, after pulling its latest state.
+#[derive(Serialize)]
+struct WritePlan {
+    status: WriteStatus,
+    /// Edits that would be written.
+    apply: Vec<PendingEdit>,
+    /// Edits Capture One already matches; writing drops them from the queue.
+    unchanged: Vec<PendingEdit>,
+    /// Fields changed in Capture One too: the user picks a side first.
+    conflicts: Vec<PendingEdit>,
+    /// Edits Capture One can no longer take (the photo is gone), with why.
+    blocked: Vec<(PendingEdit, String)>,
+}
+
+fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan), String> {
+    let pending = s.library.pending().map_err(|e| format!("{e:#}"))?;
+    let (conflicts, ready): (Vec<_>, Vec<_>) = pending.into_iter().partition(|p| p.pending.theirs.is_some());
+    let changes: Vec<Change> = ready.iter().map(|p| p.pending.change.clone()).collect();
+    let plan = s.source.plan(&changes).map_err(text)?;
+    let pick = |list: &[Change]| -> Vec<PendingEdit> {
+        ready.iter().filter(|p| list.contains(&p.pending.change)).cloned().collect()
+    };
+    let blocked = plan
+        .conflicts
+        .iter()
+        .filter_map(|c| {
+            let p = ready.iter().find(|p| p.pending.change == c.change)?;
+            Some((p.clone(), c.current.clone()))
+        })
+        .collect();
+    let out = WritePlan {
+        status: s.source.write_status(),
+        apply: pick(&plan.apply),
+        unchanged: pick(&plan.no_ops),
+        conflicts,
+        blocked,
+    };
+    Ok((out, plan))
+}
+
+#[tauri::command]
+async fn write_plan(app: AppHandle) -> Result<WritePlan, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_sync(&app)?;
+        let s = app.state::<App>().session()?;
+        let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(plan_writes(&s)?.0)
+    })
+    .await
+    .map_err(text)?
+}
+
+#[derive(Serialize)]
+struct WriteReport {
+    written: usize,
+    backup: Option<String>,
+}
+
+/// Writes the queue to Capture One: refused while it runs. Conflicts must be resolved
+/// first. Capture One's state is pulled in before and after.
+#[tauri::command]
+async fn write_apply(app: AppHandle) -> Result<WriteReport, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        run_sync(&app)?;
+        let s = app.state::<App>().session()?;
+        let report = {
+            let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+            let (summary, plan) = plan_writes(&s)?;
+            if !summary.conflicts.is_empty() {
+                return Err(format!(
+                    "{} edit(s) conflict with Capture One; choose a side first",
+                    summary.conflicts.len()
+                ));
+            }
+            let report = s.source.apply(&plan).map_err(text)?;
+            let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
+            s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
+            WriteReport { written: report.applied, backup: report.backup }
+        };
+        run_sync(&app)?;
+        Ok(report)
+    })
+    .await
+    .map_err(text)?
+}
+
 /// `/thumb/<row>` serves Capture One's own thumbnail as stored: a JPEG with every edit.
 /// `/preview/<row>` renders the large preview (~250 ms) and sends it as JPEG.
 fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -152,7 +279,21 @@ pub fn run() {
             let path = request.uri().path().to_owned();
             tauri::async_runtime::spawn_blocking(move || responder.respond(image_response(&app, &path)));
         })
-        .invoke_handler(tauri::generate_handler![status, query, smart_counts, photo, collections, sync])
+        .invoke_handler(tauri::generate_handler![
+            status,
+            query,
+            smart_counts,
+            photo,
+            collections,
+            sync,
+            edit,
+            edit_ops,
+            pending,
+            discard,
+            resolve,
+            write_plan,
+            write_apply
+        ])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");
 }

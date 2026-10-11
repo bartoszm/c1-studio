@@ -1,6 +1,6 @@
 // How photo facts read in the UI.
 
-import type { Photo } from "./api";
+import type { Op, Photo } from "./api";
 
 export const COLORS: Record<string, string> = {
   red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
@@ -45,4 +45,28 @@ export function camera(p: Photo): string {
   // Models often repeat the make ("Canon EOS 6D"); say it once.
   if (make && model && !model.toLowerCase().startsWith(make.toLowerCase().split(" ")[0])) return `${make} ${model}`;
   return model ?? make ?? "";
+}
+
+export function stars(n: number | null | undefined): string {
+  return n ? "★".repeat(n) : "unrated";
+}
+
+/** What a field edit sets, as words: `{ field: "rating", from: "★★", to: "★★★★★" }`. */
+export function opText(op: Op): { field: string; from: string; to: string } | null {
+  if ("SetRating" in op) {
+    const { base, value } = op.SetRating as { base: number | null; value: number | null };
+    return { field: "rating", from: stars(base), to: stars(value) };
+  }
+  if ("SetColor" in op) {
+    const { base, value } = op.SetColor as { base: string | null; value: string | null };
+    const name = (c: string | null) => (c ? c.toLowerCase() : "no colour");
+    return { field: "colour", from: name(base), to: name(value) };
+  }
+  return null;
+}
+
+/** The value an op sets, for a field edit. */
+export function opValue(op: Op): unknown {
+  const inner = Object.values(op)[0] as { value?: unknown } | undefined;
+  return inner?.value;
 }
