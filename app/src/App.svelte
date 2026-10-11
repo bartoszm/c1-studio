@@ -104,6 +104,7 @@
       error = null;
       if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
+        await followPicks(mine, asked);
       } else {
         selected = null;
         picked.clear();
@@ -113,6 +114,26 @@
       }
     } catch (e) {
       if (mine === generation) error = String(e);
+    }
+  }
+
+  /**
+   * After an edit re-ran the filter in place: photos that left the result leave the
+   * selection, and a single selection follows the focus to whatever photo now sits there
+   * (removing `animal` under an `animal` filter moves on to the next photo).
+   */
+  async function followPicks(mine: number, asked: Filter) {
+    if (picked.size > 1) {
+      const all = new Set((await api.query(asked, { sort: "DateDesc" })).rows);
+      if (mine !== generation) return;
+      for (const row of [...picked]) if (!all.has(row)) picked.delete(row);
+    }
+    if (picked.size <= 1) {
+      if (selected !== null) await need(selected, selected + 1);
+      if (mine !== generation) return;
+      picked.clear();
+      const row = selected === null ? undefined : rowAt(selected);
+      if (row !== undefined) picked.add(row);
     }
   }
 
