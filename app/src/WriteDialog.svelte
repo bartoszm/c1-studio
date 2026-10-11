@@ -97,7 +97,7 @@
     {#if done}
       <p class="ok">Written: {done.written.toLocaleString()} edit{done.written === 1 ? "" : "s"}.</p>
       {#if done.backup}<p class="muted">The catalog as it was is backed up in <code>{done.backup}</code>.</p>{/if}
-      <p class="muted">Open Capture One to see the changes there.</p>
+      <p class="muted">Open Capture One to see the changes there. To have edits written by themselves, turn on Autosave at the bottom right.</p>
       <div class="buttons"><button class="primary" onclick={onclose}>Done</button></div>
     {:else if plan}
       <p class:warn={!writable}>

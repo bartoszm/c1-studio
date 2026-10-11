@@ -140,6 +140,15 @@ export const pending = () => invoke<PendingEdit[]>("pending");
 export const discard = (keys: string[]) => invoke<void>("discard", { keys });
 export const resolve = (keys: string[], keepMine: boolean) => invoke<void>("resolve", { keys, keepMine });
 export const writePlan = () => invoke<WritePlan>("write_plan");
+export type AutosaveState =
+  | { state: "off" | "idle" | "pending" }
+  | { state: "waiting"; by: string }
+  | { state: "attention"; conflicts: number; blocked: number }
+  | { state: "saved"; written: number; at: number }
+  | { state: "failed"; error: string };
+/** Whether autosave is on, and what it last reported. */
+export const autosave = () => invoke<[boolean, AutosaveState]>("autosave");
+export const setAutosave = (on: boolean) => invoke<void>("set_autosave", { on });
 export const writeApply = () => invoke<{ written: number; backup: string | null }>("write_apply");
 
 // WebView2 on Windows reaches custom protocols as http://<scheme>.localhost.

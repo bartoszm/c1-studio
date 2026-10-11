@@ -40,6 +40,9 @@
   /** Bumped after every edit, so the details panel reads the photo again. */
   let version = $state(0);
   let writing = $state(false);
+  /** Write the queue to Capture One by itself; off unless turned on. */
+  let autosaveOn = $state(false);
+  let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
   let undoStack: [number, api.Op][][] = [];
@@ -139,9 +142,12 @@
 
   onMount(() => {
     refresh();
+    api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     const off = [
       listen("library-changed", () => { syncNote = ""; refresh(true); }),
       listen<string>("sync-failed", (e) => { syncNote = `sync failed: ${e.payload}`; }),
+      listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
+      listen("queue-written", () => { edited(); }),
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
@@ -324,8 +330,36 @@
     viewing = false;
   }
 
+  async function toggleAutosave(on: boolean) {
+    autosaveOn = on;
+    try {
+      await api.setAutosave(on);
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+
+  /** The footer's word on autosave, and whether clicking it should open the list. */
+  function autosaveText(s: api.AutosaveState): [string, boolean] {
+    switch (s.state) {
+      case "pending": return ["saving to Capture One when you pause…", false];
+      case "waiting":
+        return [/captureone|imgcore/i.test(s.by) ? "autosave waits for Capture One to close" : "autosave waits: the catalog is open in another program", false];
+      case "attention": {
+        const parts = [s.conflicts && `${s.conflicts} conflict${s.conflicts > 1 ? "s" : ""}`, s.blocked && `${s.blocked} that cannot be written`];
+        return [`autosave paused: ${parts.filter(Boolean).join(", ")}`, true];
+      }
+      case "saved": {
+        const time = new Date(s.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+        return [`saved ${s.written} edit${s.written === 1 ? "" : "s"} to Capture One at ${time}`, false];
+      }
+      case "failed": return [`autosave failed: ${s.error}`, true];
+      default: return ["", false];
+    }
+  }
+
   function onkey(e: KeyboardEvent) {
-    if (writing || e.target instanceof HTMLInputElement) return;
+    if (writing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && !e.altKey) {
@@ -480,8 +514,22 @@
     {/if}
     {#if editError}<span class="edit-error">{editError}</span>{/if}
     {#if syncNote}<span class="sync">{syncNote}</span>{/if}
+    <span class="autosave" class:alone={!syncNote}>
+      {#if autosaveOn}
+        {@const [note, attention] = autosaveText(autosaveState)}
+        {#if attention}
+          <button class="attention" onclick={() => (writing = true)}>{note}</button>
+        {:else if note}
+          <span>{note}</span>
+        {/if}
+      {/if}
+      <label title="Write queued edits to Capture One by itself, a few seconds after you pause, whenever it is closed">
+        <input type="checkbox" checked={autosaveOn} onchange={(e) => toggleAutosave(e.currentTarget.checked)} />
+        Autosave
+      </label>
+    </span>
     {#if queuedCount}
-      <button class="queue" class:alone={!syncNote} onclick={() => (writing = true)}>
+      <button class="queue" onclick={() => (writing = true)}>
         {queuedCount.toLocaleString()} edit{queuedCount === 1 ? "" : "s"} waiting · Write to Capture One…
       </button>
     {/if}

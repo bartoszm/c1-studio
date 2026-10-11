@@ -183,6 +183,8 @@ impl PhotoSource for CaptureOne {
         let backup = write::backup(&self.catalog, &self.backup_dir(), write::KEEP_BACKUPS)?;
         let mut con = write::open_write(&self.catalog)?;
         let applied = write::write(&mut con, plan, |c| self.variant_pk(&c.photo))?;
+        drop(con);
+        write::wrote(&self.catalog, &backup)?;
         Ok(ApplyReport { applied, backup: Some(backup.backup.display().to_string()) })
     }
 }

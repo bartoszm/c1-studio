@@ -431,6 +431,42 @@ and colour tags as writable.
     - the backup holds the state before the write;
     - both pass `PRAGMA integrity_check`.
 
+### Writing on demand, autosave as an option
+
+At the user's request, nothing goes to Capture One unless they ask: edits queue in the
+app until *Write to Capture One…*. **Autosave** (a footer checkbox, off by default, kept
+in `<data dir>/settings.json`) writes the queue by itself.
+
+- **How autosave runs:** a backend loop (`autosave_loop` in the app) checks every 4 s.
+  It writes once there has been no edit for 8 s, the queue is non-empty, and the
+  catalog is free, through the same plan, conflict and backup rules as the dialog.
+- **What it says in the footer:**
+  - "saving to Capture One when you pause…";
+  - waits for Capture One to close (or for another program holding the file);
+  - "autosave paused: N conflicts" (opens the list);
+  - "saved N edits at 09:21";
+  - failures.
+
+  A pause for conflicts or a failure is not retried until the queue changes.
+- **Backups shared by the app's own writes:** while only the app has written since the
+  newest backup (the catalog still matches the size and time recorded after the app's
+  last write) and the backup is under an hour old, the next write reuses it, instead of
+  copying the 730 MB catalog every few seconds.
+  - Backup times are whole nanoseconds and milliseconds: decimals did not survive the
+    trip through JSON exactly.
+- **Fixed:** photos that tie on the sort key (same capture second, same import, same
+  rating) swapped places when one was edited, because an edit re-adds its document
+  and the index broke ties by document order. The sort keys now carry the row
+  (schema 3): `captured_sort`, `imported_sort` and `rating_sort`.
+- **Tested end to end** on a copy of the catalog, in a second app instance:
+  - autosave off: an edit stays queued and the catalog is unchanged;
+  - turned on: written after the pause; a second edit shares the backup;
+  - the file held open with no sharing (as Capture One does): it waits, and saves a
+    second after the file is released;
+  - a rating changed in the copy behind the app: "paused: 1 conflict", nothing
+    written; *Keep mine*, then saved with the user's value;
+  - a new backup is made after the outside change.
+
 ### Next
 
 1. Keywords: add and remove in the app (with completion from the tree) and in the
