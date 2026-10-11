@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::change::{ApplyPlan, ApplyReport, Change};
+use crate::change::{ApplyPlan, ApplyReport, Change, KeywordRemap};
 use crate::photo::{Collection, KeywordNode, Photo, PhotoId, SourceId};
 
 #[derive(Debug, thiserror::Error)]
@@ -148,6 +148,21 @@ pub trait PhotoSource: Send + Sync {
     /// Dry run: sorts changes into apply / conflict / no-op without writing.
     fn plan(&self, changes: &[Change]) -> Result<ApplyPlan>;
 
-    /// Writes a plan produced by [`PhotoSource::plan`]. Atomic: all or nothing.
+    /// Like [`PhotoSource::plan`], with the photos as they will be once `remaps` are
+    /// applied; the plan carries the remaps.
+    fn plan_after(&self, remaps: &[KeywordRemap], changes: &[Change]) -> Result<ApplyPlan> {
+        let mut plan = self.plan(changes)?;
+        plan.remaps = remaps.to_vec();
+        Ok(plan)
+    }
+
+    /// Why a keyword tree change can no longer be written (its keywords are gone), or
+    /// `None` if it can, once the `earlier` ones have been applied.
+    fn check_remap(&self, _earlier: &[KeywordRemap], _remap: &KeywordRemap) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    /// Writes a plan produced by [`PhotoSource::plan`]: its keyword remaps first, then
+    /// its changes. Atomic: all or nothing.
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport>;
 }

@@ -5,9 +5,10 @@
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS } from "./lib/format";
-  import { albumTree, pathTree, type Node } from "./lib/tree";
+  import { albumTree, pathTree, searchTree, type Node } from "./lib/tree";
   import Grid from "./Grid.svelte";
   import Info from "./Info.svelte";
+  import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -47,8 +48,16 @@
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
-  let undoStack: [number, api.Op][][] = [];
-  let redoStack: [number, api.Op][][] = [];
+  type Done = { ops: [number, api.Op][] } | { remap: number; request: api.RemapRequest };
+  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest };
+  let undoStack: Done[] = [];
+  let redoStack: Undone[] = [];
+
+  /** Keyword tree changes queued for Capture One. */
+  let remapCount = $state(0);
+  let keywordSearch = $state("");
+  let keywordMenu = $state<{ x: number; y: number; node: Node } | null>(null);
+  let keywordDialog = $state<{ mode: "rename" | "join" | "group"; start: string } | null>(null);
 
   // Sidebar layout survives restarts: which branches are open, which sections folded.
   function remembered(key: string): string[] {
@@ -135,7 +144,7 @@
     try {
       status = await api.status();
       collections = await api.collections();
-      keywordList = (await api.keywords()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+      await refreshKeywords();
       await refreshQueued();
       await run(keep);
     } catch (e) {
@@ -166,7 +175,31 @@
       by.set(p.row, [...(by.get(p.row) ?? []), field]);
     }
     queued = by;
-    queuedCount = list.length;
+    remapCount = (await api.remaps()).length;
+    queuedCount = list.length + remapCount;
+  }
+
+  async function refreshKeywords() {
+    keywordList = (await api.keywords()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+  }
+
+  /** Queues a keyword tree change (shown at once), undoable like any edit. */
+  async function applyRemap(request: api.RemapRequest) {
+    const seq = await api.remapKeywords(request);
+    undoStack.push({ remap: seq, request });
+    redoStack = [];
+    editError = null;
+    await refreshKeywords();
+    await edited();
+  }
+
+  async function quickRemap(request: api.RemapRequest) {
+    keywordMenu = null;
+    try {
+      await applyRemap(request);
+    } catch (e) {
+      editError = String(e);
+    }
   }
 
   /** The photos an edit applies to: the picked ones, else the focused one. */
@@ -188,7 +221,7 @@
     try {
       const undo = await api.edit(rows, edit);
       if (undo.length) {
-        undoStack.push(undo);
+        undoStack.push({ ops: undo });
         redoStack = [];
       }
       editError = null;
@@ -198,11 +231,39 @@
     await edited();
   }
 
-  async function undoRedo(from: [number, api.Op][][], to: [number, api.Op][][]) {
-    const ops = from.pop();
-    if (!ops) return;
+  async function undo() {
+    const last = undoStack.pop();
+    if (!last) return;
     try {
-      to.push(await api.editOps(ops));
+      if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
+      else {
+        // The photos it touched are read from Capture One again: a moment on a big catalog.
+        syncNote = "undoing the keyword change…";
+        await api.undoRemap(last.remap);
+        syncNote = "";
+        redoStack.push({ request: last.request });
+        version++;
+        await refresh(true);
+        return;
+      }
+      editError = null;
+    } catch (e) {
+      editError = String(e);
+      syncNote = "";
+    }
+    await edited();
+  }
+
+  async function redo() {
+    const last = redoStack.pop();
+    if (!last) return;
+    try {
+      if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
+      else {
+        undoStack.push({ remap: await api.remapKeywords(last.request), request: last.request });
+        await refreshKeywords();
+      }
+      editError = null;
     } catch (e) {
       editError = String(e);
     }
@@ -317,6 +378,13 @@
   let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart));
   let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
   let keywords = $derived(pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword"));
+  // While searching, the tree shows only matches (and the branches above them), opened.
+  let keywordView = $derived(searchTree(keywords, keywordSearch));
+  const searchOpen = new SvelteSet<string>();
+  $effect(() => {
+    searchOpen.clear();
+    for (const key of keywordView.open) searchOpen.add(key);
+  });
 
   let active = $derived(Object.values(filter).some((v) => v !== undefined));
 
@@ -362,12 +430,16 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (writing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (e.key === "Escape" && keywordMenu) {
+      keywordMenu = null;
+      return;
+    }
+    if (writing || keywordDialog || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && !e.altKey) {
-      if (key === "z" && !e.shiftKey) undoRedo(undoStack, redoStack);
-      else if (key === "y" || (key === "z" && e.shiftKey)) undoRedo(redoStack, undoStack);
+      if (key === "z" && !e.shiftKey) undo();
+      else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
       else return;
@@ -474,7 +546,22 @@
     <section>
       {@render head("keywords")}
       {#if !folded.has("keywords")}
-        <Tree nodes={keywords} selected={filter.keywords_under && "k:" + filter.keywords_under[0]} {expanded} onpick={pickKeyword} />
+        <input
+          class="tree-search"
+          type="search"
+          placeholder="Find a keyword"
+          spellcheck="false"
+          bind:value={keywordSearch}
+          onkeydown={(e) => { if (e.key === "Escape") { keywordSearch = ""; e.currentTarget.blur(); } }}
+        />
+        <Tree
+          nodes={keywordView.nodes}
+          selected={filter.keywords_under && "k:" + filter.keywords_under[0]}
+          expanded={keywordSearch.trim() ? searchOpen : expanded}
+          onpick={pickKeyword}
+          oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
+        />
+        {#if keywordSearch.trim() && !keywordView.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
       {/if}
     </section>
     {#each FLAT as dim}
@@ -546,8 +633,35 @@
   </footer>
 </div>
 
+{#if keywordMenu}
+  {@const node = keywordMenu.node}
+  <div class="menu-shield" role="presentation" onclick={() => (keywordMenu = null)} oncontextmenu={(e) => { e.preventDefault(); keywordMenu = null; }}></div>
+  <div class="menu" role="menu" style:left="{keywordMenu.x}px" style:top="{keywordMenu.y}px">
+    <div class="menu-title">{node.value}</div>
+    <button role="menuitem" onclick={() => { keywordDialog = { mode: "rename", start: node.value }; keywordMenu = null; }}>Rename…</button>
+    <button role="menuitem" onclick={() => { keywordDialog = { mode: "join", start: node.value }; keywordMenu = null; }}>Join or replace…</button>
+    <button role="menuitem" onclick={() => { keywordDialog = { mode: "group", start: node.value }; keywordMenu = null; }}>Group under…</button>
+    {#if node.value.includes("|")}
+      <button role="menuitem" onclick={() => quickRemap({ Group: { paths: [node.value], under: null } })}>Move to the top level</button>
+    {/if}
+    {#if node.children.length}
+      <button role="menuitem" onclick={() => quickRemap({ Ungroup: { path: node.value } })}>Ungroup</button>
+    {/if}
+  </div>
+{/if}
+
+{#if keywordDialog}
+  <KeywordDialog
+    mode={keywordDialog.mode}
+    start={keywordDialog.start}
+    keywords={keywordList}
+    onclose={() => (keywordDialog = null)}
+    ondone={applyRemap}
+  />
+{/if}
+
 {#if writing}
-  <WriteDialog onclose={() => (writing = false)} onchanged={edited} />
+  <WriteDialog onclose={() => (writing = false)} onchanged={() => { refreshKeywords(); edited(); }} />
 {/if}
 
 {#if viewing && selected !== null && rowAt(selected) !== undefined}

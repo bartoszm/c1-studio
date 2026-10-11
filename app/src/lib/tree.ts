@@ -88,3 +88,28 @@ export function albumTree(
   // Groups first, as folders come before files.
   return sortDeep(roots, (a, b) => Number(!!b.container) - Number(!!a.container) || byName(a, b));
 }
+
+/**
+ * The nodes whose name contains `query` (ignoring case), with the branches above them.
+ * A match keeps everything under it. `open` lists the branches to show expanded: those
+ * leading to a match.
+ */
+export function searchTree(nodes: Node[], query: string): { nodes: Node[]; open: string[] } {
+  const q = query.trim().toLowerCase();
+  const open: string[] = [];
+  function walk(list: Node[]): Node[] {
+    const out: Node[] = [];
+    for (const node of list) {
+      const below = walk(node.children);
+      if (node.name.toLowerCase().includes(q)) {
+        if (below.length) open.push(node.key);
+        out.push(node);
+      } else if (below.length) {
+        open.push(node.key);
+        out.push({ ...node, children: below });
+      }
+    }
+    return out;
+  }
+  return { nodes: q ? walk(nodes) : nodes, open };
+}

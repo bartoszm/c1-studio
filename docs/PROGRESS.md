@@ -507,6 +507,68 @@ in `<data dir>/settings.json`) writes the queue by itself.
 - **Tests:** four write tests and one library test. In the live app: add, remove, the
   dialog, undo twice; the queue was left empty.
 
+### Keyword tree: rename, join (replace), group, ungroup, and a search bar
+
+- **One primitive** (`c1model::KeywordRemap`): a list of `from → to` paths. Each
+  keyword, with everything under it, moves to its new path; one landing on a keyword
+  already there folds into it. The four operations are built on it:
+  - rename;
+  - join several into one, existing or new (replace is a join of one);
+  - group under a parent, existing or new, or move to the top level;
+  - ungroup: the children move up a level, and the group goes if no photo carries it
+    itself.
+- **Writing** (`source-c1/src/keywords.rs`):
+  1. Every photo whose keyword string has a moved path is rewritten, keeping index
+     order and dropping duplicates, as Python's `_rewrite_paths` does.
+  2. The tree is reshaped. Nodes keep their `Z_PK` and columns; folded ones are
+     deleted once nothing points at them (the bundled SQLite enforces `ZPARENT`'s
+     foreign key). Missing parents are created.
+  3. Every moving node first steps aside under a temporary name, so
+     `UNIQUE(ZNAME, ZPARENT)` never trips; a name swap works.
+  4. The intervals are renumbered (Python's `rebuild_tree` order) only when the
+     structure changed; a plain rename leaves them, as Python does.
+  5. The whole tree is checked before the commit.
+- **CLI:** `c1cat keyword rename | move | merge | group | ungroup`.
+- **Differential test:** rename, move to the top level, move under an existing and
+  under a new parent, and merge, on the real catalog. Identical to Python, `ZKEYWORD`
+  included (565 rows).
+- **Queued like everything else** (`remaps` in `edits.redb`, applied in order):
+  - the library rewrites its photos at once;
+  - syncs lay the remaps over what Capture One sends;
+  - queued keyword edits follow their keyword to its new path;
+  - the keyword list (completion) shows the tree as it will be.
+- **Undo:** drops the remap and re-reads the photos it touched from the source: their
+  fingerprints are cleared, and the next sync is a full one.
+- **Planning:** photo edits are planned against the catalog as the remaps will leave
+  it (`PhotoSource::plan_after`), so removing a keyword just renamed is not lost.
+  Each remap is checked after the earlier ones; one whose keywords are gone is listed
+  as blocked.
+- **Writing order:** remaps first, then the photo edits, in one transaction under one
+  backup.
+- **In the app:**
+  - right-click a keyword in the sidebar tree for Rename…, Join or replace…, Group
+    under…, Move to the top level and Ungroup;
+  - the dialog takes more keywords with completion, counts the photos carrying them,
+    and says when the target is new;
+  - Ctrl+Z undoes a tree change like any edit;
+  - the Write dialog lists keyword changes first;
+  - a search bar above the Keywords tree shows only matching keywords, with the
+    branches above them opened.
+- **Tests:**
+  - five write tests: rename keeps the intervals, join, group then ungroup, an
+    ungrouped group still in use stays, name swap;
+  - a blocked-remap test;
+  - three library tests: rename through sync and write, undoing a join, the
+    grouped/ungrouped keyword list;
+  - in the live app: search, rename, group, the Write dialog, two undos;
+  - end to end on a catalog copy: rename, then a removal of the renamed keyword, a
+    group under a new parent, and an add by the new path. Written in one go, the
+    removal followed the keyword through both changes, the tree has
+    drinks › cola drink, its intervals are contiguous, and `integrity_check` is ok.
+- **Seen in passing:** 159 photos carry keywords only from their file (the default and
+  combined layers, not the adjustment layer). The app reads the adjustment layer, as
+  the Python tool does, so it does not show them, and keyword changes leave them.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

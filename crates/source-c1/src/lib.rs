@@ -18,8 +18,8 @@ use std::sync::Mutex;
 
 use c1model::source::Result;
 use c1model::{
-    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoId,
-    PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
+    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, Field, ImageFormat, ImageRef, ImageTier, KeywordRemap,
+    PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
@@ -169,14 +169,25 @@ impl PhotoSource for CaptureOne {
 
     /// Reads the live catalog, so it works while Capture One is open.
     fn plan(&self, changes: &[Change]) -> Result<ApplyPlan> {
+        self.plan_after(&[], changes)
+    }
+
+    fn plan_after(&self, remaps: &[KeywordRemap], changes: &[Change]) -> Result<ApplyPlan> {
         let con = catalog::open_live(&self.catalog)?;
-        write::plan(&con, changes, |c| self.variant_pk(&c.photo))
+        let mut plan = write::plan(&con, remaps, changes, |c| self.variant_pk(&c.photo))?;
+        plan.remaps = remaps.to_vec();
+        Ok(plan)
     }
 
     /// Refuses while Capture One or anything else has the catalog open, backs it up,
     /// then writes the plan in one transaction after checking it still holds.
+    fn check_remap(&self, earlier: &[KeywordRemap], remap: &KeywordRemap) -> Result<Option<String>> {
+        let con = catalog::open_live(&self.catalog)?;
+        keywords::check_remap(&con, earlier, remap)
+    }
+
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport> {
-        if plan.apply.is_empty() {
+        if plan.apply.is_empty() && plan.remaps.is_empty() {
             return Ok(ApplyReport::default());
         }
         let _guard = self.snapshot_lock.lock().unwrap();

@@ -6,11 +6,13 @@
 
   // One level of a tree; expanded children render a nested Tree, so closed branches
   // cost nothing however large they are.
-  let { nodes, selected, expanded, onpick, depth = 0 }: {
+  let { nodes, selected, expanded, onpick, oncontext, depth = 0 }: {
     nodes: Node[];
     selected: string | undefined;
     expanded: SvelteSet<string>;
     onpick: (node: Node) => void;
+    /** Right-click on a node (its menu). */
+    oncontext?: (node: Node, e: MouseEvent) => void;
     depth?: number;
   } = $props();
 
@@ -28,6 +30,10 @@
     class:empty={node.count === 0}
     style:padding-left="{6 + depth * 14}px"
     title={node.disabled}
+    role="treeitem"
+    aria-selected={selected === node.key}
+    tabindex="-1"
+    oncontextmenu={oncontext && ((e) => { e.preventDefault(); oncontext(node, e); })}
   >
     {#if node.children.length}
       <button class="chev" class:open aria-label={open ? "Collapse" : "Expand"} onclick={() => flip(node)}>›</button>
@@ -45,6 +51,6 @@
     </button>
   </div>
   {#if open && node.children.length}
-    <Tree nodes={node.children} {selected} {expanded} {onpick} depth={depth + 1} />
+    <Tree nodes={node.children} {selected} {expanded} {onpick} {oncontext} depth={depth + 1} />
   {/if}
 {/each}

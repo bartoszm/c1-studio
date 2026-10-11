@@ -240,6 +240,31 @@ pub fn diff(old: &Photo, new: &Photo) -> Vec<Op> {
     ops
 }
 
+#[cfg(test)]
+mod remap_tests {
+    use super::*;
+
+    fn k(p: &str) -> KeywordPath {
+        KeywordPath::from_pipe(p)
+    }
+
+    #[test]
+    fn subtrees_move_and_duplicates_fold() {
+        let join = KeywordRemap {
+            map: vec![(k("streets"), k("street")), (k("a"), k("g|a"))],
+            prune: vec![],
+            label: String::new(),
+        };
+        assert_eq!(join.path(&k("streets|night")), k("street|night"));
+        assert_eq!(join.path(&k("a|x")), k("g|a|x"));
+        assert_eq!(join.path(&k("ab")), k("ab"), "a prefix of a name is not a parent");
+        let mut kws = vec![k("street"), k("b&w"), k("streets")];
+        assert!(join.apply(&mut kws));
+        assert_eq!(kws, [k("street"), k("b&w")]);
+        assert!(!join.apply(&mut kws));
+    }
+}
+
 /// Sorts changes into a plan using [`Op::check`]. `lookup` returns the current photo.
 pub fn plan_with<'a>(changes: &[Change], mut lookup: impl FnMut(&PhotoId) -> Option<&'a Photo>) -> ApplyPlan {
     let mut plan = ApplyPlan::default();
@@ -266,10 +291,117 @@ pub struct Conflict {
 /// A dry run: what [`crate::PhotoSource::apply`] would do.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ApplyPlan {
+    /// Keyword tree changes, applied first and in order.
+    #[serde(default)]
+    pub remaps: Vec<KeywordRemap>,
     pub apply: Vec<Change>,
     pub conflicts: Vec<Conflict>,
     /// Changes that would not alter anything (value already equals the target).
     pub no_ops: Vec<Change>,
+}
+
+/// A change to the keyword tree that rewrites every photo carrying the keywords it moves.
+/// Renaming, joining, grouping and ungrouping all come down to this.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct KeywordRemap {
+    /// Each `from` keyword, and everything under it, moves to `to`: with `a → g|a`,
+    /// `a|x` becomes `g|a|x`. The first entry that matches a path decides.
+    pub map: Vec<(KeywordPath, KeywordPath)>,
+    /// Keywords dropped from the tree afterwards if they are left with no children and
+    /// no photo carries them (the group an ungroup empties).
+    #[serde(default)]
+    pub prune: Vec<KeywordPath>,
+    /// What the user asked for, for showing: `Join "streets" into "street"`.
+    pub label: String,
+}
+
+impl KeywordRemap {
+    /// A keyword gets a new name, in the same place.
+    pub fn rename(path: KeywordPath, name: &str) -> Self {
+        let mut to = path.0.clone();
+        to.pop();
+        to.push(name.to_owned());
+        let label = format!("Rename “{}” to “{name}”", path.to_pipe());
+        Self { map: vec![(path, KeywordPath(to))], prune: vec![], label }
+    }
+
+    /// Several keywords become one, existing or new (replacing one keyword with another
+    /// is joining one). Keywords under them move along.
+    pub fn join(from: Vec<KeywordPath>, into: KeywordPath) -> Self {
+        let names: Vec<String> = from.iter().map(|p| format!("“{}”", p.to_pipe())).collect();
+        let label = format!("Join {} into “{}”", names.join(", "), into.to_pipe());
+        let map = from.into_iter().filter(|p| *p != into).map(|p| (p, into.clone())).collect();
+        Self { map, prune: vec![], label }
+    }
+
+    /// Keywords go under a parent, existing or new; `None` moves them to the top level.
+    pub fn group(paths: Vec<KeywordPath>, under: Option<KeywordPath>) -> Self {
+        let names: Vec<String> = paths.iter().map(|p| format!("“{}”", p.to_pipe())).collect();
+        let label = match &under {
+            Some(u) => format!("Group {} under “{}”", names.join(", "), u.to_pipe()),
+            None => format!("Move {} to the top level", names.join(", ")),
+        };
+        let map = paths
+            .into_iter()
+            .map(|p| {
+                let mut to = under.as_ref().map(|u| u.0.clone()).unwrap_or_default();
+                to.push(p.0.last().cloned().unwrap_or_default());
+                (p, KeywordPath(to))
+            })
+            .filter(|(from, to)| from != to)
+            .collect();
+        Self { map, prune: vec![], label }
+    }
+
+    /// A group's keywords (`children`, as the tree has them now) move up a level, and
+    /// the group goes if no photo carries it itself.
+    pub fn ungroup(group: KeywordPath, children: Vec<KeywordPath>) -> Self {
+        let up = group.0[..group.0.len().saturating_sub(1)].to_vec();
+        let map = children
+            .into_iter()
+            .map(|c| {
+                let mut to = up.clone();
+                to.push(c.0.last().cloned().unwrap_or_default());
+                (c, KeywordPath(to))
+            })
+            .collect();
+        let label = format!("Ungroup “{}”", group.to_pipe());
+        Self { map, prune: vec![group], label }
+    }
+
+    /// Where a keyword ends up.
+    pub fn path(&self, path: &KeywordPath) -> KeywordPath {
+        for (from, to) in &self.map {
+            if path.0.starts_with(&from.0) {
+                let mut moved = to.0.clone();
+                moved.extend_from_slice(&path.0[from.0.len()..]);
+                return KeywordPath(moved);
+            }
+        }
+        path.clone()
+    }
+
+    pub fn moves(&self, path: &KeywordPath) -> bool {
+        self.map.iter().any(|(from, _)| path.0.starts_with(&from.0))
+    }
+
+    /// Rewrites a photo's keywords; one landing on a keyword already there is dropped.
+    /// Returns whether anything changed.
+    pub fn apply(&self, keywords: &mut Vec<KeywordPath>) -> bool {
+        if !keywords.iter().any(|k| self.moves(k)) {
+            return false;
+        }
+        let mut out: Vec<KeywordPath> = Vec::with_capacity(keywords.len());
+        for k in keywords.iter() {
+            let moved = self.path(k);
+            if !out.contains(&moved) {
+                out.push(moved);
+            }
+        }
+        let changed = out != *keywords;
+        *keywords = out;
+        changed
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

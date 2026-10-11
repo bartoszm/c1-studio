@@ -124,7 +124,17 @@ export type WritePlan = {
   unchanged: PendingEdit[];
   conflicts: PendingEdit[];
   blocked: [PendingEdit, string][];
+  /** Keyword tree changes, written first: number and what they do. */
+  remaps: [number, string][];
+  blocked_remaps: [number, string, string][];
 };
+
+/** A keyword tree change. Paths join levels with `|`. */
+export type RemapRequest =
+  | { Rename: { path: string; name: string } }
+  | { Join: { from: string[]; into: string } }
+  | { Group: { paths: string[]; under: string | null } }
+  | { Ungroup: { path: string } };
 export type Edit =
   | { Rating: number | null }
   | { Color: Color | null }
@@ -142,6 +152,11 @@ export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit
 export const editOps = (changes: [number, Op][]) => invoke<[number, Op][]>("edit_ops", { changes });
 /** Every keyword path in the catalog with its use count. */
 export const keywords = () => invoke<[string, number][]>("keywords");
+/** Queues a keyword tree change; returns its number, for undo. */
+export const remapKeywords = (request: RemapRequest) => invoke<number>("remap_keywords", { request });
+export const undoRemap = (seq: number) => invoke<void>("undo_remap", { seq });
+export const remaps = () => invoke<[number, string][]>("remaps");
+export const keywordUsers = (paths: string[]) => invoke<number>("keyword_users", { paths });
 export const pending = () => invoke<PendingEdit[]>("pending");
 export const discard = (keys: string[]) => invoke<void>("discard", { keys });
 export const resolve = (keys: string[], keepMine: boolean) => invoke<void>("resolve", { keys, keepMine });

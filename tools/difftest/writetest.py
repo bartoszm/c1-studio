@@ -71,6 +71,12 @@ def edits(g: dict) -> list[tuple[str, list[str], list[int]]]:
         ("keyword", ["add", "b&w", "difftest|beta", "difftest|alpha"], g["top"] + g["rated"][:1]),
         ("keyword", ["remove", "street"], g["plain"][:2]),
         ("keyword", ["remove", "difftest|alpha", "b&w"], g["rated"][1:3]),
+        # The keyword tree itself: every photo carrying the keyword is rewritten.
+        ("keyword", ["rename", "--path", "difftest|alpha", "--to", "gamma"], []),
+        ("keyword", ["move", "--path", "difftest|beta", "--to-root"], []),
+        ("keyword", ["move", "--path", f"{g['first_root']}|difftest child", "--to-parent", "difftest"], []),
+        ("keyword", ["move", "--path", "beta", "--to-parent", "difftest newgroup"], []),
+        ("keyword", ["merge", "--from", "difftest|gamma", "--into", "street"], []),
     ]
 
 

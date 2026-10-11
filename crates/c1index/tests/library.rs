@@ -1,4 +1,5 @@
 use c1index::{Dim, Filter, Library, Presence, QueryOptions, Range, Sort, Trashed, parse_rating};
+use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
 use c1model::*;
 
@@ -547,4 +548,83 @@ fn keyword_edits_queue_one_keyword_each() {
     // Undo puts the photos back as they were before the first edit (queued again).
     lib.edit(&undo).unwrap();
     assert!(!lib.photo(row1).unwrap().unwrap().keywords.contains(&night));
+}
+
+fn under(library: &Library, path: &str) -> Vec<u32> {
+    ids(library, &Filter { keywords_under: vec![path.into()], ..Filter::default() })
+}
+
+#[test]
+fn a_queued_rename_shows_at_once_survives_a_sync_and_writes() {
+    let (_d, lib, source) = setup();
+    let street = under(&lib, "street");
+    let row2 = row_of(&lib, 2); // no keywords
+    lib.edit(&[(row2, Op::AddKeywords { paths: vec![KeywordPath::from_pipe("street")] })]).unwrap();
+
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("street"), "avenue")).unwrap();
+    let mut expected = street.clone();
+    expected.push(2);
+    expected.sort();
+    assert_eq!(under(&lib, "avenue"), expected);
+    assert!(under(&lib, "street").is_empty());
+    let pending = lib.pending().unwrap();
+    assert_eq!(
+        pending[0].pending.change.op,
+        Op::AddKeywords { paths: vec![KeywordPath::from_pipe("avenue")] },
+        "the queued add follows"
+    );
+    assert!(lib.keywords().unwrap().iter().any(|n| n.path == KeywordPath::from_pipe("avenue")));
+
+    // Capture One changes photo 1 meanwhile: its keywords arrive renamed.
+    source.edit_externally(&lib.photo_id(row_of(&lib, 1)).unwrap(), |p| p.rating = Some(5));
+    lib.sync(&source).unwrap();
+    assert_eq!(under(&lib, "avenue"), expected);
+
+    // Written: tree change first, then the photo edits planned as they will be.
+    let remaps: Vec<_> = lib.remaps().unwrap();
+    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
+    let plan = source.plan_after(&remaps.iter().map(|(_, q)| q.remap.clone()).collect::<Vec<_>>(), &changes).unwrap();
+    assert_eq!(plan.apply.len(), 1);
+    source.apply(&plan).unwrap();
+    lib.settle_remaps(&remaps.iter().map(|(s, _)| *s).collect::<Vec<_>>()).unwrap();
+    lib.settle(&plan.apply).unwrap();
+    lib.sync(&source).unwrap();
+    assert!(lib.remaps().unwrap().is_empty() && lib.pending().unwrap().is_empty());
+    assert_eq!(under(&lib, "avenue"), expected);
+    assert!(source.photo(&lib.photo_id(row2).unwrap()).unwrap().keywords.contains(&KeywordPath::from_pipe("avenue")));
+}
+
+#[test]
+fn undoing_a_queued_join_brings_the_source_keywords_back() {
+    let (_d, lib, source) = setup();
+    let best = under(&lib, "best");
+    let seq = lib
+        .remap_keywords(KeywordRemap::join(vec![KeywordPath::from_pipe("best")], KeywordPath::from_pipe("street")))
+        .unwrap();
+    assert!(under(&lib, "best").is_empty());
+    assert_eq!(under(&lib, "street|best2018"), best);
+    lib.undo_remap(seq).unwrap();
+    lib.sync(&source).unwrap();
+    assert_eq!(under(&lib, "best"), best);
+    assert!(under(&lib, "street|best2018").is_empty());
+}
+
+#[test]
+fn grouping_and_ungrouping_show_in_the_keyword_list() {
+    let (_d, lib, _source) = setup();
+    let paths = |lib: &Library| {
+        let mut p: Vec<String> = lib.keywords().unwrap().into_iter().map(|n| n.path.to_pipe()).collect();
+        p.sort();
+        p
+    };
+    let before = paths(&lib);
+    lib.remap_keywords(KeywordRemap::group(
+        vec![KeywordPath::from_pipe("best"), KeywordPath::from_pipe("street")],
+        Some(KeywordPath::from_pipe("things")),
+    ))
+    .unwrap();
+    assert_eq!(paths(&lib), ["things", "things|best", "things|best|best2018", "things|street"]);
+    let children = vec![KeywordPath::from_pipe("things|best"), KeywordPath::from_pipe("things|street")];
+    lib.remap_keywords(KeywordRemap::ungroup(KeywordPath::from_pipe("things"), children)).unwrap();
+    assert_eq!(paths(&lib), before);
 }

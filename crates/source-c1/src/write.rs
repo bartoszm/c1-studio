@@ -12,7 +12,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use c1model::change::{Check, compare};
 use c1model::source::Result;
-use c1model::{ApplyPlan, Change, ColorLabel, Conflict, Op, SourceError, WriteStatus};
+use c1model::{ApplyPlan, Change, ColorLabel, Conflict, KeywordRemap, Op, SourceError, WriteStatus};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
@@ -119,9 +119,11 @@ fn current(con: &Connection, variant_pk: i64) -> Result<Option<Current>> {
     .map_err(db_err)
 }
 
-/// Sorts changes into apply / conflict / no-op against the catalog behind `con`.
+/// Sorts changes into apply / conflict / no-op against the catalog behind `con`, as it
+/// will be once `remaps` have been applied (queued keyword edits name the new paths).
 pub(crate) fn plan(
     con: &Connection,
+    remaps: &[KeywordRemap],
     changes: &[Change],
     variant_pk: impl Fn(&Change) -> Result<i64>,
 ) -> Result<ApplyPlan> {
@@ -133,8 +135,11 @@ pub(crate) fn plan(
                 Op::SetRating { base, value } => compare(base, value, &now.rating),
                 Op::SetColor { base, value } => compare(base, value, &now.color),
                 Op::AddKeywords { paths } | Op::RemoveKeywords { paths } => {
-                    let stored = keywords::stored(con, variant_pk(change)?)?;
-                    let has = |p: &c1model::KeywordPath| stored.iter().any(|(s, _)| *s == p.to_pipe());
+                    let stored: Vec<c1model::KeywordPath> = keywords::stored(con, variant_pk(change)?)?
+                        .into_iter()
+                        .map(|(p, _)| remaps.iter().fold(c1model::KeywordPath::from_pipe(&p), |p, r| r.path(&p)))
+                        .collect();
+                    let has = |p: &c1model::KeywordPath| stored.contains(p);
                     let adding = matches!(change.op, Op::AddKeywords { .. });
                     for path in paths.iter().filter(|_| adding) {
                         keywords::validate(&path.to_pipe())?;
@@ -216,14 +221,19 @@ pub(crate) fn write(
     variant_pk: impl Fn(&Change) -> Result<i64>,
 ) -> Result<usize> {
     let tx = con.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    let again = self::plan(&tx, &plan.apply, &variant_pk)?;
+    let again = self::plan(&tx, &plan.remaps, &plan.apply, &variant_pk)?;
     if again.apply != plan.apply {
         return Err(SourceError::StalePlan);
+    }
+    // Keyword tree changes first: queued photo edits already name keywords by their new
+    // paths. (The check above ran before them, against the state the plan was made on.)
+    for remap in &plan.remaps {
+        keywords::remap(&tx, remap)?;
     }
     for change in &plan.apply {
         write_change(&tx, variant_pk(change)?, &change.op)?;
     }
-    if plan.apply.iter().any(|c| matches!(c.op, Op::AddKeywords { .. })) {
+    if !plan.remaps.is_empty() || plan.apply.iter().any(|c| matches!(c.op, Op::AddKeywords { .. })) {
         let problems = keywords::check_tree(&tx)?;
         if !problems.is_empty() {
             return Err(SourceError::Other(format!("the keyword tree would be left broken: {}", problems.join("; "))));
@@ -236,7 +246,7 @@ pub(crate) fn write(
     )
     .map_err(db_err)?;
     tx.commit().map_err(db_err)?;
-    Ok(plan.apply.len())
+    Ok(plan.remaps.len() + plan.apply.len())
 }
 
 fn now_ms() -> u64 {
@@ -473,7 +483,7 @@ pub(crate) mod tests {
     fn rating_goes_to_adjustment_and_combined_never_default() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let plan = plan(&con, &[change(1, Op::SetRating { base: None, value: Some(5) })], pk).unwrap();
+        let plan = plan(&con, &[], &[change(1, Op::SetRating { base: None, value: Some(5) })], pk).unwrap();
         assert_eq!(write(&mut con, &plan, pk).unwrap(), 1);
         assert_eq!(by_layer(&con, 1, "ZBASIC_RATING"), [(17, Some(5)), (18, None), (20, Some(5))]);
         assert_eq!(by_layer(&con, 2, "ZBASIC_RATING"), [(17, None), (18, None), (20, None)]);
@@ -487,7 +497,7 @@ pub(crate) mod tests {
             change(1, Op::SetRating { base: None, value: Some(3) }),
             change(1, Op::SetColor { base: None, value: Some(ColorLabel::Green) }),
         ];
-        let p = plan(&con, &set, pk).unwrap();
+        let p = plan(&con, &[], &set, pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(by_layer(&con, 1, "ZCOLOR_TAG_INDEX"), [(17, Some(4)), (18, None), (20, Some(4))]);
 
@@ -495,7 +505,7 @@ pub(crate) mod tests {
             change(1, Op::SetRating { base: Some(3), value: None }),
             change(1, Op::SetColor { base: Some(ColorLabel::Green), value: None }),
         ];
-        let p = plan(&con, &clear, pk).unwrap();
+        let p = plan(&con, &[], &clear, pk).unwrap();
         assert_eq!(p.apply.len(), 2);
         write(&mut con, &p, pk).unwrap();
         assert_eq!(by_layer(&con, 1, "ZBASIC_RATING"), [(17, None), (18, None), (20, None)]);
@@ -509,6 +519,7 @@ pub(crate) mod tests {
         con.execute("UPDATE ZVARIANTMETADATA SET ZBASIC_RATING = 2 WHERE Z_PK IN (5, 6)", []).unwrap(); // variant 2
         let p = plan(
             &con,
+            &[],
             &[
                 change(1, Op::SetRating { base: None, value: Some(4) }), // apply
                 change(2, Op::SetRating { base: None, value: Some(4) }), // someone set 2: conflict
@@ -527,7 +538,7 @@ pub(crate) mod tests {
     fn a_plan_made_stale_is_not_written() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let p = plan(&con, &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
+        let p = plan(&con, &[], &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
         // Between the plan and the write, someone else rates it.
         con.execute("UPDATE ZVARIANTMETADATA SET ZBASIC_RATING = 1 WHERE Z_PK IN (2, 3)", []).unwrap();
         assert!(matches!(write(&mut con, &p, pk), Err(SourceError::StalePlan)));
@@ -538,7 +549,7 @@ pub(crate) mod tests {
     fn writing_stamps_the_document() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let p = plan(&con, &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
+        let p = plan(&con, &[], &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         let stamp: f64 = con.query_row("SELECT ZDATEMODIFIED FROM ZDOCUMENTCONTENT", [], |r| r.get(0)).unwrap();
         assert!((stamp - unix_now()).abs() < 60.0);
@@ -583,7 +594,7 @@ pub(crate) mod tests {
         let Some(mut con) = fixture(&catalog) else { return };
         let store = dir.path().join("backups");
         let write_one = |con: &mut Connection, pk: i64, stars: u8| {
-            let p = plan(con, &[change(pk, Op::SetRating { base: None, value: Some(stars) })], self::pk).unwrap();
+            let p = plan(con, &[], &[change(pk, Op::SetRating { base: None, value: Some(stars) })], self::pk).unwrap();
             write(con, &p, self::pk).unwrap();
         };
 
@@ -633,7 +644,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
         let add = change(1, Op::AddKeywords { paths: kw(&["street", "b&w", "best|best2018"]) });
-        let p = plan(&con, std::slice::from_ref(&add), pk).unwrap();
+        let p = plan(&con, &[], std::slice::from_ref(&add), pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(
             keywords_by_layer(&con, 1),
@@ -653,7 +664,7 @@ pub(crate) mod tests {
             ]
         );
         // Already there: nothing to do.
-        assert_eq!(plan(&con, &[add], pk).unwrap().no_ops.len(), 1);
+        assert_eq!(plan(&con, &[], &[add], pk).unwrap().no_ops.len(), 1);
     }
 
     #[test]
@@ -661,7 +672,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
         for (pk_, path) in [(1, "a"), (2, "b"), (3, "a|x"), (3, "a|x|deep"), (4, "b|y")] {
-            let p = plan(&con, &[change(pk_, Op::AddKeywords { paths: kw(&[path]) })], pk).unwrap();
+            let p = plan(&con, &[], &[change(pk_, Op::AddKeywords { paths: kw(&[path]) })], pk).unwrap();
             write(&mut con, &p, pk).unwrap();
         }
         assert_eq!(keywords::check_tree(&con).unwrap(), Vec::<String>::new());
@@ -682,19 +693,19 @@ pub(crate) mod tests {
     fn removing_renumbers_and_leaves_the_tree() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let p = plan(&con, &[change(2, Op::AddKeywords { paths: kw(&["street", "b&w", "night"]) })], pk).unwrap();
+        let p = plan(&con, &[], &[change(2, Op::AddKeywords { paths: kw(&["street", "b&w", "night"]) })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         let remove = change(2, Op::RemoveKeywords { paths: kw(&["street"]) });
-        let p = plan(&con, std::slice::from_ref(&remove), pk).unwrap();
+        let p = plan(&con, &[], std::slice::from_ref(&remove), pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(
             keywords_by_layer(&con, 2),
             [(17, Some("b&w||0,night||1".into())), (18, None), (20, Some("b&w||0,night||1".into()))]
         );
         assert_eq!(tree(&con).len(), 3, "the keyword stays in the library");
-        assert_eq!(plan(&con, &[remove], pk).unwrap().no_ops.len(), 1, "removing it again does nothing");
+        assert_eq!(plan(&con, &[], &[remove], pk).unwrap().no_ops.len(), 1, "removing it again does nothing");
         // Removing the last one leaves no string at all.
-        let p = plan(&con, &[change(2, Op::RemoveKeywords { paths: kw(&["b&w", "night"]) })], pk).unwrap();
+        let p = plan(&con, &[], &[change(2, Op::RemoveKeywords { paths: kw(&["b&w", "night"]) })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(keywords_by_layer(&con, 2), [(17, None), (18, None), (20, None)]);
     }
@@ -703,7 +714,122 @@ pub(crate) mod tests {
     fn a_keyword_name_with_a_comma_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let Some(con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        assert!(plan(&con, &[change(1, Op::AddKeywords { paths: kw(&["a,b"]) })], pk).is_err());
+        assert!(plan(&con, &[], &[change(1, Op::AddKeywords { paths: kw(&["a,b"]) })], pk).is_err());
+    }
+
+    fn remap_of(map: &[(&str, &str)], prune: &[&str]) -> c1model::KeywordRemap {
+        c1model::KeywordRemap {
+            map: map
+                .iter()
+                .map(|(a, b)| (c1model::KeywordPath::from_pipe(a), c1model::KeywordPath::from_pipe(b)))
+                .collect(),
+            prune: prune.iter().map(|p| c1model::KeywordPath::from_pipe(p)).collect(),
+            label: String::new(),
+        }
+    }
+
+    /// Photos 1-3 with keywords; the tree has street, streets|night, b&w, a|x.
+    fn tagged(path: &Path) -> Option<Connection> {
+        let mut con = fixture(path)?;
+        for (pk_, paths) in [(1, vec!["street", "streets", "b&w"]), (2, vec!["streets|night", "a"]), (3, vec!["a|x"])] {
+            let p = plan(&con, &[], &[change(pk_, Op::AddKeywords { paths: kw(&paths) })], pk).unwrap();
+            write(&mut con, &p, pk).unwrap();
+        }
+        Some(con)
+    }
+
+    fn remap_all(con: &mut Connection, remap: c1model::KeywordRemap) {
+        let p = ApplyPlan { remaps: vec![remap], ..ApplyPlan::default() };
+        write(con, &p, pk).unwrap();
+        assert_eq!(keywords::check_tree(con).unwrap(), Vec::<String>::new());
+    }
+
+    fn adjusted(con: &Connection, variant: i64) -> Option<String> {
+        keywords_by_layer(con, variant)[0].1.clone()
+    }
+
+    #[test]
+    fn renaming_keeps_the_tree_numbers() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = tagged(&dir.path().join("c.cocatalogdb")) else { return };
+        let before = tree(&con);
+        remap_all(&mut con, remap_of(&[("streets", "avenues")], &[]));
+        assert_eq!(adjusted(&con, 1).as_deref(), Some("avenues||1,b&w||2,street||0"));
+        assert_eq!(adjusted(&con, 2).as_deref(), Some("a||1,avenues|night||0"));
+        let after = tree(&con);
+        let renamed: Vec<_> = before
+            .into_iter()
+            .map(|(n, p, l, r)| {
+                let f = |s: String| if s == "streets" { "avenues".to_owned() } else { s };
+                (f(n), p.map(f), l, r)
+            })
+            .collect();
+        assert_eq!(after, renamed, "only the name changes; intervals stay");
+    }
+
+    #[test]
+    fn joining_folds_a_keyword_and_its_children_into_another() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = tagged(&dir.path().join("c.cocatalogdb")) else { return };
+        let street_pk: i64 =
+            con.query_row("SELECT Z_PK FROM ZKEYWORD WHERE ZNAME = 'street'", [], |r| r.get(0)).unwrap();
+        remap_all(&mut con, remap_of(&[("streets", "street")], &[]));
+        assert_eq!(adjusted(&con, 1).as_deref(), Some("b&w||1,street||0"), "the duplicate is dropped");
+        assert_eq!(adjusted(&con, 2).as_deref(), Some("a||1,street|night||0"));
+        let names: Vec<_> = tree(&con).into_iter().map(|(n, p, ..)| (n, p)).collect();
+        assert!(names.contains(&("night".into(), Some("street".into()))));
+        assert!(!names.iter().any(|(n, _)| n == "streets"));
+        let kept: i64 = con.query_row("SELECT Z_PK FROM ZKEYWORD WHERE ZNAME = 'street'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kept, street_pk, "the target keeps its node");
+    }
+
+    #[test]
+    fn grouping_under_a_new_keyword_then_ungrouping() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = tagged(&dir.path().join("c.cocatalogdb")) else { return };
+        remap_all(&mut con, remap_of(&[("a", "things|a"), ("b&w", "things|b&w")], &[]));
+        assert_eq!(adjusted(&con, 3).as_deref(), Some("things|a|x||0"));
+        let names: Vec<_> = tree(&con).into_iter().map(|(n, p, ..)| (n, p)).collect();
+        assert!(names.contains(&("things".into(), None)));
+        assert!(names.contains(&("a".into(), Some("things".into()))));
+        assert!(names.contains(&("x".into(), Some("a".into()))));
+        assert!(names.contains(&("b&w".into(), Some("things".into()))));
+
+        // Ungroup: the children move up, and the emptied group goes (no photo has it).
+        remap_all(&mut con, remap_of(&[("things|a", "a"), ("things|b&w", "b&w")], &["things"]));
+        assert_eq!(adjusted(&con, 3).as_deref(), Some("a|x||0"));
+        let names: Vec<_> = tree(&con).into_iter().map(|(n, p, ..)| (n, p)).collect();
+        assert!(!names.iter().any(|(n, _)| n == "things"));
+        assert!(names.contains(&("a".into(), None)));
+    }
+
+    #[test]
+    fn a_group_some_photo_carries_is_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = tagged(&dir.path().join("c.cocatalogdb")) else { return };
+        remap_all(&mut con, remap_of(&[("a|x", "x")], &["a"]));
+        assert!(tree(&con).iter().any(|(n, p, ..)| n == "a" && p.is_none()), "photo 2 still has a");
+    }
+
+    #[test]
+    fn swapping_two_names_does_not_trip_the_unique_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = tagged(&dir.path().join("c.cocatalogdb")) else { return };
+        remap_all(&mut con, remap_of(&[("street", "b&w"), ("b&w", "street")], &[]));
+        assert_eq!(adjusted(&con, 1).as_deref(), Some("b&w||0,street||2,streets||1"));
+    }
+
+    #[test]
+    fn a_remap_of_keywords_gone_from_the_catalog_is_blocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(con) = tagged(&dir.path().join("c.cocatalogdb")) else { return };
+        assert!(keywords::check_remap(&con, &[], &remap_of(&[("nope", "x")], &[])).unwrap().is_some());
+        assert!(keywords::check_remap(&con, &[], &remap_of(&[("streets|night", "night")], &[])).unwrap().is_none());
+        // A change to a keyword an earlier queued change makes.
+        let rename = remap_of(&[("street", "avenue")], &[]);
+        let group = remap_of(&[("avenue", "g|avenue")], &[]);
+        assert!(keywords::check_remap(&con, &[], &group).unwrap().is_some());
+        assert!(keywords::check_remap(&con, &[rename], &group).unwrap().is_none());
     }
 
     #[test]

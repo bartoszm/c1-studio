@@ -10,7 +10,7 @@ pub mod memory;
 pub mod photo;
 pub mod source;
 
-pub use change::{ApplyPlan, ApplyReport, Change, Conflict, Op};
+pub use change::{ApplyPlan, ApplyReport, Change, Conflict, KeywordRemap, Op};
 pub use photo::{
     AssetId, Collection, CollectionId, CollectionKind, ColorLabel, Condition, EditInfo, Exif, FileInfo, GeoOrigin,
     GeoPoint, Iptc, KeywordNode, KeywordPath, Photo, PhotoId, Place, SmartRule, SourceId,

@@ -34,7 +34,7 @@
 
   let locked = $derived(plan && typeof plan.status === "object" ? plan.status.Locked.by : null);
   let writable = $derived(plan?.status === "Ready");
-  let toWrite = $derived(plan ? plan.apply.length + plan.unchanged.length : 0);
+  let toWrite = $derived(plan ? plan.remaps.length + plan.apply.length + plan.unchanged.length : 0);
   let canWrite = $derived(!!plan && writable && plan.conflicts.length === 0 && toWrite > 0 && !busy);
   let everything = $derived(
     plan ? [...plan.apply, ...plan.unchanged, ...plan.conflicts, ...plan.blocked.map(([p]) => p)] : [],
@@ -70,6 +70,17 @@
 
   const resolve = (keys: string[], keepMine: boolean) => act(() => api.resolve(keys, keepMine));
   const discard = (keys: string[]) => act(() => api.discard(keys));
+  const dropRemaps = (seqs: number[]) =>
+    act(async () => {
+      for (const seq of seqs) await api.undoRemap(seq);
+    });
+  /** Undo everything queued: keyword tree changes newest first, then the edits. */
+  const undoAll = () =>
+    act(async () => {
+      const seqs = [...(plan?.remaps ?? []).map(([s]) => s), ...(plan?.blocked_remaps ?? []).map(([s]) => s)];
+      for (const seq of seqs.sort((a, b) => b - a)) await api.undoRemap(seq);
+      await api.discard(everything.map((p) => p.key));
+    });
 
   function onkey(e: KeyboardEvent) {
     if (e.key === "Escape") onclose();
@@ -141,6 +152,25 @@
         </section>
       {/if}
 
+      {#if plan.remaps.length}
+        <section>
+          <h3>Keyword changes ({plan.remaps.length}), written first</h3>
+          <ul class="labels">
+            {#each plan.remaps as [seq, label] (seq)}<li>{label}</li>{/each}
+          </ul>
+        </section>
+      {/if}
+
+      {#if plan.blocked_remaps.length}
+        <section>
+          <h3>Keyword changes that cannot be written ({plan.blocked_remaps.length})</h3>
+          <ul class="labels">
+            {#each plan.blocked_remaps as [seq, label, why] (seq)}<li>{label} <span class="note">{why}</span></li>{/each}
+          </ul>
+          <button onclick={() => dropRemaps(plan!.blocked_remaps.map(([s]) => s))}>Drop these</button>
+        </section>
+      {/if}
+
       {#if plan.apply.length}
         <section>
           <h3>To write ({plan.apply.length.toLocaleString()})</h3>
@@ -168,13 +198,15 @@
         </p>
       {/if}
 
-      {#if !everything.length}<p class="muted">Nothing is waiting to be written.</p>{/if}
+      {#if !everything.length && !plan.remaps.length && !plan.blocked_remaps.length}
+        <p class="muted">Nothing is waiting to be written.</p>
+      {/if}
 
       <div class="buttons">
-        {#if everything.length}
+        {#if everything.length || plan.remaps.length || plan.blocked_remaps.length}
           {#if confirmDiscard}
-            <span class="warn">Undo all {everything.length} queued edits here?</span>
-            <button onclick={() => discard(everything.map((p) => p.key)).then(onclose)}>Yes, undo them</button>
+            <span class="warn">Undo everything queued here?</span>
+            <button onclick={() => undoAll().then(onclose)}>Yes, undo it</button>
             <button onclick={() => (confirmDiscard = false)}>No</button>
           {:else}
             <button class="left" onclick={() => (confirmDiscard = true)}>Undo all…</button>
@@ -221,6 +253,7 @@
   li img, .gone { width: 48px; height: 32px; object-fit: contain; background: var(--bg); border-radius: 2px; flex: none; }
   .what { flex: 1; min-width: 0; }
   .from { color: var(--muted); }
+  .labels li { display: block; padding: 2px 0; }
   .name { display: inline-block; min-width: 110px; margin-right: 8px; color: var(--muted); }
   .note { margin-left: 6px; color: var(--muted); }
   .choose { display: flex; gap: 6px; flex: none; }

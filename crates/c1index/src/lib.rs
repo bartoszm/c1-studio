@@ -8,7 +8,7 @@ pub mod library;
 pub mod schema;
 mod store;
 
-pub use edits::{Event, Origin, Pending};
+pub use edits::{Event, Origin, Pending, QueuedRemap};
 pub use facets::Counts;
 pub use filter::{BBox, Filter, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
 pub use library::{Library, PendingEdit, QueryOptions, QueryResult, Sort, SyncReport, smart_filter};
