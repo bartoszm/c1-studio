@@ -12,7 +12,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -34,7 +34,11 @@ pub enum Dim {
     State,
     City,
     Year,
+    /// `YYYY-MM`, local date.
     Month,
+    /// `YYYY-MM-Www`: the days of ISO week `ww` that fall in that month, so a week
+    /// across two months is counted under each, with its own days.
+    Week,
     /// `1`..`5`, or `none`.
     Rating,
     /// Colour name, or `none`.
@@ -48,7 +52,7 @@ pub enum Dim {
 }
 
 impl Dim {
-    pub const ALL: [Dim; 17] = [
+    pub const ALL: [Dim; 18] = [
         Dim::Source,
         Dim::Keyword,
         Dim::KeywordTree,
@@ -60,6 +64,7 @@ impl Dim {
         Dim::City,
         Dim::Year,
         Dim::Month,
+        Dim::Week,
         Dim::Rating,
         Dim::Color,
         Dim::Ext,
@@ -81,6 +86,7 @@ impl Dim {
             Dim::City => "city",
             Dim::Year => "year",
             Dim::Month => "month",
+            Dim::Week => "week",
             Dim::Rating => "rating_s",
             Dim::Color => "color",
             Dim::Ext => "ext",
@@ -244,6 +250,7 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
     if let Some(date) = photo.captured_at.and_then(local_date) {
         dim(Dim::Year, &date.year().to_string());
         dim(Dim::Month, &format!("{:04}-{:02}", date.year(), date.month()));
+        dim(Dim::Week, &format!("{:04}-{:02}-W{:02}", date.year(), date.month(), date.iso_week().week()));
     }
     dim(Dim::Rating, &photo.rating.map_or("none".to_owned(), |r| r.to_string()));
     dim(Dim::Color, photo.color.map_or("none", |c| c.name()));

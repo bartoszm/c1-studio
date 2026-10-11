@@ -137,6 +137,8 @@ pub struct Filter {
     pub year: Option<i32>,
     /// `YYYY-MM`.
     pub month: Option<String>,
+    /// `YYYY-MM-Www`: the days of an ISO week inside a month.
+    pub week: Option<String>,
     pub imported: Option<TimeRange>,
     /// Collection ids the photo must be in (each).
     pub collections: Vec<String>,
@@ -240,12 +242,15 @@ impl Filter {
             Dim::Country => f.country = None,
             Dim::State => f.state = None,
             Dim::City => f.city = None,
-            // A month lies inside its year: kept, it would leave only that year counted.
-            Dim::Year => {
+            // Years, months and weeks are one tree, and a range of days the other way to
+            // the same thing: each level counts as if no date were picked, so the whole
+            // tree stays visible.
+            Dim::Year | Dim::Month | Dim::Week => {
                 f.year = None;
                 f.month = None;
+                f.week = None;
+                f.captured = None;
             }
-            Dim::Month => f.month = None,
             Dim::Rating => f.rating = None,
             Dim::Color => f.color = None,
             Dim::Ext => f.ext.clear(),
@@ -367,6 +372,9 @@ impl Filter {
         if let Some(month) = &self.month {
             must.push(term(f.dim(Dim::Month), month));
         }
+        if let Some(week) = &self.week {
+            must.push(term(f.dim(Dim::Week), week));
+        }
         if let Some(t) = &self.imported {
             must.push(range_i64(f.imported, t.from, t.to));
         }
@@ -483,11 +491,19 @@ mod tests {
     }
 
     #[test]
-    fn years_count_without_the_month_picked_in_them() {
-        let f =
-            Filter { year: Some(2024), month: Some("2024-05".into()), camera: Some("X".into()), ..Filter::default() };
-        assert_eq!(f.without(Dim::Year), Filter { camera: Some("X".into()), ..Filter::default() });
-        assert_eq!(f.without(Dim::Month), Filter { month: None, ..f.clone() });
+    fn the_date_tree_counts_as_if_no_date_were_picked() {
+        let f = Filter {
+            year: Some(2024),
+            month: Some("2024-05".into()),
+            week: Some("2024-05-W20".into()),
+            camera: Some("X".into()),
+            ..Filter::default()
+        };
+        for dim in [Dim::Year, Dim::Month, Dim::Week] {
+            assert_eq!(f.without(dim), Filter { camera: Some("X".into()), ..Filter::default() });
+        }
+        let range = Filter { captured: Some(TimeRange { from: Some(0), to: None }), ..Filter::default() };
+        assert_eq!(range.without(Dim::Year), Filter::default());
     }
 
     #[test]
