@@ -132,12 +132,14 @@ photos with edits not yet written, and the panel lists which fields.
 | Remove a keyword | × next to it in the panel. Keywords under it go too; the × says so. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
+| IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
 
-Captions (title, headline, description, creator, copyright) show in the panel but are
-not typed there yet; set them by copy and paste or with `c1cat describe` / `c1cat iptc`.
+**Title is not a caption.** Capture One follows the strict IPTC meaning: Title is the
+*Object Name*, a short formal identifier of the image (a file or job code), and sits
+under IPTC – Image. The caption is the Description.
 
 **Copy and paste.** *Copy…* in the panel (Ctrl+Shift+C) lists the focused photo's
-rating, colour, keywords, location, GPS and caption fields with their values. Tick what
+rating, colour, keywords, location, GPS and IPTC fields with their values. Tick what
 to copy; for keywords, choose *add to theirs* or *replace theirs*. *Paste* (Ctrl+Shift+V)
 puts them on the picked photos as one edit. A ticked field that is empty on the source
 clears it on the targets. The clipboard keeps the photo as it was when copied, and
