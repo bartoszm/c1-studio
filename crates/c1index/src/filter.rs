@@ -240,7 +240,11 @@ impl Filter {
             Dim::Country => f.country = None,
             Dim::State => f.state = None,
             Dim::City => f.city = None,
-            Dim::Year => f.year = None,
+            // A month lies inside its year: kept, it would leave only that year counted.
+            Dim::Year => {
+                f.year = None;
+                f.month = None;
+            }
             Dim::Month => f.month = None,
             Dim::Rating => f.rating = None,
             Dim::Color => f.color = None,
@@ -476,6 +480,20 @@ mod tests {
     fn globs_become_anchored_regexes() {
         assert_eq!(glob_to_regex("dscf*.raf"), "dscf.*\\.raf");
         assert_eq!(glob_to_regex("a?b"), "a.b");
+    }
+
+    #[test]
+    fn years_count_without_the_month_picked_in_them() {
+        let f =
+            Filter { year: Some(2024), month: Some("2024-05".into()), camera: Some("X".into()), ..Filter::default() };
+        assert_eq!(f.without(Dim::Year), Filter { camera: Some("X".into()), ..Filter::default() });
+        assert_eq!(f.without(Dim::Month), Filter { month: None, ..f.clone() });
+    }
+
+    #[test]
+    fn time_ranges_take_either_bound() {
+        let f: Filter = serde_json::from_str(r#"{"captured":{"from":1000}}"#).unwrap();
+        assert_eq!(f.captured, Some(TimeRange { from: Some(1000), to: None }));
     }
 
     #[test]
