@@ -12,7 +12,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -111,9 +111,13 @@ pub struct Fields {
     pub filename: Field,
     pub folder: Field,
     pub captured: Field,
+    /// Sort keys: the value, then the row, so photos that tie keep their order when one
+    /// of them is edited (an edit re-adds its document at the end of the index).
     pub captured_sort: Field,
     pub imported: Field,
+    pub imported_sort: Field,
     pub rating: Field,
+    pub rating_sort: Field,
     pub iso: Field,
     pub aperture: Field,
     pub shutter: Field,
@@ -151,7 +155,9 @@ pub fn build_schema() -> (Schema, Fields) {
         captured: b.add_i64_field("captured", INDEXED),
         captured_sort: b.add_i64_field("captured_sort", FAST),
         imported: b.add_i64_field("imported", num()),
+        imported_sort: b.add_i64_field("imported_sort", FAST),
         rating: b.add_u64_field("rating", num()),
+        rating_sort: b.add_u64_field("rating_sort", FAST),
         iso: b.add_u64_field("iso", num()),
         aperture: b.add_f64_field("aperture", num()),
         shutter: b.add_f64_field("shutter", num()),
@@ -195,6 +201,16 @@ pub fn folder_tree(path: &str) -> Vec<String> {
 
 fn local_date(ms: i64) -> Option<chrono::DateTime<Local>> {
     Local.timestamp_millis_opt(ms).single()
+}
+
+/// A time (ms) with the row in its low 20 bits, so equal times sort by row. Photos
+/// without a time sort first, also by row.
+fn sort_key(ms: Option<i64>, row: u64) -> i64 {
+    let tie = (row & 0xf_ffff) as i64;
+    match ms {
+        Some(ms) => ms.saturating_mul(1 << 20).saturating_add(tie),
+        None => i64::MIN + tie,
+    }
 }
 
 pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
@@ -284,7 +300,9 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
     }
     doc.add_text(f.text, text.join("\n"));
 
-    doc.add_i64(f.captured_sort, photo.captured_at.unwrap_or(i64::MIN));
+    doc.add_i64(f.captured_sort, sort_key(photo.captured_at, row));
+    doc.add_i64(f.imported_sort, sort_key(photo.imported_at, row));
+    doc.add_u64(f.rating_sort, (u64::from(photo.rating.unwrap_or(0)) << 32) | (row & 0xffff_ffff));
     if let Some(ms) = photo.captured_at {
         doc.add_i64(f.captured, ms);
     }

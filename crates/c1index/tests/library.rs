@@ -491,3 +491,24 @@ fn queued_edits_outlive_the_store() {
     assert_eq!(rated(&lib, 5.0), [5]);
     assert_eq!(lib.pending().unwrap().len(), 1);
 }
+
+#[test]
+fn an_edit_keeps_photos_that_tie_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    // Ten photos taken in the same second, imported together, unrated.
+    let photos = (1..=10)
+        .map(|n| Photo { captured_at: Some(1_700_000_000_000), imported_at: Some(1), rating: None, ..photo(n) })
+        .collect();
+    let source = MemorySource::new("mem", photos, vec![]);
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&source).unwrap();
+    for sort in [Sort::DateDesc, Sort::Date, Sort::ImportedDesc, Sort::Rating] {
+        let order = |lib: &Library| {
+            lib.query(&Filter::default(), &QueryOptions { sort, ..QueryOptions::default() }).unwrap().rows
+        };
+        let before = order(&lib);
+        // Re-adds the document of a photo in the middle; a colour does not change any key.
+        lib.edit(&[(before[4], Op::SetColor { base: None, value: Some(ColorLabel::Blue) })]).unwrap();
+        assert_eq!(order(&lib), before, "{sort:?}");
+    }
+}

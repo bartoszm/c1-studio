@@ -573,13 +573,13 @@ impl Library {
             Sort::Imported | Sort::ImportedDesc => {
                 let order = if options.sort == Sort::Imported { Order::Asc } else { Order::Desc };
                 let (n, hits, f) =
-                    searcher.search(query, &(Count, top.order_by_fast_field::<i64>("imported", order), facets))?;
+                    searcher.search(query, &(Count, top.order_by_fast_field::<i64>("imported_sort", order), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Rating | Sort::RatingDesc => {
                 let order = if options.sort == Sort::Rating { Order::Asc } else { Order::Desc };
                 let (n, hits, f) =
-                    searcher.search(query, &(Count, top.order_by_fast_field::<u64>("rating", order), facets))?;
+                    searcher.search(query, &(Count, top.order_by_fast_field::<u64>("rating_sort", order), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Filename | Sort::FilenameDesc => {

@@ -22,6 +22,11 @@ use crate::process;
 /// Backups kept per catalog; older ones are deleted after a new one is made.
 pub(crate) const KEEP_BACKUPS: usize = 5;
 
+/// Writes the app makes in a row share one backup for this long, as long as nothing
+/// else touched the catalog in between (autosave writes often; each backup copies the
+/// whole catalog). The backup holds the catalog from before the first of them.
+const SHARED_BACKUP_MS: u64 = 3_600_000;
+
 /// Whether a write could start now, cheapest checks first.
 pub(crate) fn status(catalog: &Path) -> WriteStatus {
     if let Some(name) = process::running_capture_one() {
@@ -201,6 +206,10 @@ pub(crate) fn write(
     Ok(plan.apply.len())
 }
 
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
 fn unix_now() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
@@ -217,16 +226,26 @@ pub struct Backup {
     /// The catalog's size and modification time when it was copied: a backup is reused
     /// while the catalog still matches them.
     pub source_size: u64,
-    pub source_mtime: f64,
+    /// Nanoseconds since the epoch: whole numbers, so they compare exactly after a trip
+    /// through JSON.
+    pub source_mtime: u64,
     /// Local time, `2026-10-11T14:03:22`.
     pub created: String,
     pub size: u64,
     pub millis: u128,
+    /// Milliseconds since the epoch, when it was made.
+    #[serde(default)]
+    pub created_ms: u64,
+    /// The catalog's size and modification time right after the app's last write that
+    /// this backup covers. While the catalog still matches, the next write reuses it.
+    #[serde(default)]
+    pub after_write: Option<(u64, u64)>,
 }
 
-fn file_stamp(path: &Path) -> Result<(u64, f64)> {
+/// Size and modification time (ns).
+fn file_stamp(path: &Path) -> Result<(u64, u64)> {
     let meta = fs::metadata(path)?;
-    let mtime = meta.modified()?.duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    let mtime = meta.modified()?.duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
     Ok((meta.len(), mtime))
 }
 
@@ -247,11 +266,18 @@ pub fn backups(catalog: &Path, dir: &Path) -> Vec<Backup> {
 /// even if something touched the file meanwhile. Reuses the newest backup when the
 /// catalog has not changed since it was made, and keeps only the newest `keep`.
 pub fn backup(catalog: &Path, dir: &Path, keep: usize) -> Result<Backup> {
-    let (source_size, source_mtime) = file_stamp(catalog)?;
-    if let Some(same) =
-        backups(catalog, dir).into_iter().find(|b| b.source_size == source_size && b.source_mtime == source_mtime)
+    let stamp = file_stamp(catalog)?;
+    let (source_size, source_mtime) = stamp;
+    let all = backups(catalog, dir);
+    if let Some(same) = all.iter().find(|b| b.source_size == source_size && b.source_mtime == source_mtime) {
+        return Ok(same.clone());
+    }
+    // Only the app wrote since the newest backup, and not long ago: it still covers this.
+    if let Some(newest) = all.first()
+        && newest.after_write == Some(stamp)
+        && now_ms().saturating_sub(newest.created_ms) < SHARED_BACKUP_MS
     {
-        return Ok(same);
+        return Ok(newest.clone());
     }
     fs::create_dir_all(dir)?;
     let started = Instant::now();
@@ -273,6 +299,8 @@ pub fn backup(catalog: &Path, dir: &Path, keep: usize) -> Result<Backup> {
         source_mtime,
         created: now.format("%Y-%m-%dT%H:%M:%S%.3f").to_string(),
         millis: started.elapsed().as_millis(),
+        created_ms: now_ms(),
+        after_write: None,
     };
     let manifest = manifest_path(&target);
     fs::write(&manifest, serde_json::to_vec_pretty(&record).map_err(|e| SourceError::Other(e.to_string()))?)?;
@@ -281,6 +309,14 @@ pub fn backup(catalog: &Path, dir: &Path, keep: usize) -> Result<Backup> {
         let _ = fs::remove_file(manifest_path(&stale.backup));
     }
     Ok(record)
+}
+
+/// Records that the app just wrote to the catalog under `backup`'s cover.
+pub(crate) fn wrote(catalog: &Path, backup: &Backup) -> Result<()> {
+    let record = Backup { after_write: Some(file_stamp(catalog)?), ..backup.clone() };
+    let bytes = serde_json::to_vec_pretty(&record).map_err(|e| SourceError::Other(e.to_string()))?;
+    fs::write(manifest_path(&record.backup), bytes)?;
+    Ok(())
 }
 
 fn manifest_path(backup: &Path) -> PathBuf {
@@ -505,6 +541,34 @@ pub(crate) mod tests {
         let copy = Connection::open(&kept[0].backup).unwrap();
         let n: i64 = copy.query_row("SELECT COUNT(*) FROM ZVARIANT", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 5);
+    }
+
+    #[test]
+    fn writes_in_a_row_share_a_backup_until_someone_else_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        let Some(mut con) = fixture(&catalog) else { return };
+        let store = dir.path().join("backups");
+        let write_one = |con: &mut Connection, pk: i64, stars: u8| {
+            let p = plan(con, &[change(pk, Op::SetRating { base: None, value: Some(stars) })], self::pk).unwrap();
+            write(con, &p, self::pk).unwrap();
+        };
+
+        let first = backup(&catalog, &store, 5).unwrap();
+        write_one(&mut con, 1, 4);
+        wrote(&catalog, &first).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let second = backup(&catalog, &store, 5).unwrap();
+        assert_eq!(second.backup, first.backup, "only the app wrote: the same backup covers it");
+        write_one(&mut con, 2, 4);
+        wrote(&catalog, &second).unwrap();
+
+        // Someone else writes (Capture One): the next write gets a fresh backup.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        con.execute("UPDATE ZVARIANTMETADATA SET ZBASIC_RATING = 1 WHERE Z_PK IN (8, 9)", []).unwrap();
+        let third = backup(&catalog, &store, 5).unwrap();
+        assert_ne!(third.backup, first.backup);
+        assert_eq!(backups(&catalog, &store).len(), 2);
     }
 
     #[test]

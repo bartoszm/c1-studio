@@ -1,7 +1,10 @@
 //! The desktop app: the library behind Tauri commands, and pixels behind the `c1img:`
 //! protocol (`c1img://localhost/thumb/<row>`, `c1img://localhost/preview/<row>`).
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::{Change, Collection, ColorLabel, ImageTier, Op, Photo, PhotoSource, WriteStatus};
@@ -15,6 +18,27 @@ struct Session {
     library: Library,
     /// One sync or write to Capture One at a time.
     syncing: Mutex<()>,
+    /// `settings.json` beside the library.
+    settings_path: PathBuf,
+    /// Write the queue to Capture One by itself (off unless the user turns it on).
+    autosave: AtomicBool,
+    /// When the queue last changed, so autosave waits until the user pauses.
+    last_edit: Mutex<Instant>,
+    /// What autosave last reported, sent to the window only when it changes.
+    autosave_state: Mutex<AutosaveState>,
+}
+
+impl Session {
+    fn touched(&self) {
+        *self.last_edit.lock().unwrap() = Instant::now();
+    }
+}
+
+/// The app's own settings, kept per catalog.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Settings {
+    autosave: bool,
 }
 
 /// The open session, or why there is none (no catalog found, library unreadable).
@@ -31,7 +55,18 @@ fn open() -> anyhow::Result<Session> {
     let dir = data_dir(&catalog);
     let source = CaptureOne::open(&catalog, dir.join("work"))?;
     let library = Library::open(dir.join("library"))?;
-    Ok(Session { source, library, syncing: Mutex::new(()) })
+    let settings_path = dir.join("settings.json");
+    let settings: Settings =
+        std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    Ok(Session {
+        source,
+        library,
+        syncing: Mutex::new(()),
+        settings_path,
+        autosave: AtomicBool::new(settings.autosave),
+        last_edit: Mutex::new(Instant::now()),
+        autosave_state: Mutex::new(AutosaveState::Off),
+    })
 }
 
 fn text(e: impl std::fmt::Display) -> String {
@@ -111,13 +146,17 @@ async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u6
         Edit::Color(value) => Op::SetColor { base: None, value },
     };
     let changes: Vec<(u64, Op)> = rows.into_iter().map(|row| (row, op.clone())).collect();
-    app.session()?.library.edit(&changes).map_err(|e| format!("{e:#}"))
+    let s = app.session()?;
+    s.touched();
+    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
 }
 
 /// Applies ops returned by [`edit`] (undo and redo).
 #[tauri::command]
 async fn edit_ops(app: State<'_, App>, changes: Vec<(u64, Op)>) -> Result<Vec<(u64, Op)>, String> {
-    app.session()?.library.edit(&changes).map_err(|e| format!("{e:#}"))
+    let s = app.session()?;
+    s.touched();
+    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
@@ -127,12 +166,16 @@ async fn pending(app: State<'_, App>) -> Result<Vec<PendingEdit>, String> {
 
 #[tauri::command]
 async fn discard(app: State<'_, App>, keys: Vec<String>) -> Result<(), String> {
-    app.session()?.library.discard(&keys).map_err(|e| format!("{e:#}"))
+    let s = app.session()?;
+    s.touched();
+    s.library.discard(&keys).map_err(|e| format!("{e:#}"))
 }
 
 #[tauri::command]
 async fn resolve(app: State<'_, App>, keys: Vec<String>, keep_mine: bool) -> Result<(), String> {
-    app.session()?.library.resolve(&keys, keep_mine).map_err(|e| format!("{e:#}"))
+    let s = app.session()?;
+    s.touched();
+    s.library.resolve(&keys, keep_mine).map_err(|e| format!("{e:#}"))
 }
 
 /// What writing the queue to Capture One would do, after pulling its latest state.
@@ -193,32 +236,158 @@ struct WriteReport {
     backup: Option<String>,
 }
 
-/// Writes the queue to Capture One: refused while it runs. Conflicts must be resolved
-/// first. Capture One's state is pulled in before and after.
+enum Outcome {
+    Written(WriteReport),
+    /// Nothing written: these need the user first.
+    Attention {
+        conflicts: usize,
+        blocked: usize,
+    },
+}
+
+/// Writes the queue to Capture One (refused while it runs), unless some edit conflicts
+/// with a change made there. Capture One's state is pulled in before and after.
+fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
+    run_sync(app)?;
+    let s = app.state::<App>().session()?;
+    let report = {
+        let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+        let (summary, plan) = plan_writes(&s)?;
+        if !summary.conflicts.is_empty() {
+            return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
+        }
+        let report = s.source.apply(&plan).map_err(text)?;
+        let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
+        s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
+        if report.applied == 0 && !summary.blocked.is_empty() {
+            return Ok(Outcome::Attention { conflicts: 0, blocked: summary.blocked.len() });
+        }
+        WriteReport { written: report.applied, backup: report.backup }
+    };
+    run_sync(app)?;
+    Ok(Outcome::Written(report))
+}
+
 #[tauri::command]
 async fn write_apply(app: AppHandle) -> Result<WriteReport, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        run_sync(&app)?;
-        let s = app.state::<App>().session()?;
-        let report = {
-            let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-            let (summary, plan) = plan_writes(&s)?;
-            if !summary.conflicts.is_empty() {
-                return Err(format!(
-                    "{} edit(s) conflict with Capture One; choose a side first",
-                    summary.conflicts.len()
-                ));
-            }
-            let report = s.source.apply(&plan).map_err(text)?;
-            let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
-            s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
-            WriteReport { written: report.applied, backup: report.backup }
-        };
-        run_sync(&app)?;
-        Ok(report)
+    app.state::<App>().session()?.touched();
+    tauri::async_runtime::spawn_blocking(move || match write_queue(&app)? {
+        Outcome::Written(report) => Ok(report),
+        Outcome::Attention { conflicts, .. } => {
+            Err(format!("{conflicts} edit(s) conflict with Capture One; choose a side first"))
+        }
     })
     .await
     .map_err(text)?
+}
+
+/// What autosave is doing, for the footer.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(tag = "state", rename_all = "lowercase")]
+enum AutosaveState {
+    Off,
+    /// The queue is empty.
+    Idle,
+    /// Edits are queued; it writes once the user pauses.
+    Pending,
+    /// Capture One (or another program) has the catalog; it writes once it is closed.
+    Waiting {
+        by: String,
+    },
+    /// Some edits need a choice in the Write dialog first.
+    Attention {
+        conflicts: usize,
+        blocked: usize,
+    },
+    Saved {
+        written: usize,
+        at: i64,
+    },
+    Failed {
+        error: String,
+    },
+}
+
+/// Edits wait this long after the last change before autosave writes them.
+const AUTOSAVE_QUIET: Duration = Duration::from_secs(8);
+const AUTOSAVE_TICK: Duration = Duration::from_secs(4);
+
+fn report_autosave(app: &AppHandle, s: &Session, state: AutosaveState) {
+    let mut last = s.autosave_state.lock().unwrap();
+    // A save stays on show until there is something new to say.
+    let keep_saved = matches!(*last, AutosaveState::Saved { .. }) && state == AutosaveState::Idle;
+    if *last != state && !keep_saved {
+        *last = state.clone();
+        let _ = app.emit("autosave", &state);
+    }
+}
+
+/// Runs for the life of the app: when autosave is on, writes the queue once the user
+/// has paused and Capture One is closed.
+fn autosave_loop(app: AppHandle) {
+    loop {
+        std::thread::sleep(AUTOSAVE_TICK);
+        let Ok(s) = app.state::<App>().session() else { return };
+        if !s.autosave.load(Ordering::Relaxed) {
+            report_autosave(&app, &s, AutosaveState::Off);
+            continue;
+        }
+        let queued = s.library.pending().map(|p| p.len()).unwrap_or(0);
+        if queued == 0 {
+            report_autosave(&app, &s, AutosaveState::Idle);
+            continue;
+        }
+        if s.last_edit.lock().unwrap().elapsed() < AUTOSAVE_QUIET {
+            report_autosave(&app, &s, AutosaveState::Pending);
+            continue;
+        }
+        match s.source.write_status() {
+            WriteStatus::Ready => {}
+            WriteStatus::Locked { by } => {
+                report_autosave(&app, &s, AutosaveState::Waiting { by });
+                continue;
+            }
+            WriteStatus::ReadOnly => {
+                let error = "this catalog's format is not one the app was checked against".to_owned();
+                report_autosave(&app, &s, AutosaveState::Failed { error });
+                continue;
+            }
+        }
+        let state = match write_queue(&app) {
+            Ok(Outcome::Written(r)) => {
+                let _ = app.emit("queue-written", &r);
+                AutosaveState::Saved { written: r.written, at: c1index::edits::now_ms() }
+            }
+            Ok(Outcome::Attention { conflicts, blocked }) => AutosaveState::Attention { conflicts, blocked },
+            Err(error) => AutosaveState::Failed { error },
+        };
+        // A failure is not retried until the queue changes, so it is not repeated every tick.
+        if matches!(state, AutosaveState::Failed { .. } | AutosaveState::Attention { .. }) {
+            report_autosave(&app, &s, state);
+            let since = *s.last_edit.lock().unwrap();
+            while *s.last_edit.lock().unwrap() == since && s.autosave.load(Ordering::Relaxed) {
+                std::thread::sleep(AUTOSAVE_TICK);
+            }
+        } else {
+            report_autosave(&app, &s, state);
+        }
+    }
+}
+
+#[tauri::command]
+async fn autosave(app: State<'_, App>) -> Result<(bool, AutosaveState), String> {
+    let s = app.session()?;
+    Ok((s.autosave.load(Ordering::Relaxed), s.autosave_state.lock().unwrap().clone()))
+}
+
+#[tauri::command]
+async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
+    let s = app.session()?;
+    s.autosave.store(on, Ordering::Relaxed);
+    // Turning it on waits for the usual pause, so the first write is never a surprise.
+    s.touched();
+    let bytes = serde_json::to_vec_pretty(&Settings { autosave: on }).map_err(text)?;
+    std::fs::write(&s.settings_path, bytes).map_err(text)
 }
 
 /// `/thumb/<row>` serves Capture One's own thumbnail as stored: a JPEG with every edit.
@@ -271,6 +440,8 @@ pub fn run() {
                         let _ = handle.emit("sync-failed", e);
                     }
                 });
+                let handle = app.handle().clone();
+                std::thread::spawn(move || autosave_loop(handle));
             }
             Ok(())
         })
@@ -292,7 +463,9 @@ pub fn run() {
             discard,
             resolve,
             write_plan,
-            write_apply
+            write_apply,
+            autosave,
+            set_autosave
         ])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");
