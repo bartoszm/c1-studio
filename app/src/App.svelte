@@ -36,6 +36,8 @@
   let selected = $state<number | null>(null);
   let viewing = $state(false);
   let syncNote = $state("syncing…");
+  /** Why reading the source failed, in full: shown in the grid when it is left empty. */
+  let syncFailed = $state<string | null>(null);
   let grid: Grid;
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
@@ -201,7 +203,8 @@
       status = await api.status();
       // A sync that failed before the window was listening (at start, or on opening
       // another catalog) still says so.
-      if (status.sync_error) syncNote = `sync failed: ${status.sync_error}`;
+      syncFailed = status.sync_error;
+      if (syncFailed) syncNote = "sync failed";
       collections = await api.collections();
       await refreshKeywords();
       await refreshQueued();
@@ -216,8 +219,8 @@
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     const off = [
-      listen("library-changed", () => { syncNote = ""; refresh(true); }),
-      listen<string>("sync-failed", (e) => { syncNote = `sync failed: ${e.payload}`; }),
+      listen("library-changed", () => { syncNote = ""; syncFailed = null; refresh(true); }),
+      listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
       listen("queue-written", () => { edited(); }),
     ];
@@ -946,6 +949,8 @@
     {#if error}
       <p class="error">{error}</p>
       {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button></p>{/if}
+    {:else if syncFailed && status?.photos === 0}
+      <p class="error">Nothing could be read from this catalog.<br />{syncFailed}</p>
     {:else if result && result.total === 0}
       <p class="empty">Nothing matches.</p>
     {/if}
@@ -956,11 +961,22 @@
   <footer>
     {#if status}
       <span>{status.source}</span>
+      {#if status.compatibility.read !== "Tested" || status.compatibility.write !== "Tested"}
+        {@const c = status.compatibility}
+        <button
+          class="compat"
+          class:untested={c.read !== "Tested"}
+          title="{c.format}. {c.note ?? ''}"
+          onclick={() => (choosingSource = true)}
+        >
+          {c.read !== "Tested" ? "untested version" : "read-only"} · {c.format.replace(/^Capture One (\d+\.\d+).*$/, "$1")}
+        </button>
+      {/if}
       <span>{status.photos.toLocaleString()} in library</span>
       <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
     {/if}
     {#if editError}<span class="edit-error">{editError}</span>{/if}
-    {#if syncNote}<span class="sync">{syncNote}</span>{/if}
+    {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     <span class="autosave" class:alone={!syncNote}>
       {#if autosaveOn}
         {@const [note, attention] = autosaveText(autosaveState)}

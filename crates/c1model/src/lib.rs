@@ -19,8 +19,8 @@ pub use photo::{
 };
 pub use provider::{Pick, Provider, SourceSpec};
 pub use source::{
-    Capabilities, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError, SourceEvent, SourceInfo,
-    WriteStatus,
+    Capabilities, Compatibility, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError,
+    SourceEvent, SourceInfo, Support, WriteStatus,
 };
 
 /// Bumped whenever a serialised [`Photo`] or [`Collection`] changes shape, so stored copies
