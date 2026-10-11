@@ -1,10 +1,26 @@
+<script lang="ts" module>
+  /** How tiles are sized: about this wide (the count per row follows the window), or a
+   *  fixed count per row (the width follows). */
+  export type Tiles = { by: "size"; px: number } | { by: "count"; n: number };
+  export type Shape = "3:2" | "1:1";
+  export const DEFAULT_TILES: Tiles = { by: "size", px: 170 };
+  export const MIN_TILE = 60;
+  export const MAX_COUNT = 30;
+  /** What the grid laid out: tiles per row, their width, the width they share. */
+  export type Layout = { cols: number; width: number; room: number };
+</script>
+
 <script lang="ts">
-  import type { Snippet } from "svelte";
+  import { untrack, type Snippet } from "svelte";
+  import { SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
 
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
-  let { total, rowAt, need, selected, picked, queued, onselect, onopen, children }: {
+  let {
+    total, rowAt, need, selected, picked, queued, onselect, onopen, children,
+    tiles, shape, ontiles, layout = $bindable(),
+  }: {
     total: number;
     /** The photo at a position, once its page has loaded. */
     rowAt: (i: number) => number | undefined;
@@ -20,9 +36,13 @@
     onselect: (i: number, how?: { add: boolean; range: boolean }) => void;
     onopen: (i: number) => void;
     children?: Snippet;
+    tiles: Tiles;
+    shape: Shape;
+    /** Ctrl+wheel asks for bigger or smaller tiles. */
+    ontiles: (tiles: Tiles) => void;
+    layout?: Layout;
   } = $props();
 
-  const MIN = 170;
   const GAP = 6;
   const PAD = 10;
   const OVERSCAN = 3;
@@ -32,9 +52,15 @@
   let height = $state(0);
   let top = $state(0);
 
-  let cols = $derived(Math.max(1, Math.floor((width - 2 * PAD + GAP) / (MIN + GAP))));
-  let cellW = $derived(Math.max(1, (width - 2 * PAD - GAP * (cols - 1)) / cols));
-  let cellH = $derived(Math.round((cellW * 2) / 3));
+  let room = $derived(Math.max(1, width - 2 * PAD));
+  let cols = $derived(
+    Math.max(1, Math.min(
+      tiles.by === "count" ? tiles.n : Math.round((room + GAP) / (tiles.px + GAP)),
+      Math.floor((room + GAP) / (MIN_TILE + GAP)) || 1,
+    )),
+  );
+  let cellW = $derived(Math.max(1, (room - GAP * (cols - 1)) / cols));
+  let cellH = $derived(Math.round(shape === "1:1" ? cellW : (cellW * 2) / 3));
   let lineH = $derived(cellH + GAP);
   let lines = $derived(Math.ceil(total / cols));
   let first = $derived(Math.max(0, Math.floor((top - PAD) / lineH) - OVERSCAN));
@@ -45,6 +71,87 @@
 
   $effect(() => {
     if (width > 0 && total > 0) need(first * cols, Math.min(total, last * cols));
+  });
+
+  $effect(() => {
+    layout = { cols, width: Math.round(cellW), room };
+  });
+
+  /** The tile width that gives `n` per row. */
+  function widthFor(n: number) {
+    return Math.max(MIN_TILE, Math.floor((room - GAP * (n - 1)) / n));
+  }
+
+  /** One step bigger (fewer per row) or smaller (more per row), keeping the mode. */
+  export function step(bigger: boolean) {
+    const n = Math.max(1, Math.min(MAX_COUNT, cols + (bigger ? -1 : 1)));
+    if (n === cols && tiles.by === "count") return;
+    ontiles(tiles.by === "count" ? { by: "count", n } : { by: "size", px: widthFor(n) });
+  }
+
+  // When tiles change size (or the window does), the photo in focus stays where it was
+  // on screen, or else the row at the top stays at the top. That row is remembered
+  // until the next scroll, so steps one after another don't drift.
+  let before: { cols: number; lineH: number } | null = null;
+  let anchor: { i: number; past: number } | null = null;
+  let placed = -1;
+  function scrolled() {
+    top = el.scrollTop;
+    if (Math.abs(el.scrollTop - placed) > 1) anchor = null;
+  }
+  $effect(() => {
+    const now = { cols, lineH };
+    untrack(() => {
+      if (el && before && (before.cols !== now.cols || before.lineH !== now.lineH)) {
+        const old = el.scrollTop;
+        const lineOf = (i: number, l: { cols: number; lineH: number }) => PAD + Math.floor(i / l.cols) * l.lineH;
+        const focusY = selected === null ? -1 : lineOf(selected, before) - old;
+        if (selected !== null && focusY > -before.lineH && focusY < height) el.scrollTop = lineOf(selected, now) - focusY;
+        else {
+          if (!anchor) {
+            // The row nearest the top edge, and how far it is past it.
+            const at = Math.max(0, old - PAD) / before.lineH;
+            const i = Math.round(at) * before.cols;
+            anchor = { i, past: old - lineOf(i, before) };
+          }
+          el.scrollTop = lineOf(anchor.i, now) + anchor.past;
+        }
+        placed = el.scrollTop;
+        top = el.scrollTop;
+      }
+      before = now;
+    });
+  });
+
+  // Thumbnails are 450 px wide: tiles bigger than that take the preview once scrolling
+  // stops, laid over the thumbnail when it arrives.
+  const sharp = new SvelteSet<number>();
+  let wantSharp = $derived(cellW * devicePixelRatio > 560);
+  $effect(() => {
+    if (!wantSharp) {
+      untrack(() => sharp.clear());
+      return;
+    }
+    // Only what is on screen: each preview takes a moment to render.
+    const from = Math.floor((top - PAD) / lineH) * cols;
+    const to = Math.ceil((top + height - PAD) / lineH) * cols;
+    const rows = shown.filter((i) => i >= from && i < to).map(rowAt).filter((r) => r !== undefined);
+    const wait = setTimeout(() => {
+      if (sharp.size > 200) sharp.clear();
+      for (const r of rows) sharp.add(r);
+    }, 300);
+    return () => clearTimeout(wait);
+  });
+
+  // Ctrl+wheel scales the tiles. Not a passive listener: the page must not zoom.
+  $effect(() => {
+    const wheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.deltaY) return;
+      e.preventDefault();
+      step(e.deltaY < 0);
+    };
+    el.addEventListener("wheel", wheel, { passive: false });
+    return () => el.removeEventListener("wheel", wheel);
   });
 
   /** Back to the top, for a new result. */
@@ -81,7 +188,7 @@
   }
 </script>
 
-<main bind:this={el} bind:clientWidth={width} bind:clientHeight={height} onscroll={() => (top = el.scrollTop)}>
+<main bind:this={el} bind:clientWidth={width} bind:clientHeight={height} onscroll={scrolled}>
   {@render children?.()}
   <div class="space" style:height="{total ? lines * lineH - GAP + 2 * PAD : 0}px">
     {#each shown as i (i)}
@@ -96,7 +203,12 @@
         onclick={(e) => onselect(i, { add: e.ctrlKey || e.metaKey, range: e.shiftKey })}
         ondblclick={() => onopen(i)}
       >
-        {#if row !== undefined}<img src={api.thumbUrl(row)} alt="" decoding="async" />{/if}
+        {#if row !== undefined}
+          <img src={api.thumbUrl(row)} alt="" decoding="async" />
+          {#if wantSharp && sharp.has(row)}
+            <img class="sharp" src={api.previewUrl(row)} alt="" decoding="async" onload={(e) => e.currentTarget.classList.add("ready")} />
+          {/if}
+        {/if}
         {#if queued(i)}<span class="queued" title="Edited here, not yet written to Capture One"></span>{/if}
       </button>
     {/each}

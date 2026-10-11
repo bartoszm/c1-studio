@@ -53,7 +53,7 @@ header {
 .search:focus { border-color: #555; }
 .clear { padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; }
 .clear:hover { background: var(--hover); }
-.toggle { margin-left: auto; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
+.toggle { padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
 .toggle:hover { background: var(--hover); }
 .toggle.on { color: var(--text); background: var(--on); }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -147,6 +147,17 @@ main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps t
   box-shadow: 0 0 0 2px var(--panel);
 }
 .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* The preview over a big tile's thumbnail, faded in once it has arrived. */
+.cell img.sharp {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(100% - 8px);
+  height: calc(100% - 8px);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.cell img.sharp.ready { opacity: 1; }
 .empty { padding: 24px; text-align: center; color: var(--muted); }
 .error { padding: 16px; color: var(--error); white-space: pre-wrap; }
 
@@ -287,3 +298,22 @@ footer .edit-error { color: var(--error); }
 .menu-title { padding: 4px 12px 6px; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 4px; overflow-wrap: anywhere; }
 .menu button { padding: 4px 12px; text-align: left; }
 .menu button:hover { background: var(--hover); }
+
+/* Tile size in the header. */
+.tiles { margin-left: auto; display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.tiles button { width: 22px; height: 22px; border-radius: 3px; }
+.tiles button:hover { color: var(--text); background: var(--hover); }
+.tiles input[type="range"] { width: 110px; accent-color: var(--accent); }
+.tiles label { display: flex; align-items: center; gap: 4px; margin-left: 4px; white-space: nowrap; }
+.tiles input[type="number"] {
+  width: 42px;
+  padding: 2px 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.tiles input[type="number"].fixed { border-color: var(--accent); }
+.tiles input[type="number"]:focus { outline: none; border-color: var(--queued); }
+.tiles .shape { width: auto; padding: 0 6px; margin-left: 4px; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
