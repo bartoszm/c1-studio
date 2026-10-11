@@ -220,6 +220,10 @@ export const missingCountryCodes = (filter: Filter) =>
   invoke<[string, number[]][]>("missing_country_codes", { filter });
 /** Sets ISO codes on photos as one edit; returns the ops that undo it. */
 export const setCountryCodes = (items: [number[], string][]) => invoke<[number, Op][]>("set_country_codes", { items });
+/** Renames or joins a place: every photo at or under `from` moves to `to` (same depth);
+ *  `code` sets the ISO code with a new country. Returns the ops that undo it. */
+export const movePlace = (from: string, to: string, code: string | null) =>
+  invoke<[number, Op][]>("move_place", { from, to, code });
 export const editOps = (changes: [number, Op][]) => invoke<[number, Op][]>("edit_ops", { changes });
 /** Every keyword path in the catalog with its use count. */
 export const keywords = () => invoke<[string, number][]>("keywords");

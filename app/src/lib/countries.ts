@@ -20,8 +20,9 @@ const NOT_COUNTRIES = new Set([
   "TP", "VD", "WK", "YD", "YU", "ZR",
 ]);
 
-/** Lower case, no accents, no punctuation runs: `Hong-Kong` and `hong kong` match. */
-function key(name: string): string {
+/** Lower case, no accents, no punctuation runs: `Hong-Kong` and `hong kong` match, and
+ *  so do `Kraków` and `krakow`. */
+export function looseKey(name: string): string {
   return name
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
@@ -56,17 +57,17 @@ function names(): Map<string, string> {
         } catch {
           name = undefined;
         }
-        if (name && name !== code && !byName.has(key(name))) byName.set(key(name), code);
+        if (name && name !== code && !byName.has(looseKey(name))) byName.set(looseKey(name), code);
       }
     }
   }
-  for (const [alias, code] of Object.entries(ALIASES)) byName.set(key(alias), code);
+  for (const [alias, code] of Object.entries(ALIASES)) byName.set(looseKey(alias), code);
   return byName;
 }
 
 /** The ISO code for a country name in English, Polish or the user's language, or null. */
 export function codeFor(country: string): string | null {
-  const k = key(country);
+  const k = looseKey(country);
   if (!k) return null;
   return names().get(k) ?? null;
 }

@@ -329,6 +329,58 @@ async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u6
     s.library.edit(&changes).map_err(|e| format!("{e:#}"))
 }
 
+/// A place path's levels, `Poland|—|Kraków` → country, no state, city: a level the
+/// index writes as `—` is no value.
+fn place_levels(path: &str) -> Vec<Option<String>> {
+    path.split('|').map(|l| Some(l.trim().to_owned()).filter(|l| !l.is_empty() && l != c1index::NO_PLACE)).collect()
+}
+
+/// `place` moved to `to`: its first `to.len()` levels (country, state, city, location)
+/// become `to`'s; the levels below stay. `code` sets the ISO country code too.
+fn moved_place(place: &Place, to: &[Option<String>], code: Option<&str>) -> Place {
+    let mut out = place.clone();
+    let levels = [&mut out.country, &mut out.state, &mut out.city, &mut out.location];
+    for (level, value) in levels.into_iter().zip(to) {
+        *level = value.clone();
+    }
+    if let Some(code) = code {
+        out.country_code = clean_text("country_code", code);
+    }
+    out
+}
+
+/// Renames or joins a place: every photo at or under `from` moves to `to`, a path of the
+/// same depth (an existing place joins them, a new one renames), as one edit. `code`,
+/// when given, is the ISO code to set with a new country. Returns the ops that undo it.
+#[tauri::command]
+async fn move_place(
+    app: State<'_, App>,
+    from: String,
+    to: String,
+    code: Option<String>,
+) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    let target = place_levels(&to);
+    if target.len() != from.split('|').count() || target.len() > 4 {
+        return Err(format!("{to:?} is not at the level of {from:?}"));
+    }
+    if target.last().is_none_or(|l| l.is_none()) {
+        return Err("the new name cannot be empty".into());
+    }
+    let filter = Filter { place_under: Some(from), trashed: c1index::Trashed::Include, ..Filter::default() };
+    let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
+    let rows = s.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.rows;
+    let mut changes = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            let value = moved_place(&photo.place, &target, code.as_deref());
+            changes.push((row, Op::SetPlace { base: photo.place, value }));
+        }
+    }
+    s.touched();
+    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+}
+
 /// Photos in view with a country but no ISO country code, by country.
 #[tauri::command]
 async fn missing_country_codes(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, Vec<u64>)>, String> {
@@ -954,6 +1006,7 @@ pub fn run() {
             edit_ops,
             paste,
             missing_country_codes,
+            move_place,
             set_country_codes,
             keywords,
             remap_keywords,
@@ -1032,6 +1085,31 @@ mod tests {
         assert_eq!(gone, &[KeywordPath::from_pipe("b&w")]);
         assert_eq!(added.len(), 2);
         assert!(paste_ops(&from, &fields(&["albums"]), &to).is_err());
+    }
+
+    #[test]
+    fn a_moved_place_takes_the_new_levels_and_keeps_the_ones_below() {
+        let krakow = Place {
+            country: Some("Poland".into()),
+            city: Some("Krakow".into()),
+            location: Some("Rynek".into()),
+            country_code: Some("PL".into()),
+            ..Place::default()
+        };
+        // Poland|—|Krakow joins Poland|Malopolska|Kraków: the state is set, Rynek stays.
+        let moved = moved_place(&krakow, &place_levels("Poland|Malopolska|Kraków"), None);
+        assert_eq!(moved.state.as_deref(), Some("Malopolska"));
+        assert_eq!(moved.city.as_deref(), Some("Kraków"));
+        assert_eq!(moved.location.as_deref(), Some("Rynek"));
+        assert_eq!(moved.country_code.as_deref(), Some("PL"));
+        // A country renamed with its code.
+        let usa = Place { country: Some("USA".into()), city: Some("New York".into()), ..Place::default() };
+        let renamed = moved_place(&usa, &place_levels("United States"), Some("us"));
+        assert_eq!((renamed.country.as_deref(), renamed.country_code.as_deref()), (Some("United States"), Some("US")));
+        assert_eq!(renamed.city.as_deref(), Some("New York"));
+        // Into a place with no state: the state goes.
+        let into = moved_place(&moved, &place_levels("Poland|—|Kraków"), None);
+        assert_eq!(into.state, None);
     }
 
     #[test]
