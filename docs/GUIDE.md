@@ -17,9 +17,30 @@ pnpm tauri build --debug --no-bundle    # then run target\debug\c1studio.exe
 pnpm tauri dev                          # or a live-reloading window while developing
 ```
 
-The catalog is found as for `c1cat`: `C1_CATALOG`, then
-`%APPDATA%\c1studio\config.json` (`{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`),
-then the only catalog under `C:\c1_catalogs\*\`. If none is found, the grid says why.
+## Opening a catalog
+
+On start the app opens the first of:
+
+1. a path on the command line: `c1studio.exe C:\c1_catalogs\fuji` (the `.cocatalogdb`
+   file, or the folder holding exactly one);
+2. `C1_CATALOG` (for scripts and test instances; not remembered);
+3. the catalog opened last;
+4. the only catalog under `C:\c1_catalogs\*\`.
+
+**The source menu** (*C1 Studio ▾* at the top left, showing the open catalog's name)
+opens another one: pick one from *Recent* (× takes it off the list), browse with
+*Capture One catalog…*, or type a path and press Enter. The window reloads on the new
+catalog, with its own library, queue and settings. If nothing could be opened, the menu
+opens by itself.
+
+**Versions.** The menu shows which Capture One made the catalog, and whether reading and
+writing are checked for it. Catalogs from Capture One 16.8 are read and written; 16.5
+catalogs are read only; any other version is tried for reading only, untested. A
+read-only or untested catalog shows a badge in the footer ("read-only · 16.5"); you can
+still edit, and the edits stay queued in the app. When a catalog cannot be read at all,
+the grid says why.
+
+## Syncing
 
 On start the app reads what changed in the catalog since last time. The first start
 indexes the whole catalog; after that it takes a moment, and the footer says "syncing…"
@@ -33,7 +54,7 @@ up at the next of these, or on the next start.
 
 ## The window
 
-- **Header:** the search box, tile size controls, the *Details* toggle and the number
+- **Header:** the source menu, the search box, tile size controls, the *Details* toggle and the number
   of matching photos with how long the query took.
 - **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera and
   Country. Click a section's title to fold it. Which sections are folded and which
@@ -43,7 +64,7 @@ up at the next of these, or on the next start.
 - **Grid:** the matching photos, newest first.
 - **Details panel** (right): everything about the focused photo. `i` or *Details*
   shows and hides it.
-- **Footer:** the catalog, how many photos the library holds, whether Capture One is
+- **Footer:** the catalog (with a badge if it is read-only or untested), how many photos the library holds, whether Capture One is
   open, sync and autosave messages, the Autosave switch and, when edits are waiting,
   *N edits waiting · Write to Capture One…*.
 
@@ -160,7 +181,8 @@ Nothing is written to the catalog until you ask, or turn Autosave on.
   *Drop these*.
 - Edits Capture One already matches leave the queue.
 
-*Write N edits* works only while **Capture One is closed**: it keeps the catalog in
+*Write N edits* works only on a catalog the app can write (see
+[Versions](#opening-a-catalog)) and while **Capture One is closed**: it keeps the catalog in
 memory and would overwrite the changes. Close it and click *Check again*. Before
 writing, the catalog is backed up; the dialog shows where. *Undo all…* throws the whole
 queue away.
@@ -201,6 +223,7 @@ Keys do not act while you type in a field.
 
 - The library, the edit queue, the autosave setting and backups:
   `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+- Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The sidebar layout, tile size and the copy clipboard: the app's own browser storage.
 
 ## Not yet
