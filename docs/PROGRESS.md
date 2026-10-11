@@ -634,6 +634,27 @@ in `<data dir>/settings.json`) writes the queue by itself.
   Apply sets `captured`. A range and a tree pick replace each other.
 - Index schema 4 (the week facet): rebuilt from the store on the first start, no resync.
 
+### Opening a chosen source; providers
+
+- **Providers** (`c1model::provider`): a `Provider` is a kind of source. It has an id
+  (`capture-one`), says how a location is picked (a file of some types, or a folder),
+  recognises a location, gives a stable key for the app's data about it, and opens it
+  as a `PhotoSource`. The app holds a `SourceSpec { provider, location }` and the list
+  of providers it was built with (`app/src-tauri/src/sources.rs`); another kind of
+  source is one more provider there, nothing else in the app changes.
+- **Capture One** (`source_c1::CaptureOneProvider`): a catalog is its `.cocatalogdb`
+  file or the folder holding exactly one. Its data key is the one used before, so
+  existing libraries, queues and backups carry over (a test pins `fiuji-ba047789`).
+- **Opening:** `c1studio <path> [--provider <id>]`; else `$C1_CATALOG` (scripts, test
+  instances: not remembered); else the source opened last; else a provider's usual
+  place. In the app, the header's source menu shows what is open, recent sources (each
+  can be forgotten), "Capture One catalog…" (system file dialog, `tauri-plugin-dialog`)
+  and a typed path. Switching opens the new source's own library and settings, then the
+  window reloads. Recent sources: `%APPDATA%\c1studio\sources.json`.
+- **Tested** in a separate build with its own data and settings: a path on the command
+  line, a typed folder, a bad path, back through Recent, and a restart reopening the
+  last source.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

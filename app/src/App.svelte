@@ -10,6 +10,7 @@
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import Info from "./Info.svelte";
+  import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
   import Viewer from "./Viewer.svelte";
@@ -21,6 +22,8 @@
   const FLAT: Dim[] = ["rating", "color", "camera", "country"];
 
   let status = $state<api.Status | null>(null);
+  /** The source menu in the header; open by itself when nothing could be opened. */
+  let choosingSource = $state(false);
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
@@ -202,6 +205,7 @@
       await run(keep);
     } catch (e) {
       error = String(e);
+      if (!status) choosingSource = true;
     }
   }
 
@@ -811,7 +815,7 @@
 
 <div class="app" class:with-info={showInfo}>
   <header>
-    <span class="brand">C1 Studio</span>
+    <SourceMenu bind:open={choosingSource} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
@@ -938,6 +942,7 @@
   >
     {#if error}
       <p class="error">{error}</p>
+      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button></p>{/if}
     {:else if result && result.total === 0}
       <p class="empty">Nothing matches.</p>
     {/if}

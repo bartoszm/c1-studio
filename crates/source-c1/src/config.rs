@@ -42,8 +42,7 @@ pub fn find_catalog(explicit: Option<&Path>) -> Result<PathBuf, SourceError> {
 
 /// `%APPDATA%\c1studio\config.json`.
 pub fn config_file() -> PathBuf {
-    let base = env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home().join(".config"));
-    base.join("c1studio").join("config.json")
+    c1model::provider::config_root().join("config.json")
 }
 
 fn read_config_catalog() -> Option<PathBuf> {
@@ -52,17 +51,9 @@ fn read_config_catalog() -> Option<PathBuf> {
     value.get("catalog")?.as_str().map(PathBuf::from)
 }
 
-fn home() -> PathBuf {
-    env::var_os("USERPROFILE").or_else(|| env::var_os("HOME")).map(PathBuf::from).unwrap_or_default()
-}
-
 /// Per-catalog working data: `%LOCALAPPDATA%\c1studio\<catalog id>`.
 pub fn data_dir(catalog: &Path) -> PathBuf {
-    let base = env::var_os("C1_DATA_DIR")
-        .or_else(|| env::var_os("LOCALAPPDATA"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".local").join("share"));
-    base.join("c1studio").join(catalog_id(catalog))
+    c1model::provider::data_root().join(catalog_id(catalog))
 }
 
 /// A readable, stable key per catalog: the stem plus a hash of the full path.
