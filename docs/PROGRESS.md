@@ -329,10 +329,61 @@ go. Open branches and folded sections are remembered between runs.
 - **The viewer shows the same panel** at its side while it is on, and stepping with
   ← → updates both.
 
-### Next
-
 Stage 1 is done. The app does not load originals: they may be offline, so the cached
 previews are the largest image it shows. The `original` tier stays in `c1cat image`, untested
 on real files.
 
-1. Stage 2: editing and sync back to Capture One, once the user confirms.
+- **Fixed:** after a filter change, cells already on screen kept the previous result's
+  thumbnails while the details panel and viewer showed the photo now at that position.
+  The page map was swapped for a new one, but the variable holding it was not reactive.
+
+## Stage 2: editing and sync to Capture One
+
+### Writing ratings and colour tags (`source-c1/src/write.rs`)
+
+Ported from the Python `safety.py` and `cmd_meta.py`. Capture One now reports ratings
+and colour tags as writable.
+
+- **Write status, cheapest check first:** `Locked` while Capture One runs, while a
+  rollback journal is present, or while any program holds the file (an open with no
+  sharing fails). `ReadOnly` when the journal mode is not `delete` or the schema is not
+  160800. `Ready` otherwise.
+- **`plan` reads the live catalog,** so it works with Capture One open. Each change
+  compares its `base` with the catalog: apply, no-op (already so) or conflict (someone
+  changed it, or the photo is gone).
+- **`apply`:**
+  - refuses unless the status is `Ready`;
+  - backs the catalog up through SQLite's backup API into `<data dir>/backups`, with a
+    JSON manifest beside each copy;
+  - an unchanged catalog reuses its newest backup, and the newest 5 are kept;
+  - then, in one `BEGIN IMMEDIATE` transaction, it re-plans and writes nothing if the
+    catalog no longer agrees (`StalePlan`).
+- **Where the values go:** both metadata rows (adjustment and combined layer), never
+  the default layer. Unrated and no colour are NULL. `ZDOCUMENTCONTENT.ZDATEMODIFIED`
+  is stamped.
+- **CLI:** `c1cat rate --set 0-5 | --clear` and `c1cat color --set NAME`. They take the
+  usual selectors, are dry runs unless `--apply` is given, and refuse an empty
+  selection.
+- **Tests:**
+  - A test catalog built from the real schema (`tests/fixtures/schema.sql`) runs the
+    unit tests and the conformance checks (`check_read`, `check_write`).
+  - It also runs an end-to-end apply: backup first, then the next snapshot sees the
+    change.
+- **Differential test against Python:** `tools/difftest/writetest.py`.
+  - It copies the catalog twice and runs the same six edits through both
+    implementations: rate, colour, clear, none and 0 on 20 variants in four starting
+    states.
+  - It then compares every table row by row. On the real catalog the copies are
+    identical: 33 changes, 32 metadata rows differ from the original, and nothing else
+    changed.
+
+### Next
+
+1. The change queue in the app:
+   - multi-select;
+   - Capture One's keys (0–5 for stars, colour keys);
+   - edits kept in `redb` and shown at once, while Capture One is open too.
+2. Sync to C1: a preview of the differences, conflicts to resolve, then write. Changes
+   made in Capture One flow back through the normal sync.
+3. Keywords (nested-set tree) and albums, each with a differential test.
+4. A list of backups, with restore.
