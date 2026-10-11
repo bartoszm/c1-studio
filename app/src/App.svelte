@@ -6,7 +6,7 @@
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS } from "./lib/format";
   import { albumTree, pathTree, searchTree, type Node } from "./lib/tree";
-  import Grid from "./Grid.svelte";
+  import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import Info from "./Info.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -70,6 +70,36 @@
   const expanded = new SvelteSet<string>(remembered("expanded"));
   const folded = new SvelteSet<string>(remembered("folded"));
   let showInfo = $state(!remembered("folded").includes("info"));
+  // Tile size and shape, remembered too.
+  function rememberedTiles(): { tiles: Tiles; shape: Shape } {
+    try {
+      const t = JSON.parse(localStorage.getItem("tiles") ?? "null");
+      const tiles: Tiles =
+        t?.by === "count" && t.n >= 1 ? { by: "count", n: Math.min(MAX_COUNT, Math.round(t.n)) }
+        : t?.by === "size" && t.px >= MIN_TILE ? { by: "size", px: Math.round(t.px) }
+        : DEFAULT_TILES;
+      return { tiles, shape: t?.shape === "1:1" ? "1:1" : "3:2" };
+    } catch {
+      return { tiles: DEFAULT_TILES, shape: "3:2" };
+    }
+  }
+  const start = rememberedTiles();
+  let tiles = $state<Tiles>(start.tiles);
+  let shape = $state<Shape>(start.shape);
+  let layout = $state<Layout>({ cols: 1, width: 170, room: 1000 });
+  $effect(() => {
+    try {
+      localStorage.setItem("tiles", JSON.stringify({ ...tiles, shape }));
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+  /** Tiles per row from the box in the header: kept as the window changes. */
+  function setCount(value: string) {
+    const n = Math.round(+value);
+    if (n >= 1) tiles = { by: "count", n: Math.min(MAX_COUNT, n) };
+  }
+
   $effect(() => {
     try {
       localStorage.setItem("expanded", JSON.stringify([...expanded]));
@@ -463,6 +493,9 @@
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
+      else if ((key === "=" || key === "+") && !viewing) grid?.step(true);
+      else if (key === "-" && !viewing) grid?.step(false);
+      else if (key === "0" && !viewing) tiles = DEFAULT_TILES;
       else return;
       e.preventDefault();
       return;
@@ -545,6 +578,36 @@
     <span class="brand">C1 Studio</span>
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     {#if active}<button class="clear" onclick={clearAll}>Clear filters</button>{/if}
+    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+      <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
+      <input
+        type="range"
+        aria-label="Tile size"
+        min={MIN_TILE}
+        max={Math.max(MIN_TILE + 1, layout.room)}
+        value={tiles.by === "size" ? tiles.px : layout.width}
+        oninput={(e) => (tiles = { by: "size", px: +e.currentTarget.value })}
+        onchange={(e) => e.currentTarget.blur()}
+      />
+      <button aria-label="Bigger tiles" onclick={() => grid?.step(true)}>+</button>
+      <label title="Tiles per row. Typed in, the count stays as the window changes; the slider lets it follow the window again.">
+        <input
+          type="number"
+          min="1"
+          max={MAX_COUNT}
+          value={layout.cols}
+          class:fixed={tiles.by === "count"}
+          onchange={(e) => setCount(e.currentTarget.value)}
+          onkeydown={(e) => { if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur(); }}
+        />
+        per row
+      </label>
+      <button
+        class="shape"
+        title={shape === "1:1" ? "Square tiles: click for 3:2" : "3:2 tiles: click for square"}
+        onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
+      >{shape}</button>
+    </div>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
@@ -614,6 +677,10 @@
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     onselect={pick}
     onopen={(i) => { pick(i); viewing = true; }}
+    {tiles}
+    {shape}
+    ontiles={(t) => (tiles = t)}
+    bind:layout
   >
     {#if error}
       <p class="error">{error}</p>
