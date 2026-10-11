@@ -569,6 +569,17 @@ in `<data dir>/settings.json`) writes the queue by itself.
   combined layers, not the adjustment layer). The app reads the adjustment layer, as
   the Python tool does, so it does not show them, and keyword changes leave them.
 
+### Removing a keyword takes the keywords under it
+
+- **What was wrong:** reported on photo 64249 (`animal`, `animal|cat`, `animal|dog`,
+  `street`). Removing `animal` and `animal|cat` left `animal|dog`, because a removal
+  took only that exact keyword.
+- **Now:** removing a keyword from photos removes everything under it as well. The
+  library splits the removal into one queued removal per keyword the photo actually
+  has, so undo restores exactly those, and the write to Capture One is still the exact
+  per-keyword removal the differential test covers.
+- The panel's × says when it will take keywords under it too.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

@@ -628,3 +628,30 @@ fn grouping_and_ungrouping_show_in_the_keyword_list() {
     lib.remap_keywords(KeywordRemap::ungroup(KeywordPath::from_pipe("things"), children)).unwrap();
     assert_eq!(paths(&lib), before);
 }
+
+#[test]
+fn removing_a_keyword_takes_the_keywords_under_it() {
+    let (_d, lib, _source) = setup();
+    let row = row_of(&lib, 3); // street, best|best2018
+    let kws = |lib: &Library| lib.photo(row).unwrap().unwrap().keywords.iter().map(|k| k.to_pipe()).collect::<Vec<_>>();
+    lib.edit(&[(
+        row,
+        Op::AddKeywords { paths: vec![KeywordPath::from_pipe("best"), KeywordPath::from_pipe("best|top")] },
+    )])
+    .unwrap();
+    assert_eq!(kws(&lib), ["street", "best|best2018", "best", "best|top"]);
+
+    let undo = lib.edit(&[(row, Op::RemoveKeywords { paths: vec![KeywordPath::from_pipe("best")] })]).unwrap();
+    assert_eq!(kws(&lib), ["street"]);
+    assert_eq!(undo.len(), 3, "best, best|best2018 and best|top each come back on undo");
+    // best and best|top were only queued adds: removing them cancels those. best|best2018
+    // came from the source: its removal is queued.
+    let queued: Vec<String> =
+        lib.pending().unwrap().into_iter().map(|p| p.key.rsplit('\u{1f}').next().unwrap().to_owned()).collect();
+    assert_eq!(queued, ["keyword:best|best2018"]);
+
+    lib.edit(&undo).unwrap();
+    let mut back = kws(&lib);
+    back.sort();
+    assert_eq!(back, ["best", "best|best2018", "best|top", "street"]);
+}
