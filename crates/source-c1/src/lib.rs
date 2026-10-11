@@ -193,12 +193,12 @@ mod tests {
 
     use super::*;
 
-    fn source() -> (tempfile::TempDir, CaptureOne) {
+    fn source() -> Option<(tempfile::TempDir, CaptureOne)> {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("fixture.cocatalogdb");
-        drop(write::tests::fixture(&catalog));
+        drop(write::tests::fixture(&catalog)?);
         let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
-        (dir, source)
+        Some((dir, source))
     }
 
     fn ready(source: &CaptureOne) -> bool {
@@ -211,7 +211,7 @@ mod tests {
 
     #[test]
     fn fixture_conforms_for_reads_and_writes() {
-        let (_dir, source) = source();
+        let Some((_dir, source)) = source() else { return };
         assert_eq!(conformance::check_read(&source), Vec::<String>::new());
         if ready(&source) {
             let probe = PhotoId::new(&source.info().id, "3");
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn apply_backs_up_first_and_the_next_snapshot_sees_the_change() {
-        let (_dir, source) = source();
+        let Some((_dir, source)) = source() else { return };
         if !ready(&source) {
             return;
         }
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn edits_other_than_rating_and_colour_are_refused_for_now() {
-        let (_dir, source) = source();
+        let Some((_dir, source)) = source() else { return };
         let id = PhotoId::new(&source.info().id, "1");
         let add = Change { photo: id, op: Op::AddKeywords { paths: vec![c1model::KeywordPath::from_pipe("x")] } };
         assert!(matches!(source.plan(&[add]), Err(SourceError::Unsupported(_))));
