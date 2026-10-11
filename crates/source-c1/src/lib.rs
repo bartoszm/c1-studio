@@ -226,6 +226,28 @@ mod tests {
     }
 
     #[test]
+    fn a_catalog_from_before_retouching_layers_reads() {
+        // Schema 1650 (Capture One before 16.x) has no ZRETOUCHINGLAYER table.
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("old.cocatalogdb");
+        let Some(con) = write::tests::fixture(&catalog) else { return };
+        con.execute_batch("DROP TABLE ZRETOUCHINGLAYER; UPDATE ZVERSIONINFO SET ZVERSION = 1650").unwrap();
+        drop(con);
+        let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
+        let mut photos = 0;
+        source
+            .snapshot(None, &mut |e| {
+                photos += matches!(e, SourceEvent::Upsert(_)) as usize;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(photos, 5);
+        // Read, but never written: the app was not checked against this format. (Locked
+        // instead while Capture One runs.)
+        assert_ne!(source.write_status(), WriteStatus::Ready);
+    }
+
+    #[test]
     fn fixture_conforms_for_reads_and_writes() {
         let Some((_dir, source)) = source() else { return };
         assert_eq!(conformance::check_read(&source), Vec::<String>::new());

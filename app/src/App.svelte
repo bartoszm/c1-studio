@@ -199,6 +199,9 @@
   async function refresh(keep = false) {
     try {
       status = await api.status();
+      // A sync that failed before the window was listening (at start, or on opening
+      // another catalog) still says so.
+      if (status.sync_error) syncNote = `sync failed: ${status.sync_error}`;
       collections = await api.collections();
       await refreshKeywords();
       await refreshQueued();
