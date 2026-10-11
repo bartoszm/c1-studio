@@ -109,6 +109,9 @@ export type Photo = {
     description: string | null;
     creator: string | null;
     copyright: string | null;
+    job_id: string | null;
+    instructions: string | null;
+    source: string | null;
   };
   place: {
     city: string | null;
@@ -183,7 +186,9 @@ export type Edit =
   /** Latitude, longitude; null clears. */
   | { Geo: [number, number] | null };
 export type PlaceField = "country" | "country_code" | "state" | "city" | "location";
-export type CaptionField = "description" | "title" | "headline" | "creator" | "copyright";
+/** IPTC text fields. `title` is IPTC's Object Name: a short identifier, not a caption. */
+export type CaptionField =
+  | "description" | "title" | "headline" | "creator" | "copyright" | "job_id" | "instructions" | "source";
 /** What can be copied from one photo to others. `keywords` adds them; `keywords_exact`
  *  makes the targets' keywords the same. */
 export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | PlaceField | "geo" | CaptionField;

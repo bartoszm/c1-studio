@@ -90,6 +90,13 @@ def edits(g: dict) -> list[tuple[str, list[str], list[int]]]:
         ("iptc", ["--set-copyright", "difftest copyright", "--set-creator", "difftest"], g["top"][:2]),
         ("describe", ["--description", "difftest caption", "--title", "difftest title"], g["plain"][:2]),
         ("describe", ["--description", ""], g["plain"][:1]),
+        # Title is IPTC's Object Name (ZSTATUS_TITLE); the status fields beside it.
+        ("describe", ["--title", "DSCF-difftest", "--headline", "Nagłówek",
+                      "--description", "Pierwsza linia\nDruga linia"], g["rated"][:2]),
+        ("iptc", ["--set-job-id", "JOB-7", "--set-instructions", "Embargo do poniedziałku",
+                  "--set-source", "Archiwum"], g["rated"][:2] + g["top"][:1]),
+        ("iptc", ["--set-job-id", "", "--set-source", ""], g["rated"][1:2]),
+        ("describe", ["--title", ""], g["rated"][:1]),
         # GPS is on the image, in Capture One's decimal form whatever it held before.
         ("geo", ["--lat", "50.0614", "--lon", "19.9366"], g["plain"][:2] + g["gps"][:1]),
         ("geo", ["--lat", "-33.8688", "--lon", "151.2093"], g["gps_comma"][:1]),

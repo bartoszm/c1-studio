@@ -169,8 +169,8 @@ enum Edit {
     /// Location fields by name (`city`, `state`, `country`, `country_code`, `location`);
     /// empty clears one. Fields not named keep each photo's own value.
     Place(BTreeMap<String, String>),
-    /// Caption fields by name (`description`, `headline`, `title`, `creator`,
-    /// `copyright`); empty clears one.
+    /// IPTC text fields by name (`description`, `headline`, `title`, `creator`,
+    /// `copyright`, `job_id`, `instructions`, `source`); empty clears one.
     Iptc(BTreeMap<String, String>),
     /// Latitude and longitude in degrees; `None` clears.
     Geo(Option<[f64; 2]>),
@@ -194,12 +194,15 @@ fn iptc_slot<'a>(iptc: &'a mut Iptc, name: &str) -> Option<&'a mut Option<String
         "title" => &mut iptc.title,
         "creator" => &mut iptc.creator,
         "copyright" => &mut iptc.copyright,
+        "job_id" => &mut iptc.job_id,
+        "instructions" => &mut iptc.instructions,
+        "source" => &mut iptc.source,
         _ => return None,
     })
 }
 
-/// A typed field: trimmed (but a caption keeps its lines), blank is nothing, and a
-/// country code is upper case.
+/// A typed field: trimmed at both ends (a description keeps its inner lines), blank is
+/// nothing, and a country code is upper case.
 fn clean_text(name: &str, text: &str) -> Option<String> {
     let text = text.trim();
     if text.is_empty() {
