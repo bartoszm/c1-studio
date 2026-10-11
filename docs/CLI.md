@@ -127,8 +127,9 @@ In PowerShell, quote values with `>`, `<`, `|`, `*` or spaces: `--rating '>=4'`,
 |---|---|
 | `rate --set 0-5` / `rate --clear` | Star rating; 0 and `--clear` both mean unrated. |
 | `color --set NAME` | Colour tag; `none` clears. Alias `colour`. |
-| `describe --description/--headline/--title TEXT` | Caption, headline, title. |
-| `iptc --set-creator/--set-copyright/--set-city/--set-state/--set-country/--set-country-code/--set-location TEXT` | IPTC contact and place fields. |
+| `describe --description/--headline/--title TEXT` | Description (the caption), headline, and title: IPTC's Object Name, a short identifier, not a caption. |
+| `iptc --set-creator/--set-copyright/--set-job-id/--set-instructions/--set-source TEXT` | IPTC contact and status fields. |
+| `iptc --set-city/--set-state/--set-country/--set-country-code/--set-location TEXT` | IPTC location fields. |
 | `geo --lat LAT --lon LON` / `geo --clear` | GPS. Stored per image, so every variant of it moves. |
 | `keyword add PATH...` / `keyword remove PATH...` | Keywords on the photos. Alias `kw`. |
 
@@ -139,7 +140,8 @@ The `iptc` place fields carry a `--set-` prefix so they never read as the `--cit
 ```powershell
 & $c1 rate --set 5 --id 1234 --id 1235
 & $c1 color --set green --album 'Picks' --apply
-& $c1 describe --title 'Kazimierz at dusk' --id 1234 --apply
+& $c1 describe --description 'Kazimierz at dusk' --title 'KRK-2026-014' --id 1234 --apply
+& $c1 iptc --set-job-id 'JOB-7' --set-source 'Archiwum' --album 'Picks' --apply
 & $c1 iptc --set-city 'Kraków' --set-country Poland --folder 'H:\fotos\2026\krakow' --apply
 & $c1 geo --lat 50.0614 --lon 19.9366 --filename 'DSCF04*' --apply
 & $c1 kw add 'place|Kraków' street --year 2026 --city krak --apply
