@@ -169,6 +169,7 @@ impl Vocab {
                     kind: CollectionKind::Group,
                     parent: None,
                     rule: None,
+                    system: false,
                 }
             })
             .collect();
@@ -183,6 +184,7 @@ impl Vocab {
                     kind: CollectionKind::Album,
                     parent: parent.map(|g| g.id.clone()),
                     rule: None,
+                    system: false,
                 }
             })
             .collect();

@@ -81,7 +81,8 @@ as if its own pick were not made, so the alternatives stay visible: with *2025* 
 the Date tree still shows every year.
 
 - **Albums:** albums, smart albums and their groups. Smart albums are counted by their
-  own rules.
+  own rules. The + beside the title and a right-click on an album make and change them
+  (see [Albums](#albums)).
 - **Date:** years › months › weeks. Picking one opens it; picking it again goes up a
   level. A week is the days of one ISO week inside one month, so a week that spans two
   months shows under each with its own days. *Custom range…* takes a From and a To day
@@ -144,6 +145,7 @@ photos with edits not yet written, and the panel lists which fields.
 | Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
+| Albums | The panel's *Put in an album* field (completes from the albums) or *New album…*; × takes the photos out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. Or right-click an album in the sidebar: *Put the N selected photos here*. Only albums take photos; see [Albums](#albums). |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
 
 **Title is not a caption.** Capture One follows the strict IPTC meaning: Title is the
@@ -187,6 +189,40 @@ The dialog says how many photos carry the keywords, and when the target is new. 
 change shows at once, is queued like any edit, written before the photo edits, and
 undone with Ctrl+Z.
 
+## Albums
+
+Capture One has two kinds of album, and so does the app:
+
+- An **album** holds the photos put into it, by hand. Its count is its photos.
+- A **smart album** holds no photos of its own: it is a rule (keyword contains *street*,
+  rating at least ★★★★, captured in 2025), and shows whatever photos match it now and
+  later. Photos cannot be put into one or taken out of it; change its rule instead. Its
+  icon differs, and its count is what the rule selects.
+
+**Groups** hold albums, smart albums and other groups; **projects** (made in Capture One)
+hold them too.
+
+The **+** beside the Albums title makes a new album, smart album or group at the top
+level or in a group. Right-click an album, smart album or group for:
+
+- **Put the N selected photos here** (albums).
+- **Edit rule…** (smart albums): match *all* or *any* of the conditions; each is
+  *Keyword contains* (any level of a keyword's name, ignoring case), *Rating is*,
+  *Rating is at least* or *Captured in year*. These are the conditions Capture One's
+  own smart albums in your catalogs use; a smart album with another kind of condition
+  is shown greyed out and edited in Capture One.
+- **New album / smart album / group…**, in the group (or beside the album) clicked.
+  A new album can take the selected photos at once.
+- **Rename…** and **Delete…**. Deleting a group takes everything in it. The photos stay
+  in the catalog; only their place in the album goes.
+
+Capture One's own *Recent Captures* and *Recent Imports* are left alone: they cannot be
+renamed or deleted here, nor given new albums (the albums Capture One made in Recent
+Imports can). Projects are deleted in Capture One.
+
+Every album change shows at once (in blue until written), is queued like any edit,
+written before the photo edits, and undone with Ctrl+Z.
+
 ## Writing to Capture One
 
 Nothing is written to the catalog until you ask, or turn Autosave on.
@@ -197,6 +233,8 @@ Nothing is written to the catalog until you ask, or turn Autosave on.
   *Keep mine* or *Take Capture One's* for each, or for all at once. Nothing is written
   until every one is settled.
 - **Keyword changes:** tree changes, written first.
+- **Album changes:** albums, smart albums and groups made, renamed, given a new rule or
+  deleted, written next (photos put into a new album need it to exist).
 - **To write:** each edit, with the old and new value.
 - **Cannot be written:** edits Capture One can no longer take (the photo is gone), with
   *Drop these*.
@@ -250,6 +288,5 @@ Keys do not act while you type in a field.
 
 ## Not yet
 
-- Adding photos to albums and creating albums.
 - A list of backups with restore.
-- Typing captions in the details panel.
+- Moving an album into another group, and dragging photos onto an album.

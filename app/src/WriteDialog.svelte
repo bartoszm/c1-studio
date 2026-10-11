@@ -34,7 +34,14 @@
 
   let locked = $derived(plan && typeof plan.status === "object" ? plan.status.Locked.by : null);
   let writable = $derived(plan?.status === "Ready");
-  let toWrite = $derived(plan ? plan.remaps.length + plan.apply.length + plan.unchanged.length : 0);
+  let toWrite = $derived(plan ? plan.remaps.length + plan.collections.length + plan.apply.length + plan.unchanged.length : 0);
+  /** Album names, for edits that put photos into albums. */
+  let albumPaths = $state(new Map<string, string>());
+  api.collections().then((all) => (albumPaths = new Map(all.map((c) => [c.id, c.path])))).catch(() => {});
+  const albumName = (id: string) => `“${albumPaths.get(id) ?? id}”`;
+  let structural = $derived(
+    plan ? plan.remaps.length + plan.blocked_remaps.length + plan.collections.length + plan.blocked_collections.length : 0,
+  );
   let canWrite = $derived(!!plan && writable && plan.conflicts.length === 0 && toWrite > 0 && !busy);
   let everything = $derived(
     plan ? [...plan.apply, ...plan.unchanged, ...plan.conflicts, ...plan.blocked.map(([p]) => p)] : [],
@@ -74,12 +81,20 @@
     act(async () => {
       for (const seq of seqs) await api.undoRemap(seq);
     });
-  /** Undo everything queued: keyword tree changes newest first, then the edits. */
+  const dropCollections = (seqs: number[]) =>
+    act(async () => {
+      for (const seq of seqs.sort((a, b) => b - a)) await api.undoCollection(seq);
+    });
+  /** Undo everything queued: album and keyword tree changes newest first, then the edits. */
   const undoAll = () =>
     act(async () => {
+      const albums = [...(plan?.collections ?? []).map(([s]) => s), ...(plan?.blocked_collections ?? []).map(([s]) => s)];
+      for (const seq of albums.sort((a, b) => b - a)) await api.undoCollection(seq);
       const seqs = [...(plan?.remaps ?? []).map(([s]) => s), ...(plan?.blocked_remaps ?? []).map(([s]) => s)];
       for (const seq of seqs.sort((a, b) => b - a)) await api.undoRemap(seq);
-      await api.discard(everything.map((p) => p.key));
+      // Taking back a new album takes the photos put into it: discard only what is left.
+      const left = new Set((await api.pending()).map((p) => p.key));
+      await api.discard(everything.map((p) => p.key).filter((k) => left.has(k)));
     });
 
   function onkey(e: KeyboardEvent) {
@@ -90,7 +105,7 @@
 <svelte:window onkeydown={onkey} />
 
 {#snippet item(p: api.PendingEdit, note?: string)}
-  {@const t = opText(p.change.op)}
+  {@const t = opText(p.change.op, albumName)}
   <li>
     {#if p.row !== null}<img src={api.thumbUrl(p.row)} alt="" />{:else}<span class="gone"></span>{/if}
     <span class="what">
@@ -172,6 +187,25 @@
         </section>
       {/if}
 
+      {#if plan.collections.length}
+        <section>
+          <h3>Album changes ({plan.collections.length}), written before photo edits</h3>
+          <ul class="labels">
+            {#each plan.collections as [seq, label] (seq)}<li>{label}</li>{/each}
+          </ul>
+        </section>
+      {/if}
+
+      {#if plan.blocked_collections.length}
+        <section>
+          <h3>Album changes that cannot be written ({plan.blocked_collections.length})</h3>
+          <ul class="labels">
+            {#each plan.blocked_collections as [seq, label, why] (seq)}<li>{label} <span class="note">{why}</span></li>{/each}
+          </ul>
+          <button onclick={() => dropCollections(plan!.blocked_collections.map(([s]) => s))}>Drop these</button>
+        </section>
+      {/if}
+
       {#if plan.apply.length}
         <section>
           <h3>To write ({plan.apply.length.toLocaleString()})</h3>
@@ -199,12 +233,12 @@
         </p>
       {/if}
 
-      {#if !everything.length && !plan.remaps.length && !plan.blocked_remaps.length}
+      {#if !everything.length && !structural}
         <p class="muted">Nothing is waiting to be written.</p>
       {/if}
 
       <div class="buttons">
-        {#if everything.length || plan.remaps.length || plan.blocked_remaps.length}
+        {#if everything.length || structural}
           {#if confirmDiscard}
             <span class="warn">Undo everything queued here?</span>
             <button onclick={() => undoAll().then(onclose)}>Yes, undo it</button>

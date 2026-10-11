@@ -164,6 +164,35 @@ These change the tree itself, on every photo, and take no selection.
 | `kw group --path PATH --path PATH --under PATH` | Put keywords under a parent, existing or new. |
 | `kw ungroup --path PATH` | Move a group's keywords up a level; the group goes if no photo carries it. |
 
+### Albums
+
+An album holds the photos put into it; a smart album holds none, only a rule. Albums are
+named as the selector's `--album` names them: `#906`, a name, or the end of a path.
+
+| Command | Does |
+|---|---|
+| `album create NAME [--parent G]` | Make an album, at the top level or in group (or project) `G`. |
+| `group create NAME [--parent G]` | Make a group. |
+| `smart create NAME [--parent G] [--match all\|any] [--rating R] [--keyword K]... [--year Y]` | Make a smart album. `--rating` is `'>=4'`, `'>3'` (written as at least 4) or `'5'`; `--keyword` matches any level of a keyword's name; conditions are joined by `--match` (all by default). |
+| `smart rule ALBUM` + the same rule flags | Give a smart album a new rule. |
+| `album rename ALBUM --to NAME` | Rename an album, smart album or group. |
+| `album delete ALBUM [--force-children]` | Delete it (and, with the flag, a group's contents). Photos stay. |
+| `album add ALBUM <selection> [--create [--parent G]]` | Put the matching photos into an album; `--create` makes it if there is none of that name. |
+| `album remove ALBUM <selection>` | Take the matching photos out. |
+
+```powershell
+& $c1 group create 'trips' --apply
+& $c1 album add 'japan 2026' --create --parent trips --keyword japan --year 2026 --apply
+& $c1 album remove 'japan 2026' --rating 1 --apply
+& $c1 smart create 'street 4+' --rating '>=4' --keyword street --apply
+& $c1 album delete 'trips' --force-children --apply
+```
+
+`album add` positions the album first because `--album` is a filter here: `album add
+portfolio --album street` copies *street* into *portfolio*. A name already used in the
+same place is refused unless `--allow-duplicate`; Capture One's own *Recent Captures*
+and *Recent Imports* are never changed, and projects are deleted in Capture One.
+
 ### How writes work
 
 - **Dry run by default.** Without `--apply` nothing is written: the command prints how
@@ -180,7 +209,7 @@ These change the tree itself, on every photo, and take no selection.
 - **Conflicts.** A change is planned against the value the library last saw. If the
   catalog now holds something else, the change is reported as a conflict and skipped.
 - `--json` prints the outcome as JSON: `applied`, `backup`, and the ids to `apply`,
-  `unchanged` and in `conflicts`.
+  `unchanged` and in `conflicts` (album commands add `collections`, what they do).
 
 ## Benchmark
 

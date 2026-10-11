@@ -29,6 +29,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg"] }
 jxl-oxide = "0.12"
 rand = "0.10"
 tempfile = "3"
+uuid = { version = "1", features = ["v4"] }
 
 # Dependencies are slow in debug builds (tantivy especially), which makes tests and
 # benchmarks misleading. Optimising them costs one slower first build.

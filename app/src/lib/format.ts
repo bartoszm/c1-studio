@@ -52,7 +52,7 @@ export function stars(n: number | null | undefined): string {
 }
 
 /** What a field edit sets, as words: `{ field: "rating", from: "★★", to: "★★★★★" }`. */
-export function opText(op: Op): { field: string; from: string; to: string } | null {
+export function opText(op: Op, albumName: (id: string) => string = (id) => id): { field: string; from: string; to: string } | null {
   if ("SetRating" in op) {
     const { base, value } = op.SetRating as { base: number | null; value: number | null };
     return { field: "rating", from: stars(base), to: stars(value) };
@@ -78,6 +78,11 @@ export function opText(op: Op): { field: string; from: string; to: string } | nu
     const add = "AddKeywords" in op;
     const { paths } = (add ? op.AddKeywords : op.RemoveKeywords) as { paths: string[][] };
     return { field: "keyword", from: "", to: `${add ? "+" : "−"} ${paths.map((p) => p.join("|")).join(", ")}` };
+  }
+  if ("AddToCollection" in op || "RemoveFromCollection" in op) {
+    const add = "AddToCollection" in op;
+    const { collection } = (add ? op.AddToCollection : op.RemoveFromCollection) as { collection: string };
+    return { field: "album", from: "", to: `${add ? "into" : "out of"} ${albumName(collection)}` };
   }
   return null;
 }

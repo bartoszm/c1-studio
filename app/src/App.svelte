@@ -8,6 +8,7 @@
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
+  import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import PlaceDialog from "./PlaceDialog.svelte";
@@ -57,8 +58,11 @@
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
-  type Done = { ops: [number, api.Op][] } | { remap: number; request: api.RemapRequest };
-  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest };
+  type Done =
+    | { ops: [number, api.Op][] }
+    | { remap: number; request: api.RemapRequest }
+    | { collection: number; change: api.CollectionChange };
+  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest } | { change: api.CollectionChange };
   let undoStack: Done[] = [];
   let redoStack: Undone[] = [];
 
@@ -70,6 +74,15 @@
   let placeMenu = $state<{ x: number; y: number; node: Node } | null>(null);
   let placeDialog = $state<{ mode: "rename" | "join"; path: string } | null>(null);
   let keywordDialog = $state<{ mode: "rename" | "join" | "group"; start: string } | null>(null);
+  /** Albums with changes queued for Capture One (made, renamed, given a rule). */
+  let queuedAlbums = $state(new Set<string>());
+  /** The Albums tree's menu: on an album, or (`node` null) from the section's + button. */
+  let albumMenu = $state<{ x: number; y: number; node: Node | null } | null>(null);
+  let albumDialog = $state<{
+    mode: "create" | "rename" | "rule" | "delete";
+    kind?: "Album" | "Smart" | "Group";
+    collection?: api.Collection;
+  } | null>(null);
 
   // Sidebar layout survives restarts: which branches are open, which sections folded.
   function remembered(key: string): string[] {
@@ -210,7 +223,7 @@
       // another catalog) still says so.
       syncFailed = status.sync_error;
       if (syncFailed) syncNote = "sync failed";
-      collections = await api.collections();
+      await refreshCollections();
       await refreshKeywords();
       await refreshQueued();
       await run(keep);
@@ -244,7 +257,30 @@
     }
     queued = by;
     remapCount = (await api.remaps()).length;
-    queuedCount = list.length + remapCount;
+    const albumChanges = await api.collectionChanges();
+    queuedAlbums = new Set(albumChanges.map(([, , id]) => id));
+    queuedCount = list.length + remapCount + albumChanges.length;
+  }
+
+  /** The albums, after a change here or a sync. An album picked in the filter that is
+   *  gone (deleted, or written and back under Capture One's own id) is let go. */
+  async function refreshCollections() {
+    collections = await api.collections();
+    const ids = new Set(collections.map((c) => c.id));
+    const kept = filter.collections?.filter((id) => ids.has(id));
+    if (kept && kept.length !== filter.collections?.length) filter = { ...filter, collections: kept.length ? kept : undefined };
+  }
+
+  /** Queues an album change (shown at once), undoable like any edit. `fill` puts the
+   *  picked photos into a new album as well. */
+  async function applyCollection(change: api.CollectionChange, fill = false) {
+    const [seq, queuedChange] = await api.changeCollection(change);
+    undoStack.push({ collection: seq, change: queuedChange });
+    redoStack = [];
+    editError = null;
+    await refreshCollections();
+    if (fill && "Create" in queuedChange) await applyEdit({ AddToAlbum: queuedChange.Create.id });
+    else await edited();
   }
 
   async function refreshKeywords() {
@@ -310,6 +346,22 @@
     const mine = ++keywordsAsked;
     const wait = setTimeout(() => {
       api.keywordCounts(rows).then((c) => { if (mine === keywordsAsked) selectionKeywords = c; }).catch(() => {});
+    }, 80);
+    return () => clearTimeout(wait);
+  });
+  /** The albums the picked photos are in, with how many each holds; null for one. */
+  let selectionAlbums = $state<[string, number][] | null>(null);
+  let albumsAsked = 0;
+  $effect(() => {
+    const rows = [...picked];
+    void version;
+    if (rows.length < 2 || !showInfo) {
+      selectionAlbums = null;
+      return;
+    }
+    const mine = ++albumsAsked;
+    const wait = setTimeout(() => {
+      api.albumCounts(rows).then((c) => { if (mine === albumsAsked) selectionAlbums = c; }).catch(() => {});
     }, 80);
     return () => clearTimeout(wait);
   });
@@ -386,7 +438,11 @@
     if (!last) return;
     try {
       if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
-      else {
+      else if ("collection" in last) {
+        await api.undoCollection(last.collection);
+        redoStack.push({ change: last.change });
+        await refreshCollections();
+      } else {
         // The photos it touched are read from Capture One again: a moment on a big catalog.
         syncNote = "undoing the keyword change…";
         await api.undoRemap(last.remap);
@@ -409,7 +465,12 @@
     if (!last) return;
     try {
       if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
-      else {
+      else if ("change" in last) {
+        // The same id as before, so photo edits redone after it still find the album.
+        const [seq, change] = await api.changeCollection(last.change);
+        undoStack.push({ collection: seq, change });
+        await refreshCollections();
+      } else {
         undoStack.push({ remap: await api.remapKeywords(last.request), request: last.request });
         await refreshKeywords();
       }
@@ -621,7 +682,7 @@
     albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location",
   };
 
-  let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart));
+  let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart, queuedAlbums));
   let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
   let places = $derived(placeTree(result?.facets.place_tree ?? []));
   let keywords = $derived(pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword"));
@@ -677,12 +738,13 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (e.key === "Escape" && (keywordMenu || placeMenu)) {
+    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu)) {
       keywordMenu = null;
       placeMenu = null;
+      albumMenu = null;
       return;
     }
-    if (writing || keywordDialog || placeDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -873,6 +935,10 @@
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
+    sharedAlbums={selectionAlbums}
+    onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
+    onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
+    onnewalbum={() => (albumDialog = { mode: "create", kind: "Album" })}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
     onplace={(fields) => applyEdit({ Place: fields })}
@@ -928,10 +994,22 @@
   </header>
 
   <aside>
-    <section>
+    <section class="with-add">
       {@render head("albums")}
+      <button
+        class="section-add"
+        title="New album, smart album or group"
+        aria-label="New album, smart album or group"
+        onclick={(e) => { const r = e.currentTarget.getBoundingClientRect(); albumMenu = { x: r.left, y: r.bottom, node: null }; }}
+      >+</button>
       {#if !folded.has("albums")}
-        <Tree nodes={albums} selected={filter.collections && "a:" + filter.collections[0]} {expanded} onpick={pickAlbum} />
+        <Tree
+          nodes={albums}
+          selected={filter.collections && "a:" + filter.collections[0]}
+          {expanded}
+          onpick={pickAlbum}
+          oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
+        />
       {/if}
     </section>
     {@render dates()}
@@ -1099,6 +1177,53 @@
       <button role="menuitem" onclick={() => quickRemap({ Ungroup: { path: node.value } })}>Ungroup</button>
     {/if}
   </div>
+{/if}
+
+{#if albumMenu}
+  {@const c = albumMenu.node ? byId.get(albumMenu.node.value) : undefined}
+  {@const holds = !c || ((c.kind === "Group" || c.kind === "Project") && !c.system)}
+  {@const beside = !!c && !holds && !(c.parent && byId.get(c.parent)?.system)}
+  {@const n = targets().length}
+  <div class="menu-shield" role="presentation" onclick={() => (albumMenu = null)} oncontextmenu={(e) => { e.preventDefault(); albumMenu = null; }}></div>
+  <div class="menu" role="menu" style:left="{albumMenu.x}px" style:top="{albumMenu.y}px">
+    {#if c}<div class="menu-title">{c.path}</div>{/if}
+    {#if c?.kind === "Album" && n}
+      <button role="menuitem" onclick={() => { albumMenu = null; applyEdit({ AddToAlbum: c.id }); }}>
+        Put the {n === 1 ? "selected photo" : `${n.toLocaleString()} selected photos`} here
+      </button>
+    {/if}
+    {#if c?.kind === "Smart" && c.rule && ruleRows(c.rule)}
+      <button role="menuitem" onclick={() => { albumDialog = { mode: "rule", collection: c }; albumMenu = null; }}>Edit rule…</button>
+    {/if}
+    {#if holds || beside}
+      {#each [["Album", "album"], ["Smart", "smart album"], ["Group", "group"]] as const as [kind, noun]}
+        <button role="menuitem" onclick={() => { albumDialog = { mode: "create", kind, collection: c }; albumMenu = null; }}>
+          New {noun}{c && holds ? " in it" : ""}…
+        </button>
+      {/each}
+    {/if}
+    {#if c && !c.system}
+      <button role="menuitem" onclick={() => { albumDialog = { mode: "rename", collection: c }; albumMenu = null; }}>Rename…</button>
+      {#if c.kind !== "Project"}
+        <button role="menuitem" class="danger" onclick={() => { albumDialog = { mode: "delete", collection: c }; albumMenu = null; }}>Delete…</button>
+      {/if}
+    {:else if c?.system}
+      <div class="menu-note">Capture One's own: changed only there.</div>
+    {/if}
+  </div>
+{/if}
+
+{#if albumDialog}
+  <AlbumDialog
+    mode={albumDialog.mode}
+    kind={albumDialog.kind}
+    collection={albumDialog.collection}
+    {collections}
+    keywords={keywordList}
+    picked={targets().length}
+    onclose={() => (albumDialog = null)}
+    ondone={applyCollection}
+  />
 {/if}
 
 {#if keywordDialog}

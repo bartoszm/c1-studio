@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use c1model::{Change, KeywordRemap, Op, PhotoId};
+use c1model::{Change, CollectionChange, KeywordRemap, Op, PhotoId};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -18,12 +18,27 @@ const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
 /// sequence number → JSON [`QueuedRemap`]: keyword tree changes, applied in order.
 const REMAPS: TableDefinition<u64, &[u8]> = TableDefinition::new("remaps");
+/// sequence number → JSON [`QueuedCollection`]: album changes, applied in order.
+const COLLECTIONS: TableDefinition<u64, &[u8]> = TableDefinition::new("collections");
 
 /// A keyword tree change waiting to be written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QueuedRemap {
     pub remap: KeywordRemap,
     pub at: i64,
+}
+
+/// An album change waiting to be written.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QueuedCollection {
+    pub change: CollectionChange,
+    /// What it does, worded when it was made (a later rename does not reword it).
+    pub label: String,
+    pub at: i64,
+    /// Queued photo edits it made pointless (photos put into an album it deletes), kept
+    /// so undoing it brings them back.
+    #[serde(default)]
+    pub dropped: Vec<(String, Pending)>,
 }
 
 /// One field of one photo, edited in the app, waiting to be written to its source.
@@ -78,6 +93,7 @@ impl Edits {
         tx.open_table(PENDING)?;
         tx.open_table(EVENTS)?;
         tx.open_table(REMAPS)?;
+        tx.open_table(COLLECTIONS)?;
         tx.commit()?;
         Ok(Self { db })
     }
@@ -102,6 +118,17 @@ impl Edits {
         let tx = self.db.begin_read()?;
         let mut out = Vec::new();
         for entry in tx.open_table(REMAPS)?.iter()? {
+            let (seq, bytes) = entry?;
+            out.push((seq.value(), serde_json::from_slice(bytes.value())?));
+        }
+        Ok(out)
+    }
+
+    /// Queued album changes, in the order they apply.
+    pub fn collections(&self) -> anyhow::Result<Vec<(u64, QueuedCollection)>> {
+        let tx = self.db.begin_read()?;
+        let mut out = Vec::new();
+        for entry in tx.open_table(COLLECTIONS)?.iter()? {
             let (seq, bytes) = entry?;
             out.push((seq.value(), serde_json::from_slice(bytes.value())?));
         }
@@ -154,6 +181,29 @@ impl EditsBatch {
 
     pub fn remove_remap(&mut self, seq: u64) -> anyhow::Result<()> {
         self.tx.open_table(REMAPS)?.remove(seq)?;
+        Ok(())
+    }
+
+    pub fn add_collection(&mut self, queued: &QueuedCollection) -> anyhow::Result<u64> {
+        let mut table = self.tx.open_table(COLLECTIONS)?;
+        let next = table.last()?.map_or(0, |(k, _)| k.value() + 1);
+        let bytes = serde_json::to_vec(queued)?;
+        table.insert(next, bytes.as_slice())?;
+        Ok(next)
+    }
+
+    /// Queued album changes, in order.
+    pub fn collections(&self) -> anyhow::Result<Vec<(u64, QueuedCollection)>> {
+        let mut out = Vec::new();
+        for entry in self.tx.open_table(COLLECTIONS)?.iter()? {
+            let (seq, bytes) = entry?;
+            out.push((seq.value(), serde_json::from_slice(bytes.value())?));
+        }
+        Ok(out)
+    }
+
+    pub fn remove_collection(&mut self, seq: u64) -> anyhow::Result<()> {
+        self.tx.open_table(COLLECTIONS)?.remove(seq)?;
         Ok(())
     }
 

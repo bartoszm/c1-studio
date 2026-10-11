@@ -6,19 +6,22 @@
 //! write the catalog is backed up, and every write runs in one transaction that first
 //! re-checks each change against what the catalog holds at that moment.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use c1model::change::{Check, compare, spot};
+use c1model::change::{Check, compare, membership_problem, spot};
 use c1model::source::Result;
-use c1model::{ApplyPlan, Change, ColorLabel, Conflict, Iptc, KeywordRemap, Op, Place, SourceError, WriteStatus};
+use c1model::{
+    ApplyPlan, Change, CollectionChange, ColorLabel, Conflict, Iptc, KeywordRemap, Op, Place, SourceError, WriteStatus,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{self, EXPECTED_ZVERSION, db_err};
 use crate::extract::blank;
-use crate::{config, keywords, process};
+use crate::{albums, config, keywords, process};
 
 /// Backups kept per catalog; older ones are deleted after a new one is made.
 pub(crate) const KEEP_BACKUPS: usize = 5;
@@ -178,14 +181,17 @@ fn current(con: &Connection, variant_pk: i64) -> Result<Option<Current>> {
 }
 
 /// Sorts changes into apply / conflict / no-op against the catalog behind `con`, as it
-/// will be once `remaps` have been applied (queued keyword edits name the new paths).
+/// will be once `remaps` (queued keyword edits name the new paths) and `collections`
+/// (photos may go into an album made there) have been applied.
 pub(crate) fn plan(
     con: &Connection,
     remaps: &[KeywordRemap],
+    collections: &[CollectionChange],
     changes: &[Change],
     variant_pk: impl Fn(&Change) -> Result<i64>,
 ) -> Result<ApplyPlan> {
     let mut plan = ApplyPlan::default();
+    let mut albums: Option<Vec<c1model::Collection>> = None;
     for change in changes {
         let check = match current(con, variant_pk(change)?)? {
             None => Check::Conflict("deleted".into()),
@@ -213,7 +219,24 @@ pub(crate) fn plan(
                         _ => Check::Apply,
                     }
                 }
-                _ => return Err(SourceError::Unsupported("albums are not written yet")),
+                Op::AddToCollection { collection } | Op::RemoveFromCollection { collection } => {
+                    let albums = match &mut albums {
+                        Some(a) => a,
+                        None => albums.insert(albums::after(con, collections)?),
+                    };
+                    match membership_problem(albums, collection) {
+                        Some(why) => Check::Conflict(why),
+                        None => {
+                            // An album made in this write has no members yet.
+                            let member = match albums::resolve(con, collection)? {
+                                Some(pk) => albums::is_member(con, pk, variant_pk(change)?)?,
+                                None => false,
+                            };
+                            let adding = matches!(change.op, Op::AddToCollection { .. });
+                            if adding == member { Check::NoOp } else { Check::Apply }
+                        }
+                    }
+                }
             },
         };
         match check {
@@ -287,7 +310,9 @@ fn write_change(con: &Connection, variant_pk: i64, op: &Op) -> Result<usize> {
                 .and_then(|mut s| s.execute(params![lat, lon, variant_pk]))
                 .map_err(db_err);
         }
-        _ => return Err(SourceError::Unsupported("albums are not written yet")),
+        Op::AddToCollection { .. } | Op::RemoveFromCollection { .. } => {
+            return Err(SourceError::Other("album membership is written per album, not per photo".into()));
+        }
     };
     let rows = metadata_rows(con, variant_pk)?;
     let sql = format!("UPDATE ZVARIANTMETADATA SET {column} = ?1 WHERE Z_PK = ?2");
@@ -327,7 +352,7 @@ pub(crate) fn write(
     variant_pk: impl Fn(&Change) -> Result<i64>,
 ) -> Result<usize> {
     let tx = con.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
-    let again = self::plan(&tx, &plan.remaps, &plan.apply, &variant_pk)?;
+    let again = self::plan(&tx, &plan.remaps, &plan.collections, &plan.apply, &variant_pk)?;
     if again.apply != plan.apply {
         return Err(SourceError::StalePlan);
     }
@@ -336,8 +361,44 @@ pub(crate) fn write(
     for remap in &plan.remaps {
         keywords::remap(&tx, remap)?;
     }
+    // Then albums: photo edits may put photos into one made here.
+    for (i, change) in plan.collections.iter().enumerate() {
+        if let Some(why) = albums::check(&tx, &plan.collections[..i], change)? {
+            return Err(SourceError::Other(format!("{why}: {change:?}")));
+        }
+        albums::write(&tx, change)?;
+    }
+    // Album membership goes album by album, as the Python `album add` does.
+    let mut members: BTreeMap<(String, bool), Vec<i64>> = BTreeMap::new();
     for change in &plan.apply {
-        write_change(&tx, variant_pk(change)?, &change.op)?;
+        match &change.op {
+            Op::AddToCollection { collection } => {
+                members.entry((collection.0.clone(), true)).or_default().push(variant_pk(change)?)
+            }
+            Op::RemoveFromCollection { collection } => {
+                members.entry((collection.0.clone(), false)).or_default().push(variant_pk(change)?)
+            }
+            op => {
+                write_change(&tx, variant_pk(change)?, op)?;
+            }
+        }
+    }
+    for ((collection, adding), variants) in members {
+        let id = c1model::CollectionId(collection);
+        let pk = albums::resolve(&tx, &id)?.ok_or_else(|| SourceError::Other(format!("album {} is gone", id.0)))?;
+        let before = albums::dangling(&tx, pk)?;
+        if adding {
+            albums::add_members(&tx, pk, &variants)?;
+        } else {
+            albums::remove_members(&tx, pk, &variants)?;
+        }
+        let after = albums::dangling(&tx, pk)?;
+        if after.0 > before.0 || after.1 > before.1 {
+            return Err(SourceError::Other(format!(
+                "album {} would be left with links that do not match ({before:?} → {after:?})",
+                id.0
+            )));
+        }
     }
     if !plan.remaps.is_empty() || plan.apply.iter().any(|c| matches!(c.op, Op::AddKeywords { .. })) {
         let problems = keywords::check_tree(&tx)?;
@@ -352,7 +413,7 @@ pub(crate) fn write(
     )
     .map_err(db_err)?;
     tx.commit().map_err(db_err)?;
-    Ok(plan.remaps.len() + plan.apply.len())
+    Ok(plan.remaps.len() + plan.collections.len() + plan.apply.len())
 }
 
 fn now_ms() -> u64 {
@@ -589,7 +650,7 @@ pub(crate) mod tests {
     fn rating_goes_to_adjustment_and_combined_never_default() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let plan = plan(&con, &[], &[change(1, Op::SetRating { base: None, value: Some(5) })], pk).unwrap();
+        let plan = plan(&con, &[], &[], &[change(1, Op::SetRating { base: None, value: Some(5) })], pk).unwrap();
         assert_eq!(write(&mut con, &plan, pk).unwrap(), 1);
         assert_eq!(by_layer(&con, 1, "ZBASIC_RATING"), [(17, Some(5)), (18, None), (20, Some(5))]);
         assert_eq!(by_layer(&con, 2, "ZBASIC_RATING"), [(17, None), (18, None), (20, None)]);
@@ -603,7 +664,7 @@ pub(crate) mod tests {
             change(1, Op::SetRating { base: None, value: Some(3) }),
             change(1, Op::SetColor { base: None, value: Some(ColorLabel::Green) }),
         ];
-        let p = plan(&con, &[], &set, pk).unwrap();
+        let p = plan(&con, &[], &[], &set, pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(by_layer(&con, 1, "ZCOLOR_TAG_INDEX"), [(17, Some(4)), (18, None), (20, Some(4))]);
 
@@ -611,7 +672,7 @@ pub(crate) mod tests {
             change(1, Op::SetRating { base: Some(3), value: None }),
             change(1, Op::SetColor { base: Some(ColorLabel::Green), value: None }),
         ];
-        let p = plan(&con, &[], &clear, pk).unwrap();
+        let p = plan(&con, &[], &[], &clear, pk).unwrap();
         assert_eq!(p.apply.len(), 2);
         write(&mut con, &p, pk).unwrap();
         assert_eq!(by_layer(&con, 1, "ZBASIC_RATING"), [(17, None), (18, None), (20, None)]);
@@ -640,7 +701,8 @@ pub(crate) mod tests {
             .unwrap();
         let base = Place { city: s("Krakow"), ..Place::default() };
         let value = Place { city: s("Kraków"), country: s("Poland"), country_code: s("PL"), ..Place::default() };
-        let p = plan(&con, &[], &[change(1, Op::SetPlace { base: base.clone(), value: value.clone() })], pk).unwrap();
+        let p =
+            plan(&con, &[], &[], &[change(1, Op::SetPlace { base: base.clone(), value: value.clone() })], pk).unwrap();
         assert_eq!(p.apply.len(), 1);
         write(&mut con, &p, pk).unwrap();
         let some = |v: &str| [(17, s(v)), (18, None), (20, s(v))];
@@ -649,16 +711,16 @@ pub(crate) mod tests {
         assert_eq!(text_by_layer(&con, 1, "ZIMAGE_ISOCOUNTRYCODE"), some("PL"));
         assert_eq!(text_by_layer(&con, 1, "ZIMAGE_STATE"), some(""));
         // Written: the same op is now done; one made on the old value conflicts.
-        let again = plan(&con, &[], &[change(1, Op::SetPlace { base: base.clone(), value })], pk).unwrap();
+        let again = plan(&con, &[], &[], &[change(1, Op::SetPlace { base: base.clone(), value })], pk).unwrap();
         assert_eq!(again.no_ops.len(), 1);
         let stale = Op::SetPlace { base, value: Place { city: s("Warsaw"), ..Place::default() } };
-        assert_eq!(plan(&con, &[], &[change(1, stale)], pk).unwrap().conflicts.len(), 1);
+        assert_eq!(plan(&con, &[], &[], &[change(1, stale)], pk).unwrap().conflicts.len(), 1);
         // Cleared is NULL.
         let clear = Op::SetPlace {
             base: Place { city: s("Kraków"), country: s("Poland"), country_code: s("PL"), ..Place::default() },
             value: Place { country: s("Poland"), country_code: s("PL"), ..Place::default() },
         };
-        let p = plan(&con, &[], &[change(1, clear)], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(1, clear)], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(text_by_layer(&con, 1, "ZIMAGE_CITY"), [(17, None), (18, None), (20, None)]);
     }
@@ -668,7 +730,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
         let value = Iptc { description: s("24hprojet"), copyright: s("B. M."), ..Iptc::default() };
-        let p = plan(&con, &[], &[change(2, Op::SetIptc { base: Iptc::default(), value })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(2, Op::SetIptc { base: Iptc::default(), value })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(
             text_by_layer(&con, 2, "ZCONTENT_DESCRIPTION"),
@@ -690,7 +752,8 @@ pub(crate) mod tests {
             source: s("Archiwum"),
             ..Iptc::default()
         };
-        let p = plan(&con, &[], &[change(3, Op::SetIptc { base: Iptc::default(), value: value.clone() })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(3, Op::SetIptc { base: Iptc::default(), value: value.clone() })], pk)
+            .unwrap();
         write(&mut con, &p, pk).unwrap();
         let both = |v: &str| [(17, s(v)), (18, None), (20, s(v))];
         assert_eq!(text_by_layer(&con, 3, "ZSTATUS_TITLE"), both("DSCF0743"));
@@ -699,10 +762,10 @@ pub(crate) mod tests {
         assert_eq!(text_by_layer(&con, 3, "ZSTATUS_INSTRUCTIONS"), both("Embargo until Monday"));
         assert_eq!(text_by_layer(&con, 3, "ZSTATUS_SOURCE"), both("Archiwum"));
         // Read back the way it was written: done.
-        let again = plan(&con, &[], &[change(3, Op::SetIptc { base: Iptc::default(), value: value.clone() })], pk);
+        let again = plan(&con, &[], &[], &[change(3, Op::SetIptc { base: Iptc::default(), value: value.clone() })], pk);
         assert_eq!(again.unwrap().no_ops.len(), 1);
         let cleared = Iptc { job_id: None, ..value.clone() };
-        let p = plan(&con, &[], &[change(3, Op::SetIptc { base: value, value: cleared })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(3, Op::SetIptc { base: value, value: cleared })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(text_by_layer(&con, 3, "ZSTATUS_JOBIDENTIFIER"), [(17, None), (18, None), (20, None)]);
         assert_eq!(text_by_layer(&con, 3, "ZSTATUS_TITLE"), both("DSCF0743"));
@@ -722,7 +785,7 @@ pub(crate) mod tests {
             origin: GeoOrigin::Exif,
         };
         let manual = GeoPoint { lat: -33.8688, lon: 151.2093, alt: Some(5.0), origin: GeoOrigin::Manual };
-        let p = plan(&con, &[], &[change(3, Op::SetGeo { base: Some(camera), value: Some(manual) })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(3, Op::SetGeo { base: Some(camera), value: Some(manual) })], pk).unwrap();
         assert_eq!(p.apply.len(), 1);
         write(&mut con, &p, pk).unwrap();
         let gps: (String, String) = con
@@ -734,9 +797,9 @@ pub(crate) mod tests {
         // Reads back as stored data, at the same spot: done, not a conflict.
         let read_back = GeoPoint { alt: None, origin: GeoOrigin::Exif, ..manual };
         let again =
-            plan(&con, &[], &[change(3, Op::SetGeo { base: Some(camera), value: Some(read_back) })], pk).unwrap();
+            plan(&con, &[], &[], &[change(3, Op::SetGeo { base: Some(camera), value: Some(read_back) })], pk).unwrap();
         assert_eq!(again.no_ops.len(), 1);
-        let p = plan(&con, &[], &[change(3, Op::SetGeo { base: Some(manual), value: None })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(3, Op::SetGeo { base: Some(manual), value: None })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         let cleared: Option<String> =
             con.query_row("SELECT ZGPSLATITUDE FROM ZIMAGE WHERE Z_PK = 3", [], |r| r.get(0)).unwrap();
@@ -750,6 +813,7 @@ pub(crate) mod tests {
         con.execute("UPDATE ZVARIANTMETADATA SET ZBASIC_RATING = 2 WHERE Z_PK IN (5, 6)", []).unwrap(); // variant 2
         let p = plan(
             &con,
+            &[],
             &[],
             &[
                 change(1, Op::SetRating { base: None, value: Some(4) }), // apply
@@ -769,7 +833,7 @@ pub(crate) mod tests {
     fn a_plan_made_stale_is_not_written() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let p = plan(&con, &[], &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
         // Between the plan and the write, someone else rates it.
         con.execute("UPDATE ZVARIANTMETADATA SET ZBASIC_RATING = 1 WHERE Z_PK IN (2, 3)", []).unwrap();
         assert!(matches!(write(&mut con, &p, pk), Err(SourceError::StalePlan)));
@@ -780,7 +844,7 @@ pub(crate) mod tests {
     fn writing_stamps_the_document() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let p = plan(&con, &[], &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(1, Op::SetRating { base: None, value: Some(4) })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         let stamp: f64 = con.query_row("SELECT ZDATEMODIFIED FROM ZDOCUMENTCONTENT", [], |r| r.get(0)).unwrap();
         assert!((stamp - unix_now()).abs() < 60.0);
@@ -825,7 +889,8 @@ pub(crate) mod tests {
         let Some(mut con) = fixture(&catalog) else { return };
         let store = dir.path().join("backups");
         let write_one = |con: &mut Connection, pk: i64, stars: u8| {
-            let p = plan(con, &[], &[change(pk, Op::SetRating { base: None, value: Some(stars) })], self::pk).unwrap();
+            let p =
+                plan(con, &[], &[], &[change(pk, Op::SetRating { base: None, value: Some(stars) })], self::pk).unwrap();
             write(con, &p, self::pk).unwrap();
         };
 
@@ -875,7 +940,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
         let add = change(1, Op::AddKeywords { paths: kw(&["street", "b&w", "best|best2018"]) });
-        let p = plan(&con, &[], std::slice::from_ref(&add), pk).unwrap();
+        let p = plan(&con, &[], &[], std::slice::from_ref(&add), pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(
             keywords_by_layer(&con, 1),
@@ -895,7 +960,7 @@ pub(crate) mod tests {
             ]
         );
         // Already there: nothing to do.
-        assert_eq!(plan(&con, &[], &[add], pk).unwrap().no_ops.len(), 1);
+        assert_eq!(plan(&con, &[], &[], &[add], pk).unwrap().no_ops.len(), 1);
     }
 
     #[test]
@@ -903,7 +968,7 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
         for (pk_, path) in [(1, "a"), (2, "b"), (3, "a|x"), (3, "a|x|deep"), (4, "b|y")] {
-            let p = plan(&con, &[], &[change(pk_, Op::AddKeywords { paths: kw(&[path]) })], pk).unwrap();
+            let p = plan(&con, &[], &[], &[change(pk_, Op::AddKeywords { paths: kw(&[path]) })], pk).unwrap();
             write(&mut con, &p, pk).unwrap();
         }
         assert_eq!(keywords::check_tree(&con).unwrap(), Vec::<String>::new());
@@ -924,19 +989,20 @@ pub(crate) mod tests {
     fn removing_renumbers_and_leaves_the_tree() {
         let dir = tempfile::tempdir().unwrap();
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        let p = plan(&con, &[], &[change(2, Op::AddKeywords { paths: kw(&["street", "b&w", "night"]) })], pk).unwrap();
+        let p =
+            plan(&con, &[], &[], &[change(2, Op::AddKeywords { paths: kw(&["street", "b&w", "night"]) })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         let remove = change(2, Op::RemoveKeywords { paths: kw(&["street"]) });
-        let p = plan(&con, &[], std::slice::from_ref(&remove), pk).unwrap();
+        let p = plan(&con, &[], &[], std::slice::from_ref(&remove), pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(
             keywords_by_layer(&con, 2),
             [(17, Some("b&w||0,night||1".into())), (18, None), (20, Some("b&w||0,night||1".into()))]
         );
         assert_eq!(tree(&con).len(), 3, "the keyword stays in the library");
-        assert_eq!(plan(&con, &[], &[remove], pk).unwrap().no_ops.len(), 1, "removing it again does nothing");
+        assert_eq!(plan(&con, &[], &[], &[remove], pk).unwrap().no_ops.len(), 1, "removing it again does nothing");
         // Removing the last one leaves no string at all.
-        let p = plan(&con, &[], &[change(2, Op::RemoveKeywords { paths: kw(&["b&w", "night"]) })], pk).unwrap();
+        let p = plan(&con, &[], &[], &[change(2, Op::RemoveKeywords { paths: kw(&["b&w", "night"]) })], pk).unwrap();
         write(&mut con, &p, pk).unwrap();
         assert_eq!(keywords_by_layer(&con, 2), [(17, None), (18, None), (20, None)]);
     }
@@ -945,7 +1011,7 @@ pub(crate) mod tests {
     fn a_keyword_name_with_a_comma_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let Some(con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
-        assert!(plan(&con, &[], &[change(1, Op::AddKeywords { paths: kw(&["a,b"]) })], pk).is_err());
+        assert!(plan(&con, &[], &[], &[change(1, Op::AddKeywords { paths: kw(&["a,b"]) })], pk).is_err());
     }
 
     fn remap_of(map: &[(&str, &str)], prune: &[&str]) -> c1model::KeywordRemap {
@@ -963,7 +1029,7 @@ pub(crate) mod tests {
     fn tagged(path: &Path) -> Option<Connection> {
         let mut con = fixture(path)?;
         for (pk_, paths) in [(1, vec!["street", "streets", "b&w"]), (2, vec!["streets|night", "a"]), (3, vec!["a|x"])] {
-            let p = plan(&con, &[], &[change(pk_, Op::AddKeywords { paths: kw(&paths) })], pk).unwrap();
+            let p = plan(&con, &[], &[], &[change(pk_, Op::AddKeywords { paths: kw(&paths) })], pk).unwrap();
             write(&mut con, &p, pk).unwrap();
         }
         Some(con)

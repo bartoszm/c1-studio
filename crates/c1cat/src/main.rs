@@ -9,7 +9,8 @@ use std::time::Instant;
 use anyhow::Context;
 use c1index::{Dim, Filter, Library, QueryOptions, Sort};
 use c1model::{
-    ApplyPlan, Change, ColorLabel, GeoOrigin, GeoPoint, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource,
+    ApplyPlan, Change, CollectionChange, CollectionId, CollectionKind, ColorLabel, Condition, GeoOrigin, GeoPoint,
+    ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, SmartRule,
 };
 use clap::{Parser, Subcommand};
 use source_c1::{CaptureOne, data_dir, find_catalog};
@@ -175,6 +176,22 @@ enum Command {
         #[command(subcommand)]
         action: KeywordAction,
     },
+    /// Make, rename and delete albums, and put photos in or take them out. A dry run
+    /// unless --apply is given.
+    Album {
+        #[command(subcommand)]
+        action: AlbumAction,
+    },
+    /// Album groups.
+    Group {
+        #[command(subcommand)]
+        action: GroupAction,
+    },
+    /// Smart albums: a rule instead of members.
+    Smart {
+        #[command(subcommand)]
+        action: SmartAction,
+    },
     /// Time the library against the stage-0 speed gate on synthetic photos.
     Bench {
         #[arg(long, default_value_t = 250_000)]
@@ -263,6 +280,147 @@ enum KeywordAction {
         #[command(flatten)]
         write: WriteFlags,
     },
+}
+
+// Albums are named as the Python `--album` named them: `#906`, a name, or a path suffix.
+#[derive(Subcommand)]
+enum AlbumAction {
+    /// Make an album, at the top level or in a group or project.
+    Create {
+        name: String,
+        #[arg(long, value_name = "NAME|#PK")]
+        parent: Option<String>,
+        #[arg(long)]
+        allow_duplicate: bool,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Rename an album, smart album or group.
+    Rename {
+        #[arg(value_name = "NAME|#PK")]
+        album: String,
+        #[arg(long)]
+        to: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Delete an album, smart album or group (and what is in it). Photos stay.
+    Delete {
+        #[arg(value_name = "NAME|#PK")]
+        album: String,
+        /// Needed to delete a group with collections in it.
+        #[arg(long)]
+        force_children: bool,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Put the matching photos into an album. (The album is positional: `--album` is a
+    /// filter here, so `album add portfolio --album street` copies street into portfolio.)
+    Add {
+        #[arg(value_name = "ALBUM")]
+        album: String,
+        #[command(flatten)]
+        select: Selector,
+        /// Make the album if there is none of that name.
+        #[arg(long)]
+        create: bool,
+        /// Where `--create` makes it.
+        #[arg(long, value_name = "NAME|#PK")]
+        parent: Option<String>,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Take the matching photos out of an album.
+    Remove {
+        #[arg(value_name = "ALBUM")]
+        album: String,
+        #[command(flatten)]
+        select: Selector,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+}
+
+#[derive(Subcommand)]
+enum GroupAction {
+    /// Make a group, to hold albums.
+    Create {
+        name: String,
+        #[arg(long, value_name = "NAME|#PK")]
+        parent: Option<String>,
+        #[arg(long)]
+        allow_duplicate: bool,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+}
+
+#[derive(Subcommand)]
+enum SmartAction {
+    /// Make a smart album from a rule.
+    Create {
+        name: String,
+        #[arg(long, value_name = "NAME|#PK")]
+        parent: Option<String>,
+        #[command(flatten)]
+        rule: RuleArgs,
+        #[arg(long)]
+        allow_duplicate: bool,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Give a smart album a new rule.
+    Rule {
+        #[arg(value_name = "NAME|#PK")]
+        album: String,
+        #[command(flatten)]
+        rule: RuleArgs,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+}
+
+/// A smart album's rule, in the order the Python `smart create` writes it: rating,
+/// keywords, year.
+#[derive(clap::Args)]
+struct RuleArgs {
+    /// Every condition (all) or any one of them (any).
+    #[arg(long = "match", default_value = "all", value_parser = ["all", "any"])]
+    match_: String,
+    /// '>=4' (at least), '>3' (written as at least 4) or '5'.
+    #[arg(long)]
+    rating: Option<String>,
+    /// Some keyword's name contains this (repeatable).
+    #[arg(long)]
+    keyword: Vec<String>,
+    /// Captured in this year.
+    #[arg(long)]
+    year: Option<i32>,
+}
+
+impl RuleArgs {
+    fn rule(&self) -> anyhow::Result<SmartRule> {
+        let mut conditions = Vec::new();
+        if let Some(text) = &self.rating {
+            let t = text.trim();
+            let n = |s: &str| s.trim().parse::<u8>().ok().filter(|n| *n <= 5);
+            conditions.push(
+                match (t.strip_prefix(">="), t.strip_prefix('>'), t.strip_prefix('=')) {
+                    (Some(v), _, _) => n(v).map(|min| Condition::Rating { min, max: 5 }),
+                    (None, Some(v), _) => n(v).filter(|v| *v < 5).map(|v| Condition::Rating { min: v + 1, max: 5 }),
+                    (None, None, Some(v)) => n(v).map(|v| Condition::Rating { min: v, max: v }),
+                    _ => n(t).map(|v| Condition::Rating { min: v, max: v }),
+                }
+                .with_context(|| format!("cannot read the rating {text:?}; use '>=4', '>3' or '4'"))?,
+            );
+        }
+        conditions.extend(self.keyword.iter().map(|k| Condition::KeywordContains(k.clone())));
+        conditions.extend(self.year.map(Condition::Year));
+        if conditions.is_empty() {
+            anyhow::bail!("a smart album needs at least one condition (--rating, --keyword or --year)");
+        }
+        Ok(SmartRule { match_all: self.match_ == "all", conditions })
+    }
 }
 
 #[derive(clap::Args)]
@@ -431,6 +589,102 @@ fn remap(
             Some(r) => println!("written; backup: {}", r.backup.unwrap_or_default()),
             None => println!("dry run: nothing written; add --apply to write"),
         }
+    }
+    Ok(())
+}
+
+/// The photos a selection matches; refuses an empty selection, as `edit` does.
+fn selected(session: &Session, select: &Selector) -> anyhow::Result<Vec<Photo>> {
+    let filter = select.to_filter(&session.library)?;
+    if filter == Filter::default() {
+        anyhow::bail!("refusing to run without a selection; add at least one filter (e.g. --id, --album, --rating)");
+    }
+    let rows = session.library.query(&filter, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.extend(session.library.photo(row)?);
+    }
+    Ok(out)
+}
+
+/// A new collection, refused if one of that name is already in the same place.
+fn create(
+    session: &Session,
+    name: &str,
+    kind: CollectionKind,
+    parent: Option<&str>,
+    rule: Option<SmartRule>,
+    allow_duplicate: bool,
+) -> anyhow::Result<CollectionChange> {
+    let parent = parent.map(|p| session.library.resolve_collection(p).map(CollectionId)).transpose()?;
+    let all = session.library.collections()?;
+    if let Some(same) = all
+        .iter()
+        .find(|c| c.parent == parent && c.name.to_lowercase() == name.to_lowercase())
+        .filter(|_| !allow_duplicate)
+    {
+        anyhow::bail!("{:?} already exists (#{}); pass --allow-duplicate to make another", same.path, same.id.0);
+    }
+    Ok(CollectionChange::Create { id: c1index::new_collection_id(), name: name.to_owned(), kind, parent, rule })
+}
+
+/// Plans album changes, then photo changes into and out of albums, and with `--apply`
+/// writes them together.
+fn albums(
+    catalog: Option<&PathBuf>,
+    flags: &WriteFlags,
+    build: impl FnOnce(&Session) -> anyhow::Result<(Vec<CollectionChange>, Vec<Change>)>,
+) -> anyhow::Result<()> {
+    let session = open(catalog)?;
+    if !flags.no_sync {
+        sync(&session, true)?;
+    }
+    let (collections, changes) = build(&session)?;
+    let before = session.library.collections()?;
+    let labels: Vec<String> = collections.iter().map(|c| c.label(&before)).collect();
+    for (i, change) in collections.iter().enumerate() {
+        if let Some(why) = session.source.check_collection(&collections[..i], change)? {
+            anyhow::bail!("{}: {why}", labels[i]);
+        }
+    }
+    let plan = session.source.plan_after(&[], &collections, &changes)?;
+    let report = if flags.apply {
+        let report = session.source.apply(&plan)?;
+        sync(&session, true)?;
+        Some(report)
+    } else {
+        None
+    };
+    let ids = |list: &[Change]| list.iter().map(|c| c.photo.ext.clone()).collect::<Vec<_>>();
+    if flags.json {
+        let out = serde_json::json!({
+            "collections": labels,
+            "applied": report.as_ref().map(|r| r.applied),
+            "backup": report.as_ref().and_then(|r| r.backup.clone()),
+            "apply": ids(&plan.apply),
+            "unchanged": ids(&plan.no_ops),
+            "conflicts": plan.conflicts.iter().map(|c| (c.change.photo.ext.clone(), c.current.clone())).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    for label in &labels {
+        println!("{label}");
+    }
+    if !changes.is_empty() {
+        println!(
+            "{} photo(s) to move, {} already so, {} refused",
+            plan.apply.len(),
+            plan.no_ops.len(),
+            plan.conflicts.len()
+        );
+        for c in plan.conflicts.iter().take(20) {
+            println!("  refused {}: {}", c.change.photo.ext, c.current);
+        }
+    }
+    match report {
+        Some(r) => println!("written: {}; backup: {}", r.applied, r.backup.unwrap_or_default()),
+        None => println!("dry run: nothing written; add --apply to write"),
     }
     Ok(())
 }
@@ -609,6 +863,75 @@ fn main() -> anyhow::Result<()> {
             };
             edit(cli.catalog.as_ref(), &select, &write, |_| op.clone())?;
         }
+        Command::Album { action } => {
+            let catalog = cli.catalog.as_ref();
+            let member = |photos: Vec<Photo>, id: &CollectionId, add: bool| -> Vec<Change> {
+                let op = if add {
+                    Op::AddToCollection { collection: id.clone() }
+                } else {
+                    Op::RemoveFromCollection { collection: id.clone() }
+                };
+                photos.into_iter().map(|p| Change { photo: p.id, op: op.clone() }).collect()
+            };
+            match action {
+                AlbumAction::Create { name, parent, allow_duplicate, write } => albums(catalog, &write, |s| {
+                    Ok((
+                        vec![create(s, &name, CollectionKind::Album, parent.as_deref(), None, allow_duplicate)?],
+                        vec![],
+                    ))
+                })?,
+                AlbumAction::Rename { album, to, write } => albums(catalog, &write, |s| {
+                    let id = CollectionId(s.library.resolve_collection(&album)?);
+                    Ok((vec![CollectionChange::Rename { id, name: to }], vec![]))
+                })?,
+                AlbumAction::Delete { album, force_children, write } => albums(catalog, &write, |s| {
+                    let id = CollectionId(s.library.resolve_collection(&album)?);
+                    let all = s.library.collections()?;
+                    let inside = all.iter().filter(|c| c.parent.as_ref() == Some(&id)).count();
+                    if inside > 0 && !force_children {
+                        anyhow::bail!("it holds {inside} collection(s); pass --force-children to delete them too");
+                    }
+                    Ok((vec![CollectionChange::Delete { id }], vec![]))
+                })?,
+                AlbumAction::Add { album, select, create: make, parent, write } => albums(catalog, &write, |s| {
+                    let photos = selected(s, &select)?;
+                    match s.library.resolve_collection(&album) {
+                        Ok(id) => Ok((vec![], member(photos, &CollectionId(id), true))),
+                        Err(_) if make => {
+                            let new = create(s, &album, CollectionKind::Album, parent.as_deref(), None, false)?;
+                            let changes = member(photos, new.id(), true);
+                            Ok((vec![new], changes))
+                        }
+                        Err(e) => Err(e),
+                    }
+                })?,
+                AlbumAction::Remove { album, select, write } => albums(catalog, &write, |s| {
+                    let id = CollectionId(s.library.resolve_collection(&album)?);
+                    Ok((vec![], member(selected(s, &select)?, &id, false)))
+                })?,
+            }
+        }
+        Command::Group { action: GroupAction::Create { name, parent, allow_duplicate, write } } => {
+            albums(cli.catalog.as_ref(), &write, |s| {
+                Ok((vec![create(s, &name, CollectionKind::Group, parent.as_deref(), None, allow_duplicate)?], vec![]))
+            })?
+        }
+        Command::Smart { action } => match action {
+            SmartAction::Create { name, parent, rule, allow_duplicate, write } => {
+                let rule = rule.rule()?;
+                albums(cli.catalog.as_ref(), &write, |s| {
+                    let new = create(s, &name, CollectionKind::Smart, parent.as_deref(), Some(rule), allow_duplicate)?;
+                    Ok((vec![new], vec![]))
+                })?
+            }
+            SmartAction::Rule { album, rule, write } => {
+                let rule = rule.rule()?;
+                albums(cli.catalog.as_ref(), &write, |s| {
+                    let id = CollectionId(s.library.resolve_collection(&album)?);
+                    Ok((vec![CollectionChange::SetRule { id, rule }], vec![]))
+                })?
+            }
+        },
         Command::Bench { photos, keywords, queries, seed, dir, rebuild, dims } => {
             bench::bench(&bench::Config { photos, keywords, queries, seed, dir, rebuild, dims: parse_dims(&dims)? })?;
         }
