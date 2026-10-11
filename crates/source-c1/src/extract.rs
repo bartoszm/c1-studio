@@ -103,12 +103,23 @@ fn load_layers(con: &Connection) -> Result<Layers> {
             *layers.local.entry(variant).or_default() += 1;
         }
     }
+    // Catalogs from before Capture One 16.x (schema 1650) have no retouching layers.
+    if !has_table(con, "ZRETOUCHINGLAYER")? {
+        return Ok(layers);
+    }
     let mut stmt = con.prepare("SELECT ZVARIANT FROM ZRETOUCHINGLAYER").map_err(db_err)?;
     let mut rows = stmt.query([]).map_err(db_err)?;
     while let Some(r) = rows.next().map_err(db_err)? {
         *layers.retouch.entry(r.get(0).map_err(db_err)?).or_default() += 1;
     }
     Ok(layers)
+}
+
+fn has_table(con: &Connection, name: &str) -> Result<bool> {
+    con.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [name], |r| {
+        r.get(0)
+    })
+    .map_err(db_err)
 }
 
 fn load_membership(con: &Connection) -> Result<HashMap<i64, Vec<CollectionId>>> {

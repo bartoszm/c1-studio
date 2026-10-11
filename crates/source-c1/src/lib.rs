@@ -6,10 +6,12 @@
 //! schema fact relied on here; each one was verified against a real catalog.
 
 mod catalog;
+mod compat;
 mod config;
 mod extract;
 mod keywords;
 mod process;
+mod provider;
 mod smart;
 mod write;
 
@@ -25,14 +27,16 @@ use c1model::{
 pub use catalog::EXPECTED_ZVERSION;
 pub use config::{catalog_id, data_dir, find_catalog};
 pub use extract::{Extract, extract};
+pub use provider::CaptureOneProvider;
 pub use write::Backup;
 
 pub struct CaptureOne {
     catalog: PathBuf,
     id: SourceId,
     work_dir: PathBuf,
-    /// Catalog schema version, read once at open.
-    zversion: i64,
+    /// Which Capture One made the catalog, read at open and again with each full read
+    /// (opening it in a newer Capture One upgrades it).
+    version: Mutex<compat::CatalogVersion>,
     /// Serialises snapshots: each one copies the catalog into `work_dir`.
     snapshot_lock: Mutex<()>,
 }
@@ -45,12 +49,12 @@ impl CaptureOne {
             return Err(SourceError::NotFound(catalog.display().to_string()));
         }
         let catalog = std::path::absolute(catalog)?;
-        let zversion = catalog::open_live(&catalog).and_then(|con| catalog::zversion(&con))?;
+        let version = catalog::open_live(&catalog).and_then(|con| compat::read_version(&con))?;
         Ok(Self {
             id: SourceId(format!("c1:{}", catalog_id(&catalog))),
             catalog,
             work_dir: work_dir.into(),
-            zversion,
+            version: Mutex::new(version),
             snapshot_lock: Mutex::new(()),
         })
     }
@@ -84,7 +88,13 @@ impl CaptureOne {
 impl PhotoSource for CaptureOne {
     fn info(&self) -> SourceInfo {
         let stem = self.catalog.file_stem().unwrap_or_default().to_string_lossy();
-        SourceInfo { id: self.id.clone(), name: format!("Capture One · {stem}"), version: self.zversion.to_string() }
+        let version = self.version.lock().unwrap();
+        SourceInfo {
+            id: self.id.clone(),
+            name: format!("Capture One · {stem}"),
+            version: version.schema.to_string(),
+            compatibility: compat::assess(&version),
+        }
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -110,7 +120,9 @@ impl PhotoSource for CaptureOne {
         let copy = catalog::copy_for_reading(&self.catalog, &self.work_dir)?;
         let extracted = {
             let con = catalog::open_copy(copy.path())?;
-            extract(&con, self.catalog_dir(), &self.id)?
+            let version = compat::read_version(&con)?;
+            *self.version.lock().unwrap() = version.clone();
+            extract(&con, self.catalog_dir(), &self.id).map_err(|e| compat::read_failed(&version, &e))?
         };
         drop(copy);
 
@@ -221,6 +233,48 @@ mod tests {
             eprintln!("write checks skipped: {status:?}");
         }
         status == WriteStatus::Ready
+    }
+
+    #[test]
+    fn a_catalog_from_before_retouching_layers_reads() {
+        // Schema 1650 (Capture One before 16.x) has no ZRETOUCHINGLAYER table.
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("old.cocatalogdb");
+        let Some(con) = write::tests::fixture(&catalog) else { return };
+        con.execute_batch("DROP TABLE ZRETOUCHINGLAYER; UPDATE ZVERSIONINFO SET ZVERSION = 1650").unwrap();
+        drop(con);
+        let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
+        let mut photos = 0;
+        source
+            .snapshot(None, &mut |e| {
+                photos += matches!(e, SourceEvent::Upsert(_)) as usize;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(photos, 5);
+        // Read, but never written: the app was not checked against this format. (Locked
+        // instead while Capture One runs.)
+        assert_ne!(source.write_status(), WriteStatus::Ready);
+        let compat = source.info().compatibility;
+        assert_eq!((compat.read, compat.write), (c1model::Support::Tested, c1model::Support::Off));
+        assert!(compat.format.contains("schema 1650"), "{}", compat.format);
+    }
+
+    #[test]
+    fn a_catalog_that_cannot_be_read_says_which_version_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("old.cocatalogdb");
+        let Some(con) = write::tests::fixture(&catalog) else { return };
+        con.execute_batch(
+            "DROP TABLE ZPATHLOCATION; UPDATE ZVERSIONINFO SET ZVERSION = 1531, ZAUTHOR = '15.3.1.17 Pro Win'",
+        )
+        .unwrap();
+        drop(con);
+        let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
+        let error = source.snapshot(None, &mut |_| Ok(())).unwrap_err().to_string();
+        assert!(error.contains("Capture One 15.3.1 Pro (Windows), catalog schema 1531"), "{error}");
+        assert!(error.contains("not checked against") && error.contains("ZPATHLOCATION"), "{error}");
+        assert_eq!(source.info().compatibility.read, c1model::Support::Untested);
     }
 
     #[test]

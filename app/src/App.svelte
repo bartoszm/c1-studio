@@ -10,6 +10,7 @@
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import Info from "./Info.svelte";
+  import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
   import Viewer from "./Viewer.svelte";
@@ -21,6 +22,8 @@
   const FLAT: Dim[] = ["rating", "color", "camera", "country"];
 
   let status = $state<api.Status | null>(null);
+  /** The source menu in the header; open by itself when nothing could be opened. */
+  let choosingSource = $state(false);
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
@@ -33,6 +36,8 @@
   let selected = $state<number | null>(null);
   let viewing = $state(false);
   let syncNote = $state("syncing…");
+  /** Why reading the source failed, in full: shown in the grid when it is left empty. */
+  let syncFailed = $state<string | null>(null);
   let grid: Grid;
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
@@ -196,12 +201,17 @@
   async function refresh(keep = false) {
     try {
       status = await api.status();
+      // A sync that failed before the window was listening (at start, or on opening
+      // another catalog) still says so.
+      syncFailed = status.sync_error;
+      if (syncFailed) syncNote = "sync failed";
       collections = await api.collections();
       await refreshKeywords();
       await refreshQueued();
       await run(keep);
     } catch (e) {
       error = String(e);
+      if (!status) choosingSource = true;
     }
   }
 
@@ -209,8 +219,8 @@
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     const off = [
-      listen("library-changed", () => { syncNote = ""; refresh(true); }),
-      listen<string>("sync-failed", (e) => { syncNote = `sync failed: ${e.payload}`; }),
+      listen("library-changed", () => { syncNote = ""; syncFailed = null; refresh(true); }),
+      listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
       listen("queue-written", () => { edited(); }),
     ];
@@ -811,7 +821,7 @@
 
 <div class="app" class:with-info={showInfo}>
   <header>
-    <span class="brand">C1 Studio</span>
+    <SourceMenu bind:open={choosingSource} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
@@ -938,6 +948,9 @@
   >
     {#if error}
       <p class="error">{error}</p>
+      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button></p>{/if}
+    {:else if syncFailed && status?.photos === 0}
+      <p class="error">Nothing could be read from this catalog.<br />{syncFailed}</p>
     {:else if result && result.total === 0}
       <p class="empty">Nothing matches.</p>
     {/if}
@@ -948,11 +961,22 @@
   <footer>
     {#if status}
       <span>{status.source}</span>
+      {#if status.compatibility.read !== "Tested" || status.compatibility.write !== "Tested"}
+        {@const c = status.compatibility}
+        <button
+          class="compat"
+          class:untested={c.read !== "Tested"}
+          title="{c.format}. {c.note ?? ''}"
+          onclick={() => (choosingSource = true)}
+        >
+          {c.read !== "Tested" ? "untested version" : "read-only"} · {c.format.replace(/^Capture One (\d+\.\d+).*$/, "$1")}
+        </button>
+      {/if}
       <span>{status.photos.toLocaleString()} in library</span>
       <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
     {/if}
     {#if editError}<span class="edit-error">{editError}</span>{/if}
-    {#if syncNote}<span class="sync">{syncNote}</span>{/if}
+    {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     <span class="autosave" class:alone={!syncNote}>
       {#if autosaveOn}
         {@const [note, attention] = autosaveText(autosaveState)}

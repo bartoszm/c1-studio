@@ -38,6 +38,37 @@ pub struct SourceInfo {
     pub name: String,
     /// Source-specific version, e.g. the catalog schema version.
     pub version: String,
+    pub compatibility: Compatibility,
+}
+
+/// How far the app has been checked against a source's format, one way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Support {
+    /// Checked against this version.
+    Tested,
+    /// Not checked: the app tries, and says so.
+    Untested,
+    /// Not done for this version.
+    Off,
+}
+
+/// What made a source and how far the app trusts itself with it, for telling the user,
+/// above all when something does not work.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Compatibility {
+    /// The program and version that made it: "Capture One 16.5.5 Pro (Windows), catalog
+    /// schema 1650".
+    pub format: String,
+    pub read: Support,
+    pub write: Support,
+    /// Why, in a sentence or two, when either is not `Tested`.
+    pub note: Option<String>,
+}
+
+impl Compatibility {
+    pub fn tested(format: impl Into<String>) -> Self {
+        Self { format: format.into(), read: Support::Tested, write: Support::Tested, note: None }
+    }
 }
 
 /// Fields a source can write back.

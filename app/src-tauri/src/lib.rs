@@ -4,24 +4,32 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
+use c1model::provider::data_root;
 use c1model::{
-    Change, Collection, ColorLabel, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo,
-    PhotoSource, Place, WriteStatus,
+    Change, Collection, ColorLabel, Compatibility, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op,
+    Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
 };
 use serde::{Deserialize, Serialize};
-use source_c1::{CaptureOne, data_dir, find_catalog};
+use sources::Recent;
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
+
+mod sources;
 
 struct Session {
-    source: CaptureOne,
+    /// What is open: which provider, and where.
+    spec: SourceSpec,
+    source: Box<dyn PhotoSource>,
     library: Library,
     /// One sync or write to Capture One at a time.
     syncing: Mutex<()>,
+    /// Why the last sync failed, until one succeeds: shown however late the window asks.
+    sync_error: Mutex<Option<String>>,
     /// `settings.json` beside the library.
     settings_path: PathBuf,
     /// Write the queue to Capture One by itself (off unless the user turns it on).
@@ -45,27 +53,37 @@ struct Settings {
     autosave: bool,
 }
 
-/// The open session, or why there is none (no catalog found, library unreadable).
-struct App(Result<Arc<Session>, String>);
+/// The source asked for and its session, or why there is none (nothing chosen yet, the
+/// catalog is gone, the library is unreadable). Another source can be opened at any time.
+struct Current {
+    spec: Option<SourceSpec>,
+    session: Result<Arc<Session>, String>,
+}
+
+struct App(RwLock<Current>);
 
 impl App {
     fn session(&self) -> Result<Arc<Session>, String> {
-        self.0.clone()
+        self.0.read().unwrap().session.clone()
     }
 }
 
-fn open() -> anyhow::Result<Session> {
-    let catalog = find_catalog(None)?;
-    let dir = data_dir(&catalog);
-    let source = CaptureOne::open(&catalog, dir.join("work"))?;
+/// Opens a source through its provider, with the app's data about it (library,
+/// settings, backups) in a folder of its own.
+fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
+    let provider = sources::provider(&spec.provider).map_err(anyhow::Error::msg)?;
+    let dir = data_root().join(provider.data_key(&spec.location));
+    let source = provider.open(&spec.location, &dir.join("work"))?;
     let library = Library::open(dir.join("library"))?;
     let settings_path = dir.join("settings.json");
     let settings: Settings =
         std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     Ok(Session {
+        spec: spec.clone(),
         source,
         library,
         syncing: Mutex::new(()),
+        sync_error: Mutex::new(None),
         settings_path,
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
@@ -83,16 +101,21 @@ struct Status {
     source: String,
     photos: u64,
     writes: String,
+    sync_error: Option<String>,
+    /// What made the source and how far the app is checked against it.
+    compatibility: Compatibility,
 }
 
 #[tauri::command]
 async fn status(app: State<'_, App>) -> Result<Status, String> {
     let s = app.session()?;
     Ok(Status {
-        catalog: s.source.catalog_path().display().to_string(),
+        catalog: s.spec.location.clone(),
         source: s.source.info().name,
         photos: s.library.len(),
         writes: format!("{:?}", s.source.write_status()),
+        sync_error: s.sync_error.lock().unwrap().clone(),
+        compatibility: s.source.info().compatibility,
     })
 }
 
@@ -126,7 +149,9 @@ async fn sync(app: AppHandle) -> Result<SyncReport, String> {
 fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let s = app.state::<App>().session()?;
     let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-    let report = s.library.sync(&s.source).map_err(|e| format!("{e:#}"))?;
+    let report = s.library.sync(s.source.as_ref()).map_err(|e| format!("{e:#}"));
+    *s.sync_error.lock().unwrap() = report.as_ref().err().cloned();
+    let report = report?;
     if report.full || report.added + report.updated + report.deleted > 0 {
         let _ = app.emit("library-changed", &report);
     }
@@ -458,6 +483,8 @@ async fn resolve(app: State<'_, App>, keys: Vec<String>, keep_mine: bool) -> Res
 #[derive(Serialize)]
 struct WritePlan {
     status: WriteStatus,
+    /// Why a read-only source is read-only.
+    compatibility: Compatibility,
     /// Edits that would be written.
     apply: Vec<PendingEdit>,
     /// Edits Capture One already matches; writing drops them from the queue.
@@ -501,6 +528,7 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>),
         .collect();
     let out = WritePlan {
         status: s.source.write_status(),
+        compatibility: s.source.info().compatibility,
         apply: pick(&plan.apply),
         unchanged: pick(&plan.no_ops),
         conflicts,
@@ -623,7 +651,8 @@ fn report_autosave(app: &AppHandle, s: &Session, state: AutosaveState) {
 fn autosave_loop(app: AppHandle) {
     loop {
         std::thread::sleep(AUTOSAVE_TICK);
-        let Ok(s) = app.state::<App>().session() else { return };
+        // Nothing open (yet): another source may be opened at any time.
+        let Ok(s) = app.state::<App>().session() else { continue };
         if !s.autosave.load(Ordering::Relaxed) {
             report_autosave(&app, &s, AutosaveState::Off);
             continue;
@@ -645,7 +674,9 @@ fn autosave_loop(app: AppHandle) {
                 continue;
             }
             WriteStatus::ReadOnly => {
-                let error = "this catalog's format is not one the app was checked against".to_owned();
+                let compat = s.source.info().compatibility;
+                let error =
+                    format!("not written to this catalog ({}): {}", compat.format, compat.note.unwrap_or_default());
                 report_autosave(&app, &s, AutosaveState::Failed { error });
                 continue;
             }
@@ -724,22 +755,145 @@ fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
         .expect("a static response always builds")
 }
 
+/// Reads the source in the background, telling the window if that fails.
+fn sync_in_background(app: &AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(e) = run_sync(&handle) {
+            let _ = handle.emit("sync-failed", e);
+        }
+    });
+}
+
+/// A source as the window lists it.
+#[derive(Serialize)]
+struct SourceEntry {
+    #[serde(flatten)]
+    spec: SourceSpec,
+    /// The provider's name for its kind: "Capture One catalog".
+    kind: &'static str,
+    /// The file or folder name, for lists.
+    name: String,
+    /// Still there to be opened.
+    available: bool,
+}
+
+fn entry(spec: &SourceSpec) -> Option<SourceEntry> {
+    let provider = sources::provider(&spec.provider).ok()?;
+    let path = std::path::Path::new(&spec.location);
+    let name = path.file_stem().or(path.file_name()).map_or(spec.location.clone(), |n| n.to_string_lossy().into());
+    Some(SourceEntry {
+        spec: spec.clone(),
+        kind: provider.name(),
+        name,
+        available: provider.recognise(&spec.location).is_some(),
+    })
+}
+
+#[derive(Serialize)]
+struct ProviderView {
+    id: &'static str,
+    name: &'static str,
+    pick: Pick,
+}
+
+#[derive(Serialize)]
+struct SourcesView {
+    current: Option<SourceEntry>,
+    /// The open source's, when one is open.
+    compatibility: Option<Compatibility>,
+    /// Why nothing is open, when nothing is.
+    error: Option<String>,
+    recent: Vec<SourceEntry>,
+    providers: Vec<ProviderView>,
+}
+
+/// What is open, what was open before, and what kinds of source can be opened.
+#[tauri::command]
+async fn sources(app: State<'_, App>) -> Result<SourcesView, String> {
+    let current = app.0.read().unwrap();
+    Ok(SourcesView {
+        current: current.spec.as_ref().and_then(entry),
+        compatibility: current.session.as_ref().ok().map(|s| s.source.info().compatibility),
+        error: current.session.as_ref().err().cloned(),
+        recent: Recent::load().list.iter().filter(|s| Some(*s) != current.spec.as_ref()).filter_map(entry).collect(),
+        providers: sources::providers()
+            .iter()
+            .map(|p| ProviderView { id: p.id(), name: p.name(), pick: p.pick() })
+            .collect(),
+    })
+}
+
+/// Asks for a source of a provider's kind with the system's file or folder dialog.
+#[tauri::command]
+async fn pick_source(app: AppHandle, provider: String) -> Result<Option<String>, String> {
+    let provider = sources::provider(&provider)?;
+    let pick = provider.pick();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = app.dialog().file().set_title(provider.name());
+        let picked = match pick {
+            Pick::File { label, extensions } => dialog.add_filter(label, extensions).blocking_pick_file(),
+            Pick::Folder => dialog.blocking_pick_folder(),
+        };
+        picked.map(|p| p.into_path().map(|p| p.display().to_string())).transpose().map_err(text)
+    })
+    .await
+    .map_err(text)?
+}
+
+/// Opens another source in place of the current one: the window reloads after.
+#[tauri::command]
+async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
+    let named = Some(spec.provider.as_str()).filter(|p| !p.is_empty());
+    let spec = sources::spec_for(&spec.location, named)?;
+    {
+        let state = app.state::<App>();
+        let current = state.0.read().unwrap();
+        if current.spec.as_ref() == Some(&spec) && current.session.is_ok() {
+            return Ok(());
+        }
+    }
+    let opened = {
+        let spec = spec.clone();
+        tauri::async_runtime::spawn_blocking(move || open(&spec).map_err(|e| format!("{e:#}")))
+            .await
+            .map_err(text)??
+    };
+    // The old session closes once the last task using it is done with it.
+    *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
+    Recent::remember(&spec)?;
+    sync_in_background(&app);
+    Ok(())
+}
+
+/// Takes a source off the recent list.
+#[tauri::command]
+async fn forget_source(spec: SourceSpec) -> Result<(), String> {
+    Recent::forget(&spec)
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let session = open().map(Arc::new).map_err(|e| format!("{e:#}"));
-            let ready = session.is_ok();
-            app.manage(App(session));
-            if ready {
-                let handle = app.handle().clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    if let Err(e) = run_sync(&handle) {
-                        let _ = handle.emit("sync-failed", e);
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            let current = match sources::startup(&args) {
+                Ok((spec, remember)) => {
+                    let session = open(&spec).map(Arc::new).map_err(|e| format!("{e:#}"));
+                    if session.is_ok() && remember {
+                        let _ = Recent::remember(&spec);
                     }
-                });
-                let handle = app.handle().clone();
-                std::thread::spawn(move || autosave_loop(handle));
+                    Current { spec: Some(spec), session }
+                }
+                Err(e) => Current { spec: None, session: Err(e) },
+            };
+            let ready = current.session.is_ok();
+            app.manage(App(RwLock::new(current)));
+            if ready {
+                sync_in_background(app.handle());
             }
+            let handle = app.handle().clone();
+            std::thread::spawn(move || autosave_loop(handle));
             Ok(())
         })
         .register_asynchronous_uri_scheme_protocol("c1img", |ctx, request, responder| {
@@ -748,6 +902,10 @@ pub fn run() {
             tauri::async_runtime::spawn_blocking(move || responder.respond(image_response(&app, &path)));
         })
         .invoke_handler(tauri::generate_handler![
+            sources,
+            pick_source,
+            open_source,
+            forget_source,
             status,
             query,
             smart_counts,

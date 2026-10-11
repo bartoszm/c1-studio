@@ -118,7 +118,8 @@
           Close Capture One to write: it keeps the catalog in memory and would overwrite these changes.
           <span class="muted">(Held by {locked}.)</span> Your edits stay queued meanwhile.
         {:else}
-          This catalog cannot be written: its format is not one this app was checked against.
+          This catalog cannot be written. <span class="muted">{plan.compatibility.format}.</span>
+          {plan.compatibility.note ?? ""} Your edits stay queued here.
         {/if}
       </p>
 
