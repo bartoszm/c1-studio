@@ -685,3 +685,43 @@ fn removing_a_keyword_takes_the_keywords_under_it() {
     back.sort();
     assert_eq!(back, ["best", "best|best2018", "best|top", "street"]);
 }
+
+#[test]
+fn places_nest_country_state_city_location_with_gaps_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let place = |country: Option<&str>, state: Option<&str>, city: Option<&str>, code: Option<&str>| Place {
+        country: country.map(str::to_owned),
+        state: state.map(str::to_owned),
+        city: city.map(str::to_owned),
+        country_code: code.map(str::to_owned),
+        ..Place::default()
+    };
+    let photos: Vec<Photo> = [
+        place(Some("Poland"), Some("Malopolska"), Some("Kraków"), Some("PL")),
+        place(Some("Poland"), None, Some("Kraków"), None),
+        place(None, None, Some("London"), None),
+        place(Some("Japan"), None, None, None),
+        Place::default(),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, p)| Photo { place: p, ..photo(i as u32 + 1) })
+    .collect();
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    let options = QueryOptions { facets: vec![Dim::PlaceTree], limit: Some(0), ..QueryOptions::default() };
+    let tree: std::collections::HashMap<String, u64> =
+        lib.query(&Filter::default(), &options).unwrap().facets[&Dim::PlaceTree].iter().cloned().collect();
+    assert_eq!(tree["Poland"], 2);
+    assert_eq!(tree["Poland|Malopolska|Kraków"], 1);
+    // No state: its own level, so Kraków is not counted twice under one parent.
+    assert_eq!(tree["Poland|—|Kraków"], 1);
+    assert_eq!(tree["—|—|London"], 1);
+    assert_eq!(tree["Japan"], 1);
+    assert!(!tree.contains_key("Japan|—"), "no trailing empty levels");
+    let under = |p: &str| Filter { place_under: Some(p.into()), ..Filter::default() };
+    assert_eq!(ids(&lib, &under("Poland")), [1, 2]);
+    assert_eq!(ids(&lib, &under("Poland|—")), [2]);
+    // A country without its ISO code.
+    assert_eq!(ids(&lib, &Filter { no_country_code: true, ..Filter::default() }), [2, 4]);
+}

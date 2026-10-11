@@ -145,6 +145,11 @@ pub struct Filter {
     pub not_in_collections: Vec<String>,
     pub gps: Option<bool>,
     pub within: Option<BBox>,
+    /// A place and everything in it: `Poland|Malopolska`, levels as [`Dim::PlaceTree`]
+    /// writes them.
+    pub place_under: Option<String>,
+    /// Only photos with a country but no ISO country code.
+    pub no_country_code: bool,
     /// Substring, case-insensitive.
     pub city: Option<String>,
     pub state: Option<String>,
@@ -256,6 +261,7 @@ impl Filter {
             Dim::Ext => f.ext.clear(),
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
+            Dim::PlaceTree => f.place_under = None,
             Dim::Flag => {}
         }
         f
@@ -281,6 +287,12 @@ impl Filter {
         }
         if !self.ext.is_empty() {
             must.push(any_of(f.dim(Dim::Ext), self.ext.iter().map(|e| e.trim_start_matches('.').to_lowercase())));
+        }
+        if let Some(place) = &self.place_under {
+            must.push(term(f.dim(Dim::PlaceTree), place));
+        }
+        if self.no_country_code {
+            must.push(has(flag::NO_COUNTRY_CODE));
         }
         if let Some(folder) = &self.folder {
             must.push(term(f.folder, &normalise_folder(folder)));

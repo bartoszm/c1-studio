@@ -12,7 +12,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -49,10 +49,16 @@ pub enum Dim {
     /// The photo's folder and every folder above it, `H:/fotos/2026`, in the path's own
     /// case: counting this gives "photos at or under".
     Folder,
+    /// `Country|State|City|Location` and every level above it, a missing level as
+    /// [`NO_PLACE`]: counting this gives "photos at or under".
+    PlaceTree,
 }
 
+/// A level of [`Dim::PlaceTree`] the photo has no value for (`Poland|—|Kraków`: no state).
+pub const NO_PLACE: &str = "—";
+
 impl Dim {
-    pub const ALL: [Dim; 18] = [
+    pub const ALL: [Dim; 19] = [
         Dim::Source,
         Dim::Keyword,
         Dim::KeywordTree,
@@ -71,6 +77,7 @@ impl Dim {
         Dim::Style,
         Dim::Flag,
         Dim::Folder,
+        Dim::PlaceTree,
     ];
 
     pub fn field_name(self) -> &'static str {
@@ -93,6 +100,7 @@ impl Dim {
             Dim::Style => "style",
             Dim::Flag => "flag",
             Dim::Folder => "folder_tree",
+            Dim::PlaceTree => "place_tree",
         }
     }
 }
@@ -106,6 +114,26 @@ pub mod flag {
     pub const EDITED: &str = "edited";
     pub const LOCAL_LAYERS: &str = "local_layers";
     pub const TRASHED: &str = "trashed";
+    /// A country without its ISO code.
+    pub const NO_COUNTRY_CODE: &str = "no_country_code";
+}
+
+/// The place's path and every level above it, down to its last known level:
+/// `Poland`, `Poland|—`, `Poland|—|Kraków`. None for a photo with no place at all.
+pub fn place_tree(place: &c1model::Place) -> Vec<String> {
+    let levels = [&place.country, &place.state, &place.city, &place.location];
+    let name = |l: &Option<String>| l.as_deref().map(|s| s.trim().replace('|', "/")).filter(|s| !s.is_empty());
+    let Some(last) = levels.iter().rposition(|l| name(l).is_some()) else { return Vec::new() };
+    let mut path = String::new();
+    let mut out = Vec::with_capacity(last + 1);
+    for (i, level) in levels[..=last].iter().enumerate() {
+        if i > 0 {
+            path.push('|');
+        }
+        path.push_str(&name(level).unwrap_or_else(|| NO_PLACE.to_owned()));
+        out.push(path.clone());
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -268,6 +296,7 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
         (flag::EDITED, photo.edit.edited),
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),
+        (flag::NO_COUNTRY_CODE, photo.place.country.is_some() && photo.place.country_code.is_none()),
     ];
     for (name, set) in flags {
         if set {
@@ -275,6 +304,9 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
         }
     }
 
+    for place in place_tree(&photo.place) {
+        doc.add_text(f.dim(Dim::PlaceTree), &place);
+    }
     doc.add_u64(f.row, row);
     doc.add_text(f.ext_id, &photo.id.ext);
     doc.add_text(f.asset, &photo.asset.0);
