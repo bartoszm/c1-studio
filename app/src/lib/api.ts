@@ -52,6 +52,22 @@ export type QueryResult = {
 
 export type Status = { catalog: string; source: string; photos: number; writes: string };
 
+/** What to open: which provider (`capture-one`), and where. An empty provider lets the
+ *  first that recognises the location open it. */
+export type SourceSpec = { provider: string; location: string };
+export type SourceEntry = SourceSpec & { kind: string; name: string; available: boolean };
+export type ProviderView = {
+  id: string;
+  name: string;
+  pick: { File: { label: string; extensions: string[] } } | "Folder";
+};
+export type SourcesView = {
+  current: SourceEntry | null;
+  error: string | null;
+  recent: SourceEntry[];
+  providers: ProviderView[];
+};
+
 export type GeoOrigin = "Exif" | "Manual" | "Gpx" | "Geocoded";
 
 export type Photo = {
@@ -160,6 +176,12 @@ export type CaptionField = "description" | "title" | "headline" | "creator" | "c
 export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | PlaceField | "geo" | CaptionField;
 
 export const status = () => invoke<Status>("status");
+export const sources = () => invoke<SourcesView>("sources");
+/** The system dialog for a provider's kind of source; null if cancelled. */
+export const pickSource = (provider: string) => invoke<string | null>("pick_source", { provider });
+/** Opens another source; the window should reload after. */
+export const openSource = (spec: SourceSpec) => invoke<void>("open_source", { spec });
+export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", { spec });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });

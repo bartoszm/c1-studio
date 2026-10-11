@@ -411,3 +411,33 @@ footer .edit-error { color: var(--error); }
 .info-panel .clip button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; white-space: nowrap; }
 .info-panel .clip button:hover { background: var(--hover); }
 .info-panel .clip-what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
+
+/* The source menu: what is open, recent sources, and opening another. */
+.source-button { display: flex; align-items: baseline; gap: 8px; padding: 3px 8px; margin-left: -8px; border-radius: 4px; }
+.source-button:hover { background: var(--hover); }
+.source-button .current { max-width: 160px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.source-button .current.none { font-style: italic; }
+.source-button .caret { font-size: 10px; color: var(--muted); }
+.source-menu { top: 40px; left: 8px; width: 380px; max-height: calc(100vh - 60px); overflow-y: auto; }
+.source-row { display: flex; align-items: stretch; }
+.source-row .what { flex: 1; display: grid; min-width: 0; padding: 4px 12px; text-align: left; }
+.source-row.current .what { padding: 2px 12px 6px; }
+.source-row .what small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+.source-row .what:disabled { opacity: 0.5; cursor: default; }
+.source-row .forget { padding: 0 10px; color: var(--muted); visibility: hidden; }
+.source-row:hover .forget { visibility: visible; }
+.source-row .forget:hover { color: var(--error); }
+.source-menu button:disabled { cursor: default; }
+.source-path { padding: 4px 12px 6px; }
+.source-path input {
+  width: 100%;
+  padding: 3px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.source-path input:focus { outline: none; border-color: var(--queued); }
+.source-note { margin: 4px 12px 6px; color: var(--muted); overflow-wrap: anywhere; }
+.source-note.error { color: var(--error); }

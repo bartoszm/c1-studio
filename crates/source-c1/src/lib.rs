@@ -10,6 +10,7 @@ mod config;
 mod extract;
 mod keywords;
 mod process;
+mod provider;
 mod smart;
 mod write;
 
@@ -25,6 +26,7 @@ use c1model::{
 pub use catalog::EXPECTED_ZVERSION;
 pub use config::{catalog_id, data_dir, find_catalog};
 pub use extract::{Extract, extract};
+pub use provider::CaptureOneProvider;
 pub use write::Backup;
 
 pub struct CaptureOne {
