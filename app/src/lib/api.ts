@@ -50,7 +50,7 @@ export type QueryResult = {
   micros: number;
 };
 
-export type Status = { catalog: string; source: string; photos: number; writes: string };
+export type Status = { catalog: string; source: string; photos: number; writes: string; sync_error: string | null };
 
 /** What to open: which provider (`capture-one`), and where. An empty provider lets the
  *  first that recognises the location open it. */

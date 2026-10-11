@@ -28,6 +28,8 @@ struct Session {
     library: Library,
     /// One sync or write to Capture One at a time.
     syncing: Mutex<()>,
+    /// Why the last sync failed, until one succeeds: shown however late the window asks.
+    sync_error: Mutex<Option<String>>,
     /// `settings.json` beside the library.
     settings_path: PathBuf,
     /// Write the queue to Capture One by itself (off unless the user turns it on).
@@ -81,6 +83,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         source,
         library,
         syncing: Mutex::new(()),
+        sync_error: Mutex::new(None),
         settings_path,
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
@@ -98,6 +101,7 @@ struct Status {
     source: String,
     photos: u64,
     writes: String,
+    sync_error: Option<String>,
 }
 
 #[tauri::command]
@@ -108,6 +112,7 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         source: s.source.info().name,
         photos: s.library.len(),
         writes: format!("{:?}", s.source.write_status()),
+        sync_error: s.sync_error.lock().unwrap().clone(),
     })
 }
 
@@ -141,7 +146,9 @@ async fn sync(app: AppHandle) -> Result<SyncReport, String> {
 fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let s = app.state::<App>().session()?;
     let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-    let report = s.library.sync(s.source.as_ref()).map_err(|e| format!("{e:#}"))?;
+    let report = s.library.sync(s.source.as_ref()).map_err(|e| format!("{e:#}"));
+    *s.sync_error.lock().unwrap() = report.as_ref().err().cloned();
+    let report = report?;
     if report.full || report.added + report.updated + report.deleted > 0 {
         let _ = app.emit("library-changed", &report);
     }
