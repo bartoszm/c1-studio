@@ -120,6 +120,50 @@ aside section { padding: 4px 0; }
 .facet .name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .facet .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .stars { color: var(--star); letter-spacing: 1px; }
+
+/* Dates: the picked year opens onto its months; a range of days below the years. */
+.months {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 2px;
+  padding: 2px 8px 6px 26px;
+}
+.months button {
+  display: grid;
+  padding: 2px 0;
+  border-radius: 3px;
+  line-height: 1.2;
+  text-align: center;
+}
+.months button:hover:not(:disabled) { background: var(--hover); }
+.months button.on { background: var(--on); }
+.months button:disabled { cursor: default; color: #666; }
+.months .n { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.months button:disabled .n { color: #555; }
+.range { display: grid; gap: 4px; padding: 6px 8px 2px 26px; }
+.range label { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
+.range input {
+  width: 140px;
+  padding: 2px 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.range input:focus { outline: none; border-color: var(--queued); }
+.presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px 0 26px;
+  color: var(--muted);
+}
+.presets button { padding: 1px 5px; border-radius: 3px; color: var(--text); }
+.presets button:hover { background: var(--hover); }
+.presets button.on { background: var(--on); }
+.presets .drop { color: var(--muted); }
 .dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid #555; }
 
 main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps the measured width true */

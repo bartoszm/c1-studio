@@ -4,10 +4,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Dim =
-  | "rating" | "color" | "year" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city";
+  | "rating" | "color" | "year" | "month" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
+/** Inclusive Unix milliseconds; either end may be left open. */
+export type TimeRange = { from?: number; to?: number };
 export type Color = "Red" | "Orange" | "Yellow" | "Green" | "Blue" | "Pink" | "Purple";
 
 /** Only the fields set narrow the result; the rest take Rust's defaults. */
@@ -16,6 +18,10 @@ export type Filter = {
   rating?: Presence<Range>;
   color?: Presence<Color[]>;
   year?: number;
+  /** `YYYY-MM`, a local month. */
+  month?: string;
+  /** Capture time. */
+  captured?: TimeRange;
   camera?: string;
   country?: string;
   keywords_under?: string[];

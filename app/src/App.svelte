@@ -15,7 +15,7 @@
   import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = ["rating", "color", "year", "camera", "country", "keyword_tree", "collection", "folder"];
+  const DIMS: Dim[] = ["rating", "color", "year", "month", "camera", "country", "keyword_tree", "collection", "folder"];
   /** Groups listed as plain values; the rest are trees. */
   const FLAT: Dim[] = ["rating", "color", "year", "camera", "country"];
 
@@ -451,6 +451,65 @@
     run();
   }
 
+  // Dates: a year, a month in it, or a range of days. Picking one lets go of the others,
+  // so the filter never asks for dates that contradict.
+  const MONTHS = Array.from({ length: 12 }, (_, i) => new Date(2000, i, 1));
+  /** The year whose months show: the one picked, or the one holding the picked month. */
+  let dateYear = $derived(filter.year ?? (filter.month ? +filter.month.slice(0, 4) : undefined));
+  let monthCounts = $derived(new Map(result?.facets.month ?? []));
+  const monthKey = (year: number, i: number) => `${year}-${String(i + 1).padStart(2, "0")}`;
+
+  /** Picking the year again goes back from its month to the whole year, then lets go. */
+  function pickYear(year: number) {
+    if (filter.month && dateYear === year) filter = { ...filter, year, month: undefined };
+    else if (filter.year === year) filter = { ...filter, year: undefined, month: undefined };
+    else filter = { ...filter, year, month: undefined, captured: undefined };
+    run();
+  }
+
+  function pickMonth(key: string) {
+    filter = filter.month === key
+      ? { ...filter, month: undefined }
+      : { ...filter, year: +key.slice(0, 4), month: key, captured: undefined };
+    run();
+  }
+
+  // Range ends are local days, `YYYY-MM-DD` as date inputs give them.
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dayOf = (ms: number) => {
+    const d = new Date(ms);
+    return `${String(d.getFullYear()).padStart(4, "0")}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  /** Midnight starting the day, `after` days on (setFullYear: `new Date` reads years below 100 as 19xx). */
+  function dayStart(day: string, after = 0) {
+    const [y, m, d] = day.split("-").map(Number);
+    const at = new Date(0);
+    at.setFullYear(y, m - 1, d + after);
+    at.setHours(0, 0, 0, 0);
+    return at.getTime();
+  }
+  let rangeFrom = $derived(filter.captured?.from === undefined ? "" : dayOf(filter.captured.from));
+  let rangeTo = $derived(filter.captured?.to === undefined ? "" : dayOf(filter.captured.to));
+
+  /** Days `from` to `to`, both included; "" leaves that end open. */
+  function setRange(from: string, to: string) {
+    // Typing a year in a date box passes through 0002, 0020…: wait for a whole one.
+    if ([from, to].some((d) => d && +d.slice(0, 4) < 1800)) return;
+    if (from && to && from > to) [from, to] = [to, from];
+    const captured = from || to
+      ? { from: from ? dayStart(from) : undefined, to: to ? dayStart(to, 1) - 1 : undefined }
+      : undefined;
+    filter = captured ? { ...filter, captured, year: undefined, month: undefined } : { ...filter, captured };
+    run();
+  }
+
+  // Ranges ending today, left open so photos taken later today join.
+  const PRESETS: [string, number][] = [["7 days", 7], ["30 days", 30], ["90 days", 90], ["365 days", 365]];
+  function presetFrom(days: number) {
+    return dayOf(dayStart(dayOf(Date.now()), 1 - days));
+  }
+  const isPreset = (days: number) => rangeFrom === presetFrom(days) && rangeTo === "";
+
   function clearAll() {
     filter = {};
     search = "";
@@ -470,7 +529,7 @@
   }
 
   const TITLES: Record<string, string> = {
-    rating: "Rating", color: "Colour", year: "Year", camera: "Camera", country: "Country",
+    rating: "Rating", color: "Colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
     albums: "Albums", folders: "Folders", keywords: "Keywords",
   };
 
@@ -598,6 +657,49 @@
   </button>
 {/snippet}
 
+{#snippet dates(years: [string, number][])}
+  <section>
+    {@render head("date")}
+    {#if !folded.has("date")}
+      {#each years as [value, n]}
+        {@const year = +value}
+        <button class="facet" class:on={filter.year === year} onclick={() => pickYear(year)}>
+          <span class="name">{value}</span>
+          <span class="n">{n.toLocaleString()}</span>
+        </button>
+        {#if dateYear === year}
+          <div class="months">
+            {#each MONTHS as date, i}
+              {@const key = monthKey(year, i)}
+              {@const count = monthCounts.get(key) ?? 0}
+              <button
+                class:on={filter.month === key}
+                disabled={!count && filter.month !== key}
+                title="{date.toLocaleDateString(undefined, { month: 'long' })} {year}"
+                onclick={() => pickMonth(key)}
+              >
+                {date.toLocaleDateString(undefined, { month: "short" })}
+                <span class="n">{count ? count.toLocaleString() : "–"}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {/each}
+      <div class="range">
+        <label>From <input type="date" value={rangeFrom} onchange={(e) => setRange(e.currentTarget.value, rangeTo)} /></label>
+        <label>To <input type="date" value={rangeTo} onchange={(e) => setRange(rangeFrom, e.currentTarget.value)} /></label>
+      </div>
+      <div class="presets">
+        Last
+        {#each PRESETS as [name, days]}
+          <button class:on={isPreset(days)} onclick={() => setRange(isPreset(days) ? "" : presetFrom(days), "")}>{name}</button>
+        {/each}
+        {#if filter.captured}<button class="drop" title="Any date" onclick={() => setRange("", "")}>×</button>{/if}
+      </div>
+    {/if}
+  </section>
+{/snippet}
+
 {#snippet details()}
   {@const row = selected === null ? undefined : rowAt(selected)}
   <Info
@@ -705,7 +807,9 @@
     </section>
     {#each FLAT as dim}
       {@const list = values(dim)}
-      {#if list.length}
+      {#if dim === "year"}
+        {@render dates(list)}
+      {:else if list.length}
         <section>
           {@render head(dim)}
           {#if !folded.has(dim)}
