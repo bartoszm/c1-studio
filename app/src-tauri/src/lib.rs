@@ -1,6 +1,7 @@
 //! The desktop app: the library behind Tauri commands, and pixels behind the `c1img:`
 //! protocol (`c1img://localhost/thumb/<row>`, `c1img://localhost/preview/<row>`).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::{
-    Change, Collection, ColorLabel, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, WriteStatus,
+    Change, Collection, ColorLabel, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo,
+    PhotoSource, Place, WriteStatus,
 };
 use serde::{Deserialize, Serialize};
 use source_c1::{CaptureOne, data_dir, find_catalog};
@@ -139,6 +141,132 @@ enum Edit {
     /// Keyword paths, levels joined by `|`.
     AddKeywords(Vec<String>),
     RemoveKeywords(Vec<String>),
+    /// Location fields by name (`city`, `state`, `country`, `country_code`, `location`);
+    /// empty clears one. Fields not named keep each photo's own value.
+    Place(BTreeMap<String, String>),
+    /// Caption fields by name (`description`, `headline`, `title`, `creator`,
+    /// `copyright`); empty clears one.
+    Iptc(BTreeMap<String, String>),
+    /// Latitude and longitude in degrees; `None` clears.
+    Geo(Option<[f64; 2]>),
+}
+
+fn place_slot<'a>(place: &'a mut Place, name: &str) -> Option<&'a mut Option<String>> {
+    Some(match name {
+        "city" => &mut place.city,
+        "state" => &mut place.state,
+        "country" => &mut place.country,
+        "country_code" => &mut place.country_code,
+        "location" => &mut place.location,
+        _ => return None,
+    })
+}
+
+fn iptc_slot<'a>(iptc: &'a mut Iptc, name: &str) -> Option<&'a mut Option<String>> {
+    Some(match name {
+        "description" => &mut iptc.description,
+        "headline" => &mut iptc.headline,
+        "title" => &mut iptc.title,
+        "creator" => &mut iptc.creator,
+        "copyright" => &mut iptc.copyright,
+        _ => return None,
+    })
+}
+
+/// A typed field: trimmed (but a caption keeps its lines), blank is nothing, and a
+/// country code is upper case.
+fn clean_text(name: &str, text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(if name == "country_code" { text.to_uppercase() } else { text.to_owned() })
+}
+
+fn geo_point(lat: f64, lon: f64) -> Result<GeoPoint, String> {
+    if !(lat.is_finite() && lon.is_finite() && (-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)) {
+        return Err(format!("{lat}, {lon}: latitude is -90 to 90 and longitude -180 to 180"));
+    }
+    Ok(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual })
+}
+
+/// The op `edit` makes on one photo. The library takes each base from the photo; the
+/// bases here are placeholders.
+fn op_for(edit: &Edit, photo: &Photo) -> Result<Op, String> {
+    Ok(match edit {
+        Edit::Rating(value) => Op::SetRating { base: None, value: value.filter(|&v| v > 0) },
+        Edit::Color(value) => Op::SetColor { base: None, value: *value },
+        Edit::AddKeywords(paths) => Op::AddKeywords { paths: keyword_paths(paths)? },
+        Edit::RemoveKeywords(paths) => Op::RemoveKeywords { paths: keyword_paths(paths)? },
+        Edit::Place(fields) => {
+            let mut value = photo.place.clone();
+            for (name, text) in fields {
+                *place_slot(&mut value, name).ok_or_else(|| format!("no location field {name:?}"))? =
+                    clean_text(name, text);
+            }
+            Op::SetPlace { base: photo.place.clone(), value }
+        }
+        Edit::Iptc(fields) => {
+            let mut value = photo.iptc.clone();
+            for (name, text) in fields {
+                *iptc_slot(&mut value, name).ok_or_else(|| format!("no caption field {name:?}"))? =
+                    clean_text(name, text);
+            }
+            Op::SetIptc { base: photo.iptc.clone(), value }
+        }
+        Edit::Geo(value) => {
+            Op::SetGeo { base: photo.geo, value: value.map(|[lat, lon]| geo_point(lat, lon)).transpose()? }
+        }
+    })
+}
+
+/// What pasting `fields` copied from `from` does to `to`. Keywords are added
+/// (`keywords`) or made the same (`keywords_exact`: the ones `from` lacks go first).
+fn paste_ops(from: &Photo, fields: &[String], to: &Photo) -> Result<Vec<Op>, String> {
+    let mut removes = Vec::new();
+    let mut ops = Vec::new();
+    let mut place = to.place.clone();
+    let mut iptc = to.iptc.clone();
+    for name in fields {
+        match name.as_str() {
+            "rating" => ops.push(Op::SetRating { base: to.rating, value: from.rating }),
+            "color" => ops.push(Op::SetColor { base: to.color, value: from.color }),
+            "keywords" | "keywords_exact" => {
+                if name == "keywords_exact" {
+                    let gone: Vec<KeywordPath> =
+                        to.keywords.iter().filter(|k| !from.keywords.contains(k)).cloned().collect();
+                    if !gone.is_empty() {
+                        removes.push(Op::RemoveKeywords { paths: gone });
+                    }
+                }
+                if !from.keywords.is_empty() {
+                    ops.push(Op::AddKeywords { paths: from.keywords.clone() });
+                }
+            }
+            "geo" => ops.push(Op::SetGeo { base: to.geo, value: from.geo }),
+            other => {
+                let mut source_place = from.place.clone();
+                let mut source_iptc = from.iptc.clone();
+                if let Some(slot) = place_slot(&mut place, other) {
+                    *slot = place_slot(&mut source_place, other).and_then(|v| v.take());
+                } else if let Some(slot) = iptc_slot(&mut iptc, other) {
+                    *slot = iptc_slot(&mut source_iptc, other).and_then(|v| v.take());
+                } else {
+                    return Err(format!("cannot copy {other:?}"));
+                }
+            }
+        }
+    }
+    if place != to.place {
+        ops.push(Op::SetPlace { base: to.place.clone(), value: place });
+    }
+    if iptc != to.iptc {
+        ops.push(Op::SetIptc { base: to.iptc.clone(), value: iptc });
+    }
+    // A removal takes the keywords under it too; the adds after it put back any that
+    // `from` has.
+    removes.extend(ops);
+    Ok(removes)
 }
 
 /// `best | best2018 ` → `best|best2018`. Refuses names Capture One cannot store.
@@ -162,15 +290,33 @@ fn keyword_paths(paths: &[String]) -> Result<Vec<KeywordPath>, String> {
 /// that undo it.
 #[tauri::command]
 async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u64, Op)>, String> {
-    // The library takes each base from the photo; these are placeholders.
-    let op = match edit {
-        Edit::Rating(value) => Op::SetRating { base: None, value: value.filter(|&v| v > 0) },
-        Edit::Color(value) => Op::SetColor { base: None, value },
-        Edit::AddKeywords(paths) => Op::AddKeywords { paths: keyword_paths(&paths)? },
-        Edit::RemoveKeywords(paths) => Op::RemoveKeywords { paths: keyword_paths(&paths)? },
-    };
-    let changes: Vec<(u64, Op)> = rows.into_iter().map(|row| (row, op.clone())).collect();
     let s = app.session()?;
+    let mut changes = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            changes.push((row, op_for(&edit, &photo)?));
+        }
+    }
+    s.touched();
+    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+}
+
+/// Pastes fields copied from one photo (as it was when copied) onto others, as one
+/// edit. Returns the ops that undo it.
+#[tauri::command]
+async fn paste(
+    app: State<'_, App>,
+    rows: Vec<u64>,
+    from: Photo,
+    fields: Vec<String>,
+) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    let mut changes = Vec::new();
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            changes.extend(paste_ops(&from, &fields, &photo)?.into_iter().map(|op| (row, op)));
+        }
+    }
     s.touched();
     s.library.edit(&changes).map_err(|e| format!("{e:#}"))
 }
@@ -610,6 +756,7 @@ pub fn run() {
             sync,
             edit,
             edit_ops,
+            paste,
             keywords,
             remap_keywords,
             undo_remap,
@@ -625,4 +772,75 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use c1model::{AssetId, EditInfo, Exif, FileInfo, PhotoId, SourceId};
+
+    fn photo(n: u32, keywords: &[&str], city: Option<&str>) -> Photo {
+        Photo {
+            id: PhotoId::new(&SourceId("t".into()), n.to_string()),
+            asset: AssetId(n.to_string()),
+            variant_index: 0,
+            file: FileInfo::default(),
+            captured_at: None,
+            imported_at: None,
+            exif: Exif::default(),
+            rating: Some(n as u8),
+            color: None,
+            keywords: keywords.iter().map(|k| KeywordPath::from_pipe(k)).collect(),
+            iptc: Iptc::default(),
+            place: Place { city: city.map(str::to_owned), country: Some("Poland".into()), ..Place::default() },
+            geo: None,
+            collections: vec![],
+            edit: EditInfo::default(),
+            trashed: false,
+        }
+    }
+
+    fn fields(names: &[&str]) -> Vec<String> {
+        names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[test]
+    fn pasting_takes_only_the_chosen_fields() {
+        let from = photo(4, &["street"], Some("Kraków"));
+        let to = Photo { place: Place { country: Some("Japan".into()), ..Place::default() }, ..photo(1, &[], None) };
+        let ops = paste_ops(&from, &fields(&["rating", "city"]), &to).unwrap();
+        assert_eq!(ops.len(), 2);
+        assert!(matches!(ops[0], Op::SetRating { value: Some(4), .. }));
+        let Op::SetPlace { value, .. } = &ops[1] else { panic!("{ops:?}") };
+        // The city comes over; their country stays.
+        assert_eq!((value.city.as_deref(), value.country.as_deref()), (Some("Kraków"), Some("Japan")));
+        // Copying an empty field clears it.
+        let ops = paste_ops(&photo(4, &[], None), &fields(&["city"]), &photo(1, &[], Some("Oslo"))).unwrap();
+        let Op::SetPlace { value, .. } = &ops[0] else { panic!("{ops:?}") };
+        assert_eq!(value.city, None);
+    }
+
+    #[test]
+    fn keywords_are_added_or_made_the_same() {
+        let from = photo(1, &["street", "city|night"], None);
+        let to = photo(2, &["street", "b&w"], None);
+        let add = paste_ops(&from, &fields(&["keywords"]), &to).unwrap();
+        assert!(matches!(&add[..], [Op::AddKeywords { .. }]));
+        let exact = paste_ops(&from, &fields(&["keywords_exact"]), &to).unwrap();
+        // The removal first: the adds after it put back anything it takes under it.
+        let [Op::RemoveKeywords { paths: gone }, Op::AddKeywords { paths: added }] = &exact[..] else {
+            panic!("{exact:?}")
+        };
+        assert_eq!(gone, &[KeywordPath::from_pipe("b&w")]);
+        assert_eq!(added.len(), 2);
+        assert!(paste_ops(&from, &fields(&["albums"]), &to).is_err());
+    }
+
+    #[test]
+    fn typed_place_fields_are_cleaned() {
+        let edit = Edit::Place(BTreeMap::from([("country_code".into(), " pl ".into()), ("city".into(), "  ".into())]));
+        let Op::SetPlace { value, .. } = op_for(&edit, &photo(1, &[], Some("Oslo"))).unwrap() else { panic!() };
+        assert_eq!((value.country_code.as_deref(), value.city), (Some("PL"), None));
+        assert!(op_for(&Edit::Geo(Some([91.0, 0.0])), &photo(1, &[], None)).is_err());
+    }
 }

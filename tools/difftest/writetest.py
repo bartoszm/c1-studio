@@ -41,6 +41,9 @@ def pick(catalog: Path) -> dict[str, list[int]]:
         "rated": "m.ZBASIC_RATING = 3",
         "colored": "m.ZCOLOR_TAG_INDEX = 2",
         "top": "m.ZBASIC_RATING = 5 AND m.ZCOLOR_TAG_INDEX IS NOT NULL",
+        "placed": "m.ZIMAGE_CITY <> '' AND m.ZIMAGE_COUNTRY <> ''",
+        "gps": "i.ZGPSLATITUDE LIKE '%.%' AND i.ZGPSLATITUDE NOT LIKE '%,%'",
+        "gps_comma": "i.ZGPSLATITUDE LIKE '%,%'",
     }
     out = {}
     for name, where in groups.items():
@@ -77,6 +80,21 @@ def edits(g: dict) -> list[tuple[str, list[str], list[int]]]:
         ("keyword", ["move", "--path", f"{g['first_root']}|difftest child", "--to-parent", "difftest"], []),
         ("keyword", ["move", "--path", "beta", "--to-parent", "difftest newgroup"], []),
         ("keyword", ["merge", "--from", "difftest|gamma", "--into", "street"], []),
+        # Location and caption text: both metadata rows. A cleared field is NULL. (Rust
+        # leaves a field alone when it holds the value already, Python writes it anyway:
+        # the same unless it held '' and is cleared, which these cases avoid.)
+        ("iptc", ["--set-city", "Kraków", "--set-country", "Poland", "--set-country-code", "PL"],
+         g["plain"][:2] + g["placed"][:2]),
+        ("iptc", ["--set-city", ""], g["placed"][2:4]),
+        ("iptc", ["--set-location", "Rynek Główny", "--set-state", "Małopolska"], g["placed"][:1] + g["rated"][:1]),
+        ("iptc", ["--set-copyright", "difftest copyright", "--set-creator", "difftest"], g["top"][:2]),
+        ("describe", ["--description", "difftest caption", "--title", "difftest title"], g["plain"][:2]),
+        ("describe", ["--description", ""], g["plain"][:1]),
+        # GPS is on the image, in Capture One's decimal form whatever it held before.
+        ("geo", ["--lat", "50.0614", "--lon", "19.9366"], g["plain"][:2] + g["gps"][:1]),
+        ("geo", ["--lat", "-33.8688", "--lon", "151.2093"], g["gps_comma"][:1]),
+        ("geo", ["--lat", "52", "--lon", "-1"], g["rated"][:1]),
+        ("geo", ["--clear"], g["gps"][1:2] + g["gps_comma"][1:2]),
     ]
 
 
@@ -148,6 +166,7 @@ def compare(a: Path, b: Path, original: Path) -> int:
 
 
 def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8")  # place names
     ap = argparse.ArgumentParser()
     ap.add_argument("--catalog", type=Path, help="defaults to %%APPDATA%%\\c1studio\\config.json")
     ap.add_argument("--work", type=Path, required=True, help="scratch directory, created and later removed")

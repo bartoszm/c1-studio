@@ -146,6 +146,20 @@ pub(crate) fn original_path(
     if rel.is_empty() { format!("{win_root}{filename}") } else { format!("{win_root}{rel}\\{filename}") }
 }
 
+/// Signed decimal degrees as Capture One writes them: `44.803944444445N`, `20.37835W`.
+/// The number is the shortest that reads back as the same value (as Python's `repr`,
+/// which the oracle uses: a whole number keeps its `.0`).
+pub(crate) fn format_gps(value: f64, latitude: bool) -> String {
+    let letter = match (latitude, value >= 0.0) {
+        (true, true) => 'N',
+        (true, false) => 'S',
+        (false, true) => 'E',
+        (false, false) => 'W',
+    };
+    let abs = value.abs();
+    if abs.fract() == 0.0 { format!("{abs:.1}{letter}") } else { format!("{abs}{letter}") }
+}
+
 /// Signed decimal degrees from either form Capture One stores:
 /// decimal degrees `44.803944444445N`, or the XMP/EXIF form `50,2.2566833N`
 /// (degrees, decimal minutes) and `50,2,15.4N` (degrees, minutes, seconds).
@@ -171,6 +185,17 @@ pub(crate) fn parse_gps(value: Option<&str>) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gps_written_reads_back_the_same() {
+        assert_eq!(format_gps(44.803944444445, true), "44.803944444445N");
+        assert_eq!(format_gps(-20.37835, false), "20.37835W");
+        assert_eq!(format_gps(-33.0, true), "33.0S");
+        assert_eq!(format_gps(0.0, false), "0.0E");
+        for v in [50.0 + 2.2566833 / 60.0, -(19.0 + 56.0 / 60.0 + 30.0 / 3600.0), 1e-7, 179.99999999999997] {
+            assert_eq!(parse_gps(Some(&format_gps(v, true))), Some(v));
+        }
+    }
 
     #[test]
     fn gps_hemispheres() {

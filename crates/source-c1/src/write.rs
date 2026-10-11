@@ -10,14 +10,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use c1model::change::{Check, compare};
+use c1model::change::{Check, compare, spot};
 use c1model::source::Result;
-use c1model::{ApplyPlan, Change, ColorLabel, Conflict, KeywordRemap, Op, SourceError, WriteStatus};
+use c1model::{ApplyPlan, Change, ColorLabel, Conflict, Iptc, KeywordRemap, Op, Place, SourceError, WriteStatus};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{self, EXPECTED_ZVERSION, db_err};
-use crate::{keywords, process};
+use crate::extract::blank;
+use crate::{config, keywords, process};
 
 /// Backups kept per catalog; older ones are deleted after a new one is made.
 pub(crate) const KEEP_BACKUPS: usize = 5;
@@ -97,21 +98,66 @@ fn held_elsewhere(_catalog: &Path) -> bool {
 struct Current {
     rating: Option<u8>,
     color: Option<ColorLabel>,
+    iptc: Iptc,
+    place: Place,
+    /// GPS is on the image, shared by its variants.
+    geo: Option<(f64, f64)>,
+}
+
+/// The text fields' columns on ZVARIANTMETADATA, in the order of `iptc_fields` and
+/// `place_fields`.
+const IPTC_COLUMNS: [&str; 5] =
+    ["ZCONTENT_DESCRIPTION", "ZCONTENT_HEADLINE", "ZSTATUS_TITLE", "ZCONTACT_CREATOR", "ZSTATUS_COPYRIGHTNOTICE"];
+const PLACE_COLUMNS: [&str; 5] =
+    ["ZIMAGE_CITY", "ZIMAGE_STATE", "ZIMAGE_COUNTRY", "ZIMAGE_ISOCOUNTRYCODE", "ZIMAGE_LOCATION"];
+
+fn iptc_fields(i: &Iptc) -> [&Option<String>; 5] {
+    [&i.description, &i.headline, &i.title, &i.creator, &i.copyright]
+}
+fn place_fields(p: &Place) -> [&Option<String>; 5] {
+    [&p.city, &p.state, &p.country, &p.country_code, &p.location]
 }
 
 fn current(con: &Connection, variant_pk: i64) -> Result<Option<Current>> {
     con.prepare_cached(
-        "SELECT m.ZBASIC_RATING, m.ZCOLOR_TAG_INDEX FROM ZVARIANT v
+        "SELECT m.ZBASIC_RATING, m.ZCOLOR_TAG_INDEX,
+                m.ZCONTENT_DESCRIPTION, m.ZCONTENT_HEADLINE, m.ZSTATUS_TITLE, m.ZCONTACT_CREATOR,
+                m.ZSTATUS_COPYRIGHTNOTICE,
+                m.ZIMAGE_CITY, m.ZIMAGE_STATE, m.ZIMAGE_COUNTRY, m.ZIMAGE_ISOCOUNTRYCODE, m.ZIMAGE_LOCATION,
+                i.ZGPSLATITUDE, i.ZGPSLONGITUDE
+           FROM ZVARIANT v
            JOIN ZVARIANTMETADATA m ON m.ZLAYER = v.ZADJUSTMENTLAYER
+           JOIN ZIMAGE i ON i.Z_PK = v.ZIMAGE
           WHERE v.Z_PK = ?1",
     )
     .and_then(|mut s| {
         s.query_row([variant_pk], |r| {
             let rating: Option<i64> = r.get(0)?;
             let color: Option<i64> = r.get(1)?;
+            let text = |i: usize| r.get::<_, Option<String>>(i).map(blank);
+            let lat = text(12)?;
+            let lon = text(13)?;
             Ok(Current {
                 rating: rating.filter(|&v| v > 0).map(|v| v.clamp(1, 5) as u8),
                 color: color.and_then(|v| u8::try_from(v).ok()).and_then(ColorLabel::from_index),
+                iptc: Iptc {
+                    description: text(2)?,
+                    headline: text(3)?,
+                    title: text(4)?,
+                    creator: text(5)?,
+                    copyright: text(6)?,
+                },
+                place: Place {
+                    city: text(7)?,
+                    state: text(8)?,
+                    country: text(9)?,
+                    country_code: text(10)?,
+                    location: text(11)?,
+                },
+                geo: match (config::parse_gps(lat.as_deref()), config::parse_gps(lon.as_deref())) {
+                    (Some(lat), Some(lon)) => Some((lat, lon)),
+                    _ => None,
+                },
             })
         })
         .optional()
@@ -134,6 +180,10 @@ pub(crate) fn plan(
             Some(now) => match &change.op {
                 Op::SetRating { base, value } => compare(base, value, &now.rating),
                 Op::SetColor { base, value } => compare(base, value, &now.color),
+                Op::SetIptc { base, value } => compare(base, value, &now.iptc),
+                Op::SetPlace { base, value } => compare(base, value, &now.place),
+                // Only the position: Capture One keeps no altitude or origin.
+                Op::SetGeo { base, value } => compare(&spot(base), &spot(value), &now.geo),
                 Op::AddKeywords { paths } | Op::RemoveKeywords { paths } => {
                     let stored: Vec<c1model::KeywordPath> = keywords::stored(con, variant_pk(change)?)?
                         .into_iter()
@@ -151,7 +201,7 @@ pub(crate) fn plan(
                         _ => Check::Apply,
                     }
                 }
-                _ => return Err(SourceError::Unsupported("ratings, colour tags and keywords are written so far")),
+                _ => return Err(SourceError::Unsupported("albums are not written yet")),
             },
         };
         match check {
@@ -202,13 +252,57 @@ fn write_change(con: &Connection, variant_pk: i64, op: &Op) -> Result<usize> {
             };
             return keywords::write_variant(con, variant_pk, &after);
         }
-        _ => return Err(SourceError::Unsupported("ratings, colour tags and keywords are written so far")),
+        // Text fields: only the columns that change, so a blank stored as '' stays as it
+        // is; a cleared field is NULL.
+        Op::SetIptc { base, value } => {
+            let changed = changed_columns(&IPTC_COLUMNS, iptc_fields(base), iptc_fields(value));
+            return write_text(con, variant_pk, &changed);
+        }
+        Op::SetPlace { base, value } => {
+            let changed = changed_columns(&PLACE_COLUMNS, place_fields(base), place_fields(value));
+            return write_text(con, variant_pk, &changed);
+        }
+        Op::SetGeo { value, .. } => {
+            let (lat, lon) = match value {
+                Some(g) => (Some(config::format_gps(g.lat, true)), Some(config::format_gps(g.lon, false))),
+                None => (None, None),
+            };
+            return con
+                .prepare_cached(
+                    "UPDATE ZIMAGE SET ZGPSLATITUDE = ?1, ZGPSLONGITUDE = ?2
+                      WHERE Z_PK = (SELECT ZIMAGE FROM ZVARIANT WHERE Z_PK = ?3)",
+                )
+                .and_then(|mut s| s.execute(params![lat, lon, variant_pk]))
+                .map_err(db_err);
+        }
+        _ => return Err(SourceError::Unsupported("albums are not written yet")),
     };
     let rows = metadata_rows(con, variant_pk)?;
     let sql = format!("UPDATE ZVARIANTMETADATA SET {column} = ?1 WHERE Z_PK = ?2");
     let mut stmt = con.prepare_cached(&sql).map_err(db_err)?;
     for row in &rows {
         stmt.execute(params![value, row]).map_err(db_err)?;
+    }
+    Ok(rows.len())
+}
+
+fn changed_columns<'a>(
+    columns: &[&'static str; 5],
+    base: [&Option<String>; 5],
+    value: [&'a Option<String>; 5],
+) -> Vec<(&'static str, Option<&'a str>)> {
+    (0..5).filter(|&i| base[i] != value[i]).map(|i| (columns[i], value[i].as_deref())).collect()
+}
+
+/// Sets text columns on both metadata rows. Returns the rows touched.
+fn write_text(con: &Connection, variant_pk: i64, columns: &[(&str, Option<&str>)]) -> Result<usize> {
+    let rows = metadata_rows(con, variant_pk)?;
+    for (column, value) in columns {
+        let sql = format!("UPDATE ZVARIANTMETADATA SET {column} = ?1 WHERE Z_PK = ?2");
+        let mut stmt = con.prepare_cached(&sql).map_err(db_err)?;
+        for row in &rows {
+            stmt.execute(params![value, row]).map_err(db_err)?;
+        }
     }
     Ok(rows.len())
 }
@@ -510,6 +604,101 @@ pub(crate) mod tests {
         write(&mut con, &p, pk).unwrap();
         assert_eq!(by_layer(&con, 1, "ZBASIC_RATING"), [(17, None), (18, None), (20, None)]);
         assert_eq!(by_layer(&con, 1, "ZCOLOR_TAG_INDEX"), [(17, None), (18, None), (20, None)]);
+    }
+
+    fn text_by_layer(con: &Connection, variant: i64, column: &str) -> Vec<(i64, Option<String>)> {
+        let sql = format!(
+            "SELECT l.Z_ENT, m.{column} FROM ZVARIANTLAYER l JOIN ZVARIANTMETADATA m ON m.Z_PK = l.ZMETADATA
+              WHERE l.ZVARIANT = ?1 ORDER BY l.Z_ENT"
+        );
+        let mut stmt = con.prepare(&sql).unwrap();
+        stmt.query_map([variant], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    fn s(v: &str) -> Option<String> {
+        Some(v.to_owned())
+    }
+
+    #[test]
+    fn place_writes_only_the_fields_that_change_on_both_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        // A blank stored as '' reads as nothing and is left alone.
+        con.execute("UPDATE ZVARIANTMETADATA SET ZIMAGE_STATE = '', ZIMAGE_CITY = 'Krakow' WHERE Z_PK IN (2, 3)", [])
+            .unwrap();
+        let base = Place { city: s("Krakow"), ..Place::default() };
+        let value = Place { city: s("Kraków"), country: s("Poland"), country_code: s("PL"), ..Place::default() };
+        let p = plan(&con, &[], &[change(1, Op::SetPlace { base: base.clone(), value: value.clone() })], pk).unwrap();
+        assert_eq!(p.apply.len(), 1);
+        write(&mut con, &p, pk).unwrap();
+        let some = |v: &str| [(17, s(v)), (18, None), (20, s(v))];
+        assert_eq!(text_by_layer(&con, 1, "ZIMAGE_CITY"), some("Kraków"));
+        assert_eq!(text_by_layer(&con, 1, "ZIMAGE_COUNTRY"), some("Poland"));
+        assert_eq!(text_by_layer(&con, 1, "ZIMAGE_ISOCOUNTRYCODE"), some("PL"));
+        assert_eq!(text_by_layer(&con, 1, "ZIMAGE_STATE"), some(""));
+        // Written: the same op is now done; one made on the old value conflicts.
+        let again = plan(&con, &[], &[change(1, Op::SetPlace { base: base.clone(), value })], pk).unwrap();
+        assert_eq!(again.no_ops.len(), 1);
+        let stale = Op::SetPlace { base, value: Place { city: s("Warsaw"), ..Place::default() } };
+        assert_eq!(plan(&con, &[], &[change(1, stale)], pk).unwrap().conflicts.len(), 1);
+        // Cleared is NULL.
+        let clear = Op::SetPlace {
+            base: Place { city: s("Kraków"), country: s("Poland"), country_code: s("PL"), ..Place::default() },
+            value: Place { country: s("Poland"), country_code: s("PL"), ..Place::default() },
+        };
+        let p = plan(&con, &[], &[change(1, clear)], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        assert_eq!(text_by_layer(&con, 1, "ZIMAGE_CITY"), [(17, None), (18, None), (20, None)]);
+    }
+
+    #[test]
+    fn caption_fields_go_to_both_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        let value = Iptc { description: s("24hprojet"), copyright: s("B. M."), ..Iptc::default() };
+        let p = plan(&con, &[], &[change(2, Op::SetIptc { base: Iptc::default(), value })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        assert_eq!(
+            text_by_layer(&con, 2, "ZCONTENT_DESCRIPTION"),
+            [(17, s("24hprojet")), (18, None), (20, s("24hprojet"))]
+        );
+        assert_eq!(text_by_layer(&con, 2, "ZSTATUS_COPYRIGHTNOTICE"), [(17, s("B. M.")), (18, None), (20, s("B. M."))]);
+        assert_eq!(text_by_layer(&con, 2, "ZSTATUS_TITLE"), [(17, None), (18, None), (20, None)]);
+    }
+
+    #[test]
+    fn gps_goes_to_the_image_and_compares_by_position() {
+        use c1model::{GeoOrigin, GeoPoint};
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        con.execute("UPDATE ZIMAGE SET ZGPSLATITUDE = '50,2.2566833N', ZGPSLONGITUDE = '19,56,30E' WHERE Z_PK = 3", [])
+            .unwrap();
+        let camera = GeoPoint {
+            lat: 50.0 + 2.2566833 / 60.0,
+            lon: 19.0 + 56.0 / 60.0 + 30.0 / 3600.0,
+            alt: None,
+            origin: GeoOrigin::Exif,
+        };
+        let manual = GeoPoint { lat: -33.8688, lon: 151.2093, alt: Some(5.0), origin: GeoOrigin::Manual };
+        let p = plan(&con, &[], &[change(3, Op::SetGeo { base: Some(camera), value: Some(manual) })], pk).unwrap();
+        assert_eq!(p.apply.len(), 1);
+        write(&mut con, &p, pk).unwrap();
+        let gps: (String, String) = con
+            .query_row("SELECT ZGPSLATITUDE, ZGPSLONGITUDE FROM ZIMAGE WHERE Z_PK = 3", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(gps, ("33.8688S".to_owned(), "151.2093E".to_owned()));
+        // Reads back as stored data, at the same spot: done, not a conflict.
+        let read_back = GeoPoint { alt: None, origin: GeoOrigin::Exif, ..manual };
+        let again =
+            plan(&con, &[], &[change(3, Op::SetGeo { base: Some(camera), value: Some(read_back) })], pk).unwrap();
+        assert_eq!(again.no_ops.len(), 1);
+        let p = plan(&con, &[], &[change(3, Op::SetGeo { base: Some(manual), value: None })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        let cleared: Option<String> =
+            con.query_row("SELECT ZGPSLATITUDE FROM ZIMAGE WHERE Z_PK = 3", [], |r| r.get(0)).unwrap();
+        assert_eq!(cleared, None);
     }
 
     #[test]

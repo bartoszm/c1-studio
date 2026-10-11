@@ -390,7 +390,7 @@ impl Library {
             let Some(photo) = batch.photo(row)? else { continue };
             let mut after = photo.clone();
             op.apply_to(&mut after);
-            if after == photo {
+            if after == photo || op.based_on(&photo).is_identity() {
                 continue;
             }
             // From what the photo shows now to what was asked.

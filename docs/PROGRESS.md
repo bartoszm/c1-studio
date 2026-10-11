@@ -580,9 +580,49 @@ in `<data dir>/settings.json`) writes the queue by itself.
   per-keyword removal the differential test covers.
 - The panel's × says when it will take keywords under it too.
 
+### Tile size
+
+- The header sets the grid's tiles: a slider (about that wide; the count per row follows
+  the window), a per-row box (that many whatever the window), and 3:2 or square.
+  Ctrl+wheel and Ctrl+plus/minus step one per row; Ctrl+0 resets. Remembered.
+- Rescaling keeps the focused photo where it was on screen, or else the top row at the
+  top, over any number of steps.
+- Tiles wider than the 450 px thumbnail load the preview for what is on screen once
+  scrolling stops.
+
+### Location, GPS and caption fields; copy and paste between photos
+
+- **Writing** (`source-c1/src/write.rs`), as the Python `cmd_meta.py` does:
+  - location (`ZIMAGE_CITY`, `_STATE`, `_COUNTRY`, `_ISOCOUNTRYCODE`, `_LOCATION`) and
+    caption (`ZCONTENT_DESCRIPTION`, `ZCONTENT_HEADLINE`, `ZSTATUS_TITLE`,
+    `ZCONTACT_CREATOR`, `ZSTATUS_COPYRIGHTNOTICE`) go to the adjustment and combined
+    metadata rows; only the columns that change are written, and a cleared field is NULL;
+  - GPS goes to `ZIMAGE.ZGPSLATITUDE/LONGITUDE` as `50.0614N`/`19.9366E`, the shortest
+    decimal that reads back as the same value. It is per image: every variant of it
+    moves. Altitude is not stored.
+- **Conflicts:** GPS compares by position only, so a position typed here reads back from
+  Capture One as done, not as a conflict.
+- **CLI:** `c1cat describe --description/--headline/--title`, `c1cat iptc
+  --set-city/--set-state/--set-country/--set-country-code/--set-location/--set-creator/
+  --set-copyright` (empty clears), `c1cat geo --lat --lon | --clear`.
+- **Differential test:** ten more cases (set, clear, accented names, GPS over decimal and
+  camera-written `50,2.25N` values, whole degrees, clearing): SAME as Python.
+- **In the app:**
+  - the details panel's Location fields (country, code, state, city, location, GPS) are
+    typed in place; Enter or leaving the field saves, Escape puts it back. GPS takes
+    `50.0614, 19.9366`, N/S/E/W letters or degrees-minutes-seconds. With several photos
+    selected, a field typed applies to all of them;
+  - **Copy…** (Ctrl+Shift+C) opens a list of the photo's fields with their values; tick
+    what to copy (keywords: add to theirs, or replace theirs). **Paste** (Ctrl+Shift+V)
+    puts them on the selected photos as one undoable edit, queued like any other. The
+    clipboard holds the photo as it was when copied, survives restarts, and copying an
+    empty field clears it on the targets (the dialog says so).
+- **Tests:** four write tests, a GPS format round trip, three paste and typing tests in
+  the app crate. In a second app instance on a catalog copy: typed fields, bad GPS, copy,
+  paste to two photos, undo, redo, then a write checked in the copy's database.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.
 2. A list of backups, with restore.
-3. Keyword library edits (rename, move, merge, delete), if wanted: Python has them;
-   they rewrite every photo using the keyword.
+3. Editing captions in the details panel (they are written and pasted already).
