@@ -62,6 +62,11 @@ export function opText(op: Op): { field: string; from: string; to: string } | nu
     const name = (c: string | null) => (c ? c.toLowerCase() : "no colour");
     return { field: "colour", from: name(base), to: name(value) };
   }
+  if ("AddKeywords" in op || "RemoveKeywords" in op) {
+    const add = "AddKeywords" in op;
+    const { paths } = (add ? op.AddKeywords : op.RemoveKeywords) as { paths: string[][] };
+    return { field: "keyword", from: "", to: `${add ? "+" : "−"} ${paths.map((p) => p.join("|")).join(", ")}` };
+  }
   return null;
 }
 

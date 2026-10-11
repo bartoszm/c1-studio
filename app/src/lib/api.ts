@@ -125,7 +125,11 @@ export type WritePlan = {
   conflicts: PendingEdit[];
   blocked: [PendingEdit, string][];
 };
-export type Edit = { Rating: number | null } | { Color: Color | null };
+export type Edit =
+  | { Rating: number | null }
+  | { Color: Color | null }
+  | { AddKeywords: string[] }
+  | { RemoveKeywords: string[] };
 
 export const status = () => invoke<Status>("status");
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
@@ -136,6 +140,8 @@ export const sync = () => invoke("sync");
 /** Returns the ops that undo it. */
 export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit", { rows, edit });
 export const editOps = (changes: [number, Op][]) => invoke<[number, Op][]>("edit_ops", { changes });
+/** Every keyword path in the catalog with its use count. */
+export const keywords = () => invoke<[string, number][]>("keywords");
 export const pending = () => invoke<PendingEdit[]>("pending");
 export const discard = (keys: string[]) => invoke<void>("discard", { keys });
 export const resolve = (keys: string[], keepMine: boolean) => invoke<void>("resolve", { keys, keepMine });

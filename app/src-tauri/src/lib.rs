@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
-use c1model::{Change, Collection, ColorLabel, ImageTier, Op, Photo, PhotoSource, WriteStatus};
+use c1model::{Change, Collection, ColorLabel, ImageTier, KeywordPath, Op, Photo, PhotoSource, WriteStatus};
 use serde::{Deserialize, Serialize};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 use tauri::http::{Response, StatusCode, header};
@@ -134,6 +134,26 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
 enum Edit {
     Rating(Option<u8>),
     Color(Option<ColorLabel>),
+    /// Keyword paths, levels joined by `|`.
+    AddKeywords(Vec<String>),
+    RemoveKeywords(Vec<String>),
+}
+
+/// `best | best2018 ` → `best|best2018`. Refuses names Capture One cannot store.
+fn keyword_paths(paths: &[String]) -> Result<Vec<KeywordPath>, String> {
+    paths
+        .iter()
+        .map(|path| {
+            let levels: Vec<String> = path.split('|').map(|l| l.trim().to_owned()).collect();
+            if levels.iter().any(|l| l.is_empty()) {
+                return Err(format!("{path:?}: a keyword level is empty"));
+            }
+            if levels.iter().any(|l| l.contains(',')) {
+                return Err(format!("{path:?}: keyword names cannot contain a comma"));
+            }
+            Ok(KeywordPath(levels))
+        })
+        .collect()
 }
 
 /// Edits photos in the library and queues the edits for Capture One. Returns the ops
@@ -144,6 +164,8 @@ async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u6
     let op = match edit {
         Edit::Rating(value) => Op::SetRating { base: None, value: value.filter(|&v| v > 0) },
         Edit::Color(value) => Op::SetColor { base: None, value },
+        Edit::AddKeywords(paths) => Op::AddKeywords { paths: keyword_paths(&paths)? },
+        Edit::RemoveKeywords(paths) => Op::RemoveKeywords { paths: keyword_paths(&paths)? },
     };
     let changes: Vec<(u64, Op)> = rows.into_iter().map(|row| (row, op.clone())).collect();
     let s = app.session()?;
@@ -157,6 +179,13 @@ async fn edit_ops(app: State<'_, App>, changes: Vec<(u64, Op)>) -> Result<Vec<(u
     let s = app.session()?;
     s.touched();
     s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+}
+
+/// Every keyword in the catalog's tree with how many photos carry it, for completion.
+#[tauri::command]
+async fn keywords(app: State<'_, App>) -> Result<Vec<(String, u32)>, String> {
+    let nodes = app.session()?.library.keywords().map_err(|e| format!("{e:#}"))?;
+    Ok(nodes.into_iter().map(|n| (n.path.to_pipe(), n.uses)).collect())
 }
 
 #[tauri::command]
@@ -459,6 +488,7 @@ pub fn run() {
             sync,
             edit,
             edit_ops,
+            keywords,
             pending,
             discard,
             resolve,

@@ -361,40 +361,43 @@ impl Library {
         let mut edits = self.edits.batch()?;
         let now = now_ms();
         let mut undo = Vec::new();
-        for (row, op) in changes {
-            let Some(field) = op.field() else { bail!("only fields are edited so far, not {op:?}") };
-            let Some(mut photo) = batch.photo(*row)? else { continue };
-            // From what the photo shows now to what was asked.
-            let shown = op.based_on(&photo);
-            if shown.is_identity() {
+        for (row, op) in changes.iter().flat_map(|(row, op)| op.split().into_iter().map(move |op| (*row, op))) {
+            let Some(what) = op.queue_key() else { bail!("{op:?} cannot be queued yet") };
+            let Some(photo) = batch.photo(row)? else { continue };
+            let mut after = photo.clone();
+            op.apply_to(&mut after);
+            if after == photo {
                 continue;
             }
-            let key = pending_key(&photo.id, field);
+            // From what the photo shows now to what was asked.
+            let shown = op.based_on(&photo);
+            let key = pending_key(&photo.id, &what);
             let previous = edits.get(&key)?;
-            // The base stays what the source held when the field was first edited.
+            // A field's base stays what the source held when it was first edited. A
+            // keyword added then removed (or the other way round) is back where it was.
             let wanted = match &previous {
-                Some(p) => p.change.op.retarget(op),
+                Some(p) => p.change.op.retarget(&op),
                 None => shown.clone(),
             };
+            let undone = |p: &Pending| p.theirs.is_none() && (wanted.is_identity() || p.change.op.reverted() == op);
             match previous {
-                Some(p) if wanted.is_identity() && p.theirs.is_none() => edits.remove(&key)?,
+                Some(p) if undone(&p) => edits.remove(&key)?,
                 previous => {
                     let theirs = previous.and_then(|p| p.theirs);
                     let change = Change { photo: photo.id.clone(), op: wanted };
                     edits.put(&key, &Pending { change, at: now, theirs })?;
                 }
             }
-            undo.push((*row, shown.reverted()));
+            undo.push((row, shown.reverted()));
             edits.log(&Event {
                 at: now,
                 origin: Origin::App,
                 change: Change { photo: photo.id.clone(), op: shown },
             })?;
-            op.apply_to(&mut photo);
-            let fingerprint = batch.fingerprint(*row)?.unwrap_or_default();
-            batch.put_photo(*row, &photo, fingerprint)?;
-            writer.delete_term(Term::from_field_u64(self.fields.row, *row));
-            writer.add_document(schema::document(&self.fields, *row, &photo))?;
+            let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
+            batch.put_photo(row, &after, fingerprint)?;
+            writer.delete_term(Term::from_field_u64(self.fields.row, row));
+            writer.add_document(schema::document(&self.fields, row, &after))?;
         }
         writer.commit()?;
         batch.commit()?;
@@ -454,8 +457,10 @@ impl Library {
         let _writing = self.writing.lock().unwrap();
         let mut edits = self.edits.batch()?;
         for change in written {
-            if let Some(field) = change.op.field() {
-                let key = pending_key(&change.photo, field);
+            for op in change.op.split() {
+                let Some(what) = op.queue_key() else { continue };
+                let key = pending_key(&change.photo, &what);
+                let change = &Change { photo: change.photo.clone(), op };
                 if edits.get(&key)?.is_some_and(|p| p.change == *change) {
                     edits.remove(&key)?;
                 }
@@ -478,7 +483,9 @@ impl Library {
             let Some(mut photo) = batch.photo(row)? else { continue };
             let op = restore(&pending);
             let shown = op.based_on(&photo);
-            if shown.is_identity() {
+            let mut after = photo.clone();
+            op.apply_to(&mut after);
+            if after == photo {
                 continue;
             }
             edits.log(&Event {

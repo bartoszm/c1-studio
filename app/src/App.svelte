@@ -23,6 +23,8 @@
   let search = $state("");
   let result = $state<QueryResult | null>(null);
   let collections = $state<api.Collection[]>([]);
+  /** Keyword paths for completion, most used first. */
+  let keywordList = $state<string[]>([]);
   let smart = $state<Map<string, number> | null>(null);
   /** Position of the photo picked in the grid; the viewer and the panel show it. */
   let selected = $state<number | null>(null);
@@ -133,6 +135,7 @@
     try {
       status = await api.status();
       collections = await api.collections();
+      keywordList = (await api.keywords()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
       await refreshQueued();
       await run(keep);
     } catch (e) {
@@ -366,6 +369,7 @@
       if (key === "z" && !e.shiftKey) undoRedo(undoStack, redoStack);
       else if (key === "y" || (key === "z" && e.shiftKey)) undoRedo(redoStack, undoStack);
       else if (key === "a" && !viewing) pickAll();
+      else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
       else return;
       e.preventDefault();
       return;
@@ -427,6 +431,12 @@
     queued={(row !== undefined && queued.get(row)) || []}
     onrate={(n) => applyEdit({ Rating: n })}
     oncolor={(c) => applyEdit({ Color: c })}
+    keywords={keywordList}
+    onaddkeyword={(path) => {
+      if (!keywordList.includes(path)) keywordList = [...keywordList, path];
+      applyEdit({ AddKeywords: [path] });
+    }}
+    onremovekeyword={(path) => applyEdit({ RemoveKeywords: [path] })}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}

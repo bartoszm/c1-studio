@@ -84,7 +84,7 @@
     {#if p.row !== null}<img src={api.thumbUrl(p.row)} alt="" />{:else}<span class="gone"></span>{/if}
     <span class="what">
       <span class="name">{p.name ?? p.change.photo.ext}</span>
-      {#if t}{t.field}: <span class="from">{t.from}</span> → <b>{t.to}</b>{/if}
+      {#if t}{t.field}: {#if t.from}<span class="from">{t.from}</span> → {/if}<b>{t.to}</b>{/if}
       {#if note}<span class="note">{note}</span>{/if}
     </span>
   </li>

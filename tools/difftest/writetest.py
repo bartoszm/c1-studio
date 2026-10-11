@@ -49,11 +49,14 @@ def pick(catalog: Path) -> dict[str, list[int]]:
             f" JOIN ZIMAGE i ON i.Z_PK = v.ZIMAGE WHERE i.ZISTRASHED = 0 AND {where} ORDER BY v.Z_PK LIMIT 4"
         ).fetchall()
         out[name] = [r[0] for r in rows]
+    # The first keyword in the tree: a child under it shifts every interval after it.
+    out["first_root"] = con.execute(
+        "SELECT ZNAME FROM ZKEYWORD WHERE ZPARENT IS NULL ORDER BY ZLEFT LIMIT 1").fetchone()[0]
     con.close()
     return out
 
 
-def edits(g: dict[str, list[int]]) -> list[tuple[str, list[str], list[int]]]:
+def edits(g: dict) -> list[tuple[str, list[str], list[int]]]:
     """(command, value arguments, variant ids), applied in order on both sides."""
     return [
         ("rate", ["--set", "4"], g["plain"] + g["rated"]),
@@ -62,6 +65,12 @@ def edits(g: dict[str, list[int]]) -> list[tuple[str, list[str], list[int]]]:
         ("color", ["--set", "none"], g["colored"] + g["top"]),
         ("rate", ["--set", "0"], g["rated"]),
         ("rate", ["--set", "1"], g["plain"][:1]),
+        ("keyword", ["add", "street"], g["plain"]),
+        ("keyword", ["add", "difftest|alpha"], g["rated"]),
+        ("keyword", ["add", f"{g['first_root']}|difftest child"], g["colored"][:2]),
+        ("keyword", ["add", "b&w", "difftest|beta", "difftest|alpha"], g["top"] + g["rated"][:1]),
+        ("keyword", ["remove", "street"], g["plain"][:2]),
+        ("keyword", ["remove", "difftest|alpha", "b&w"], g["rated"][1:3]),
     ]
 
 
@@ -78,9 +87,10 @@ def run(argv: list[str], env: dict | None = None) -> str:
 
 def python_side(catalog: Path, steps) -> None:
     for n, (command, value, pks) in enumerate(steps):
-        # The mirror only resolves --id here, so it is built once and not again.
-        sync = [] if n == 0 else ["--no-sync"]
-        argv = ["--catalog", wsl_path(catalog), "--quiet", *sync, command, *ids(pks), *value, "--apply", "--no-backup"]
+        # Rating and colour use the mirror only to resolve --id, so it is built once. Keyword
+        # edits start from the keywords the mirror holds, so it must be current for them.
+        sync = [] if n == 0 or command == "keyword" else ["--no-sync"]
+        argv = ["--catalog", wsl_path(catalog), "--quiet", *sync, command, *value, *ids(pks), "--apply", "--no-backup"]
         script = f"cd {LEGACY_WSL} && {PYTHON_WSL} -m c1cat " + " ".join(f"'{a}'" for a in argv)
         run(["wsl.exe", "-e", "bash", "-lc", script])
 
@@ -96,7 +106,7 @@ def rust_side(exe: Path, catalog: Path, data: Path, steps) -> list[dict]:
     env = {**os.environ, "C1_DATA_DIR": str(data)}
     reports = []
     for command, value, pks in steps:
-        out = run([str(exe), "--catalog", str(catalog), command, *ids(pks), *value, "--apply", "--json"], env)
+        out = run([str(exe), "--catalog", str(catalog), command, *value, *ids(pks), "--apply", "--json"], env)
         reports.append(json.loads(out))
     return reports
 

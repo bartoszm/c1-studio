@@ -215,6 +215,23 @@ footer {
 .info-panel .colors .dot { width: 14px; height: 14px; padding: 0; opacity: 0.45; }
 .info-panel .colors .dot:hover { opacity: 0.8; }
 .info-panel .colors .dot.on { opacity: 1; outline: 2px solid var(--accent); outline-offset: 1px; }
+.info-panel .keywords li { display: flex; align-items: baseline; flex-wrap: wrap; }
+.info-panel .keywords li.queued .link { color: var(--queued); }
+.info-panel .keywords .remove { margin-left: auto; padding: 0 4px; color: var(--muted); visibility: hidden; }
+.info-panel .keywords li:hover .remove { visibility: visible; }
+.info-panel .keywords .remove:hover { color: var(--error); }
+.info-panel .add-keyword input {
+  width: 100%;
+  margin-top: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.info-panel .add-keyword input:focus { outline: none; border-color: var(--queued); }
+.info-panel .error { padding: 4px 0 0; }
 .info-panel .queued-note { margin: 8px 0 0; color: var(--queued); }
 .info-panel .tag { padding: 0 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
 .info-panel dl { display: grid; grid-template-columns: 82px 1fr; gap: 4px 8px; margin: 10px 0 0; }

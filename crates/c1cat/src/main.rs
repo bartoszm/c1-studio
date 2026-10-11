@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use c1index::{Dim, Filter, Library, QueryOptions, Sort};
-use c1model::{Change, ColorLabel, ImageTier, Op, Photo, PhotoSource};
+use c1model::{Change, ColorLabel, ImageTier, KeywordPath, Op, Photo, PhotoSource};
 use clap::{Parser, Subcommand};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 
@@ -113,6 +113,12 @@ enum Command {
         #[command(flatten)]
         write: WriteFlags,
     },
+    /// Add or remove keywords on the matching photos. A dry run unless --apply is given.
+    #[command(alias = "kw")]
+    Keyword {
+        #[command(subcommand)]
+        action: KeywordAction,
+    },
     /// Time the library against the stage-0 speed gate on synthetic photos.
     Bench {
         #[arg(long, default_value_t = 250_000)]
@@ -133,6 +139,28 @@ enum Command {
         /// Dimensions counted with every query, as the sidebar would.
         #[arg(long, default_value = "rating,color,year,camera,lens,keyword_tree,collection,country")]
         dims: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeywordAction {
+    /// Add keywords (paths like `best|best2018`); missing ones join the keyword tree.
+    Add {
+        #[arg(required = true, value_name = "KEYWORD")]
+        paths: Vec<String>,
+        #[command(flatten)]
+        select: Selector,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Remove keywords from the photos; the keyword tree keeps them.
+    Remove {
+        #[arg(required = true, value_name = "KEYWORD")]
+        paths: Vec<String>,
+        #[command(flatten)]
+        select: Selector,
+        #[command(flatten)]
+        write: WriteFlags,
     },
 }
 
@@ -298,6 +326,19 @@ fn main() -> anyhow::Result<()> {
                 })?),
             };
             edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetColor { base: p.color, value })?;
+        }
+        Command::Keyword { action } => {
+            let (select, write, op) = match action {
+                KeywordAction::Add { paths, select, write } => {
+                    let paths = paths.iter().map(|p| KeywordPath::from_pipe(p.trim())).collect();
+                    (select, write, Op::AddKeywords { paths })
+                }
+                KeywordAction::Remove { paths, select, write } => {
+                    let paths = paths.iter().map(|p| KeywordPath::from_pipe(p.trim())).collect();
+                    (select, write, Op::RemoveKeywords { paths })
+                }
+            };
+            edit(cli.catalog.as_ref(), &select, &write, |_| op.clone())?;
         }
         Command::Bench { photos, keywords, queries, seed, dir, rebuild, dims } => {
             bench::bench(&bench::Config { photos, keywords, queries, seed, dir, rebuild, dims: parse_dims(&dims)? })?;
