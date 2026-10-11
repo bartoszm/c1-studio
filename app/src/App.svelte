@@ -59,6 +59,16 @@
   let autosaveOn = $state(false);
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
+  /** A word on what an edit did, shown a few seconds in the footer. */
+  let editNote = $state<string | null>(null);
+  let noteTimer: ReturnType<typeof setTimeout>;
+  function note(text: string) {
+    editNote = text;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => (editNote = null), 4000);
+  }
+  /** What is being dragged: photos (onto an album) or an album (onto a group). */
+  let dragging = $state<{ rows: number[] } | { album: string } | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
   type Done =
     | { ops: [number, api.Op][] }
@@ -81,7 +91,7 @@
   /** The Albums tree's menu: on an album, or (`node` null) from the section's + button. */
   let albumMenu = $state<{ x: number; y: number; node: Node | null } | null>(null);
   let albumDialog = $state<{
-    mode: "create" | "rename" | "rule" | "delete";
+    mode: "create" | "rename" | "rule" | "delete" | "move";
     kind?: "Album" | "Smart" | "Group";
     collection?: api.Collection;
   } | null>(null);
@@ -369,6 +379,47 @@
   });
   /** Sync: the focused photo, whose fields go onto the rest of the selection. */
   let syncing = $state<{ from: api.Photo; row: number } | null>(null);
+  /** Paste…: the photos the clipboard goes onto, with a choice of fields and how. */
+  let pasting = $state<number[] | null>(null);
+  /** What was pasted last, and how: Ctrl+V does the same again. */
+  function rememberedPaste(): api.CopyField[] | null {
+    try {
+      const f = JSON.parse(localStorage.getItem("pasteFields") ?? "null");
+      return Array.isArray(f) ? f : null;
+    } catch {
+      return null;
+    }
+  }
+  let pasteFields = $state<api.CopyField[] | null>(rememberedPaste());
+  $effect(() => {
+    try {
+      localStorage.setItem("pasteFields", JSON.stringify(pasteFields));
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+
+  /** The tile's ↑: copies at once, the fields copied last (or all the photo has). */
+  async function copyCell(i: number) {
+    const row = rowAt(i);
+    if (row === undefined) return;
+    const from = await api.photo(row);
+    if (!from) return;
+    const fields = clipboard?.fields ?? [
+      "rating", "color", "keywords", "country", "country_code", "state", "city", "location", "geo",
+      "headline", "description", "title", "job_id", "instructions", "source", "copyright", "creator",
+    ];
+    clipboard = { from, fields };
+    pasteFields = null;
+    note(`Copied from ${from.file.name}: choose what to paste with ↓ or Ctrl+Shift+V`);
+  }
+
+  /** The tile's ↓: onto the selection if the tile is in it, else onto that photo. */
+  function pasteCell(i: number) {
+    const row = rowAt(i);
+    if (row === undefined || !clipboard) return;
+    pasting = picked.has(row) && picked.size > 1 ? [...picked] : [row];
+  }
   $effect(() => {
     try {
       localStorage.setItem("clipboard", JSON.stringify(clipboard));
@@ -397,11 +448,12 @@
   /** Puts fields of `from` on the rest of the selection; they stay on the clipboard too. */
   async function sync({ from, row }: { from: api.Photo; row: number }, fields: api.CopyField[], fill: boolean) {
     clipboard = { from, fields };
+    pasteFields = null;
     await pasteRows(targets().filter((r) => r !== row), from, fields, fill);
   }
 
   async function pasteClip(fill = false) {
-    if (clipboard) await pasteRows(targets(), clipboard.from, clipboard.fields, fill);
+    if (clipboard) await pasteRows(targets(), clipboard.from, pasteFields ?? clipboard.fields, fill);
   }
 
   async function pasteRows(rows: number[], from: api.Photo, fields: api.CopyField[], fill: boolean) {
@@ -411,6 +463,10 @@
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
+        const n = new Set(undo.map(([r]) => r)).size;
+        note(`${fill ? "Merged into" : "Pasted onto"} ${n.toLocaleString()} photo${n === 1 ? "" : "s"}`);
+      } else {
+        note(`Nothing to ${fill ? "merge" : "paste"}: ${rows.length === 1 ? "the photo holds" : "the photos hold"} these values already`);
       }
       editError = null;
     } catch (e) {
@@ -419,8 +475,7 @@
     await edited();
   }
 
-  async function applyEdit(edit: api.Edit) {
-    const rows = targets();
+  async function applyEdit(edit: api.Edit, rows = targets()) {
     if (!rows.length) return;
     try {
       const undo = await api.edit(rows, edit);
@@ -746,7 +801,7 @@
       albumMenu = null;
       return;
     }
-    if (writing || showBackups || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -759,8 +814,9 @@
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
-      else if (key === "c" && e.shiftKey) openCopy();
-      else if (key === "v" && e.shiftKey) pasteClip();
+      else if (key === "c" && (e.shiftKey || !window.getSelection()?.toString())) openCopy();
+      else if (key === "v" && e.shiftKey) { if (clipboard) pasting = targets(); }
+      else if (key === "v") pasteClip();
       else if (key === "s" && e.shiftKey) openSync();
       else if ((key === "=" || key === "+") && !viewing) grid?.step(true);
       else if (key === "-" && !viewing) grid?.step(false);
@@ -773,6 +829,13 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
+    else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing) {
+      const album = shownAlbum;
+      const n = targets().length;
+      applyEdit({ RemoveFromAlbum: album.id }).then(() => {
+        if (!editError) note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} taken out of “${album.name}”`);
+      });
+    }
     else if (viewing) return; // the viewer has its own keys
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
@@ -804,6 +867,48 @@
   }
 
   let byId = $derived(new Map(collections.map((c) => [c.id, c])));
+
+  // Drag and drop in the Albums tree: photos onto an album put them in it; an album or
+  // group onto a group (or the Albums title, for the top level) moves it there.
+  function dragCell(i: number) {
+    const row = rowAt(i);
+    if (row === undefined) return;
+    dragging = { rows: picked.has(row) && picked.size > 1 ? [...picked] : [row] };
+  }
+  const movable = (c: api.Collection | undefined) => !!c && !c.system && c.kind !== "Project";
+  function dragAlbum(n: Node, starting: boolean) {
+    const ok = movable(byId.get(n.value));
+    if (ok && starting) dragging = { album: n.value };
+    return ok;
+  }
+  /** Can the dragged thing go into `target` (undefined: the top level)? */
+  function canDrop(target: api.Collection | undefined): boolean {
+    const d = dragging;
+    if (!d) return false;
+    if ("rows" in d) return target?.kind === "Album";
+    if (target && ((target.kind !== "Group" && target.kind !== "Project") || target.system)) return false;
+    for (let c = target; c; c = c.parent ? byId.get(c.parent) : undefined) if (c.id === d.album) return false;
+    return (byId.get(d.album)?.parent ?? undefined) !== target?.id;
+  }
+  async function drop(target: api.Collection | undefined) {
+    const d = dragging;
+    dragging = null;
+    if (!d) return;
+    if ("rows" in d && target) {
+      await applyEdit({ AddToAlbum: target.id }, d.rows);
+      if (!editError) note(`${d.rows.length.toLocaleString()} photo${d.rows.length === 1 ? "" : "s"} put into “${target.name}”`);
+    } else if ("album" in d) {
+      try {
+        await applyCollection({ Move: { id: d.album, parent: target?.id ?? null } });
+      } catch (e) {
+        editError = String(e);
+      }
+    }
+  }
+  /** The album the grid shows, if it is one photos can be taken out of. */
+  let shownAlbum = $derived(
+    filter.collections?.length === 1 && byId.get(filter.collections[0])?.kind === "Album" ? byId.get(filter.collections[0]) : undefined,
+  );
 
   // The filter as chips above the grid, one per value; × on a chip drops just that value.
   // `rest` is what the field holds without it (undefined lets go of the field).
@@ -940,7 +1045,6 @@
     sharedAlbums={selectionAlbums}
     onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
-    onnewalbum={() => (albumDialog = { mode: "create", kind: "Album" })}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
     onplace={(fields) => applyEdit({ Place: fields })}
@@ -949,6 +1053,7 @@
     clip={clipText}
     oncopy={openCopy}
     onpaste={pasteClip}
+    onpastechoose={() => { if (clipboard) pasting = targets(); }}
     onsync={openSync}
   />
 {/snippet}
@@ -996,22 +1101,34 @@
   </header>
 
   <aside>
-    <section class="with-add">
+    <section
+      class="albums-section"
+      role="group"
+      aria-label="Albums"
+      class:drop={dragging && "album" in dragging && canDrop(undefined)}
+      ondragover={(e) => { if (canDrop(undefined)) e.preventDefault(); }}
+      ondrop={(e) => { if (canDrop(undefined)) { e.preventDefault(); drop(undefined); } }}
+    >
       {@render head("albums")}
-      <button
-        class="section-add"
-        title="New album, smart album or group"
-        aria-label="New album, smart album or group"
-        onclick={(e) => { const r = e.currentTarget.getBoundingClientRect(); albumMenu = { x: r.left, y: r.bottom, node: null }; }}
-      >+</button>
       {#if !folded.has("albums")}
+        <div class="album-actions">
+          <button title="A new album, at the top level" onclick={() => (albumDialog = { mode: "create", kind: "Album" })}>+ Album</button>
+          <button title="A new smart album: a rule, not photos" onclick={() => (albumDialog = { mode: "create", kind: "Smart" })}>+ Smart album</button>
+          <button title="A new group, to hold albums" onclick={() => (albumDialog = { mode: "create", kind: "Group" })}>+ Group</button>
+        </div>
         <Tree
           nodes={albums}
           selected={filter.collections && "a:" + filter.collections[0]}
           {expanded}
           onpick={pickAlbum}
           oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
+          drag={dragAlbum}
+          candrop={(n) => canDrop(byId.get(n.value))}
+          ondropnode={(n) => drop(byId.get(n.value))}
         />
+        <p class="tree-hint">
+          {#if shownAlbum}Delete takes the selected photos out of “{shownAlbum.name}”.{:else}Drag photos onto an album to put them in; drag an album onto a group to move it.{/if}
+        </p>
       {/if}
     </section>
     {@render dates()}
@@ -1105,6 +1222,10 @@
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     onselect={pick}
+    ondragcell={dragCell}
+    oncopycell={copyCell}
+    onpastecell={pasteCell}
+    canpaste={!!clipboard}
     onopen={(i) => { pick(i); viewing = true; }}
     {tiles}
     {shape}
@@ -1140,7 +1261,7 @@
       <span>{status.photos.toLocaleString()} in library</span>
       <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
     {/if}
-    {#if editError}<span class="edit-error">{editError}</span>{/if}
+    {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     <span class="autosave" class:alone={!syncNote}>
       {#if autosaveOn}
@@ -1190,7 +1311,7 @@
   <div class="menu" role="menu" style:left="{albumMenu.x}px" style:top="{albumMenu.y}px">
     {#if c}<div class="menu-title">{c.path}</div>{/if}
     {#if c?.kind === "Album" && n}
-      <button role="menuitem" onclick={() => { albumMenu = null; applyEdit({ AddToAlbum: c.id }); }}>
+      <button role="menuitem" onclick={() => { const id = c.id; albumMenu = null; applyEdit({ AddToAlbum: id }); }}>
         Put the {n === 1 ? "selected photo" : `${n.toLocaleString()} selected photos`} here
       </button>
     {/if}
@@ -1206,6 +1327,12 @@
     {/if}
     {#if c && !c.system}
       <button role="menuitem" onclick={() => { albumDialog = { mode: "rename", collection: c }; albumMenu = null; }}>Rename…</button>
+      {#if movable(c)}
+        <button role="menuitem" onclick={() => { albumDialog = { mode: "move", collection: c }; albumMenu = null; }}>Move to…</button>
+        {#if c.parent}
+          <button role="menuitem" onclick={() => { const id = c.id; albumMenu = null; applyCollection({ Move: { id, parent: null } }).catch((e) => (editError = String(e))); }}>Move to the top level</button>
+        {/if}
+      {/if}
       {#if c.kind !== "Project"}
         <button role="menuitem" class="danger" onclick={() => { albumDialog = { mode: "delete", collection: c }; albumMenu = null; }}>Delete…</button>
       {/if}
@@ -1267,7 +1394,7 @@
   <CopyDialog
     photo={copying}
     fields={clipboard?.fields ?? ["country", "country_code", "state", "city", "location", "geo"]}
-    oncopy={(fields) => { if (copying) clipboard = { from: copying, fields }; }}
+    oncopy={(fields) => { if (copying) { clipboard = { from: copying, fields }; pasteFields = null; } }}
     onclose={() => (copying = null)}
   />
 {/if}
@@ -1279,6 +1406,17 @@
     fields={clipboard?.fields ?? ["keywords"]}
     oncopy={(fields, fill) => { if (syncing) sync(syncing, fields, fill); }}
     onclose={() => (syncing = null)}
+  />
+{/if}
+
+{#if pasting && clipboard}
+  {@const rows = pasting}
+  <CopyDialog
+    photo={clipboard.from}
+    paste={rows.length}
+    fields={pasteFields ?? clipboard.fields}
+    oncopy={(fields, fill) => { pasteFields = fields; if (clipboard) pasteRows(rows, clipboard.from, fields, fill); }}
+    onclose={() => (pasting = null)}
   />
 {/if}
 

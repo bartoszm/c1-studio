@@ -194,6 +194,9 @@ impl PhotoSource for MemorySource {
                 CollectionChange::Rename { id, name } => CollectionChange::Rename { id: real(&made, &id), name },
                 CollectionChange::SetRule { id, rule } => CollectionChange::SetRule { id: real(&made, &id), rule },
                 CollectionChange::Delete { id } => CollectionChange::Delete { id: real(&made, &id) },
+                CollectionChange::Move { id, parent } => {
+                    CollectionChange::Move { id: real(&made, &id), parent: parent.map(|p| real(&made, &p)) }
+                }
             };
             if let Some(why) = collection_problem(&albums, &change) {
                 return Err(SourceError::Other(format!("{}: {why}", change.label(&albums))));

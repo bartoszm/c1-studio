@@ -3,17 +3,22 @@
   import { geoText } from "./lib/format";
 
   // Choose what to copy from one photo; pasting then puts those fields on others. With
-  // `sync`, the fields go straight onto the other selected photos, replacing or filling.
-  let { photo, fields, sync, oncopy, onclose }: {
+  // `sync`, the fields go straight onto the other selected photos; with `paste`, the
+  // clipboard's photo goes onto the selected ones. Either overwrites or merges.
+  let { photo, fields, sync, paste, oncopy, onclose }: {
     photo: api.Photo;
-    /** What was copied last time, ticked to start with. */
+    /** What was copied (or pasted) last time, ticked to start with. */
     fields: api.CopyField[];
-    /** How many other selected photos a sync puts the fields on; absent for a copy. */
+    /** How many other selected photos a sync puts the fields on. */
     sync?: number;
-    /** `fill` (a sync only) fills just what the others leave empty. */
+    /** How many photos a paste puts the clipboard's fields on. */
+    paste?: number;
+    /** `fill` (merge) fills just what the others leave empty and adds keywords. */
     oncopy: (fields: api.CopyField[], fill: boolean) => void;
     onclose: () => void;
   } = $props();
+  /** How many photos the fields go onto; absent for a copy. */
+  let onto = $derived(sync ?? paste);
 
   function rememberedFill() {
     try {
@@ -30,7 +35,7 @@
       // Not remembered, that's all.
     }
   });
-  let filling = $derived(sync !== undefined && fill);
+  let filling = $derived(onto !== undefined && fill);
 
   type Item = [api.CopyField, string, string | null];
   const text = (v: string | null | undefined) => v || null;
@@ -107,21 +112,22 @@
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="copy-title">
-    {#if sync !== undefined}
-      <h2 id="copy-title">Sync from {photo.file.name}</h2>
+    {#if onto !== undefined}
+      <h2 id="copy-title">{sync !== undefined ? "Sync" : "Paste"} from {photo.file.name}</h2>
       <p class="muted">
-        Tick what to put on the other {sync.toLocaleString()} selected photo{sync === 1 ? "" : "s"}; it is queued for
-        Capture One like any edit, and stays on the clipboard for pasting elsewhere.
+        Tick what to put on {sync !== undefined ? "the other" : "the"} {onto.toLocaleString()}
+        {sync !== undefined ? "selected " : ""}photo{onto === 1 ? "" : "s"}; it is queued for Capture One like any edit{sync !== undefined ? ", and stays on the clipboard for pasting elsewhere" : ""}.
       </p>
       <div class="mode sync-mode" role="radiogroup" aria-label="How">
         <label><input type="radio" name="sync-mode" checked={!fill} onchange={() => (fill = false)} /> Overwrite: their values are replaced</label>
-        <label><input type="radio" name="sync-mode" checked={fill} onchange={() => (fill = true)} /> Fill: only where theirs are empty</label>
+        <label><input type="radio" name="sync-mode" checked={fill} onchange={() => (fill = true)} /> Merge: only what theirs leave empty is filled, keywords are added</label>
       </div>
     {:else}
       <h2 id="copy-title">Copy from {photo.file.name}</h2>
       <p class="muted">
-        Tick what to copy. Paste puts it on the selected photos, replacing their values (Ctrl+Shift+V); Fill only
-        fills what they leave empty (Ctrl+Alt+V). Either is queued for Capture One like any edit.
+        Tick what to copy. Paste (Ctrl+V) puts it on the selected photos, replacing their values; Merge (Ctrl+Alt+V)
+        only fills what they leave empty; Paste… (Ctrl+Shift+V) lets you choose. Each is queued for Capture One like
+        any edit.
       </p>
     {/if}
 
@@ -162,7 +168,7 @@
       <span class="spacer"></span>
       <button onclick={onclose}>Cancel</button>
       <button class="primary" disabled={!picked.length} onclick={() => submit()}>
-        {sync === undefined ? "Copy" : `${fill ? "Fill" : "Sync"} ${sync.toLocaleString()}`}
+        {onto === undefined ? "Copy" : `${fill ? "Merge into" : sync !== undefined ? "Sync" : "Paste onto"} ${onto.toLocaleString()}`}
       </button>
     </div>
   </div>

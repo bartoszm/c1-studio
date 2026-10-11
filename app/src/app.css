@@ -384,10 +384,30 @@ footer .edit-error { color: var(--error); }
 .menu button:hover { background: var(--hover); }
 .menu button.danger { color: var(--error); }
 .menu-note { padding: 4px 12px; color: var(--muted); font-size: 12px; }
-/* A section head with a + beside it (Albums). */
-aside section.with-add { position: relative; }
-.section-add { position: absolute; top: 5px; right: 8px; width: 20px; height: 18px; line-height: 16px; color: var(--muted); border-radius: 3px; }
-.section-add:hover { color: var(--text); background: var(--hover); }
+/* Albums: actions under the title, drop targets while dragging. */
+.album-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px 26px; }
+.album-actions button { padding: 1px 7px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
+.album-actions button:hover { color: var(--text); background: var(--hover); }
+.tree-hint { margin: 4px 8px 0 26px; font-size: 11px; color: #777; }
+.albums-section.drop > .head { color: var(--queued); }
+.node.drop { background: var(--queued); }
+.node.drop .name, .node.drop .n, .node.drop .icon { color: #fff; }
+.edit-note { color: var(--muted); }
+/* A tile's copy and paste buttons, shown on hover as Capture One's are. */
+.cell .tile-tools { position: absolute; left: 4px; bottom: 4px; display: none; gap: 3px; }
+.cell:hover .tile-tools { display: flex; }
+.cell .tool {
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+  text-align: center;
+  font-size: 13px;
+  color: #ddd;
+  background: rgb(0 0 0 / 65%);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.cell .tool:hover { color: #fff; background: var(--queued); }
 
 /* Tile size in the header. */
 .tiles { margin-left: auto; display: flex; align-items: center; gap: 4px; color: var(--muted); }

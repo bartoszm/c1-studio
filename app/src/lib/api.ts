@@ -153,7 +153,9 @@ export type CollectionChange =
   | { Create: { id: string; name: string; kind: "Album" | "Smart" | "Group"; parent: string | null; rule: SmartRule | null } }
   | { Rename: { id: string; name: string } }
   | { SetRule: { id: string; rule: SmartRule } }
-  | { Delete: { id: string } };
+  | { Delete: { id: string } }
+  /** Into a group or project; null is the top level. */
+  | { Move: { id: string; parent: string | null } };
 
 /** An edit as Rust's `c1model::Op` serialises it; only the field edits are sent from here. */
 export type Op =

@@ -6,15 +6,23 @@
 
   // One level of a tree; expanded children render a nested Tree, so closed branches
   // cost nothing however large they are.
-  let { nodes, selected, expanded, onpick, oncontext, depth = 0 }: {
+  let { nodes, selected, expanded, onpick, oncontext, drag, candrop, ondropnode, depth = 0 }: {
     nodes: Node[];
     selected: string | undefined;
     expanded: SvelteSet<string>;
     onpick: (node: Node) => void;
     /** Right-click on a node (its menu). */
     oncontext?: (node: Node, e: MouseEvent) => void;
+    /** Whether a node can be dragged; called again when the drag starts. */
+    drag?: (node: Node, starting: boolean) => boolean;
+    /** Whether what is being dragged can be dropped on a node. */
+    candrop?: (node: Node) => boolean;
+    ondropnode?: (node: Node) => void;
     depth?: number;
   } = $props();
+
+  /** The node a drag is over, shown as a drop target. */
+  let over = $state<string | null>(null);
 
   function flip(node: Node) {
     if (expanded.has(node.key)) expanded.delete(node.key);
@@ -35,6 +43,28 @@
     aria-selected={selected === node.key}
     tabindex="-1"
     oncontextmenu={oncontext && ((e) => { e.preventDefault(); oncontext(node, e); })}
+    class:drop={over === node.key}
+    draggable={!!drag?.(node, false)}
+    ondragstart={(e) => {
+      e.stopPropagation();
+      e.dataTransfer?.setData("text/plain", node.name);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+      drag?.(node, true);
+    }}
+    ondragover={(e) => {
+      if (!candrop?.(node)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      over = node.key;
+    }}
+    ondragleave={() => { if (over === node.key) over = null; }}
+    ondrop={(e) => {
+      over = null;
+      if (!candrop?.(node)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      ondropnode?.(node);
+    }}
   >
     {#if node.children.length}
       <button class="chev" class:open aria-label={open ? "Collapse" : "Expand"} onclick={() => flip(node)}>›</button>
@@ -52,6 +82,6 @@
     </button>
   </div>
   {#if open && node.children.length}
-    <Tree nodes={node.children} {selected} {expanded} {onpick} {oncontext} depth={depth + 1} />
+    <Tree nodes={node.children} {selected} {expanded} {onpick} {oncontext} {drag} {candrop} {ondropnode} depth={depth + 1} />
   {/if}
 {/each}

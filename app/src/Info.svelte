@@ -10,8 +10,8 @@
   let {
     row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onaddalbum, onremovealbum, onnewalbum,
-    onplace, ongeo, oniptc, oncopy, onpaste, onsync,
+    onaddalbum, onremovealbum,
+    onplace, ongeo, oniptc, oncopy, onpaste, onpastechoose, onsync,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -38,8 +38,6 @@
     /** Puts the selected photos into an album, or takes them out. */
     onaddalbum: (id: string) => void;
     onremovealbum: (id: string) => void;
-    /** Opens the New album dialog, for the selected photos. */
-    onnewalbum: () => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
     /** A location field typed in; "" clears it. */
@@ -53,6 +51,8 @@
     oncopy: () => void;
     /** `fill` only fills what each photo leaves empty. */
     onpaste: (fill: boolean) => void;
+    /** Opens the choice of what to paste, and how. */
+    onpastechoose: () => void;
     /** Opens the choice of fields to take from this photo onto the other selected ones. */
     onsync: () => void;
   } = $props();
@@ -186,28 +186,6 @@
       .filter((r) => !!r.c)
       .sort((a, b) => a.c.path.localeCompare(b.c.path, undefined, { sensitivity: "base" })),
   );
-  /** Albums a photo can be put into, by path, for completion. */
-  let albumChoices = $derived(
-    [...collections.values()].filter((c) => c.kind === "Album").map((c) => c.path).sort((a, b) => a.localeCompare(b)),
-  );
-  let albumTyped = $state("");
-  let albumError = $state<string | null>(null);
-
-  function addAlbum(e: SubmitEvent) {
-    e.preventDefault();
-    const text = albumTyped.trim().toLowerCase();
-    if (!text) return;
-    const albums = [...collections.values()].filter((c) => c.kind === "Album");
-    // The whole path, else a name only one album has.
-    const found = albums.filter((c) => c.path.toLowerCase() === text);
-    const named = found.length ? found : albums.filter((c) => c.name.toLowerCase() === text);
-    if (named.length === 1) {
-      albumError = null;
-      albumTyped = "";
-      onaddalbum(named[0].id);
-    } else if (named.length > 1) albumError = `Several albums are called that: pick one by its path.`;
-    else albumError = `No album “${albumTyped.trim()}”. New album… makes one.`;
-  }
 </script>
 
 <aside class="info-panel">
@@ -258,7 +236,8 @@
         <button title="Paste onto {onto}, replacing what they have (Ctrl+Shift+V)" onclick={() => onpaste(false)}>
           Paste{picked > 1 ? ` to ${picked.toLocaleString()}` : ""}
         </button>
-        <button title="Fill only the fields {onto} leave empty; keywords are added (Ctrl+Alt+V)" onclick={() => onpaste(true)}>Fill</button>
+        <button title="Merge: fill only the fields {onto} leave empty, add keywords (Ctrl+Alt+V)" onclick={() => onpaste(true)}>Merge</button>
+        <button title="Choose what to paste, and whether to overwrite or merge (Ctrl+Shift+V)" onclick={onpastechoose}>Paste…</button>
         <span class="clip-what" title={clip}>{clip}</span>
       </div>
     {/if}
@@ -350,21 +329,7 @@
         </li>
       {/each}
     </ul>
-    <form class="add-keyword add-album" onsubmit={addAlbum}>
-      <input
-        list="album-list"
-        placeholder="Put in an album"
-        autocomplete="off"
-        spellcheck="false"
-        bind:value={albumTyped}
-        onkeydown={(e) => { if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur(); }}
-      />
-      <button type="button" title="Make an album and put {picked > 1 ? 'these photos' : 'this photo'} in it" onclick={onnewalbum}>New album…</button>
-    </form>
-    <datalist id="album-list">
-      {#each albumChoices as path}<option value={path}></option>{/each}
-    </datalist>
-    {#if albumError}<p class="error">{albumError}</p>{/if}
+    {#if !albumRows.length}<p class="hint">In no album. Drag photos onto an album in the sidebar to put them in.</p>{/if}
 
     <h3>Location</h3>
     <dl class="fields" class:queued={queued.includes("place")}>

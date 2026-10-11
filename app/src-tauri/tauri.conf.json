@@ -19,6 +19,7 @@
         "minWidth": 900,
         "minHeight": 600,
         "theme": "Dark",
+        "dragDropEnabled": false,
         "backgroundColor": "#1e1e1e"
       }
     ],
