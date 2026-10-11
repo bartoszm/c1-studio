@@ -212,9 +212,10 @@ export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");
 /** Returns the ops that undo it. */
 export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit", { rows, edit });
-/** Pastes fields copied from `from` onto the photos at `rows`; returns the ops that undo it. */
-export const paste = (rows: number[], from: Photo, fields: CopyField[]) =>
-  invoke<[number, Op][]>("paste", { rows, from, fields });
+/** Pastes fields copied from `from` onto the photos at `rows`; `fill` only fills the
+ *  fields they leave empty (keywords are added). Returns the ops that undo it. */
+export const paste = (rows: number[], from: Photo, fields: CopyField[], fill = false) =>
+  invoke<[number, Op][]>("paste", { rows, from, fields, fill });
 /** Photos in view with a country but no ISO code, by country. */
 export const missingCountryCodes = (filter: Filter) =>
   invoke<[string, number[]][]>("missing_country_codes", { filter });
@@ -231,6 +232,8 @@ export const keywords = () => invoke<[string, number][]>("keywords");
 export const remapKeywords = (request: RemapRequest) => invoke<number>("remap_keywords", { request });
 export const undoRemap = (seq: number) => invoke<void>("undo_remap", { seq });
 export const remaps = () => invoke<[number, string][]>("remaps");
+/** The keywords on the photos at `rows`, with how many of them carry each. */
+export const keywordCounts = (rows: number[]) => invoke<[string, number][]>("keyword_counts", { rows });
 export const keywordUsers = (paths: string[]) => invoke<number>("keyword_users", { paths });
 export const pending = () => invoke<PendingEdit[]>("pending");
 export const discard = (keys: string[]) => invoke<void>("discard", { keys });

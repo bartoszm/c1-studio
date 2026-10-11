@@ -296,6 +296,25 @@
   }
   let clipboard = $state<Clipboard | null>(rememberedClip());
   let copying = $state<api.Photo | null>(null);
+  /** The keywords across the picked photos, with how many carry each; null for one. */
+  let selectionKeywords = $state<[string, number][] | null>(null);
+  let keywordsAsked = 0;
+  $effect(() => {
+    const rows = [...picked];
+    void version;
+    if (rows.length < 2 || !showInfo) {
+      selectionKeywords = null;
+      return;
+    }
+    // A moment's wait: Shift+arrow picks change faster than a big selection reads.
+    const mine = ++keywordsAsked;
+    const wait = setTimeout(() => {
+      api.keywordCounts(rows).then((c) => { if (mine === keywordsAsked) selectionKeywords = c; }).catch(() => {});
+    }, 80);
+    return () => clearTimeout(wait);
+  });
+  /** Sync: the focused photo, whose fields go onto the rest of the selection. */
+  let syncing = $state<{ from: api.Photo; row: number } | null>(null);
   $effect(() => {
     try {
       localStorage.setItem("clipboard", JSON.stringify(clipboard));
@@ -314,11 +333,27 @@
     copying = await api.photo(row);
   }
 
-  async function pasteClip() {
-    const rows = targets();
-    if (!clipboard || !rows.length) return;
+  async function openSync() {
+    const row = selected === null ? undefined : rowAt(selected);
+    if (row === undefined || picked.size < 2) return;
+    const from = await api.photo(row);
+    if (from) syncing = { from, row };
+  }
+
+  /** Puts fields of `from` on the rest of the selection; they stay on the clipboard too. */
+  async function sync({ from, row }: { from: api.Photo; row: number }, fields: api.CopyField[], fill: boolean) {
+    clipboard = { from, fields };
+    await pasteRows(targets().filter((r) => r !== row), from, fields, fill);
+  }
+
+  async function pasteClip(fill = false) {
+    if (clipboard) await pasteRows(targets(), clipboard.from, clipboard.fields, fill);
+  }
+
+  async function pasteRows(rows: number[], from: api.Photo, fields: api.CopyField[], fill: boolean) {
+    if (!rows.length) return;
     try {
-      const undo = await api.paste(rows, clipboard.from, clipboard.fields);
+      const undo = await api.paste(rows, from, fields, fill);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -647,9 +682,14 @@
       placeMenu = null;
       return;
     }
-    if (writing || keywordDialog || placeDialog || fillingCodes || copying || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || keywordDialog || placeDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
+    if (ctrl && e.altKey && !e.shiftKey && key === "v") {
+      pasteClip(true);
+      e.preventDefault();
+      return;
+    }
     if (ctrl && !e.altKey) {
       if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
@@ -657,6 +697,7 @@
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
       else if (key === "c" && e.shiftKey) openCopy();
       else if (key === "v" && e.shiftKey) pasteClip();
+      else if (key === "s" && e.shiftKey) openSync();
       else if ((key === "=" || key === "+") && !viewing) grid?.step(true);
       else if (key === "-" && !viewing) grid?.step(false);
       else if (key === "0" && !viewing) tiles = DEFAULT_TILES;
@@ -674,7 +715,7 @@
       const row = selected === null ? undefined : rowAt(selected);
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
-    else if (grid?.move(e.key)) e.preventDefault();
+    else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
   // Links in the info panel: filter by what was clicked.
@@ -827,6 +868,8 @@
       applyEdit({ AddKeywords: [path] });
     }}
     onremovekeyword={(path) => applyEdit({ RemoveKeywords: [path] })}
+    shared={selectionKeywords}
+    onaddkeywords={(paths) => applyEdit({ AddKeywords: paths })}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
@@ -838,6 +881,7 @@
     clip={clipText}
     oncopy={openCopy}
     onpaste={pasteClip}
+    onsync={openSync}
   />
 {/snippet}
 
@@ -1098,6 +1142,16 @@
     fields={clipboard?.fields ?? ["country", "country_code", "state", "city", "location", "geo"]}
     oncopy={(fields) => { if (copying) clipboard = { from: copying, fields }; }}
     onclose={() => (copying = null)}
+  />
+{/if}
+
+{#if syncing}
+  <CopyDialog
+    photo={syncing.from}
+    sync={picked.size - 1}
+    fields={clipboard?.fields ?? ["keywords"]}
+    oncopy={(fields, fill) => { if (syncing) sync(syncing, fields, fill); }}
+    onclose={() => (syncing = null)}
   />
 {/if}
 

@@ -2,14 +2,35 @@
   import * as api from "./lib/api";
   import { geoText } from "./lib/format";
 
-  // Choose what to copy from one photo; pasting then puts those fields on others.
-  let { photo, fields, oncopy, onclose }: {
+  // Choose what to copy from one photo; pasting then puts those fields on others. With
+  // `sync`, the fields go straight onto the other selected photos, replacing or filling.
+  let { photo, fields, sync, oncopy, onclose }: {
     photo: api.Photo;
     /** What was copied last time, ticked to start with. */
     fields: api.CopyField[];
-    oncopy: (fields: api.CopyField[]) => void;
+    /** How many other selected photos a sync puts the fields on; absent for a copy. */
+    sync?: number;
+    /** `fill` (a sync only) fills just what the others leave empty. */
+    oncopy: (fields: api.CopyField[], fill: boolean) => void;
     onclose: () => void;
   } = $props();
+
+  function rememberedFill() {
+    try {
+      return localStorage.getItem("syncFill") === "1";
+    } catch {
+      return false;
+    }
+  }
+  let fill = $state(rememberedFill());
+  $effect(() => {
+    try {
+      localStorage.setItem("syncFill", fill ? "1" : "0");
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+  let filling = $derived(sync !== undefined && fill);
 
   type Item = [api.CopyField, string, string | null];
   const text = (v: string | null | undefined) => v || null;
@@ -69,12 +90,14 @@
     groups.flatMap(([, items]) => items.map(([f]) => f)).filter((f) => chosen.has(f))
       .map((f) => (f === "keywords" && exact ? "keywords_exact" : f)) as api.CopyField[],
   );
-  let clears = $derived(groups.flatMap(([, items]) => items).filter(([f, , v]) => chosen.has(f) && v === null && !(f === "keywords" && !exact)));
+  let clears = $derived(
+    filling ? [] : groups.flatMap(([, items]) => items).filter(([f, , v]) => chosen.has(f) && v === null && !(f === "keywords" && !exact)),
+  );
 
   function submit(e?: Event) {
     e?.preventDefault();
     if (picked.length) {
-      oncopy(picked);
+      oncopy(picked, filling);
       onclose();
     }
   }
@@ -84,8 +107,23 @@
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="copy-title">
-    <h2 id="copy-title">Copy from {photo.file.name}</h2>
-    <p class="muted">Tick what to copy. Paste puts it on the selected photos (Ctrl+Shift+V); it is queued for Capture One like any edit.</p>
+    {#if sync !== undefined}
+      <h2 id="copy-title">Sync from {photo.file.name}</h2>
+      <p class="muted">
+        Tick what to put on the other {sync.toLocaleString()} selected photo{sync === 1 ? "" : "s"}; it is queued for
+        Capture One like any edit, and stays on the clipboard for pasting elsewhere.
+      </p>
+      <div class="mode sync-mode" role="radiogroup" aria-label="How">
+        <label><input type="radio" name="sync-mode" checked={!fill} onchange={() => (fill = false)} /> Overwrite: their values are replaced</label>
+        <label><input type="radio" name="sync-mode" checked={fill} onchange={() => (fill = true)} /> Fill: only where theirs are empty</label>
+      </div>
+    {:else}
+      <h2 id="copy-title">Copy from {photo.file.name}</h2>
+      <p class="muted">
+        Tick what to copy. Paste puts it on the selected photos, replacing their values (Ctrl+Shift+V); Fill only
+        fills what they leave empty (Ctrl+Alt+V). Either is queued for Capture One like any edit.
+      </p>
+    {/if}
 
     {#each groups as [title, items] (title)}
       {@const all = items.every(([f]) => chosen.has(f))}
@@ -104,7 +142,9 @@
             <span class="value" class:none={value === null} title={value ?? ""}>{value ?? "none"}</span>
           </label>
         {/each}
-        {#if title === "Keywords" && chosen.has("keywords")}
+        {#if title === "Keywords" && chosen.has("keywords") && filling}
+          <div class="mode">Keywords they lack are added; theirs stay.</div>
+        {:else if title === "Keywords" && chosen.has("keywords")}
           <div class="mode">
             <label><input type="radio" name="kw-mode" checked={!exact} onchange={() => (exact = false)} /> add to theirs</label>
             <label><input type="radio" name="kw-mode" checked={exact} onchange={() => (exact = true)} /> replace theirs</label>
@@ -121,7 +161,9 @@
       <button class="plain" onclick={filled}>Everything it has</button>
       <span class="spacer"></span>
       <button onclick={onclose}>Cancel</button>
-      <button class="primary" disabled={!picked.length} onclick={() => submit()}>Copy</button>
+      <button class="primary" disabled={!picked.length} onclick={() => submit()}>
+        {sync === undefined ? "Copy" : `${fill ? "Fill" : "Sync"} ${sync.toLocaleString()}`}
+      </button>
     </div>
   </div>
 </div>
@@ -156,6 +198,7 @@
   .value { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .value.none { color: #5a5a5a; font-style: italic; }
   .mode { display: flex; gap: 16px; padding: 4px 0 0 18px; color: var(--muted); }
+  .sync-mode { flex-direction: column; gap: 4px; padding: 6px 0 2px; color: inherit; }
   input { margin: 0; accent-color: var(--queued); }
   .buttons { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
   .spacer { flex: 1; }

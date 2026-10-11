@@ -160,8 +160,9 @@
     top = 0;
   }
 
-  /** Moves the selection by arrow key; returns false for keys it does not handle. */
-  export function move(key: string): boolean {
+  /** Moves the selection by arrow key; `range` (Shift) stretches the selection from where
+   *  it started instead. Returns false for keys it does not handle. */
+  export function move(key: string, range = false): boolean {
     const step: Record<string, number> = {
       ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols,
       PageUp: -cols * Math.max(1, Math.floor(height / lineH)), PageDown: cols * Math.max(1, Math.floor(height / lineH)),
@@ -173,7 +174,7 @@
     else return false;
     to = Math.max(0, Math.min(total - 1, to));
     if (total) {
-      onselect(to);
+      onselect(to, range ? { add: false, range: true } : undefined);
       reveal(to);
     }
     return true;

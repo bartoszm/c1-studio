@@ -250,37 +250,61 @@ fn op_for(edit: &Edit, photo: &Photo) -> Result<Op, String> {
 
 /// What pasting `fields` copied from `from` does to `to`. Keywords are added
 /// (`keywords`) or made the same (`keywords_exact`: the ones `from` lacks go first).
-fn paste_ops(from: &Photo, fields: &[String], to: &Photo) -> Result<Vec<Op>, String> {
+/// `fill` only fills what `to` leaves empty: its own values stay, and keywords are added.
+fn paste_ops(from: &Photo, fields: &[String], to: &Photo, fill: bool) -> Result<Vec<Op>, String> {
     let mut removes = Vec::new();
     let mut ops = Vec::new();
     let mut place = to.place.clone();
     let mut iptc = to.iptc.clone();
     for name in fields {
         match name.as_str() {
+            "rating" if fill => {
+                if to.rating.is_none() && from.rating.is_some() {
+                    ops.push(Op::SetRating { base: to.rating, value: from.rating })
+                }
+            }
             "rating" => ops.push(Op::SetRating { base: to.rating, value: from.rating }),
+            "color" if fill => {
+                if to.color.is_none() && from.color.is_some() {
+                    ops.push(Op::SetColor { base: to.color, value: from.color })
+                }
+            }
             "color" => ops.push(Op::SetColor { base: to.color, value: from.color }),
             "keywords" | "keywords_exact" => {
-                if name == "keywords_exact" {
+                if name == "keywords_exact" && !fill {
                     let gone: Vec<KeywordPath> =
                         to.keywords.iter().filter(|k| !from.keywords.contains(k)).cloned().collect();
                     if !gone.is_empty() {
                         removes.push(Op::RemoveKeywords { paths: gone });
                     }
                 }
-                if !from.keywords.is_empty() {
-                    ops.push(Op::AddKeywords { paths: from.keywords.clone() });
+                let new: Vec<KeywordPath> = if fill {
+                    from.keywords.iter().filter(|k| !to.keywords.contains(k)).cloned().collect()
+                } else {
+                    from.keywords.clone()
+                };
+                if !new.is_empty() {
+                    ops.push(Op::AddKeywords { paths: new });
+                }
+            }
+            "geo" if fill => {
+                if to.geo.is_none() && from.geo.is_some() {
+                    ops.push(Op::SetGeo { base: to.geo, value: from.geo })
                 }
             }
             "geo" => ops.push(Op::SetGeo { base: to.geo, value: from.geo }),
             other => {
                 let mut source_place = from.place.clone();
                 let mut source_iptc = from.iptc.clone();
-                if let Some(slot) = place_slot(&mut place, other) {
-                    *slot = place_slot(&mut source_place, other).and_then(|v| v.take());
+                let (slot, value) = if let Some(slot) = place_slot(&mut place, other) {
+                    (slot, place_slot(&mut source_place, other).and_then(|v| v.take()))
                 } else if let Some(slot) = iptc_slot(&mut iptc, other) {
-                    *slot = iptc_slot(&mut source_iptc, other).and_then(|v| v.take());
+                    (slot, iptc_slot(&mut source_iptc, other).and_then(|v| v.take()))
                 } else {
                     return Err(format!("cannot copy {other:?}"));
+                };
+                if !fill || slot.is_none() {
+                    *slot = value;
                 }
             }
         }
@@ -417,19 +441,20 @@ async fn set_country_codes(app: State<'_, App>, items: Vec<(Vec<u64>, String)>) 
 }
 
 /// Pastes fields copied from one photo (as it was when copied) onto others, as one
-/// edit. Returns the ops that undo it.
+/// edit; `fill` only fills fields they leave empty. Returns the ops that undo it.
 #[tauri::command]
 async fn paste(
     app: State<'_, App>,
     rows: Vec<u64>,
     from: Photo,
     fields: Vec<String>,
+    fill: Option<bool>,
 ) -> Result<Vec<(u64, Op)>, String> {
     let s = app.session()?;
     let mut changes = Vec::new();
     for row in rows {
         if let Some(photo) = s.library.photo(row).map_err(text)? {
-            changes.extend(paste_ops(&from, &fields, &photo)?.into_iter().map(|op| (row, op)));
+            changes.extend(paste_ops(&from, &fields, &photo, fill.unwrap_or(false))?.into_iter().map(|op| (row, op)));
         }
     }
     s.touched();
@@ -540,6 +565,22 @@ async fn undo_remap(app: AppHandle, seq: u64) -> Result<(), String> {
 async fn remaps(app: State<'_, App>) -> Result<Vec<(u64, String)>, String> {
     let list = app.session()?.library.remaps().map_err(|e| format!("{e:#}"))?;
     Ok(list.into_iter().map(|(seq, q)| (seq, q.remap.label)).collect())
+}
+
+/// The keywords on the photos at `rows`, with how many of them carry each: the
+/// selection's keywords, on all of them or only on some.
+#[tauri::command]
+async fn keyword_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(String, u64)>, String> {
+    let s = app.session()?;
+    let mut counts = BTreeMap::<String, u64>::new();
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            for path in &photo.keywords {
+                *counts.entry(path.to_pipe()).or_default() += 1;
+            }
+        }
+    }
+    Ok(counts.into_iter().collect())
 }
 
 /// How many photos carry any of these keywords (or keywords under them).
@@ -1013,6 +1054,7 @@ pub fn run() {
             undo_remap,
             remaps,
             keyword_users,
+            keyword_counts,
             pending,
             discard,
             resolve,
@@ -1059,14 +1101,14 @@ mod tests {
     fn pasting_takes_only_the_chosen_fields() {
         let from = photo(4, &["street"], Some("Kraków"));
         let to = Photo { place: Place { country: Some("Japan".into()), ..Place::default() }, ..photo(1, &[], None) };
-        let ops = paste_ops(&from, &fields(&["rating", "city"]), &to).unwrap();
+        let ops = paste_ops(&from, &fields(&["rating", "city"]), &to, false).unwrap();
         assert_eq!(ops.len(), 2);
         assert!(matches!(ops[0], Op::SetRating { value: Some(4), .. }));
         let Op::SetPlace { value, .. } = &ops[1] else { panic!("{ops:?}") };
         // The city comes over; their country stays.
         assert_eq!((value.city.as_deref(), value.country.as_deref()), (Some("Kraków"), Some("Japan")));
         // Copying an empty field clears it.
-        let ops = paste_ops(&photo(4, &[], None), &fields(&["city"]), &photo(1, &[], Some("Oslo"))).unwrap();
+        let ops = paste_ops(&photo(4, &[], None), &fields(&["city"]), &photo(1, &[], Some("Oslo")), false).unwrap();
         let Op::SetPlace { value, .. } = &ops[0] else { panic!("{ops:?}") };
         assert_eq!(value.city, None);
     }
@@ -1075,16 +1117,40 @@ mod tests {
     fn keywords_are_added_or_made_the_same() {
         let from = photo(1, &["street", "city|night"], None);
         let to = photo(2, &["street", "b&w"], None);
-        let add = paste_ops(&from, &fields(&["keywords"]), &to).unwrap();
+        let add = paste_ops(&from, &fields(&["keywords"]), &to, false).unwrap();
         assert!(matches!(&add[..], [Op::AddKeywords { .. }]));
-        let exact = paste_ops(&from, &fields(&["keywords_exact"]), &to).unwrap();
+        let exact = paste_ops(&from, &fields(&["keywords_exact"]), &to, false).unwrap();
         // The removal first: the adds after it put back anything it takes under it.
         let [Op::RemoveKeywords { paths: gone }, Op::AddKeywords { paths: added }] = &exact[..] else {
             panic!("{exact:?}")
         };
         assert_eq!(gone, &[KeywordPath::from_pipe("b&w")]);
         assert_eq!(added.len(), 2);
-        assert!(paste_ops(&from, &fields(&["albums"]), &to).is_err());
+        assert!(paste_ops(&from, &fields(&["albums"]), &to, false).is_err());
+    }
+
+    #[test]
+    fn filling_keeps_what_the_target_has() {
+        let from =
+            Photo { geo: Some(geo_point(50.0, 19.9).unwrap()), ..photo(4, &["street", "night"], Some("Kraków")) };
+        let to =
+            Photo { place: Place { city: Some("Oslo".into()), ..Place::default() }, ..photo(1, &["street"], None) };
+        let all = fields(&["rating", "color", "keywords_exact", "city", "country", "geo"]);
+        let ops = paste_ops(&from, &all, &to, true).unwrap();
+        // Their rating stays; the colour is empty on both; keywords only gain.
+        let [Op::AddKeywords { paths }, Op::SetGeo { value: Some(_), .. }, Op::SetPlace { value, .. }] = &ops[..]
+        else {
+            panic!("{ops:?}")
+        };
+        assert_eq!(paths, &[KeywordPath::from_pipe("night")]);
+        assert_eq!((value.city.as_deref(), value.country.as_deref()), (Some("Oslo"), Some("Poland")));
+        // An unrated target takes the rating; an empty source never clears.
+        let unrated = Photo { rating: None, ..to.clone() };
+        assert!(matches!(
+            paste_ops(&from, &fields(&["rating"]), &unrated, true).unwrap()[..],
+            [Op::SetRating { value: Some(4), .. }]
+        ));
+        assert!(paste_ops(&photo(4, &[], None), &fields(&["city", "geo"]), &to, true).unwrap().is_empty());
     }
 
     #[test]

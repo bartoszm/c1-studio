@@ -110,8 +110,9 @@ and the folder are links: clicking one filters by it.
 ## Browsing
 
 **Selecting.** Click a photo to focus it. Ctrl+click adds or removes one, Shift+click
-adds a range, Ctrl+A picks the whole result, and Esc goes back to the focused photo
-alone. Picked photos are outlined; edits apply to all of them.
+adds a range (so do Shift+arrows, Page Up/Down, Home and End), Ctrl+A picks the whole
+result, and Esc goes back to the focused photo alone. Picked photos are outlined; edits
+apply to all of them.
 
 **Moving.** Arrow keys, Page Up/Down, Home and End move the focus.
 
@@ -140,6 +141,7 @@ photos with edits not yet written, and the panel lists which fields.
 | Colour tag | `-` red, `+` green, `*` yellow. Or click a dot in the panel; clicking the current one clears it. |
 | Add a keyword | Ctrl+K (with the panel shown), or the *Add a keyword* field in the panel. It completes from the catalog, most used first. Nested keywords are typed with `\|`: `trips \| japan`. A keyword that does not exist yet is created. |
 | Remove a keyword | × next to it in the panel. Keywords under it go too; the × says so. |
+| Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
@@ -151,9 +153,16 @@ under IPTC – Image. The caption is the Description.
 **Copy and paste.** *Copy…* in the panel (Ctrl+Shift+C) lists the focused photo's
 rating, colour, keywords, location, GPS and IPTC fields with their values. Tick what
 to copy; for keywords, choose *add to theirs* or *replace theirs*. *Paste* (Ctrl+Shift+V)
-puts them on the picked photos as one edit. A ticked field that is empty on the source
-clears it on the targets. The clipboard keeps the photo as it was when copied, and
-survives restarts.
+puts them on the picked photos as one edit, replacing their values; a ticked field that
+is empty on the source clears it on the targets. *Fill* (Ctrl+Alt+V) only fills the
+fields the targets leave empty and adds the keywords they lack; nothing of theirs is
+replaced or cleared. The clipboard keeps the photo as it was when copied, and survives
+restarts.
+
+**Sync.** With several photos picked, *Sync to N…* (Ctrl+Shift+S) takes fields from the
+focused photo straight onto the rest of the selection: the same grouped list as *Copy…*
+(a group's box ticks all of it, e.g. the whole Location), plus *Overwrite* or *Fill*
+as above. The choice also lands on the clipboard, for pasting elsewhere.
 
 **Undo.** Ctrl+Z undoes the last edit, however many photos it touched; Ctrl+Y or
 Ctrl+Shift+Z redoes it. Editing a field back to what Capture One holds takes it out of
@@ -215,7 +224,7 @@ The queue is saved with the library and survives restarts.
 
 | Key | Does |
 |---|---|
-| Arrows, Page Up/Down, Home, End | Move the focus |
+| Arrows, Page Up/Down, Home, End | Move the focus; with Shift, pick a range |
 | Click, Ctrl+click, Shift+click | Focus one; add or remove one; add a range |
 | Ctrl+A | Pick the whole result |
 | Esc | Back to one photo; close the viewer, a dialog or a menu |
@@ -225,7 +234,8 @@ The queue is saved with the library and survives restarts.
 | `0`–`5` | Rating (0 clears) |
 | `-` `+` `*` | Red, green, yellow tag |
 | Ctrl+K | Add a keyword (details panel shown) |
-| Ctrl+Shift+C, Ctrl+Shift+V | Copy…, paste |
+| Ctrl+Shift+C, Ctrl+Shift+V, Ctrl+Alt+V | Copy…, paste (overwrite), fill empty fields |
+| Ctrl+Shift+S | Sync the focused photo's fields to the other picked photos |
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
 

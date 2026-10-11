@@ -8,9 +8,9 @@
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords, clip,
-    onrate, oncolor, onaddkeyword, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onplace, ongeo, oniptc, oncopy, onpaste,
+    row, version, picked, queued, collections, keywords, clip, shared,
+    onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
+    onplace, ongeo, oniptc, oncopy, onpaste, onsync,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -25,6 +25,10 @@
     onrate: (stars: number | null) => void;
     oncolor: (color: api.Color | null) => void;
     onaddkeyword: (path: string) => void;
+    /** Adds keywords to every selected photo: the ones only some of them have. */
+    onaddkeywords: (paths: string[]) => void;
+    /** With several photos selected: their keywords, and how many of them carry each. */
+    shared: [string, number][] | null;
     onremovekeyword: (path: string) => void;
     onkeyword: (path: string) => void;
     onalbum: (id: string) => void;
@@ -39,7 +43,10 @@
     /** What the clipboard holds, for showing; null when empty. */
     clip: string | null;
     oncopy: () => void;
-    onpaste: () => void;
+    /** `fill` only fills what each photo leaves empty. */
+    onpaste: (fill: boolean) => void;
+    /** Opens the choice of fields to take from this photo onto the other selected ones. */
+    onsync: () => void;
   } = $props();
 
   let photo = $state<api.Photo | null>(null);
@@ -150,6 +157,17 @@
     [...(photo?.keywords ?? [])].sort((a, b) => a.join("|").localeCompare(b.join("|"), undefined, { sensitivity: "base" })),
   );
 
+  // One photo shows its keywords; several show every keyword any of them has, those on
+  // only some set apart, as Capture One does.
+  type KeywordRow = { full: string; path: string[]; n: number };
+  let keywordRows: KeywordRow[] = $derived(
+    picked > 1 && shared
+      ? shared.map(([full, n]) => ({ full, path: full.split("|"), n }))
+          .sort((a, b) => a.full.localeCompare(b.full, undefined, { sensitivity: "base" }))
+      : sortedKeywords.map((path) => ({ full: path.join("|"), path, n: picked })),
+  );
+  let partial = $derived(keywordRows.filter((k) => k.n < picked).map((k) => k.full));
+
   let albums = $derived(
     (photo?.collections ?? []).map((id) => collections.get(id)).filter((c): c is api.Collection => !!c),
   );
@@ -191,13 +209,22 @@
     </div>
     <div class="clip">
       <button title="Choose what to copy from this photo (Ctrl+Shift+C)" onclick={oncopy}>Copy…</button>
-      {#if clip}
-        <button title="Paste onto {picked > 1 ? `the ${picked} selected photos` : 'this photo'} (Ctrl+Shift+V)" onclick={onpaste}>
-          Paste{picked > 1 ? ` to ${picked.toLocaleString()}` : ""}
+      {#if picked > 1}
+        <button title="Choose fields of this photo to put on the other {picked - 1} selected (Ctrl+Shift+S)" onclick={onsync}>
+          Sync to {(picked - 1).toLocaleString()}…
         </button>
-        <span class="clip-what" title={clip}>{clip}</span>
       {/if}
     </div>
+    {#if clip}
+      {@const onto = picked > 1 ? `the ${picked} selected photos` : "this photo"}
+      <div class="clip">
+        <button title="Paste onto {onto}, replacing what they have (Ctrl+Shift+V)" onclick={() => onpaste(false)}>
+          Paste{picked > 1 ? ` to ${picked.toLocaleString()}` : ""}
+        </button>
+        <button title="Fill only the fields {onto} leave empty; keywords are added (Ctrl+Alt+V)" onclick={() => onpaste(true)}>Fill</button>
+        <span class="clip-what" title={clip}>{clip}</span>
+      </div>
+    {/if}
     {#if picked > 1}<p class="hint">Edits apply to the {picked.toLocaleString()} selected photos.</p>{/if}
     {#if queued.length}
       <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to Capture One.</p>
@@ -218,17 +245,29 @@
     </dl>
 
     <h3>Keywords</h3>
+    {#if partial.length}
+      <p class="partial-note">
+        <span>{partial.length} on only some of the {picked.toLocaleString()}</span>
+        <button title="Add {partial.length === 1 ? 'it' : `all ${partial.length}`} to every selected photo" onclick={() => onaddkeywords(partial)}>
+          Add to all
+        </button>
+      </p>
+    {/if}
     <ul class="links keywords">
-      {#each sortedKeywords as path (path.join("|"))}
-        {@const full = path.join("|")}
-        <li class:queued={queued.includes(`keyword:${full}`)}>
+      {#each keywordRows as { full, path, n } (full)}
+        <li class:queued={queued.includes(`keyword:${full}`)} class:partial={n < picked}>
           {#each path as part, i}
             {#if i}<span class="sep">›</span>{/if}
             <button class="link" onclick={() => onkeyword(path.slice(0, i + 1).join("|"))}>{part}</button>
           {/each}
+          {#if n < picked}
+            <span class="count" title="On {n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{n.toLocaleString()}/{picked.toLocaleString()}</span>
+            <button class="apply" title="Add to all {picked.toLocaleString()} selected photos" aria-label="Add {full} to all" onclick={() => onaddkeyword(full)}>+</button>
+          {/if}
           <button
             class="remove"
-            title={`Remove${sortedKeywords.some((k) => k.join("|").startsWith(full + "|")) ? ", with the keywords under it," : ""}${picked > 1 ? ` from the ${picked} selected photos` : ""}`}
+            class:after={n < picked}
+            title={`Remove${keywordRows.some((k) => k.full.startsWith(full + "|")) ? ", with the keywords under it," : ""}${picked > 1 ? ` from the ${picked} selected photos` : ""}`}
             aria-label="Remove {full}"
             onclick={() => onremovekeyword(full)}>×</button
           >
