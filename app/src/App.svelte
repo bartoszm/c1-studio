@@ -399,27 +399,6 @@
     }
   });
 
-  /** The tile's ↑: copies at once, the fields copied last (or all the photo has). */
-  async function copyCell(i: number) {
-    const row = rowAt(i);
-    if (row === undefined) return;
-    const from = await api.photo(row);
-    if (!from) return;
-    const fields = clipboard?.fields ?? [
-      "rating", "color", "keywords", "country", "country_code", "state", "city", "location", "geo",
-      "headline", "description", "title", "job_id", "instructions", "source", "copyright", "creator",
-    ];
-    clipboard = { from, fields };
-    pasteFields = null;
-    note(`Copied from ${from.file.name}: choose what to paste with ↓ or Ctrl+Shift+V`);
-  }
-
-  /** The tile's ↓: onto the selection if the tile is in it, else onto that photo. */
-  function pasteCell(i: number) {
-    const row = rowAt(i);
-    if (row === undefined || !clipboard) return;
-    pasting = picked.has(row) && picked.size > 1 ? [...picked] : [row];
-  }
   $effect(() => {
     try {
       localStorage.setItem("clipboard", JSON.stringify(clipboard));
@@ -1094,6 +1073,13 @@
         onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
       >{shape}</button>
     </div>
+    {#if picked.size > 1 && selected !== null}
+      <button
+        class="copy-to"
+        title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
+        onclick={openSync}
+      >⇉ Copy to {(picked.size - 1).toLocaleString()} selected</button>
+    {/if}
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
@@ -1223,9 +1209,6 @@
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     onselect={pick}
     ondragcell={dragCell}
-    oncopycell={copyCell}
-    onpastecell={pasteCell}
-    canpaste={!!clipboard}
     onopen={(i) => { pick(i); viewing = true; }}
     {tiles}
     {shape}

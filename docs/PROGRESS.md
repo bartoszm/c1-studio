@@ -876,6 +876,12 @@ in `<data dir>/settings.json`) writes the queue by itself.
   two photos dragged onto an album, an album dragged into a group and moved back from
   the menu, Delete in an album; all written, `integrity_check` ok.
 
+- **Changed after:** the user wanted one big button that copies from a photo into the
+  selected ones, not tile buttons. The tile ↑/↓ went; **⇉ Copy to N selected** in the
+  header (shown with several picked) opens the field choice with Overwrite or Merge
+  and puts the focused photo's fields on the rest (what *Sync to N…* did, renamed
+  *Copy to N…* in the panel too).
+
 ### Next
 
 1. Stage 3: local analysis (orientation, colours, exposure, sharpness, duplicates).

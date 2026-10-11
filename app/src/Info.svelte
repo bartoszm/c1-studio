@@ -226,7 +226,7 @@
       <button title="Choose what to copy from this photo (Ctrl+Shift+C)" onclick={oncopy}>Copy…</button>
       {#if picked > 1}
         <button title="Choose fields of this photo to put on the other {picked - 1} selected (Ctrl+Shift+S)" onclick={onsync}>
-          Sync to {(picked - 1).toLocaleString()}…
+          Copy to {(picked - 1).toLocaleString()}…
         </button>
       {/if}
     </div>

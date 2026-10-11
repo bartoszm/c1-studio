@@ -152,16 +152,14 @@ photos with edits not yet written, and the panel lists which fields.
 *Object Name*, a short formal identifier of the image (a file or job code), and sits
 under IPTC – Image. The caption is the Description.
 
-**Copy and paste.** As on Capture One's thumbnails, each tile shows **↑** and **↓**
-when the pointer is over it:
+**Copy to the selected photos.** Pick several photos and focus the one to copy from
+(click it last). **⇉ Copy to N selected** in the header (Ctrl+Shift+S) lists its fields
+with their values: tick what to copy, choose **Overwrite** (their values are replaced)
+or **Merge** (only what they leave empty is filled, and keywords are added; nothing of
+theirs is replaced or cleared), and it goes onto the other N photos as one edit. The
+choice is remembered.
 
-- **↑** copies from that photo at once (the fields chosen last time, or all of them).
-- **↓** opens *Paste from …*: tick what to put on the photo (or on all the picked
-  photos, if it is one of them) and choose **Overwrite** (their values are replaced) or
-  **Merge** (only what they leave empty is filled, and keywords are added; nothing of
-  theirs is replaced or cleared). The choice is remembered for the next paste.
-
-The panel has the same: *Copy…* (Ctrl+C, or Ctrl+Shift+C) lists the focused photo's
+**Copy and paste**, for photos not picked together: *Copy…* (Ctrl+C, or Ctrl+Shift+C) lists the focused photo's
 rating, colour, keywords, location, GPS and IPTC fields with their values to tick; for
 keywords, choose *add to theirs* or *replace theirs*. *Paste* (Ctrl+V) puts the chosen
 fields on the picked photos, overwriting, *Merge* (Ctrl+Alt+V) merges, and *Paste…*
@@ -170,10 +168,7 @@ clears it on the targets. The footer says what a paste did, or that the photos a
 held those values. The clipboard keeps the photo as it was when copied, and survives
 restarts.
 
-**Sync.** With several photos picked, *Sync to N…* (Ctrl+Shift+S) takes fields from the
-focused photo straight onto the rest of the selection: the same grouped list as *Copy…*
-(a group's box ticks all of it, e.g. the whole Location), plus *Overwrite* or *Merge*
-as above. The choice also lands on the clipboard, for pasting elsewhere.
+What *Copy to N selected* copied also lands on the clipboard, for pasting elsewhere.
 
 **Undo.** Ctrl+Z undoes the last edit, however many photos it touched; Ctrl+Y or
 Ctrl+Shift+Z redoes it. Editing a field back to what Capture One holds takes it out of
@@ -303,7 +298,7 @@ The queue is saved with the library and survives restarts.
 | Ctrl+C (or Ctrl+Shift+C) | Copy… from the focused photo |
 | Ctrl+V, Ctrl+Alt+V, Ctrl+Shift+V | Paste (overwrite), merge, Paste… (choose what and how) |
 | Delete | Take the picked photos out of the album the grid shows |
-| Ctrl+Shift+S | Sync the focused photo's fields to the other picked photos |
+| Ctrl+Shift+S | Copy to N selected: the focused photo's fields onto the other picked photos |
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
 
