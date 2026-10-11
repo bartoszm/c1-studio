@@ -8,6 +8,7 @@
 mod catalog;
 mod config;
 mod extract;
+mod keywords;
 mod process;
 mod smart;
 mod write;
@@ -88,7 +89,7 @@ impl PhotoSource for CaptureOne {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            writable: vec![Field::Rating, Field::Color],
+            writable: vec![Field::Rating, Field::Color, Field::Keywords],
             tiers: vec![ImageTier::Thumb, ImageTier::Preview, ImageTier::Original],
             geo_per_asset: true,
             collections: true,
@@ -262,10 +263,10 @@ mod tests {
     }
 
     #[test]
-    fn edits_other_than_rating_and_colour_are_refused_for_now() {
+    fn edits_not_ported_yet_are_refused() {
         let Some((_dir, source)) = source() else { return };
         let id = PhotoId::new(&source.info().id, "1");
-        let add = Change { photo: id, op: Op::AddKeywords { paths: vec![c1model::KeywordPath::from_pipe("x")] } };
+        let add = Change { photo: id, op: Op::AddToCollection { collection: c1model::CollectionId("1".into()) } };
         assert!(matches!(source.plan(&[add]), Err(SourceError::Unsupported(_))));
     }
 }

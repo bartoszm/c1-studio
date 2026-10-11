@@ -114,16 +114,31 @@ impl Op {
 }
 
 impl Op {
-    /// The part of a photo a set-field op replaces. Two queued edits of the same field
-    /// on the same photo merge into one. `None` for ops that add or remove members.
-    pub fn field(&self) -> Option<&'static str> {
+    /// What a queued edit is about: a field (`rating`, `color`, ...) or one keyword
+    /// (`keyword:best|best2018`). Two edits with the same key on the same photo merge into
+    /// one entry. `None` for ops that need [`Op::split`] first, and for collections.
+    pub fn queue_key(&self) -> Option<String> {
         match self {
-            Op::SetRating { .. } => Some("rating"),
-            Op::SetColor { .. } => Some("color"),
-            Op::SetIptc { .. } => Some("iptc"),
-            Op::SetPlace { .. } => Some("place"),
-            Op::SetGeo { .. } => Some("geo"),
+            Op::SetRating { .. } => Some("rating".into()),
+            Op::SetColor { .. } => Some("color".into()),
+            Op::SetIptc { .. } => Some("iptc".into()),
+            Op::SetPlace { .. } => Some("place".into()),
+            Op::SetGeo { .. } => Some("geo".into()),
+            Op::AddKeywords { paths } | Op::RemoveKeywords { paths } if paths.len() == 1 => {
+                Some(format!("keyword:{}", paths[0].to_pipe()))
+            }
             _ => None,
+        }
+    }
+
+    /// Keyword ops one path each; other ops as they are.
+    pub fn split(&self) -> Vec<Op> {
+        match self {
+            Op::AddKeywords { paths } => paths.iter().map(|p| Op::AddKeywords { paths: vec![p.clone()] }).collect(),
+            Op::RemoveKeywords { paths } => {
+                paths.iter().map(|p| Op::RemoveKeywords { paths: vec![p.clone()] }).collect()
+            }
+            other => vec![other.clone()],
         }
     }
 

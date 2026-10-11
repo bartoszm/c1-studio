@@ -17,7 +17,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use crate::catalog::{self, EXPECTED_ZVERSION, db_err};
-use crate::process;
+use crate::{keywords, process};
 
 /// Backups kept per catalog; older ones are deleted after a new one is made.
 pub(crate) const KEEP_BACKUPS: usize = 5;
@@ -132,7 +132,21 @@ pub(crate) fn plan(
             Some(now) => match &change.op {
                 Op::SetRating { base, value } => compare(base, value, &now.rating),
                 Op::SetColor { base, value } => compare(base, value, &now.color),
-                _ => return Err(SourceError::Unsupported("only ratings and colour tags are written so far")),
+                Op::AddKeywords { paths } | Op::RemoveKeywords { paths } => {
+                    let stored = keywords::stored(con, variant_pk(change)?)?;
+                    let has = |p: &c1model::KeywordPath| stored.iter().any(|(s, _)| *s == p.to_pipe());
+                    let adding = matches!(change.op, Op::AddKeywords { .. });
+                    for path in paths.iter().filter(|_| adding) {
+                        keywords::validate(&path.to_pipe())?;
+                    }
+                    // Sets of keywords do not conflict: adding one that is there, or
+                    // removing one that is not, is simply already done.
+                    match (adding, paths.iter().all(has), paths.iter().any(has)) {
+                        (true, true, _) | (false, _, false) => Check::NoOp,
+                        _ => Check::Apply,
+                    }
+                }
+                _ => return Err(SourceError::Unsupported("ratings, colour tags and keywords are written so far")),
             },
         };
         match check {
@@ -170,7 +184,20 @@ fn write_change(con: &Connection, variant_pk: i64, op: &Op) -> Result<usize> {
             Some(v) => return Err(SourceError::Other(format!("rating {v} is outside 0..=5"))),
         },
         Op::SetColor { value, .. } => ("ZCOLOR_TAG_INDEX", value.map(|c| i64::from(c.index()))),
-        _ => return Err(SourceError::Unsupported("only ratings and colour tags are written so far")),
+        Op::AddKeywords { paths } | Op::RemoveKeywords { paths } => {
+            let paths: Vec<String> = paths.iter().map(|p| p.to_pipe()).collect();
+            let before = keywords::stored(con, variant_pk)?;
+            let after = if matches!(op, Op::AddKeywords { .. }) {
+                for path in paths.iter().filter(|p| !before.iter().any(|(s, _)| s == *p)) {
+                    keywords::ensure_path(con, path)?;
+                }
+                keywords::add_paths(&before, &paths)
+            } else {
+                keywords::remove_paths(&before, &paths)
+            };
+            return keywords::write_variant(con, variant_pk, &after);
+        }
+        _ => return Err(SourceError::Unsupported("ratings, colour tags and keywords are written so far")),
     };
     let rows = metadata_rows(con, variant_pk)?;
     let sql = format!("UPDATE ZVARIANTMETADATA SET {column} = ?1 WHERE Z_PK = ?2");
@@ -195,6 +222,12 @@ pub(crate) fn write(
     }
     for change in &plan.apply {
         write_change(&tx, variant_pk(change)?, &change.op)?;
+    }
+    if plan.apply.iter().any(|c| matches!(c.op, Op::AddKeywords { .. })) {
+        let problems = keywords::check_tree(&tx)?;
+        if !problems.is_empty() {
+            return Err(SourceError::Other(format!("the keyword tree would be left broken: {}", problems.join("; "))));
+        }
     }
     // Capture One's own record of when the document last changed.
     tx.execute(
@@ -569,6 +602,108 @@ pub(crate) mod tests {
         let third = backup(&catalog, &store, 5).unwrap();
         assert_ne!(third.backup, first.backup);
         assert_eq!(backups(&catalog, &store).len(), 2);
+    }
+
+    fn keywords_by_layer(con: &Connection, variant: i64) -> Vec<(i64, Option<String>)> {
+        let mut stmt = con
+            .prepare(
+                "SELECT l.Z_ENT, m.ZCONTENT_KEYWORDS FROM ZVARIANTLAYER l JOIN ZVARIANTMETADATA m ON m.Z_PK = l.ZMETADATA
+                  WHERE l.ZVARIANT = ?1 ORDER BY l.Z_ENT",
+            )
+            .unwrap();
+        stmt.query_map([variant], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    fn tree(con: &Connection) -> Vec<(String, Option<String>, i64, i64)> {
+        let mut stmt = con
+            .prepare(
+                "SELECT k.ZNAME, p.ZNAME, k.ZLEFT, k.ZRIGHT FROM ZKEYWORD k LEFT JOIN ZKEYWORD p ON p.Z_PK = k.ZPARENT
+                  ORDER BY k.ZLEFT",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    fn kw(paths: &[&str]) -> Vec<c1model::KeywordPath> {
+        paths.iter().map(|p| c1model::KeywordPath::from_pipe(p)).collect()
+    }
+
+    #[test]
+    fn keywords_go_to_both_layers_in_their_own_order_and_grow_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        let add = change(1, Op::AddKeywords { paths: kw(&["street", "b&w", "best|best2018"]) });
+        let p = plan(&con, std::slice::from_ref(&add), pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        assert_eq!(
+            keywords_by_layer(&con, 1),
+            [
+                (17, Some("b&w||1,best|best2018||2,street||0".into())),
+                (18, None),
+                (20, Some("street||0,b&w||1,best|best2018||2".into())),
+            ]
+        );
+        assert_eq!(
+            tree(&con),
+            [
+                ("street".into(), None, 1, 2),
+                ("b&w".into(), None, 3, 4),
+                ("best".into(), None, 5, 8),
+                ("best2018".into(), Some("best".into()), 6, 7),
+            ]
+        );
+        // Already there: nothing to do.
+        assert_eq!(plan(&con, &[add], pk).unwrap().no_ops.len(), 1);
+    }
+
+    #[test]
+    fn a_child_under_an_early_parent_shifts_the_rest_of_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        for (pk_, path) in [(1, "a"), (2, "b"), (3, "a|x"), (3, "a|x|deep"), (4, "b|y")] {
+            let p = plan(&con, &[change(pk_, Op::AddKeywords { paths: kw(&[path]) })], pk).unwrap();
+            write(&mut con, &p, pk).unwrap();
+        }
+        assert_eq!(keywords::check_tree(&con).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            tree(&con),
+            [
+                ("a".into(), None, 1, 6),
+                ("x".into(), Some("a".into()), 2, 5),
+                ("deep".into(), Some("x".into()), 3, 4),
+                ("b".into(), None, 7, 10),
+                ("y".into(), Some("b".into()), 8, 9),
+            ]
+        );
+        assert_eq!(keywords_by_layer(&con, 3)[0].1.as_deref(), Some("a|x||0,a|x|deep||1"));
+    }
+
+    #[test]
+    fn removing_renumbers_and_leaves_the_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        let p = plan(&con, &[change(2, Op::AddKeywords { paths: kw(&["street", "b&w", "night"]) })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        let remove = change(2, Op::RemoveKeywords { paths: kw(&["street"]) });
+        let p = plan(&con, std::slice::from_ref(&remove), pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        assert_eq!(
+            keywords_by_layer(&con, 2),
+            [(17, Some("b&w||0,night||1".into())), (18, None), (20, Some("b&w||0,night||1".into()))]
+        );
+        assert_eq!(tree(&con).len(), 3, "the keyword stays in the library");
+        assert_eq!(plan(&con, &[remove], pk).unwrap().no_ops.len(), 1, "removing it again does nothing");
+        // Removing the last one leaves no string at all.
+        let p = plan(&con, &[change(2, Op::RemoveKeywords { paths: kw(&["b&w", "night"]) })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        assert_eq!(keywords_by_layer(&con, 2), [(17, None), (18, None), (20, None)]);
+    }
+
+    #[test]
+    fn a_keyword_name_with_a_comma_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        assert!(plan(&con, &[change(1, Op::AddKeywords { paths: kw(&["a,b"]) })], pk).is_err());
     }
 
     #[test]

@@ -512,3 +512,39 @@ fn an_edit_keeps_photos_that_tie_in_place() {
         assert_eq!(order(&lib), before, "{sort:?}");
     }
 }
+
+#[test]
+fn keyword_edits_queue_one_keyword_each() {
+    let (_d, lib, source) = setup();
+    let (row1, row2) = (row_of(&lib, 1), row_of(&lib, 2)); // 1 has street; 2 has none
+    let add = |paths: &[&str]| Op::AddKeywords { paths: paths.iter().map(|p| KeywordPath::from_pipe(p)).collect() };
+    let remove =
+        |paths: &[&str]| Op::RemoveKeywords { paths: paths.iter().map(|p| KeywordPath::from_pipe(p)).collect() };
+
+    let undo = lib.edit(&[(row1, add(&["street", "night"])), (row2, add(&["street", "night"]))]).unwrap();
+    // Photo 1 already had street: three keywords were added, not four.
+    assert_eq!(undo.len(), 3);
+    let night = KeywordPath::from_pipe("night");
+    assert_eq!(ids(&lib, &Filter { keywords_under: vec!["night".into()], ..Filter::default() }), [1, 2]);
+    let keys: Vec<String> =
+        lib.pending().unwrap().into_iter().map(|p| p.key.rsplit('\u{1f}').next().unwrap().to_owned()).collect();
+    assert_eq!(keys, ["keyword:night", "keyword:night", "keyword:street"]);
+
+    // Taking night off photo 2 again leaves nothing queued for it.
+    lib.edit(&[(row2, remove(&["night"]))]).unwrap();
+    assert_eq!(lib.pending().unwrap().len(), 2);
+
+    // Written to the source, then synced: the queue empties and the keywords stay.
+    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
+    let plan = source.plan(&changes).unwrap();
+    source.apply(&plan).unwrap();
+    lib.settle(&plan.apply).unwrap();
+    lib.sync(&source).unwrap();
+    assert!(lib.pending().unwrap().is_empty());
+    assert!(lib.photo(row1).unwrap().unwrap().keywords.contains(&night));
+    assert_eq!(lib.photo(row2).unwrap().unwrap().keywords, vec![KeywordPath::from_pipe("street")]);
+
+    // Undo puts the photos back as they were before the first edit (queued again).
+    lib.edit(&undo).unwrap();
+    assert!(!lib.photo(row1).unwrap().unwrap().keywords.contains(&night));
+}

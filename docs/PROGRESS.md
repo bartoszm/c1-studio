@@ -467,9 +467,49 @@ in `<data dir>/settings.json`) writes the queue by itself.
     written; *Keep mine*, then saved with the user's value;
   - a new backup is made after the outside change.
 
+### Keywords
+
+- **Writing** (`source-c1/src/keywords.rs`), ported from the Python `keywords.py` and
+  `cmd_keywords.py`:
+  - A photo's keyword string is parsed with its indices. Added paths are appended and
+    numbered after the last; removed ones are dropped and the indices made dense again.
+  - The string is written to the adjustment row sorted by path (bytes) and to the
+    combined row sorted by index. No keywords is NULL.
+  - A missing keyword node (and any missing level above it) is inserted into the
+    `ZKEYWORD` nested set the same way Python does: everything at or after the gap is
+    lifted into a disjoint range and brought back two higher, so the UNIQUE and CHECK
+    constraints hold at every step.
+  - The tree is checked before the commit; a broken tree rolls the write back. Names
+    with `,` or an empty level are refused.
+  - Keyword sets do not conflict: adding one that is there, or removing one that is
+    not, is a no-op.
+- **CLI:** `c1cat keyword add|remove PATH... <selector> [--apply]`.
+- **Differential test:** `writetest.py` now also runs six keyword edits:
+  - an existing keyword;
+  - new nested ones;
+  - a child under the tree's first root, which shifts 564 nodes;
+  - three at once;
+  - two removals.
+
+  On the real catalog the Rust and Python copies are identical, `ZKEYWORD`
+  included. (The Python side rebuilds its mirror before each keyword edit, since it
+  starts from the mirror's keywords.)
+- **The queue** keeps one entry per photo and keyword (`keyword:<path>`). Adding then
+  removing the same keyword cancels out. Multi-keyword ops are split.
+- **In the app:**
+  - each keyword in the details panel has a × to remove it;
+  - an "Add a keyword" field (Ctrl+K) completes from the catalog's 560 keywords, most
+    used first, and takes nested paths (`trips | japan`);
+  - both apply to every picked photo;
+  - queued keywords show in blue;
+  - the panel sorts keywords so the list keeps still;
+  - the Write dialog lists `keyword: + uitest|nested` / `keyword: − cola`.
+- **Tests:** four write tests and one library test. In the live app: add, remove, the
+  dialog, undo twice; the queue was left empty.
+
 ### Next
 
-1. Keywords: add and remove in the app (with completion from the tree) and in the
-   queue; the nested-set tree writes ported with a differential test.
-2. Albums: add and remove photos, create albums, with a differential test.
-3. A list of backups, with restore.
+1. Albums: add and remove photos, create albums, with a differential test.
+2. A list of backups, with restore.
+3. Keyword library edits (rename, move, merge, delete), if wanted: Python has them;
+   they rewrite every photo using the keyword.

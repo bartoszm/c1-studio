@@ -6,7 +6,10 @@
 
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
-  let { row, version, picked, queued, collections, onrate, oncolor, onkeyword, onalbum, onfolder, oncamera }: {
+  let {
+    row, version, picked, queued, collections, keywords,
+    onrate, oncolor, onaddkeyword, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
+  }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
     version: number;
@@ -15,8 +18,12 @@
     /** Fields of this photo edited here and not yet written to Capture One. */
     queued: string[];
     collections: Map<string, api.Collection>;
+    /** Every keyword path in the catalog, most used first, for completion. */
+    keywords: string[];
     onrate: (stars: number | null) => void;
     oncolor: (color: api.Color | null) => void;
+    onaddkeyword: (path: string) => void;
+    onremovekeyword: (path: string) => void;
     onkeyword: (path: string) => void;
     onalbum: (id: string) => void;
     onfolder: (path: string) => void;
@@ -39,6 +46,33 @@
       (e) => { if (current === row) failed = String(e); },
     );
   });
+
+  let typed = $state("");
+  let typedError = $state<string | null>(null);
+
+  function addTyped(e: SubmitEvent) {
+    e.preventDefault();
+    const path = typed.split("|").map((l) => l.trim()).join("|");
+    if (!path) return;
+    if (path.split("|").some((l) => !l)) typedError = "A keyword level is empty.";
+    else if (path.includes(",")) typedError = "Keyword names cannot contain a comma.";
+    else {
+      typedError = null;
+      typed = "";
+      onaddkeyword(path);
+    }
+  }
+
+  /** How a queued edit reads: `rating`, `colour`, `keyword "street"`. */
+  function fieldName(f: string) {
+    if (f.startsWith("keyword:")) return `keyword “${f.slice(8)}”`;
+    return f === "color" ? "colour" : f;
+  }
+
+  // Sorted, so the list keeps still while keywords are added and removed.
+  let sortedKeywords = $derived(
+    [...(photo?.keywords ?? [])].sort((a, b) => a.join("|").localeCompare(b.join("|"), undefined, { sensitivity: "base" })),
+  );
 
   let albums = $derived(
     (photo?.collections ?? []).map((id) => collections.get(id)).filter((c): c is api.Collection => !!c),
@@ -84,7 +118,7 @@
     </div>
     {#if picked > 1}<p class="hint">Edits apply to the {picked.toLocaleString()} selected photos.</p>{/if}
     {#if queued.length}
-      <p class="queued-note">Edited here ({queued.map((f) => (f === "color" ? "colour" : f)).join(", ")}), not yet written to Capture One.</p>
+      <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to Capture One.</p>
     {/if}
 
     <dl>
@@ -101,19 +135,39 @@
       {/if}
     </dl>
 
-    {#if p.keywords.length}
-      <h3>Keywords</h3>
-      <ul class="links">
-        {#each p.keywords as path}
-          <li>
-            {#each path as part, i}
-              {#if i}<span class="sep">›</span>{/if}
-              <button class="link" onclick={() => onkeyword(path.slice(0, i + 1).join("|"))}>{part}</button>
-            {/each}
-          </li>
-        {/each}
-      </ul>
-    {/if}
+    <h3>Keywords</h3>
+    <ul class="links keywords">
+      {#each sortedKeywords as path (path.join("|"))}
+        {@const full = path.join("|")}
+        <li class:queued={queued.includes(`keyword:${full}`)}>
+          {#each path as part, i}
+            {#if i}<span class="sep">›</span>{/if}
+            <button class="link" onclick={() => onkeyword(path.slice(0, i + 1).join("|"))}>{part}</button>
+          {/each}
+          <button
+            class="remove"
+            title={picked > 1 ? `Remove from the ${picked} selected photos` : "Remove"}
+            aria-label="Remove {full}"
+            onclick={() => onremovekeyword(full)}>×</button
+          >
+        </li>
+      {/each}
+    </ul>
+    <form class="add-keyword" onsubmit={addTyped}>
+      <input
+        id="keyword-input"
+        list="keyword-list"
+        placeholder={picked > 1 ? `Add a keyword to ${picked} photos` : "Add a keyword (Ctrl+K)"}
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={typed}
+        onkeydown={(e) => { if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur(); }}
+      />
+    </form>
+    <datalist id="keyword-list">
+      {#each keywords as k}<option value={k}></option>{/each}
+    </datalist>
+    {#if typedError}<p class="error">{typedError}</p>{/if}
 
     {#if albums.length}
       <h3>Albums</h3>
