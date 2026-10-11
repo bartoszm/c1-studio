@@ -4,14 +4,20 @@
 
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
-  let { total, rowAt, need, selected, onselect, onopen, children }: {
+  let { total, rowAt, need, selected, picked, queued, onselect, onopen, children }: {
     total: number;
     /** The photo at a position, once its page has loaded. */
     rowAt: (i: number) => number | undefined;
     /** Positions [from, to) are about to show. */
     need: (from: number, to: number) => void;
+    /** The focused position: the one the details panel and viewer show. */
     selected: number | null;
-    onselect: (i: number) => void;
+    /** Is the photo at a position in the selection (several can be)? */
+    picked: (i: number) => boolean;
+    /** Does it have edits waiting to be written to Capture One? */
+    queued: (i: number) => boolean;
+    /** A click, with its modifier keys for adding to the selection. */
+    onselect: (i: number, how?: { add: boolean; range: boolean }) => void;
     onopen: (i: number) => void;
     children?: Snippet;
   } = $props();
@@ -83,13 +89,15 @@
       <button
         class="cell"
         class:sel={selected === i}
+        class:picked={picked(i)}
         style:width="{cellW}px"
         style:height="{cellH}px"
         style:transform="translate({PAD + (i % cols) * (cellW + GAP)}px, {PAD + Math.floor(i / cols) * lineH}px)"
-        onclick={() => onselect(i)}
+        onclick={(e) => onselect(i, { add: e.ctrlKey || e.metaKey, range: e.shiftKey })}
         ondblclick={() => onopen(i)}
       >
         {#if row !== undefined}<img src={api.thumbUrl(row)} alt="" decoding="async" />{/if}
+        {#if queued(i)}<span class="queued" title="Edited here, not yet written to Capture One"></span>{/if}
       </button>
     {/each}
   </div>

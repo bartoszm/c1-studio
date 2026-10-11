@@ -10,6 +10,7 @@
   import Info from "./Info.svelte";
   import Tree from "./Tree.svelte";
   import Viewer from "./Viewer.svelte";
+  import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
   const DIMS: Dim[] = ["rating", "color", "year", "camera", "country", "keyword_tree", "collection", "folder"];
@@ -28,6 +29,21 @@
   let viewing = $state(false);
   let syncNote = $state("syncing…");
   let grid: Grid;
+
+  /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
+  const picked = new SvelteSet<number>();
+  /** Where a Shift-click range starts. */
+  let anchor: number | null = null;
+  /** Row → fields edited here and not yet written to Capture One. */
+  let queued = $state.raw(new Map<number, string[]>());
+  let queuedCount = $state(0);
+  /** Bumped after every edit, so the details panel reads the photo again. */
+  let version = $state(0);
+  let writing = $state(false);
+  let editError = $state<string | null>(null);
+  // Each entry undoes one edit (one key press or click, any number of photos).
+  let undoStack: [number, api.Op][][] = [];
+  let redoStack: [number, api.Op][][] = [];
 
   // Sidebar layout survives restarts: which branches are open, which sections folded.
   function remembered(key: string): string[] {
@@ -57,7 +73,8 @@
   let pages = $state.raw(new SvelteMap<number, number[]>());
   let loading = new Map<number, Promise<void>>();
 
-  async function run() {
+  /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks. */
+  async function run(keep = false) {
     const mine = ++generation;
     const asked = $state.snapshot(filter);
     // Smart albums are counted apart: one query each, so they never hold up the grid.
@@ -71,9 +88,15 @@
       pages = new SvelteMap([[0, r.rows]]);
       loading = new Map();
       error = null;
-      selected = null;
-      viewing = false;
-      grid?.reset();
+      if (keep) {
+        if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
+      } else {
+        selected = null;
+        picked.clear();
+        anchor = null;
+        viewing = false;
+        grid?.reset();
+      }
     } catch (e) {
       if (mine === generation) error = String(e);
     }
@@ -102,11 +125,13 @@
     return Promise.all(wanted);
   }
 
-  async function refresh() {
+  /** Reads everything again; `keep` holds the scroll and selection (after a sync). */
+  async function refresh(keep = false) {
     try {
       status = await api.status();
       collections = await api.collections();
-      await run();
+      await refreshQueued();
+      await run(keep);
     } catch (e) {
       error = String(e);
     }
@@ -115,13 +140,98 @@
   onMount(() => {
     refresh();
     const off = [
-      listen("library-changed", () => { syncNote = ""; refresh(); }),
+      listen("library-changed", () => { syncNote = ""; refresh(true); }),
       listen<string>("sync-failed", (e) => { syncNote = `sync failed: ${e.payload}`; }),
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
     return () => { clearTimeout(quiet); off.forEach((p) => p.then((f) => f())); };
   });
+
+  async function refreshQueued() {
+    const list = await api.pending();
+    const by = new Map<number, string[]>();
+    for (const p of list) {
+      if (p.row === null) continue;
+      const field = p.key.slice(p.key.lastIndexOf("\u001f") + 1);
+      by.set(p.row, [...(by.get(p.row) ?? []), field]);
+    }
+    queued = by;
+    queuedCount = list.length;
+  }
+
+  /** The photos an edit applies to: the picked ones, else the focused one. */
+  function targets(): number[] {
+    if (picked.size) return [...picked];
+    const row = selected === null ? undefined : rowAt(selected);
+    return row === undefined ? [] : [row];
+  }
+
+  async function edited() {
+    version++;
+    await refreshQueued();
+    await run(true);
+  }
+
+  async function applyEdit(edit: api.Edit) {
+    const rows = targets();
+    if (!rows.length) return;
+    try {
+      const undo = await api.edit(rows, edit);
+      if (undo.length) {
+        undoStack.push(undo);
+        redoStack = [];
+      }
+      editError = null;
+    } catch (e) {
+      editError = String(e);
+    }
+    await edited();
+  }
+
+  async function undoRedo(from: [number, api.Op][][], to: [number, api.Op][][]) {
+    const ops = from.pop();
+    if (!ops) return;
+    try {
+      to.push(await api.editOps(ops));
+    } catch (e) {
+      editError = String(e);
+    }
+    await edited();
+  }
+
+  async function pick(i: number, how?: { add: boolean; range: boolean }) {
+    const row = rowAt(i);
+    if (how?.range && anchor !== null) {
+      const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor];
+      await need(lo, hi + 1);
+      if (!how.add) picked.clear();
+      for (let k = lo; k <= hi; k++) {
+        const r = rowAt(k);
+        if (r !== undefined) picked.add(r);
+      }
+    } else if (how?.add && row !== undefined) {
+      if (picked.size === 0 && selected !== null && rowAt(selected) !== undefined) picked.add(rowAt(selected)!);
+      if (picked.has(row)) picked.delete(row);
+      else picked.add(row);
+      anchor = i;
+    } else {
+      picked.clear();
+      if (row !== undefined) picked.add(row);
+      anchor = i;
+    }
+    selected = i;
+  }
+
+  async function pickAll() {
+    if (!result) return;
+    const all = await api.query($state.snapshot(filter), { sort: "DateDesc" });
+    picked.clear();
+    for (const r of all.rows) picked.add(r);
+  }
+
+  // Capture One's keys: 0-5 rate, - + * tag red, green, yellow.
+  const COLOR_KEYS: Record<string, api.Color> = { "-": "Red", "+": "Green", "*": "Yellow" };
 
   // Typing searches after a short pause.
   let typing: ReturnType<typeof setTimeout>;
@@ -215,10 +325,27 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (e.target instanceof HTMLInputElement || e.ctrlKey || e.altKey || e.metaKey) return;
-    if (e.key === "i") showInfo = !showInfo;
+    if (writing || e.target instanceof HTMLInputElement) return;
+    const ctrl = e.ctrlKey || e.metaKey;
+    const key = e.key.toLowerCase();
+    if (ctrl && !e.altKey) {
+      if (key === "z" && !e.shiftKey) undoRedo(undoStack, redoStack);
+      else if (key === "y" || (key === "z" && e.shiftKey)) undoRedo(redoStack, undoStack);
+      else if (key === "a" && !viewing) pickAll();
+      else return;
+      e.preventDefault();
+      return;
+    }
+    if (e.altKey) return;
+    if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
+    else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
+    else if (e.key === "i") showInfo = !showInfo;
     else if (viewing) return; // the viewer has its own keys
-    else if (e.key === "Enter" && selected !== null) viewing = true;
+    else if (e.key === "Escape" && picked.size > 1) {
+      picked.clear();
+      const row = selected === null ? undefined : rowAt(selected);
+      if (row !== undefined) picked.add(row);
+    } else if (e.key === "Enter" && selected !== null) viewing = true;
     else if (grid?.move(e.key)) e.preventDefault();
   }
 
@@ -258,8 +385,14 @@
 {/snippet}
 
 {#snippet details()}
+  {@const row = selected === null ? undefined : rowAt(selected)}
   <Info
-    row={selected === null ? undefined : rowAt(selected)}
+    {row}
+    {version}
+    picked={Math.max(picked.size, row === undefined ? 0 : 1)}
+    queued={(row !== undefined && queued.get(row)) || []}
+    onrate={(n) => applyEdit({ Rating: n })}
+    oncolor={(c) => applyEdit({ Color: c })}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
@@ -325,8 +458,10 @@
     {rowAt}
     {need}
     {selected}
-    onselect={(i) => (selected = i)}
-    onopen={(i) => { selected = i; viewing = true; }}
+    picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
+    queued={(i) => queued.has(rowAt(i) ?? -1)}
+    onselect={pick}
+    onopen={(i) => { pick(i); viewing = true; }}
   >
     {#if error}
       <p class="error">{error}</p>
@@ -343,9 +478,19 @@
       <span>{status.photos.toLocaleString()} in library</span>
       <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
     {/if}
+    {#if editError}<span class="edit-error">{editError}</span>{/if}
     {#if syncNote}<span class="sync">{syncNote}</span>{/if}
+    {#if queuedCount}
+      <button class="queue" class:alone={!syncNote} onclick={() => (writing = true)}>
+        {queuedCount.toLocaleString()} edit{queuedCount === 1 ? "" : "s"} waiting · Write to Capture One…
+      </button>
+    {/if}
   </footer>
 </div>
+
+{#if writing}
+  <WriteDialog onclose={() => (writing = false)} onchanged={edited} />
+{/if}
 
 {#if viewing && selected !== null && rowAt(selected) !== undefined}
   <Viewer row={rowAt(selected)!} next={rowAt(selected + 1)} onclose={close} onstep={step}>

@@ -102,12 +102,45 @@ export type Collection = {
   rule: { match_all: boolean; conditions: Condition[] } | null;
 };
 
+/** An edit as Rust's `c1model::Op` serialises it; only the field edits are sent from here. */
+export type Op =
+  | { SetRating: { base: number | null; value: number | null } }
+  | { SetColor: { base: Color | null; value: Color | null } }
+  | Record<string, unknown>;
+export type Change = { photo: { source: string; ext: string }; op: Op };
+export type PendingEdit = {
+  key: string;
+  row: number | null;
+  name: string | null;
+  change: Change;
+  at: number;
+  /** Set when Capture One changed the same field meanwhile: base → its value. */
+  theirs: Op | null;
+};
+export type WriteStatus = "Ready" | "ReadOnly" | { Locked: { by: string } };
+export type WritePlan = {
+  status: WriteStatus;
+  apply: PendingEdit[];
+  unchanged: PendingEdit[];
+  conflicts: PendingEdit[];
+  blocked: [PendingEdit, string][];
+};
+export type Edit = { Rating: number | null } | { Color: Color | null };
+
 export const status = () => invoke<Status>("status");
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");
+/** Returns the ops that undo it. */
+export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit", { rows, edit });
+export const editOps = (changes: [number, Op][]) => invoke<[number, Op][]>("edit_ops", { changes });
+export const pending = () => invoke<PendingEdit[]>("pending");
+export const discard = (keys: string[]) => invoke<void>("discard", { keys });
+export const resolve = (keys: string[], keepMine: boolean) => invoke<void>("resolve", { keys, keepMine });
+export const writePlan = () => invoke<WritePlan>("write_plan");
+export const writeApply = () => invoke<{ written: number; backup: string | null }>("write_apply");
 
 // WebView2 on Windows reaches custom protocols as http://<scheme>.localhost.
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";

@@ -340,3 +340,154 @@ fn filters_nest() {
     };
     assert_eq!(ids(&lib, &none), [6]);
 }
+
+// ---------------------------------------------------------------------------------------
+// Edits made in the app, queued for the source
+// ---------------------------------------------------------------------------------------
+
+fn row_of(library: &Library, n: u32) -> u64 {
+    let all = library.query(&Filter { trashed: Trashed::Include, ..Filter::default() }, &QueryOptions::default());
+    all.unwrap().rows.into_iter().find(|r| library.photo_id(*r).unwrap().ext == n.to_string()).unwrap()
+}
+
+fn rate(value: Option<u8>) -> Op {
+    // The library takes the base from what it holds; the one sent is ignored.
+    Op::SetRating { base: None, value }
+}
+
+fn rated(library: &Library, stars: f64) -> Vec<u32> {
+    let one = Range { min: Some(stars), max: Some(stars), ..Range::default() };
+    ids(library, &Filter { rating: Some(Presence::Values(one)), ..Filter::default() })
+}
+
+#[test]
+fn edits_show_at_once_and_queue_for_the_source() {
+    let (_d, lib, source) = setup();
+    let row = row_of(&lib, 5); // unrated
+    let undo = lib.edit(&[(row, rate(Some(5)))]).unwrap();
+    assert_eq!(rated(&lib, 5.0), [5]);
+    assert_eq!(lib.photo(row).unwrap().unwrap().rating, Some(5));
+    assert_eq!(undo, [(row, Op::SetRating { base: Some(5), value: None })]);
+
+    let pending = lib.pending().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].row, Some(row));
+    assert_eq!(pending[0].pending.change.op, Op::SetRating { base: None, value: Some(5) });
+    assert_eq!(source.photo(&pending[0].pending.change.photo).unwrap().rating, None, "nothing written yet");
+
+    // A second edit keeps the source's value as the base; undoing it empties the queue.
+    lib.edit(&[(row, rate(Some(3)))]).unwrap();
+    assert_eq!(lib.pending().unwrap()[0].pending.change.op, Op::SetRating { base: None, value: Some(3) });
+    lib.edit(&undo).unwrap();
+    assert!(lib.pending().unwrap().is_empty());
+    assert_eq!(lib.photo(row).unwrap().unwrap().rating, None);
+}
+
+#[test]
+fn queued_edits_stay_on_top_of_a_sync() {
+    let (_d, lib, source) = setup();
+    let row = row_of(&lib, 2); // rated 2
+    lib.edit(&[(row, rate(Some(5)))]).unwrap();
+    let id = lib.photo_id(row).unwrap();
+    source.edit_externally(&id, |p| p.keywords.push(KeywordPath::from_pipe("night")));
+    lib.sync(&source).unwrap();
+
+    let shown = lib.photo(row).unwrap().unwrap();
+    assert_eq!(shown.rating, Some(5), "the queued rating is kept");
+    assert!(shown.keywords.contains(&KeywordPath::from_pipe("night")), "the source's change arrives");
+    let pending = lib.pending().unwrap();
+    assert_eq!((pending.len(), pending[0].pending.theirs.as_ref()), (1, None));
+
+    let events = lib.events(10).unwrap();
+    assert_eq!(events[0].origin, c1index::Origin::Source);
+    assert_eq!(events[0].change.op, Op::AddKeywords { paths: vec![KeywordPath::from_pipe("night")] });
+    assert_eq!(events[1].origin, c1index::Origin::App);
+    assert_eq!(events[1].change.op, Op::SetRating { base: Some(2), value: Some(5) });
+}
+
+#[test]
+fn a_field_changed_on_both_sides_waits_for_a_choice() {
+    let (_d, lib, source) = setup();
+    let (row2, row3) = (row_of(&lib, 2), row_of(&lib, 3));
+    lib.edit(&[(row2, rate(Some(5))), (row3, rate(Some(5)))]).unwrap();
+    let (id2, id3) = (lib.photo_id(row2).unwrap(), lib.photo_id(row3).unwrap());
+    source.edit_externally(&id2, |p| p.rating = Some(1));
+    source.edit_externally(&id3, |p| p.rating = Some(1));
+    lib.sync(&source).unwrap();
+
+    let pending = lib.pending().unwrap();
+    assert_eq!(pending[0].pending.theirs, Some(Op::SetRating { base: Some(2), value: Some(1) }));
+    assert_eq!(lib.photo(row2).unwrap().unwrap().rating, Some(5), "the user's value shows until they choose");
+
+    // Photo 2: keep mine, now based on the source's new value. Photo 3: take theirs.
+    lib.resolve(std::slice::from_ref(&pending[0].key), true).unwrap();
+    lib.resolve(std::slice::from_ref(&pending[1].key), false).unwrap();
+    let pending = lib.pending().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].pending.change.op, Op::SetRating { base: Some(1), value: Some(5) });
+    assert_eq!(pending[0].pending.theirs, None);
+    assert_eq!(lib.photo(row3).unwrap().unwrap().rating, Some(1));
+
+    // The kept edit now writes cleanly.
+    let plan = source.plan(&[pending[0].pending.change.clone()]).unwrap();
+    assert_eq!((plan.apply.len(), plan.conflicts.len()), (1, 0));
+}
+
+#[test]
+fn the_same_change_made_in_the_source_settles_the_queue() {
+    let (_d, lib, source) = setup();
+    let row = row_of(&lib, 4);
+    lib.edit(&[(row, Op::SetColor { base: None, value: Some(ColorLabel::Green) })]).unwrap();
+    source.edit_externally(&lib.photo_id(row).unwrap(), |p| p.color = Some(ColorLabel::Green));
+    lib.sync(&source).unwrap();
+    assert!(lib.pending().unwrap().is_empty());
+    assert_eq!(lib.photo(row).unwrap().unwrap().color, Some(ColorLabel::Green));
+}
+
+#[test]
+fn writing_the_queue_to_the_source() {
+    let (_d, lib, source) = setup();
+    let rows = [row_of(&lib, 1), row_of(&lib, 6)];
+    lib.edit(&rows.map(|r| (r, rate(Some(4))))).unwrap();
+    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
+    let plan = source.plan(&changes).unwrap();
+    assert_eq!(plan.apply.len(), 2);
+    source.apply(&plan).unwrap();
+    lib.settle(&plan.apply).unwrap();
+    assert!(lib.pending().unwrap().is_empty());
+    lib.sync(&source).unwrap();
+    assert_eq!(rated(&lib, 4.0), [1, 4, 6]);
+    assert!(lib.pending().unwrap().is_empty());
+}
+
+#[test]
+fn discarding_shows_the_source_value_again() {
+    let (_d, lib, _source) = setup();
+    let row = row_of(&lib, 3); // red
+    lib.edit(&[(row, Op::SetColor { base: None, value: None })]).unwrap();
+    assert_eq!(lib.photo(row).unwrap().unwrap().color, None);
+    let keys: Vec<String> = lib.pending().unwrap().into_iter().map(|p| p.key).collect();
+    lib.discard(&keys).unwrap();
+    assert!(lib.pending().unwrap().is_empty());
+    assert_eq!(lib.photo(row).unwrap().unwrap().color, Some(ColorLabel::Red));
+    let red = ids(&lib, &Filter { color: Some(Presence::Values(vec![ColorLabel::Red])), ..Filter::default() });
+    assert_eq!(red, [3]);
+}
+
+#[test]
+fn queued_edits_outlive_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", (1..=10).map(photo).collect(), vec![]);
+    {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        lib.edit(&[(row_of(&lib, 5), rate(Some(5)))]).unwrap();
+    }
+    // The store and index are a copy of the source and can be dropped (a format change).
+    std::fs::remove_file(dir.path().join("store.redb")).unwrap();
+    std::fs::remove_dir_all(dir.path().join("index")).unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&source).unwrap();
+    assert_eq!(rated(&lib, 5.0), [5]);
+    assert_eq!(lib.pending().unwrap().len(), 1);
+}
