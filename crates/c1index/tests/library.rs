@@ -1,4 +1,4 @@
-use c1index::{Dim, Filter, Library, Presence, QueryOptions, Range, Sort, Trashed, parse_rating};
+use c1index::{Dim, Filter, Library, Presence, QueryOptions, Range, Sort, TimeRange, Trashed, parse_rating};
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
 use c1model::*;
@@ -176,6 +176,30 @@ fn facets_can_ignore_their_own_filter() {
     // Rating is not filtered, so it counts the matches themselves.
     let rated: u64 = result.facets[&Dim::Rating].iter().map(|(_, n)| n).sum();
     assert_eq!(rated as usize, result.total);
+}
+
+#[test]
+fn years_stay_visible_when_a_month_is_picked() {
+    let (_d, lib, _s) = setup();
+    let options = QueryOptions {
+        facets: vec![Dim::Year, Dim::Month],
+        limit: Some(0),
+        facets_ignore_own: true,
+        ..QueryOptions::default()
+    };
+    let all = lib.query(&Filter::default(), &options).unwrap();
+    // A month with no photos: years count as if none were picked, months within the year.
+    let empty = Filter { year: Some(2023), month: Some("2023-02".into()), ..Filter::default() };
+    let result = lib.query(&empty, &options).unwrap();
+    assert_eq!(result.total, 0);
+    assert_eq!(result.facets[&Dim::Year], all.facets[&Dim::Year]);
+    assert_eq!(result.facets[&Dim::Month], all.facets[&Dim::Month]);
+    // Captured bounds are inclusive.
+    let day = 86_400_000;
+    let at = |n: i64| Some(1_700_000_000_000 + n * day);
+    let range = |from, to| Filter { captured: Some(TimeRange { from, to }), ..Filter::default() };
+    assert_eq!(ids(&lib, &range(at(2), at(4))), [2, 3, 4]);
+    assert_eq!(ids(&lib, &range(at(8), None)), [8, 10]);
 }
 
 #[test]
