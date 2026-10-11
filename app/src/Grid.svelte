@@ -18,7 +18,7 @@
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
   let {
-    total, rowAt, need, selected, picked, queued, onselect, onopen, ondragcell, oncopycell, onpastecell, canpaste, children,
+    total, rowAt, need, selected, picked, queued, onselect, onopen, ondragcell, children,
     tiles, shape, ontiles, layout = $bindable(),
   }: {
     total: number;
@@ -37,11 +37,6 @@
     onopen: (i: number) => void;
     /** A photo is being dragged (onto an album). */
     ondragcell?: (i: number) => void;
-    /** The tile's copy and paste buttons, as Capture One's thumbnails have. */
-    oncopycell?: (i: number) => void;
-    onpastecell?: (i: number) => void;
-    /** Whether there is anything to paste. */
-    canpaste?: boolean;
     children?: Snippet;
     tiles: Tiles;
     shape: Shape;
@@ -224,28 +219,6 @@
           {/if}
         {/if}
         {#if queued(i)}<span class="queued" title="Edited here, not yet written to Capture One"></span>{/if}
-        {#if row !== undefined && oncopycell}
-          <span class="tile-tools">
-            <span
-              role="button"
-              tabindex="-1"
-              class="tool"
-              title="Copy from this photo (Ctrl+C)"
-              onclick={(e) => { e.stopPropagation(); oncopycell(i); }}
-              onkeydown={() => {}}
-            >↑</span>
-            {#if canpaste}
-              <span
-                role="button"
-                tabindex="-1"
-                class="tool"
-                title="Paste onto {picked(i) ? 'the selected photos' : 'this photo'}: choose what, overwrite or merge (Ctrl+Shift+V)"
-                onclick={(e) => { e.stopPropagation(); onpastecell?.(i); }}
-                onkeydown={() => {}}
-              >↓</span>
-            {/if}
-          </span>
-        {/if}
       </button>
     {/each}
   </div>

@@ -113,7 +113,9 @@
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="copy-title">
     {#if onto !== undefined}
-      <h2 id="copy-title">{sync !== undefined ? "Sync" : "Paste"} from {photo.file.name}</h2>
+      <h2 id="copy-title">
+        {sync !== undefined ? `Copy from ${photo.file.name} to ${sync.toLocaleString()} selected` : `Paste from ${photo.file.name}`}
+      </h2>
       <p class="muted">
         Tick what to put on {sync !== undefined ? "the other" : "the"} {onto.toLocaleString()}
         {sync !== undefined ? "selected " : ""}photo{onto === 1 ? "" : "s"}; it is queued for Capture One like any edit{sync !== undefined ? ", and stays on the clipboard for pasting elsewhere" : ""}.
@@ -168,7 +170,7 @@
       <span class="spacer"></span>
       <button onclick={onclose}>Cancel</button>
       <button class="primary" disabled={!picked.length} onclick={() => submit()}>
-        {onto === undefined ? "Copy" : `${fill ? "Merge into" : sync !== undefined ? "Sync" : "Paste onto"} ${onto.toLocaleString()}`}
+        {onto === undefined ? "Copy" : `${fill ? "Merge into" : sync !== undefined ? "Copy to" : "Paste onto"} ${onto.toLocaleString()}`}
       </button>
     </div>
   </div>

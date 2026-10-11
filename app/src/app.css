@@ -393,21 +393,9 @@ footer .edit-error { color: var(--error); }
 .node.drop { background: var(--queued); }
 .node.drop .name, .node.drop .n, .node.drop .icon { color: #fff; }
 .edit-note { color: var(--muted); }
-/* A tile's copy and paste buttons, shown on hover as Capture One's are. */
-.cell .tile-tools { position: absolute; left: 4px; bottom: 4px; display: none; gap: 3px; }
-.cell:hover .tile-tools { display: flex; }
-.cell .tool {
-  width: 20px;
-  height: 20px;
-  line-height: 20px;
-  text-align: center;
-  font-size: 13px;
-  color: #ddd;
-  background: rgb(0 0 0 / 65%);
-  border-radius: 3px;
-  cursor: pointer;
-}
-.cell .tool:hover { color: #fff; background: var(--queued); }
+/* Copy from the focused photo into the rest of the selection. */
+.copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; }
+.copy-to:hover { filter: brightness(1.12); }
 
 /* Tile size in the header. */
 .tiles { margin-left: auto; display: flex; align-items: center; gap: 4px; color: var(--muted); }
