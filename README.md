@@ -28,11 +28,15 @@ $c1 = '.\target\release\c1cat.exe'
 & $c1 bench                                    # speed gate on 250k synthetic photos
 ```
 
+Every command, selection flag and edit is described in [docs/CLI.md](docs/CLI.md).
+
 The catalog is located from `--catalog`, then `C1_CATALOG`, then
 `%APPDATA%\c1studio\config.json` (`{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`).
 Library data lives in `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 
 ## App
+
+How to use it: [docs/GUIDE.md](docs/GUIDE.md).
 
 ```powershell
 cd app
