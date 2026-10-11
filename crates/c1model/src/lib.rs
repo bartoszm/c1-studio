@@ -19,7 +19,7 @@ pub use photo::{
 };
 pub use provider::{Pick, Provider, SourceSpec};
 pub use source::{
-    Capabilities, Compatibility, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError,
+    BackupInfo, Capabilities, Compatibility, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource, SourceError,
     SourceEvent, SourceInfo, Support, WriteStatus,
 };
 

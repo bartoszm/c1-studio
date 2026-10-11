@@ -193,6 +193,13 @@ portfolio --album street` copies *street* into *portfolio*. A name already used 
 same place is refused unless `--allow-duplicate`; Capture One's own *Recent Captures*
 and *Recent Imports* are never changed, and projects are deleted in Capture One.
 
+### Backups
+
+| Command | Does |
+|---|---|
+| `backups [--json]` | The backups made before writes, newest first: when, size, file. |
+| `restore BACKUP [--apply]` | Put a backup (its file name, or the end of it) back as the catalog. The catalog as it is now is backed up first, and the path printed; restoring that undoes it. Capture One must be closed. |
+
 ### How writes work
 
 - **Dry run by default.** Without `--apply` nothing is written: the command prints how

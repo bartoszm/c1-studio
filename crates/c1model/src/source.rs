@@ -208,4 +208,30 @@ pub trait PhotoSource: Send + Sync {
     /// Writes a plan produced by [`PhotoSource::plan`]: its keyword remaps first, then
     /// its album changes, then its photo changes. Atomic: all or nothing.
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport>;
+
+    /// The copies the source kept before writing, newest first. Empty for a source that
+    /// keeps none.
+    fn backups(&self) -> Result<Vec<BackupInfo>> {
+        Ok(Vec::new())
+    }
+
+    /// Puts a backup (by [`BackupInfo::id`]) back as the source. The source as it was is
+    /// backed up first, so this can be undone the same way; that backup is returned.
+    fn restore(&self, _id: &str) -> Result<BackupInfo> {
+        Err(SourceError::Unsupported("restoring backups"))
+    }
+}
+
+/// A copy of a source kept before writing to it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BackupInfo {
+    /// What [`PhotoSource::restore`] takes: the file name, for Capture One.
+    pub id: String,
+    /// Where it is, for showing.
+    pub path: String,
+    /// Milliseconds since the epoch.
+    pub created_ms: u64,
+    pub size: u64,
+    /// Why it was made, when not before an ordinary write: "before restoring …".
+    pub note: Option<String>,
 }

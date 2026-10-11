@@ -9,6 +9,7 @@
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
+  import BackupsDialog from "./BackupsDialog.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import PlaceDialog from "./PlaceDialog.svelte";
@@ -53,6 +54,7 @@
   /** Bumped after every edit, so the details panel reads the photo again. */
   let version = $state(0);
   let writing = $state(false);
+  let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
   let autosaveOn = $state(false);
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
@@ -744,7 +746,7 @@
       albumMenu = null;
       return;
     }
-    if (writing || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -955,7 +957,7 @@
 
 <div class="app" class:with-info={showInfo}>
   <header>
-    <SourceMenu bind:open={choosingSource} />
+    <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
@@ -1278,6 +1280,10 @@
     oncopy={(fields, fill) => { if (syncing) sync(syncing, fields, fill); }}
     onclose={() => (syncing = null)}
   />
+{/if}
+
+{#if showBackups}
+  <BackupsDialog onclose={() => (showBackups = false)} onrestored={() => { syncNote = ""; refresh(true); }} />
 {/if}
 
 {#if writing}

@@ -818,7 +818,28 @@ in `<data dir>/settings.json`) writes the queue by itself.
     and the smart album deleted, written; the album row matches Capture One's fields
     and `integrity_check` is ok.
 
+### Backups and restore
+
+- **Contract:** `PhotoSource::backups()` (newest first) and `restore(id)`, which
+  returns the backup of what it replaced; `BackupInfo` (id, path, time, size, note).
+  Defaults: none, and restore unsupported.
+- **Capture One** (`write::restore`): the backup is checked first (`quick_check`, and the
+  schema this build writes; anything else is refused before the catalog changes). Then
+  the catalog as it is now is backed up *fresh* (a backup only covering an earlier
+  state, which ordinary writes may share, does not do), noted *before restoring the
+  backup of …*, and never prunes the backup being restored. The backup is copied over
+  the catalog with SQLite's backup API (`Connection::restore`), and the result checked.
+  Refused like a write while Capture One or anything else holds the catalog.
+- **App:** *Backups…* in the source menu: the list (when, how long ago, size, note) and
+  *Restore…* with a confirmation that says what is undone and that it can be undone.
+  After a restore the catalog is read in; queued edits stay queued.
+- **CLI:** `c1cat backups [--json]`, `c1cat restore BACKUP [--apply]`.
+- **Tests:** restore and undo of it (keeping one backup, the one restored survives the
+  backup made first); a backup of another schema is refused with the catalog unchanged.
+  In the app, on a copy of fuji: restoring the backup from before the albums were
+  written took them away, the replaced catalog showed at the top, and restoring it
+  brought them back.
+
 ### Next
 
-1. A list of backups, with restore.
-2. Albums: move one into another group; drag photos onto an album.
+1. Albums: move one into another group; drag photos onto an album.

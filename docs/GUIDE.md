@@ -256,6 +256,15 @@ failure is not retried until you edit again.
 within an hour share one backup as long as nothing else changed the catalog in between;
 the newest five are kept.
 
+**Restoring a backup.** *Backups…* in the source menu (click the catalog name at the top
+left) lists them, newest first, with when, how long ago and how big. *Restore…* asks
+first, then puts the catalog back as it was then: everything changed in it since, in
+Capture One or written from here, is undone. As with a write, Capture One must be
+closed. The catalog as it is now is backed up first and shows at the top of the list
+(*before restoring the backup of …*), so a restore is undone by restoring that one.
+Edits queued in the app stay queued, and are checked against the restored catalog when
+you next write.
+
 The queue is saved with the library and survives restarts.
 
 ## Keyboard
@@ -288,5 +297,4 @@ Keys do not act while you type in a field.
 
 ## Not yet
 
-- A list of backups with restore.
 - Moving an album into another group, and dragging photos onto an album.
