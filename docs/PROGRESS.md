@@ -733,6 +733,21 @@ in `<data dir>/settings.json`) writes the queue by itself.
   of fuji: Krakow joined Kraków, USA renamed into United States (US, 3,095 photos),
   hong-kong → Hong Kong and undone; written, integrity ok.
 
+### Several photos: shared keywords, fill and sync
+
+- **Keywords of a selection:** with several photos picked, the panel lists every
+  keyword any of them has (`keyword_counts`). One on only some is dimmed with a count
+  (3/5) and a + that adds it to all; *Add to all* does so for each such keyword; ×
+  removes from all. Read 80 ms after the selection settles, so Shift+arrows stay quick.
+- **Fill** (Ctrl+Alt+V, or *Fill* next to *Paste*): `paste_ops(.., fill)` only sets
+  fields the target leaves empty and adds the keywords it lacks; an empty source never
+  clears, and *replace theirs* turns into an add. A unit test pins it.
+- **Sync to N…** (Ctrl+Shift+S): the Copy dialog, opened on the focused photo, puts the
+  ticked fields straight onto the rest of the selection, *Overwrite* or *Fill*
+  (remembered). The choice also lands on the clipboard.
+- **Range by keyboard:** Shift with arrows, Page Up/Down, Home and End extends the
+  selection like Shift+click.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

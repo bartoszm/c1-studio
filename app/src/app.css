@@ -300,6 +300,15 @@ footer {
 .info-panel .keywords .remove { margin-left: auto; padding: 0 4px; color: var(--muted); visibility: hidden; }
 .info-panel .keywords li:hover .remove { visibility: visible; }
 .info-panel .keywords .remove:hover { color: var(--error); }
+/* On only some of the selected photos: dimmed, with a count and a button to add it to all. */
+.info-panel .keywords li.partial .link { color: var(--muted); font-style: italic; }
+.info-panel .keywords .count { margin-left: auto; padding-left: 6px; color: var(--muted); font-size: 11px; }
+.info-panel .keywords .apply { padding: 0 4px; color: var(--muted); }
+.info-panel .keywords .apply:hover { color: var(--queued); }
+.info-panel .keywords .remove.after { margin-left: 0; }
+.info-panel .partial-note { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--muted); font-size: 12px; }
+.info-panel .partial-note button { padding: 1px 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); }
+.info-panel .partial-note button:hover { background: var(--hover); }
 .info-panel .add-keyword input {
   width: 100%;
   margin-top: 6px;
