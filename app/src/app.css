@@ -235,7 +235,7 @@ main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps t
   transition: opacity 0.15s;
 }
 .cell img.sharp.ready { opacity: 1; }
-.empty { padding: 24px; text-align: center; color: var(--muted); }
+p.empty { padding: 24px; text-align: center; color: var(--muted); }
 .error { padding: 16px; color: var(--error); white-space: pre-wrap; }
 
 footer {

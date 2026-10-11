@@ -671,7 +671,10 @@
             const rest = without(v.Values, c);
             return { what: "Colour", text: c.toLowerCase(), dot: COLORS[c.toLowerCase()], rest: rest && { Values: rest } };
           }),
-    year: (v) => [{ text: String(v) }],
+    // A month carries its year: one chip, and dropping it goes back to the whole year.
+    year: (v) => (filter.month ? [] : [{ text: String(v) }]),
+    month: (v) => [{ text: monthText(v) }],
+    captured: (v) => [{ what: "Dates", text: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
     country: (v) => [{ what: "Country", text: v }],
     keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
@@ -679,6 +682,15 @@
       v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
   };
+  function monthText(key: string) {
+    const [y, m] = key.split("-").map(Number);
+    return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  }
+  function rangeText(r: api.TimeRange) {
+    const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    if (r.from !== undefined && r.to !== undefined) return `${day(r.from)} – ${day(r.to)}`;
+    return r.from !== undefined ? `from ${day(r.from)}` : r.to !== undefined ? `until ${day(r.to)}` : "any";
+  }
   let chips = $derived(
     (Object.keys(CHIPS) as (keyof Filter)[]).flatMap((key) => {
       const v = filter[key];
