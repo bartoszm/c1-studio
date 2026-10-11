@@ -51,8 +51,10 @@
 
   // Each query gets a number; answers to older ones are dropped.
   let generation = 0;
-  // The result's photos, fetched a page at a time as the grid reaches them.
-  let pages = new SvelteMap<number, number[]>();
+  // The result's photos, fetched a page at a time as the grid reaches them. A new result
+  // swaps in a new map, so the variable itself must be reactive too: cells already on
+  // screen would otherwise keep reading the old one and show the previous result's photos.
+  let pages = $state.raw(new SvelteMap<number, number[]>());
   let loading = new Map<number, Promise<void>>();
 
   async function run() {
