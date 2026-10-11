@@ -50,7 +50,35 @@ export type QueryResult = {
   micros: number;
 };
 
-export type Status = { catalog: string; source: string; photos: number; writes: string };
+export type Status = {
+  catalog: string;
+  source: string;
+  photos: number;
+  writes: string;
+  sync_error: string | null;
+  compatibility: Compatibility;
+};
+
+/** How far the app is checked against a source's format, each way. */
+export type Support = "Tested" | "Untested" | "Off";
+export type Compatibility = { format: string; read: Support; write: Support; note: string | null };
+
+/** What to open: which provider (`capture-one`), and where. An empty provider lets the
+ *  first that recognises the location open it. */
+export type SourceSpec = { provider: string; location: string };
+export type SourceEntry = SourceSpec & { kind: string; name: string; available: boolean };
+export type ProviderView = {
+  id: string;
+  name: string;
+  pick: { File: { label: string; extensions: string[] } } | "Folder";
+};
+export type SourcesView = {
+  current: SourceEntry | null;
+  compatibility: Compatibility | null;
+  error: string | null;
+  recent: SourceEntry[];
+  providers: ProviderView[];
+};
 
 export type GeoOrigin = "Exif" | "Manual" | "Gpx" | "Geocoded";
 
@@ -128,6 +156,7 @@ export type PendingEdit = {
 export type WriteStatus = "Ready" | "ReadOnly" | { Locked: { by: string } };
 export type WritePlan = {
   status: WriteStatus;
+  compatibility: Compatibility;
   apply: PendingEdit[];
   unchanged: PendingEdit[];
   conflicts: PendingEdit[];
@@ -160,6 +189,12 @@ export type CaptionField = "description" | "title" | "headline" | "creator" | "c
 export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | PlaceField | "geo" | CaptionField;
 
 export const status = () => invoke<Status>("status");
+export const sources = () => invoke<SourcesView>("sources");
+/** The system dialog for a provider's kind of source; null if cancelled. */
+export const pickSource = (provider: string) => invoke<string | null>("pick_source", { provider });
+/** Opens another source; the window should reload after. */
+export const openSource = (spec: SourceSpec) => invoke<void>("open_source", { spec });
+export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", { spec });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
