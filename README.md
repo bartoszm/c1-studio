@@ -88,6 +88,18 @@ Licensed under the [MIT License](LICENSE).
 The user guide is [docs/GUIDE.md](docs/GUIDE.md); the plan is in
 [docs/PLAN.md](docs/PLAN.md) and the progress log in [docs/PROGRESS.md](docs/PROGRESS.md).
 
+## Install
+
+Download `C1.Studio_<version>_x64-setup.exe` from the
+[latest release](https://github.com/bartoszm/c1-studio/releases/latest) and run it. It
+installs for the current user (no administrator rights) and adds C1 Studio to the Start
+menu. The installer is not code-signed, so Windows may say it is from an unknown
+publisher: choose *More info* → *Run anyway*. Uninstall from *Settings → Apps*.
+
+The first time, nothing is open: choose a Capture One catalog (the `.cocatalogdb` file)
+from the source menu at the top left. Catalogs from Capture One 16.8 are read and
+written, 16.5 read only; see [docs/GUIDE.md](docs/GUIDE.md).
+
 ## Build
 
 ```powershell
@@ -95,6 +107,7 @@ cd app
 pnpm install
 pnpm tauri dev                          # live-reloading window
 pnpm tauri build --debug --no-bundle    # target\debug\c1studio.exe
+pnpm tauri build                        # the installer: target\release\bundle\nsis\*-setup.exe
 ```
 
 The app opens a catalog given on the command line (`c1studio.exe C:\c1_catalogs\mine`),
@@ -128,6 +141,13 @@ crates/c1cat/      CLI over the library
 app/               the desktop app: Tauri 2 (app/src-tauri) + Svelte 5 (app/src)
 legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests
 ```
+
+### Releasing
+
+Bump `version` in `app/src-tauri/tauri.conf.json` and in `[workspace.package]` of
+`Cargo.toml`, commit, then `git tag vX.Y.Z` and `git push origin vX.Y.Z`. The Release
+workflow builds the installer and attaches it to a draft release; publish the draft on
+GitHub. A tag that does not match the version fails the build.
 
 ### Test
 

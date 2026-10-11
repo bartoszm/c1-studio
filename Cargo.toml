@@ -44,3 +44,8 @@ opt-level = 3
 # Previews and thumbnails: decoding, colour table, straightening (seconds each unoptimised).
 [profile.dev.package.c1image]
 opt-level = 3
+
+# What the installer ships: smaller and a little faster, at the cost of a slower build.
+[profile.release]
+lto = "thin"
+strip = true
