@@ -139,6 +139,8 @@ aside section { padding: 4px 0; }
 .node .name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .node .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .node.on .icon { color: var(--text); }
+/* Changed here and not yet written to Capture One. */
+.node.queued .name { color: var(--queued); }
 
 .facet {
   display: flex;
@@ -309,6 +311,10 @@ footer {
 .info-panel .partial-note { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; color: var(--muted); font-size: 12px; }
 .info-panel .partial-note button { padding: 1px 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); }
 .info-panel .partial-note button:hover { background: var(--hover); }
+.info-panel .add-album { display: flex; gap: 6px; align-items: center; }
+.info-panel .add-album input { flex: 1; min-width: 0; }
+.info-panel .add-album button { flex: none; margin-top: 6px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 3px; }
+.info-panel .add-album button:hover { background: var(--hover); }
 .info-panel .add-keyword input {
   width: 100%;
   margin-top: 6px;
@@ -376,6 +382,12 @@ footer .edit-error { color: var(--error); }
 .menu-title { padding: 4px 12px 6px; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 4px; overflow-wrap: anywhere; }
 .menu button { padding: 4px 12px; text-align: left; }
 .menu button:hover { background: var(--hover); }
+.menu button.danger { color: var(--error); }
+.menu-note { padding: 4px 12px; color: var(--muted); font-size: 12px; }
+/* A section head with a + beside it (Albums). */
+aside section.with-add { position: relative; }
+.section-add { position: absolute; top: 5px; right: 8px; width: 20px; height: 18px; line-height: 16px; color: var(--muted); border-radius: 3px; }
+.section-add:hover { color: var(--text); background: var(--hover); }
 
 /* Tile size in the header. */
 .tiles { margin-left: auto; display: flex; align-items: center; gap: 4px; color: var(--muted); }

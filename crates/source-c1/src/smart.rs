@@ -78,6 +78,44 @@ fn condition(xml: &str) -> Condition {
     }
 }
 
+/// A rule in Capture One's layout, byte for byte what the Python `smart_criteria` writes
+/// (CRLF line ends, the disabled `ANY` placeholder first). Fails for a condition that
+/// has no Capture One form: an unsupported one, or a rating range not ending at 5.
+pub fn criteria(rule: &SmartRule) -> Result<String, String> {
+    let mut body = block("ANY", OP_CONTAINS, "", false);
+    for condition in &rule.conditions {
+        body += &match condition {
+            Condition::KeywordContains(text) if !text.trim().is_empty() => block(KEY_KEYWORDS, OP_CONTAINS, text, true),
+            Condition::KeywordContains(_) => return Err("a keyword condition needs some text".into()),
+            Condition::Rating { min, max } if min == max && *max <= 5 => {
+                block(KEY_RATING, OP_EQUALS, &min.to_string(), true)
+            }
+            Condition::Rating { min, max: 5 } => block(KEY_RATING, OP_AT_LEAST, &min.to_string(), true),
+            Condition::Rating { min, max } => {
+                return Err(format!(
+                    "a rating from {min} to {max} has no Capture One form; use one value or “at least”"
+                ));
+            }
+            Condition::Year(year) => block(KEY_DATE, OP_EQUALS, &year.to_string(), true),
+            Condition::Unsupported(what) => return Err(format!("the condition {what} cannot be written")),
+        };
+    }
+    let kind = if rule.match_all { "AND" } else { "OR" };
+    Ok(format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<MatchOperator Kind=\"{kind}\">\r\n{body}</MatchOperator>"
+    ))
+}
+
+fn block(key: &str, op: u32, criterion: &str, enabled: bool) -> String {
+    let state = if enabled { "YES" } else { "NO" };
+    let criterion = criterion.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    format!(
+        "  <MatchOperator Kind=\"OR\">\r\n    <Condition Enabled=\"{state}\">\r\n      <Key>{key}</Key>\r\n      \
+         <Operator>{op}</Operator>\r\n      <Criterion>{criterion}</Criterion>\r\n    </Condition>\r\n  \
+         </MatchOperator>\r\n"
+    )
+}
+
 /// The value of `name="…"` on the first `<tag …>`.
 fn attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     let start = xml.find(&format!("<{tag}"))?;
@@ -162,6 +200,29 @@ mod tests {
         assert_eq!(one(0, "5"), [Condition::Rating { min: 5, max: 5 }]);
         assert_eq!(one(2, "4"), [Condition::Rating { min: 4, max: 5 }]);
         assert_eq!(one(5, "4"), [Condition::Rating { min: 5, max: 5 }]);
+    }
+
+    #[test]
+    fn written_as_capture_one_writes_them() {
+        // The "megalopolis" album, as Capture One stored it.
+        let theirs = album("AND", &[("NO", "ANY", 6, ""), ("YES", KEY_KEYWORDS, 6, "megalopolis")]);
+        let rule = SmartRule { match_all: true, conditions: vec![Condition::KeywordContains("megalopolis".into())] };
+        assert_eq!(criteria(&rule).unwrap(), theirs);
+        // Every writable condition reads back as itself.
+        let rule = SmartRule {
+            match_all: false,
+            conditions: vec![
+                Condition::KeywordContains("a & <b>".into()),
+                Condition::Rating { min: 4, max: 5 },
+                Condition::Rating { min: 2, max: 2 },
+                Condition::Year(2025),
+            ],
+        };
+        assert_eq!(parse(&criteria(&rule).unwrap()), rule);
+        let range = SmartRule { match_all: true, conditions: vec![Condition::Rating { min: 2, max: 4 }] };
+        assert!(criteria(&range).is_err());
+        let odd = SmartRule { match_all: true, conditions: vec![Condition::Unsupported("x".into())] };
+        assert!(criteria(&odd).is_err());
     }
 
     #[test]

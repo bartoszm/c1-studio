@@ -28,8 +28,9 @@
     class="node"
     class:on={selected === node.key}
     class:empty={node.count === 0}
+    class:queued={node.queued}
     style:padding-left="{6 + depth * 14}px"
-    title={node.disabled}
+    title={node.disabled ?? (node.queued ? "Changed here; not yet written to Capture One" : undefined)}
     role="treeitem"
     aria-selected={selected === node.key}
     tabindex="-1"

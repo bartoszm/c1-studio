@@ -6,10 +6,10 @@ use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
-use c1model::change::{Check, diff};
+use c1model::change::{Check, collection_problem, descendants, diff, membership_problem};
 use c1model::{
-    Change, Collection, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap, MODEL_VERSION, Op, Photo, PhotoId,
-    PhotoSource, SmartRule, SourceError, SourceEvent,
+    Change, Collection, CollectionChange, CollectionId, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap,
+    MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, TopDocs};
@@ -17,7 +17,7 @@ use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
 
-use crate::edits::{self, Edits, Event, Origin, Pending, QueuedRemap, now_ms, pending_key};
+use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
@@ -220,8 +220,13 @@ impl Library {
         }
         *self.keys.write().unwrap() = keys;
         self.refresh_distinct()?;
+        self.refresh_smart()
+    }
+
+    /// The smart albums' rules, after albums changed (here or in a source).
+    fn refresh_smart(&self) -> anyhow::Result<()> {
         *self.smart.write().unwrap() =
-            self.store.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
+            self.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
         Ok(())
     }
 
@@ -364,6 +369,15 @@ impl Library {
     /// their source. The library shows them at once. Returns, per row, the op that puts
     /// back what the photo showed before, for undo.
     pub fn edit(&self, changes: &[(u64, Op)]) -> anyhow::Result<Vec<(u64, Op)>> {
+        // Only albums take photos; a smart album's come from its rule.
+        if changes.iter().any(|(_, op)| membership(op).is_some()) {
+            let albums = self.collections()?;
+            for id in changes.iter().filter_map(|(_, op)| membership(op)) {
+                if let Some(why) = membership_problem(&albums, id) {
+                    bail!("{why}");
+                }
+            }
+        }
         let _writing = self.writing.lock().unwrap();
         let mut writer = self.writer()?;
         let mut batch = self.store.batch()?;
@@ -648,8 +662,105 @@ impl Library {
         self.store.photo(row)
     }
 
+    /// The sources' albums, as they will be once queued album changes are written.
     pub fn collections(&self) -> anyhow::Result<Vec<Collection>> {
-        self.store.collections()
+        let mut all = self.store.collections()?;
+        for (_, queued) in self.edits.collections()? {
+            queued.change.apply_to(&mut all);
+        }
+        Ok(all)
+    }
+
+    /// Queues an album change and shows it at once. Deleting an album drops the queued
+    /// edits that put photos into it (or took them out). Returns its number, for
+    /// [`Library::undo_collection`].
+    pub fn change_collection(&self, change: CollectionChange) -> anyhow::Result<u64> {
+        let current = self.collections()?;
+        let label = change.label(&current);
+        if let Some(why) = collection_problem(&current, &change) {
+            bail!("{label}: {why}");
+        }
+        let seq = {
+            let _writing = self.writing.lock().unwrap();
+            let mut edits = self.edits.batch()?;
+            let mut dropped = Vec::new();
+            if let CollectionChange::Delete { id } = &change {
+                let gone = descendants(&current, id);
+                for (key, pending) in edits.all()? {
+                    if membership(&pending.change.op).is_some_and(|c| gone.contains(c)) {
+                        edits.remove(&key)?;
+                        dropped.push((key, pending));
+                    }
+                }
+            }
+            let seq = edits.add_collection(&QueuedCollection { change, label, at: now_ms(), dropped })?;
+            edits.commit()?;
+            seq
+        };
+        self.refresh_smart()?;
+        Ok(seq)
+    }
+
+    /// Queued album changes, in order.
+    pub fn collection_changes(&self) -> anyhow::Result<Vec<(u64, QueuedCollection)>> {
+        self.edits.collections()
+    }
+
+    /// Drops a queued album change, bringing back the edits it dropped. Dropping the
+    /// making of an album takes what was queued for it since: changes to it, albums made
+    /// in it, and photos put into it.
+    pub fn undo_collection(&self, seq: u64) -> anyhow::Result<()> {
+        let discard = {
+            let _writing = self.writing.lock().unwrap();
+            let mut edits = self.edits.batch()?;
+            let queued = edits.collections()?;
+            let Some((_, first)) = queued.iter().find(|(s, _)| *s == seq) else { return Ok(()) };
+            let mut undo = vec![seq];
+            let mut made: Vec<CollectionId> = Vec::new();
+            if let CollectionChange::Create { id, .. } = &first.change {
+                made.push(id.clone());
+                for (later, q) in queued.iter().filter(|(s, _)| *s > seq) {
+                    let inside =
+                        matches!(&q.change, CollectionChange::Create { parent: Some(p), .. } if made.contains(p));
+                    if made.contains(q.change.id()) || inside {
+                        undo.push(*later);
+                        if let CollectionChange::Create { id, .. } = &q.change {
+                            made.push(id.clone());
+                        }
+                    }
+                }
+            }
+            for (s, q) in queued.iter().filter(|(s, _)| undo.contains(s)) {
+                for (key, pending) in &q.dropped {
+                    edits.put(key, pending)?;
+                }
+                edits.remove_collection(*s)?;
+            }
+            let discard: Vec<String> = edits
+                .all()?
+                .into_iter()
+                .filter(|(_, p)| membership(&p.change.op).is_some_and(|c| made.contains(c)))
+                .map(|(key, _)| key)
+                .collect();
+            edits.commit()?;
+            discard
+        };
+        if !discard.is_empty() {
+            self.discard(&discard)?;
+        }
+        self.refresh_smart()
+    }
+
+    /// After a source took these album changes: they are done.
+    pub fn settle_collections(&self, seqs: &[u64]) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        let mut edits = self.edits.batch()?;
+        for seq in seqs {
+            edits.remove_collection(*seq)?;
+        }
+        edits.commit()?;
+        drop(_writing);
+        self.refresh_smart()
     }
 
     /// The sources' keyword trees, as they will be once queued keyword changes are
@@ -799,6 +910,19 @@ impl Library {
             }
         }
         bail!("no collection named {name:?}")
+    }
+}
+
+/// An id for an album made in the app: a fresh uuid, which the source stores with it.
+pub fn new_collection_id() -> CollectionId {
+    CollectionId::new_local(&uuid::Uuid::new_v4().to_string())
+}
+
+/// The album an op puts a photo into or takes it out of.
+fn membership(op: &Op) -> Option<&CollectionId> {
+    match op {
+        Op::AddToCollection { collection } | Op::RemoveFromCollection { collection } => Some(collection),
+        _ => None,
     }
 }
 

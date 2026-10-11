@@ -748,7 +748,77 @@ in `<data dir>/settings.json`) writes the queue by itself.
 - **Range by keyboard:** Shift with arrows, Page Up/Down, Home and End extends the
   selection like Shift+click.
 
+### Albums and smart albums
+
+- **Two kinds, as in Capture One:** an *album* holds the photos put into it
+  (`ZVARIANTINCOLLECTION` and `ZIMAGEINCOLLECTION` links); a *smart album* holds none,
+  only its rule (`ZSMARTCRITERIA`). Only albums take photos: putting one into a smart
+  album, a group or a project is refused (`membership_problem`), in the library, the
+  plan and the write.
+- **Model:** `CollectionChange` (c1model): `Create` (album, smart album with its rule,
+  or group; in a group or project or at the top level), `Rename`, `SetRule` (smart
+  albums), `Delete` (with everything inside). A new collection's id is
+  `new:<uuid>`; the uuid is written to `ZUUID`, so later changes and photo edits in the
+  same write find it, and the next sync brings Capture One's own id. `ApplyPlan.collections`
+  are written after the keyword tree and before photo edits. `PhotoSource::plan_after`
+  takes them; `check_collection` says why one can no longer be written.
+  `CollectionChange::apply_to` is the reference behaviour (the in-memory source
+  follows it, giving made albums ids of its own as a real source would).
+- **Capture One's own collections:** the root names Recent Captures, Recent Imports,
+  All Images and the Trash. `Collection.system` marks them (`MODEL_VERSION` 4, so the
+  library re-reads once): never renamed, deleted or given albums from the app. The
+  albums Capture One makes in Recent Imports are the user's. Projects are not deleted
+  here.
+- **Writing** (`source-c1/src/albums.rs`, ported from Python's `collections.py`): rows
+  as Python makes them (`ZPROJECT` from the parent, `ZCOLLECTIONINDEX` after the
+  siblings, the default search and filter blobs byte for byte); smart rules in Capture
+  One's layout (`smart::criteria`, CRLF and the disabled `ANY` block, read back equal),
+  `Rating {min, max}` as *is* or *at least*; membership album by album, refused if it
+  would leave more links that do not match. Deleting also removes what pointed at the
+  collection: `ZSELECTEDVARIANTS`, `ZCOMPAREVARIANTS`, and the document's selected
+  collection (moved to All Images). The Python `delete` did not, and cleared
+  `ZPRIMARYVARIANT` where it held the *collection's* pk (it holds a variant): both
+  fixed in the oracle too.
+- **Library:** album changes queue in `edits.redb` (table `collections`) and show at
+  once (`Library::collections` lays them over the store; smart rules follow). Deleting
+  an album drops the queued edits that put photos into it, kept with the change so
+  undoing it brings them back. Undoing a new album takes what was queued for it since:
+  changes to it, albums made in it, photos put into it. Photo membership edits queue
+  per album (`collection:<id>`) like keywords.
+- **CLI:** `album create|rename|delete|add|remove`, `group create`, `smart create|rule`,
+  named and flagged as the Python ones.
+- **In the app:**
+  - the + beside Albums and a right-click on an album: New album / smart album /
+    group, Put the N selected photos here, Edit rule… (match all or any of *Keyword
+    contains*, *Rating is*, *Rating is at least*, *Captured in year*: the conditions
+    every smart album in the fuji catalog uses), Rename…, Delete… (lists what goes);
+  - the details panel's Albums: × takes photos out, *Put in an album* completes from
+    the albums, *New album…* can take the selected photos; with several selected, an
+    album holding only some shows 3/5 and + puts the rest in;
+  - queued albums show in blue; the Write dialog lists album changes before photo
+    edits, with *Drop these* for ones that can no longer be written; Ctrl+Z / Ctrl+Y.
+- **Tests:**
+  - model: changes and paths, what is refused, membership queue keys;
+  - write level (run with Capture One open): albums made, filled and emptied, a group
+    deleted with its album, links and selected collection; Capture One's own left alone;
+  - source level (Capture One closed): the same through `PhotoSource`;
+  - library: made here, filled, a smart album by its rule, written and back under
+    the source's ids; delete and undo; undoing a new album takes its queue.
+  - differential: `writetest.py` adds groups, albums, filling, emptying, `--create`,
+    rename, two smart albums (all and any, `&` escaped), adding to and taking from an
+    album Capture One made, and deleting a group with an album in it. ZCOLLECTION:
+    SAME. The link tables were compared by rowid and differed only in insertion order
+    (Python inserts in its selector's order, Rust album by album); they are now
+    compared as sets, since nothing points at a link row's `Z_PK`. On a copy of fuji:
+    SAME (111 changes, every table).
+  - end to end on a copy of fuji in a second instance: a new album filled with three
+    photos from the panel, a smart album *street* ∧ ★★★★+ (5,086 photos, the same as
+    Capture One's own "street 4+"), a smart album refusing a photo, rename with undo
+    and redo, written (own ids #907 and #908 after the sync), then a photo taken out
+    and the smart album deleted, written; the album row matches Capture One's fields
+    and `integrity_check` is ok.
+
 ### Next
 
-1. Albums: add and remove photos, create albums, with a differential test.
-2. A list of backups, with restore.
+1. A list of backups, with restore.
+2. Albums: move one into another group; drag photos onto an album.

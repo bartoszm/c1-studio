@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
-    Change, Collection, ColorLabel, Compatibility, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op,
-    Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
+    Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint, ImageTier,
+    Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
 };
 use serde::{Deserialize, Serialize};
 use sources::Recent;
@@ -174,6 +174,9 @@ enum Edit {
     Iptc(BTreeMap<String, String>),
     /// Latitude and longitude in degrees; `None` clears.
     Geo(Option<[f64; 2]>),
+    /// Into an album, or out of it, by collection id.
+    AddToAlbum(String),
+    RemoveFromAlbum(String),
 }
 
 fn place_slot<'a>(place: &'a mut Place, name: &str) -> Option<&'a mut Option<String>> {
@@ -245,6 +248,8 @@ fn op_for(edit: &Edit, photo: &Photo) -> Result<Op, String> {
         Edit::Geo(value) => {
             Op::SetGeo { base: photo.geo, value: value.map(|[lat, lon]| geo_point(lat, lon)).transpose()? }
         }
+        Edit::AddToAlbum(id) => Op::AddToCollection { collection: CollectionId(id.clone()) },
+        Edit::RemoveFromAlbum(id) => Op::RemoveFromCollection { collection: CollectionId(id.clone()) },
     })
 }
 
@@ -583,6 +588,58 @@ async fn keyword_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(Stri
     Ok(counts.into_iter().collect())
 }
 
+/// The albums the photos at `rows` are in, with how many of them each holds.
+#[tauri::command]
+async fn album_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(String, u64)>, String> {
+    let s = app.session()?;
+    let mut counts = BTreeMap::<String, u64>::new();
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            for id in &photo.collections {
+                *counts.entry(id.0.clone()).or_default() += 1;
+            }
+        }
+    }
+    Ok(counts.into_iter().collect())
+}
+
+/// Queues an album change; a new collection with an empty id gets one. Returns its
+/// number (for undo) and the change as queued (for redo, which keeps the id).
+#[tauri::command]
+async fn change_collection(
+    app: State<'_, App>,
+    mut change: CollectionChange,
+) -> Result<(u64, CollectionChange), String> {
+    if let CollectionChange::Create { id, .. } = &mut change
+        && id.0.is_empty()
+    {
+        *id = c1index::new_collection_id();
+    }
+    if let CollectionChange::Create { id, .. } = &change
+        && id.local_uuid().is_none()
+    {
+        return Err(format!("{} is not an id for a new album", id.0));
+    }
+    let s = app.session()?;
+    s.touched();
+    let seq = s.library.change_collection(change.clone()).map_err(|e| format!("{e:#}"))?;
+    Ok((seq, change))
+}
+
+#[tauri::command]
+async fn undo_collection(app: State<'_, App>, seq: u64) -> Result<(), String> {
+    let s = app.session()?;
+    s.touched();
+    s.library.undo_collection(seq).map_err(|e| format!("{e:#}"))
+}
+
+/// Queued album changes: number, what it does, and the collection it is about.
+#[tauri::command]
+async fn collection_changes(app: State<'_, App>) -> Result<Vec<(u64, String, String)>, String> {
+    let list = app.session()?.library.collection_changes().map_err(|e| format!("{e:#}"))?;
+    Ok(list.into_iter().map(|(seq, q)| (seq, q.label, q.change.id().0.clone())).collect())
+}
+
 /// How many photos carry any of these keywords (or keywords under them).
 #[tauri::command]
 async fn keyword_users(app: State<'_, App>, paths: Vec<String>) -> Result<usize, String> {
@@ -628,10 +685,20 @@ struct WritePlan {
     remaps: Vec<(u64, String)>,
     /// Keyword tree changes Capture One can no longer take, with why.
     blocked_remaps: Vec<(u64, String, String)>,
+    /// Album changes, written after the keyword tree and before photo edits.
+    collections: Vec<(u64, String)>,
+    /// Album changes Capture One can no longer take, with why.
+    blocked_collections: Vec<(u64, String, String)>,
 }
 
-/// The plan, what it shows, and the numbers of the keyword tree changes it carries.
-fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>), String> {
+/// The numbers of the queued structural changes a plan carries, settled once written.
+struct Carried {
+    remaps: Vec<u64>,
+    collections: Vec<u64>,
+}
+
+/// The plan, what it shows, and the queued keyword tree and album changes it carries.
+fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), String> {
     let pending = s.library.pending().map_err(|e| format!("{e:#}"))?;
     let (conflicts, ready): (Vec<_>, Vec<_>) = pending.into_iter().partition(|p| p.pending.theirs.is_some());
     let changes: Vec<Change> = ready.iter().map(|p| p.pending.change.clone()).collect();
@@ -645,7 +712,17 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>),
         }
     }
     let ok: Vec<KeywordRemap> = remaps.iter().map(|(_, r)| r.clone()).collect();
-    let plan = s.source.plan_after(&ok, &changes).map_err(text)?;
+    let mut collections: Vec<(u64, String, CollectionChange)> = Vec::new();
+    let mut blocked_collections = Vec::new();
+    for (seq, queued) in s.library.collection_changes().map_err(|e| format!("{e:#}"))? {
+        let earlier: Vec<CollectionChange> = collections.iter().map(|(_, _, c)| c.clone()).collect();
+        match s.source.check_collection(&earlier, &queued.change).map_err(text)? {
+            None => collections.push((seq, queued.label, queued.change)),
+            Some(why) => blocked_collections.push((seq, queued.label, why)),
+        }
+    }
+    let albums: Vec<CollectionChange> = collections.iter().map(|(_, _, c)| c.clone()).collect();
+    let plan = s.source.plan_after(&ok, &albums, &changes).map_err(text)?;
     let pick = |list: &[Change]| -> Vec<PendingEdit> {
         ready.iter().filter(|p| list.contains(&p.pending.change)).cloned().collect()
     };
@@ -666,9 +743,14 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>),
         blocked,
         remaps: remaps.iter().map(|(seq, r)| (*seq, r.label.clone())).collect(),
         blocked_remaps,
+        collections: collections.iter().map(|(seq, label, _)| (*seq, label.clone())).collect(),
+        blocked_collections,
     };
-    let seqs = remaps.iter().map(|(seq, _)| *seq).collect();
-    Ok((out, plan, seqs))
+    let carried = Carried {
+        remaps: remaps.iter().map(|(seq, _)| *seq).collect(),
+        collections: collections.iter().map(|(seq, _, _)| *seq).collect(),
+    };
+    Ok((out, plan, carried))
 }
 
 #[tauri::command]
@@ -705,15 +787,16 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
     let s = app.state::<App>().session()?;
     let report = {
         let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-        let (summary, plan, remaps) = plan_writes(&s)?;
+        let (summary, plan, carried) = plan_writes(&s)?;
         if !summary.conflicts.is_empty() {
             return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
         }
         let report = s.source.apply(&plan).map_err(text)?;
         let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
-        s.library.settle_remaps(&remaps).map_err(|e| format!("{e:#}"))?;
+        s.library.settle_remaps(&carried.remaps).map_err(|e| format!("{e:#}"))?;
+        s.library.settle_collections(&carried.collections).map_err(|e| format!("{e:#}"))?;
         s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
-        let blocked = summary.blocked.len() + summary.blocked_remaps.len();
+        let blocked = summary.blocked.len() + summary.blocked_remaps.len() + summary.blocked_collections.len();
         if report.applied == 0 && blocked > 0 {
             return Ok(Outcome::Attention { conflicts: 0, blocked });
         }
@@ -788,8 +871,9 @@ fn autosave_loop(app: AppHandle) {
             report_autosave(&app, &s, AutosaveState::Off);
             continue;
         }
-        let queued =
-            s.library.pending().map(|p| p.len()).unwrap_or(0) + s.library.remaps().map(|r| r.len()).unwrap_or(0);
+        let queued = s.library.pending().map(|p| p.len()).unwrap_or(0)
+            + s.library.remaps().map(|r| r.len()).unwrap_or(0)
+            + s.library.collection_changes().map(|c| c.len()).unwrap_or(0);
         if queued == 0 {
             report_autosave(&app, &s, AutosaveState::Idle);
             continue;
@@ -1054,6 +1138,10 @@ pub fn run() {
             undo_remap,
             remaps,
             keyword_users,
+            album_counts,
+            change_collection,
+            undo_collection,
+            collection_changes,
             keyword_counts,
             pending,
             discard,

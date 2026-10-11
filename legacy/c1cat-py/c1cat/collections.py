@@ -197,10 +197,16 @@ def remove_members(con, collection_pk: int, variant_pks: list[int]) -> tuple[int
 
 
 def delete(con, collection_pk: int) -> None:
+    """Remove a collection and what points at it: its photo links, the selection Capture
+    One remembers for it, and the document's selected collection (moved to All Images).
+    ZPRIMARYVARIANT holds a variant, not a collection, so it is left alone."""
     for table in ("ZIMAGEINCOLLECTION", "ZVARIANTINCOLLECTION", "ZIMAGEINCOLLECTIONPROPERTIES"):
         con.execute(f"DELETE FROM {table} WHERE ZCOLLECTION = ?", (collection_pk,))
-    con.execute("UPDATE ZCOLLECTION SET ZPRIMARYVARIANT = NULL WHERE ZPRIMARYVARIANT = ?",
-                (collection_pk,))
+    con.execute("DELETE FROM ZSELECTEDVARIANTS WHERE ZSELECTEDINCOLLECTIONS = ?", (collection_pk,))
+    con.execute("DELETE FROM ZCOMPAREVARIANTS WHERE ZCOMPAREINCOLLECTIONS = ?", (collection_pk,))
+    con.execute("UPDATE ZDOCUMENTCONTENT SET ZSELECTEDCOLLECTION ="
+                " (SELECT ZALLIMAGESCOLLECTION FROM ZCOLLECTION WHERE Z_PK = ?)"
+                " WHERE ZSELECTEDCOLLECTION = ?", (config.ROOT_COLLECTION_PK, collection_pk))
     con.execute("DELETE FROM ZCOLLECTION WHERE Z_PK = ?", (collection_pk,))
 
 

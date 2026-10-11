@@ -8,8 +8,9 @@
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords, clip, shared,
+    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
+    onaddalbum, onremovealbum, onnewalbum,
     onplace, ongeo, oniptc, oncopy, onpaste, onsync,
   }: {
     row: number | undefined;
@@ -32,6 +33,13 @@
     onremovekeyword: (path: string) => void;
     onkeyword: (path: string) => void;
     onalbum: (id: string) => void;
+    /** With several photos selected: the albums they are in, and how many each holds. */
+    sharedAlbums: [string, number][] | null;
+    /** Puts the selected photos into an album, or takes them out. */
+    onaddalbum: (id: string) => void;
+    onremovealbum: (id: string) => void;
+    /** Opens the New album dialog, for the selected photos. */
+    onnewalbum: () => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
     /** A location field typed in; "" clears it. */
@@ -85,6 +93,7 @@
   /** How a queued edit reads: `rating`, `colour`, `keyword "street"`. */
   function fieldName(f: string) {
     if (f.startsWith("keyword:")) return `keyword “${f.slice(8)}”`;
+    if (f.startsWith("collection:")) return `album “${collections.get(f.slice(11))?.name ?? f.slice(11)}”`;
     return ({ color: "colour", place: "location", geo: "GPS", iptc: "IPTC fields" } as Record<string, string>)[f] ?? f;
   }
 
@@ -168,9 +177,37 @@
   );
   let partial = $derived(keywordRows.filter((k) => k.n < picked).map((k) => k.full));
 
-  let albums = $derived(
-    (photo?.collections ?? []).map((id) => collections.get(id)).filter((c): c is api.Collection => !!c),
+  // The albums the photo is in; with several selected, every album any of them is in,
+  // those holding only some set apart, as keywords are.
+  type AlbumRow = { c: api.Collection; n: number };
+  let albumRows: AlbumRow[] = $derived(
+    (picked > 1 && sharedAlbums ? sharedAlbums : (photo?.collections ?? []).map((id): [string, number] => [id, picked]))
+      .map(([id, n]) => ({ c: collections.get(id)!, n }))
+      .filter((r) => !!r.c)
+      .sort((a, b) => a.c.path.localeCompare(b.c.path, undefined, { sensitivity: "base" })),
   );
+  /** Albums a photo can be put into, by path, for completion. */
+  let albumChoices = $derived(
+    [...collections.values()].filter((c) => c.kind === "Album").map((c) => c.path).sort((a, b) => a.localeCompare(b)),
+  );
+  let albumTyped = $state("");
+  let albumError = $state<string | null>(null);
+
+  function addAlbum(e: SubmitEvent) {
+    e.preventDefault();
+    const text = albumTyped.trim().toLowerCase();
+    if (!text) return;
+    const albums = [...collections.values()].filter((c) => c.kind === "Album");
+    // The whole path, else a name only one album has.
+    const found = albums.filter((c) => c.path.toLowerCase() === text);
+    const named = found.length ? found : albums.filter((c) => c.name.toLowerCase() === text);
+    if (named.length === 1) {
+      albumError = null;
+      albumTyped = "";
+      onaddalbum(named[0].id);
+    } else if (named.length > 1) albumError = `Several albums are called that: pick one by its path.`;
+    else albumError = `No album “${albumTyped.trim()}”. New album… makes one.`;
+  }
 </script>
 
 <aside class="info-panel">
@@ -290,14 +327,44 @@
     </datalist>
     {#if typedError}<p class="error">{typedError}</p>{/if}
 
-    {#if albums.length}
-      <h3>Albums</h3>
-      <ul class="links">
-        {#each albums as c}
-          <li><button class="link" onclick={() => onalbum(c.id)}>{c.path}</button></li>
-        {/each}
-      </ul>
-    {/if}
+    <h3>Albums</h3>
+    <ul class="links keywords albums">
+      {#each albumRows as { c, n } (c.id)}
+        <li class:queued={queued.includes(`collection:${c.id}`)} class:partial={n < picked}>
+          <button class="link" title={c.kind === "Project" ? "A project" : undefined} onclick={() => onalbum(c.id)}>{c.path}</button>
+          {#if n < picked}
+            <span class="count" title="Holds {n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{n.toLocaleString()}/{picked.toLocaleString()}</span>
+            {#if c.kind === "Album"}
+              <button class="apply" title="Put all {picked.toLocaleString()} selected photos in it" aria-label="Put all in {c.path}" onclick={() => onaddalbum(c.id)}>+</button>
+            {/if}
+          {/if}
+          {#if c.kind === "Album"}
+            <button
+              class="remove"
+              class:after={n < picked}
+              title="Take {picked > 1 ? `the ${picked} selected photos` : 'the photo'} out of it"
+              aria-label="Take out of {c.path}"
+              onclick={() => onremovealbum(c.id)}>×</button
+            >
+          {/if}
+        </li>
+      {/each}
+    </ul>
+    <form class="add-keyword add-album" onsubmit={addAlbum}>
+      <input
+        list="album-list"
+        placeholder="Put in an album"
+        autocomplete="off"
+        spellcheck="false"
+        bind:value={albumTyped}
+        onkeydown={(e) => { if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur(); }}
+      />
+      <button type="button" title="Make an album and put {picked > 1 ? 'these photos' : 'this photo'} in it" onclick={onnewalbum}>New album…</button>
+    </form>
+    <datalist id="album-list">
+      {#each albumChoices as path}<option value={path}></option>{/each}
+    </datalist>
+    {#if albumError}<p class="error">{albumError}</p>{/if}
 
     <h3>Location</h3>
     <dl class="fields" class:queued={queued.includes("place")}>

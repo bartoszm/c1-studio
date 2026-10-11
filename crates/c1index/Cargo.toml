@@ -15,6 +15,7 @@ postcard.workspace = true
 redb.workspace = true
 tantivy.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

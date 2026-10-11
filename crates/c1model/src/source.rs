@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::change::{ApplyPlan, ApplyReport, Change, KeywordRemap};
+use crate::change::{ApplyPlan, ApplyReport, Change, CollectionChange, KeywordRemap};
 use crate::photo::{Collection, KeywordNode, Photo, PhotoId, SourceId};
 
 #[derive(Debug, thiserror::Error)]
@@ -179,11 +179,17 @@ pub trait PhotoSource: Send + Sync {
     /// Dry run: sorts changes into apply / conflict / no-op without writing.
     fn plan(&self, changes: &[Change]) -> Result<ApplyPlan>;
 
-    /// Like [`PhotoSource::plan`], with the photos as they will be once `remaps` are
-    /// applied; the plan carries the remaps.
-    fn plan_after(&self, remaps: &[KeywordRemap], changes: &[Change]) -> Result<ApplyPlan> {
+    /// Like [`PhotoSource::plan`], with the source as it will be once `remaps` and
+    /// `collections` are applied; the plan carries both.
+    fn plan_after(
+        &self,
+        remaps: &[KeywordRemap],
+        collections: &[CollectionChange],
+        changes: &[Change],
+    ) -> Result<ApplyPlan> {
         let mut plan = self.plan(changes)?;
         plan.remaps = remaps.to_vec();
+        plan.collections = collections.to_vec();
         Ok(plan)
     }
 
@@ -193,7 +199,13 @@ pub trait PhotoSource: Send + Sync {
         Ok(None)
     }
 
+    /// Why an album change can no longer be written (the album or its parent is gone),
+    /// or `None` if it can, once the `earlier` ones have been applied.
+    fn check_collection(&self, _earlier: &[CollectionChange], _change: &CollectionChange) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// Writes a plan produced by [`PhotoSource::plan`]: its keyword remaps first, then
-    /// its changes. Atomic: all or nothing.
+    /// its album changes, then its photo changes. Atomic: all or nothing.
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport>;
 }
