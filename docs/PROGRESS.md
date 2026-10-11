@@ -331,8 +331,8 @@ go. Open branches and folded sections are remembered between runs.
 
 ### Next
 
-1. Push to GitHub so CI runs. `.github/workflows/ci.yml` runs on Windows: UI check and
-   build, then `cargo fmt --check`, `clippy -D warnings` and `cargo test`. `rustfmt.toml`
-   keeps the 120-column style, and the code is formatted with it.
-2. Check the original tier on real RAF/DNG files once H: is mounted.
-3. Stage 1, continued: originals at 100% from H: (needs the drive mounted).
+Stage 1 is done. The app does not load originals: they may be offline, so the cached
+previews are the largest image it shows. The `original` tier stays in `c1cat image`, untested
+on real files.
+
+1. Stage 2: editing and sync back to Capture One, once the user confirms.
