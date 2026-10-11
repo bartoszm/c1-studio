@@ -370,7 +370,22 @@ impl Library {
         let mut edits = self.edits.batch()?;
         let now = now_ms();
         let mut undo = Vec::new();
-        for (row, op) in changes.iter().flat_map(|(row, op)| op.split().into_iter().map(move |op| (*row, op))) {
+        // One op per keyword. Removing a keyword takes everything under it too (removing
+        // `animal` takes `animal|dog`), each queued on its own so undo puts back exactly
+        // what went.
+        let mut each: Vec<(u64, Op)> = Vec::new();
+        for (row, op) in changes {
+            match op {
+                Op::RemoveKeywords { paths } => {
+                    let Some(photo) = batch.photo(*row)? else { continue };
+                    for k in photo.keywords.iter().filter(|k| paths.iter().any(|p| k.0.starts_with(&p.0))) {
+                        each.push((*row, Op::RemoveKeywords { paths: vec![k.clone()] }));
+                    }
+                }
+                other => each.extend(other.split().into_iter().map(|op| (*row, op))),
+            }
+        }
+        for (row, op) in each {
             let Some(what) = op.queue_key() else { bail!("{op:?} cannot be queued yet") };
             let Some(photo) = batch.photo(row)? else { continue };
             let mut after = photo.clone();

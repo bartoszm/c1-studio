@@ -146,7 +146,7 @@
           {/each}
           <button
             class="remove"
-            title={picked > 1 ? `Remove from the ${picked} selected photos` : "Remove"}
+            title={`Remove${sortedKeywords.some((k) => k.join("|").startsWith(full + "|")) ? ", with the keywords under it," : ""}${picked > 1 ? ` from the ${picked} selected photos` : ""}`}
             aria-label="Remove {full}"
             onclick={() => onremovekeyword(full)}>×</button
           >
