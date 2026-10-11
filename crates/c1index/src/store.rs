@@ -160,6 +160,23 @@ impl Batch<'_> {
         Ok(())
     }
 
+    pub fn metas_with_prefix(&self, prefix: &str) -> anyhow::Result<Vec<(String, String)>> {
+        let table = self.tx.open_table(META)?;
+        let mut out = Vec::new();
+        for entry in table.iter()? {
+            let (k, v) = entry?;
+            if k.value().starts_with(prefix) {
+                out.push((k.value().to_owned(), v.value().to_owned()));
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn remove_meta(&mut self, key: &str) -> anyhow::Result<()> {
+        self.tx.open_table(META)?.remove(key)?;
+        Ok(())
+    }
+
     pub fn set_meta(&mut self, key: &str, value: &str) -> anyhow::Result<()> {
         self.tx.open_table(META)?.insert(key, value)?;
         Ok(())

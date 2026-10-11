@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use anyhow::Context;
 use c1index::{Dim, Filter, Library, QueryOptions, Sort};
-use c1model::{Change, ColorLabel, ImageTier, KeywordPath, Op, Photo, PhotoSource};
+use c1model::{ApplyPlan, Change, ColorLabel, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource};
 use clap::{Parser, Subcommand};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 
@@ -162,6 +162,51 @@ enum KeywordAction {
         #[command(flatten)]
         write: WriteFlags,
     },
+    /// Rename a keyword everywhere.
+    Rename {
+        #[arg(long)]
+        path: String,
+        #[arg(long, value_name = "NAME")]
+        to: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Move a keyword (and what is under it) under another, or to the top level.
+    Move {
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        to_parent: Option<String>,
+        #[arg(long)]
+        to_root: bool,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Join keywords into one, existing or new, on every photo.
+    Merge {
+        #[arg(long = "from", required = true)]
+        from: Vec<String>,
+        #[arg(long)]
+        into: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Put keywords under a parent keyword, existing or new.
+    Group {
+        #[arg(long = "path", required = true)]
+        paths: Vec<String>,
+        #[arg(long)]
+        under: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Move a group's keywords up a level; the group goes if no photo carries it.
+    Ungroup {
+        #[arg(long)]
+        path: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
 }
 
 #[derive(clap::Args)]
@@ -273,6 +318,50 @@ fn edit(
     Ok(())
 }
 
+/// Plans a keyword tree change and, with `--apply`, writes it.
+fn remap(
+    catalog: Option<&PathBuf>,
+    flags: &WriteFlags,
+    build: impl FnOnce(&Library) -> anyhow::Result<KeywordRemap>,
+) -> anyhow::Result<()> {
+    let session = open(catalog)?;
+    if !flags.no_sync {
+        sync(&session, true)?;
+    }
+    let remap = build(&session.library)?;
+    if let Some(why) = session.source.check_remap(&[], &remap)? {
+        anyhow::bail!("{}: {why}", remap.label);
+    }
+    let froms: Vec<String> = remap.map.iter().map(|(f, _)| f.to_pipe()).collect();
+    let carrying = Filter { keywords_under: froms, trashed: c1index::Trashed::Include, ..Filter::default() };
+    let photos = session.library.query(&carrying, &QueryOptions { limit: Some(0), ..QueryOptions::default() })?.total;
+    let report = if flags.apply {
+        let plan = ApplyPlan { remaps: vec![remap.clone()], ..ApplyPlan::default() };
+        let report = session.source.apply(&plan)?;
+        sync(&session, true)?;
+        Some(report)
+    } else {
+        None
+    };
+    if flags.json {
+        let out = serde_json::json!({
+            "remap": remap.label,
+            "photos": photos,
+            "applied": report.as_ref().map(|r| r.applied),
+            "backup": report.as_ref().and_then(|r| r.backup.clone()),
+            "conflicts": [],
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+    } else {
+        println!("{}: {photos} photo(s) carry these keywords", remap.label);
+        match report {
+            Some(r) => println!("written; backup: {}", r.backup.unwrap_or_default()),
+            None => println!("dry run: nothing written; add --apply to write"),
+        }
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -336,6 +425,43 @@ fn main() -> anyhow::Result<()> {
                 KeywordAction::Remove { paths, select, write } => {
                     let paths = paths.iter().map(|p| KeywordPath::from_pipe(p.trim())).collect();
                     (select, write, Op::RemoveKeywords { paths })
+                }
+                KeywordAction::Rename { path, to, write } => {
+                    let path = KeywordPath::from_pipe(&path);
+                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::rename(path, &to)));
+                }
+                KeywordAction::Move { path, to_parent, to_root, write } => {
+                    if to_root == to_parent.is_some() {
+                        anyhow::bail!("pass --to-parent PATH or --to-root");
+                    }
+                    let under = to_parent.map(|p| KeywordPath::from_pipe(&p));
+                    let path = KeywordPath::from_pipe(&path);
+                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::group(vec![path], under)));
+                }
+                KeywordAction::Merge { from, into, write } => {
+                    let from = from.iter().map(|p| KeywordPath::from_pipe(p)).collect();
+                    let into = KeywordPath::from_pipe(&into);
+                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::join(from, into)));
+                }
+                KeywordAction::Group { paths, under, write } => {
+                    let paths = paths.iter().map(|p| KeywordPath::from_pipe(p)).collect();
+                    let under = Some(KeywordPath::from_pipe(&under));
+                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::group(paths, under)));
+                }
+                KeywordAction::Ungroup { path, write } => {
+                    let group = KeywordPath::from_pipe(&path);
+                    return remap(cli.catalog.as_ref(), &write, |library| {
+                        let children: Vec<KeywordPath> = library
+                            .keywords()?
+                            .into_iter()
+                            .map(|n| n.path)
+                            .filter(|p| p.0.len() == group.0.len() + 1 && p.0.starts_with(&group.0))
+                            .collect();
+                        if children.is_empty() {
+                            anyhow::bail!("{path:?} has no keywords under it");
+                        }
+                        Ok(KeywordRemap::ungroup(group, children))
+                    });
                 }
             };
             edit(cli.catalog.as_ref(), &select, &write, |_| op.clone())?;

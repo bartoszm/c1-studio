@@ -4,8 +4,8 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use crate::change::{ApplyPlan, ApplyReport, Change, plan_with};
-use crate::photo::{Collection, Photo, PhotoId, SourceId};
+use crate::change::{ApplyPlan, ApplyReport, Change, KeywordRemap, plan_with};
+use crate::photo::{Collection, KeywordNode, KeywordPath, Photo, PhotoId, SourceId};
 use crate::source::{
     Capabilities, Cursor, Field, ImageRef, ImageTier, PhotoSource, Result, SourceError, SourceEvent, SourceInfo,
     WriteStatus,
@@ -81,6 +81,19 @@ impl PhotoSource for MemorySource {
         }
         sink(SourceEvent::BeginFull)?;
         sink(SourceEvent::Collections(state.collections.clone()))?;
+        // The keyword tree: every keyword on a photo and every level above it.
+        let mut tree: Vec<KeywordNode> = Vec::new();
+        for path in state.photos.values().flat_map(|p| &p.keywords) {
+            for n in 1..=path.0.len() {
+                let level = KeywordPath(path.0[..n].to_vec());
+                let uses = u32::from(n == path.0.len());
+                match tree.iter_mut().find(|k| k.path == level) {
+                    Some(node) => node.uses += uses,
+                    None => tree.push(KeywordNode { path: level, uses }),
+                }
+            }
+        }
+        sink(SourceEvent::Keywords(tree))?;
         for photo in state.photos.values() {
             sink(SourceEvent::Upsert(Box::new(photo.clone())))?;
         }
@@ -103,6 +116,19 @@ impl PhotoSource for MemorySource {
         Ok(plan_with(changes, |id| state.photos.get(id)))
     }
 
+    fn plan_after(&self, remaps: &[KeywordRemap], changes: &[Change]) -> Result<ApplyPlan> {
+        let state = self.state.lock().unwrap();
+        let mut after = state.photos.clone();
+        for photo in after.values_mut() {
+            for remap in remaps {
+                remap.apply(&mut photo.keywords);
+            }
+        }
+        let mut plan = plan_with(changes, |id| after.get(id));
+        plan.remaps = remaps.to_vec();
+        Ok(plan)
+    }
+
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport> {
         let mut state = self.state.lock().unwrap();
         if let Some(by) = &state.locked_by {
@@ -110,9 +136,20 @@ impl PhotoSource for MemorySource {
         }
         // Re-check against the current state: if anything moved since the plan was
         // made, refuse rather than overwrite.
-        let fresh = plan_with(&plan.apply, |id| state.photos.get(id));
+        let mut after = state.photos.clone();
+        for photo in after.values_mut() {
+            for remap in &plan.remaps {
+                remap.apply(&mut photo.keywords);
+            }
+        }
+        let fresh = plan_with(&plan.apply, |id| after.get(id));
         if fresh.apply.len() != plan.apply.len() {
             return Err(SourceError::StalePlan);
+        }
+        for remap in &plan.remaps {
+            for photo in state.photos.values_mut() {
+                remap.apply(&mut photo.keywords);
+            }
         }
         for change in &plan.apply {
             if let Some(photo) = state.photos.get_mut(&change.photo) {
@@ -120,6 +157,6 @@ impl PhotoSource for MemorySource {
             }
         }
         state.version += 1;
-        Ok(ApplyReport { applied: plan.apply.len(), backup: None })
+        Ok(ApplyReport { applied: plan.remaps.len() + plan.apply.len(), backup: None })
     }
 }

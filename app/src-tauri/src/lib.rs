@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
-use c1model::{Change, Collection, ColorLabel, ImageTier, KeywordPath, Op, Photo, PhotoSource, WriteStatus};
+use c1model::{
+    Change, Collection, ColorLabel, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, WriteStatus,
+};
 use serde::{Deserialize, Serialize};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 use tauri::http::{Response, StatusCode, header};
@@ -188,6 +190,105 @@ async fn keywords(app: State<'_, App>) -> Result<Vec<(String, u32)>, String> {
     Ok(nodes.into_iter().map(|n| (n.path.to_pipe(), n.uses)).collect())
 }
 
+/// A keyword tree change from the UI. Paths join levels with `|`.
+#[derive(Deserialize)]
+enum RemapRequest {
+    Rename {
+        path: String,
+        name: String,
+    },
+    /// Several keywords into one, existing or new; with one, a replace.
+    Join {
+        from: Vec<String>,
+        into: String,
+    },
+    /// Under a parent, existing or new; `None` is the top level.
+    Group {
+        paths: Vec<String>,
+        under: Option<String>,
+    },
+    Ungroup {
+        path: String,
+    },
+}
+
+fn one_path(path: &str) -> Result<KeywordPath, String> {
+    Ok(keyword_paths(&[path.to_owned()])?.remove(0))
+}
+
+/// Queues a keyword tree change; the library shows it at once. Returns its number, for
+/// undo.
+#[tauri::command]
+async fn remap_keywords(app: State<'_, App>, request: RemapRequest) -> Result<u64, String> {
+    let s = app.session()?;
+    let remap = match request {
+        RemapRequest::Rename { path, name } => {
+            let name = name.trim();
+            if name.is_empty() || name.contains(['|', ',']) {
+                return Err(format!("{name:?}: a name cannot be empty or contain | or ,"));
+            }
+            KeywordRemap::rename(one_path(&path)?, name)
+        }
+        RemapRequest::Join { from, into } => KeywordRemap::join(keyword_paths(&from)?, one_path(&into)?),
+        RemapRequest::Group { paths, under } => {
+            let under = under.as_deref().map(one_path).transpose()?;
+            let paths = keyword_paths(&paths)?;
+            if let Some(u) = &under
+                && paths.iter().any(|p| u.0.starts_with(&p.0))
+            {
+                return Err("a keyword cannot go under itself or under one of its own keywords".into());
+            }
+            KeywordRemap::group(paths, under)
+        }
+        RemapRequest::Ungroup { path } => {
+            let group = one_path(&path)?;
+            let children: Vec<KeywordPath> = s
+                .library
+                .keywords()
+                .map_err(|e| format!("{e:#}"))?
+                .into_iter()
+                .map(|n| n.path)
+                .filter(|p| p.0.len() == group.0.len() + 1 && p.0.starts_with(&group.0))
+                .collect();
+            if children.is_empty() {
+                return Err(format!("{path:?} has no keywords under it"));
+            }
+            KeywordRemap::ungroup(group, children)
+        }
+    };
+    s.touched();
+    s.library.remap_keywords(remap).map_err(|e| format!("{e:#}"))
+}
+
+/// Drops a queued keyword tree change; the photos it touched are read from Capture One
+/// again.
+#[tauri::command]
+async fn undo_remap(app: AppHandle, seq: u64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = app.state::<App>().session()?;
+        s.touched();
+        s.library.undo_remap(seq).map_err(|e| format!("{e:#}"))?;
+        run_sync(&app).map(|_| ())
+    })
+    .await
+    .map_err(text)?
+}
+
+/// Queued keyword tree changes: number and what they do.
+#[tauri::command]
+async fn remaps(app: State<'_, App>) -> Result<Vec<(u64, String)>, String> {
+    let list = app.session()?.library.remaps().map_err(|e| format!("{e:#}"))?;
+    Ok(list.into_iter().map(|(seq, q)| (seq, q.remap.label)).collect())
+}
+
+/// How many photos carry any of these keywords (or keywords under them).
+#[tauri::command]
+async fn keyword_users(app: State<'_, App>, paths: Vec<String>) -> Result<usize, String> {
+    let filter = Filter { keywords_under: paths, trashed: c1index::Trashed::Include, ..Filter::default() };
+    let options = QueryOptions { limit: Some(0), ..QueryOptions::default() };
+    Ok(app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.total)
+}
+
 #[tauri::command]
 async fn pending(app: State<'_, App>) -> Result<Vec<PendingEdit>, String> {
     app.session()?.library.pending().map_err(|e| format!("{e:#}"))
@@ -219,13 +320,28 @@ struct WritePlan {
     conflicts: Vec<PendingEdit>,
     /// Edits Capture One can no longer take (the photo is gone), with why.
     blocked: Vec<(PendingEdit, String)>,
+    /// Keyword tree changes that would be written first: number and what they do.
+    remaps: Vec<(u64, String)>,
+    /// Keyword tree changes Capture One can no longer take, with why.
+    blocked_remaps: Vec<(u64, String, String)>,
 }
 
-fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan), String> {
+/// The plan, what it shows, and the numbers of the keyword tree changes it carries.
+fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>), String> {
     let pending = s.library.pending().map_err(|e| format!("{e:#}"))?;
     let (conflicts, ready): (Vec<_>, Vec<_>) = pending.into_iter().partition(|p| p.pending.theirs.is_some());
     let changes: Vec<Change> = ready.iter().map(|p| p.pending.change.clone()).collect();
-    let plan = s.source.plan(&changes).map_err(text)?;
+    let mut remaps = Vec::new();
+    let mut blocked_remaps = Vec::new();
+    for (seq, queued) in s.library.remaps().map_err(|e| format!("{e:#}"))? {
+        let earlier: Vec<KeywordRemap> = remaps.iter().map(|(_, r): &(u64, KeywordRemap)| r.clone()).collect();
+        match s.source.check_remap(&earlier, &queued.remap).map_err(text)? {
+            None => remaps.push((seq, queued.remap)),
+            Some(why) => blocked_remaps.push((seq, queued.remap.label, why)),
+        }
+    }
+    let ok: Vec<KeywordRemap> = remaps.iter().map(|(_, r)| r.clone()).collect();
+    let plan = s.source.plan_after(&ok, &changes).map_err(text)?;
     let pick = |list: &[Change]| -> Vec<PendingEdit> {
         ready.iter().filter(|p| list.contains(&p.pending.change)).cloned().collect()
     };
@@ -243,8 +359,11 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan), String> {
         unchanged: pick(&plan.no_ops),
         conflicts,
         blocked,
+        remaps: remaps.iter().map(|(seq, r)| (*seq, r.label.clone())).collect(),
+        blocked_remaps,
     };
-    Ok((out, plan))
+    let seqs = remaps.iter().map(|(seq, _)| *seq).collect();
+    Ok((out, plan, seqs))
 }
 
 #[tauri::command]
@@ -281,15 +400,17 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
     let s = app.state::<App>().session()?;
     let report = {
         let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-        let (summary, plan) = plan_writes(&s)?;
+        let (summary, plan, remaps) = plan_writes(&s)?;
         if !summary.conflicts.is_empty() {
             return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
         }
         let report = s.source.apply(&plan).map_err(text)?;
         let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
+        s.library.settle_remaps(&remaps).map_err(|e| format!("{e:#}"))?;
         s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
-        if report.applied == 0 && !summary.blocked.is_empty() {
-            return Ok(Outcome::Attention { conflicts: 0, blocked: summary.blocked.len() });
+        let blocked = summary.blocked.len() + summary.blocked_remaps.len();
+        if report.applied == 0 && blocked > 0 {
+            return Ok(Outcome::Attention { conflicts: 0, blocked });
         }
         WriteReport { written: report.applied, backup: report.backup }
     };
@@ -361,7 +482,8 @@ fn autosave_loop(app: AppHandle) {
             report_autosave(&app, &s, AutosaveState::Off);
             continue;
         }
-        let queued = s.library.pending().map(|p| p.len()).unwrap_or(0);
+        let queued =
+            s.library.pending().map(|p| p.len()).unwrap_or(0) + s.library.remaps().map(|r| r.len()).unwrap_or(0);
         if queued == 0 {
             report_autosave(&app, &s, AutosaveState::Idle);
             continue;
@@ -489,6 +611,10 @@ pub fn run() {
             edit,
             edit_ops,
             keywords,
+            remap_keywords,
+            undo_remap,
+            remaps,
+            keyword_users,
             pending,
             discard,
             resolve,

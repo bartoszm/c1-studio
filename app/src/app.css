@@ -258,3 +258,32 @@ footer .autosave label { display: flex; align-items: center; gap: 4px; cursor: p
 footer .autosave input { margin: 0; accent-color: var(--queued); }
 footer .autosave .attention { color: #e8b03a; text-decoration: underline; }
 footer .edit-error { color: var(--error); }
+
+/* The keyword tree's search and right-click menu. */
+.tree-search {
+  width: calc(100% - 16px);
+  margin: 2px 8px 6px;
+  padding: 3px 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.tree-search:focus { outline: none; border-color: var(--queued); }
+.tree-none { margin: 4px 12px; color: var(--muted); }
+.menu-shield { position: fixed; inset: 0; z-index: 30; }
+.menu {
+  position: fixed;
+  z-index: 31;
+  display: grid;
+  min-width: 190px;
+  padding: 4px 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 50%);
+}
+.menu-title { padding: 4px 12px 6px; color: var(--muted); border-bottom: 1px solid var(--line); margin-bottom: 4px; overflow-wrap: anywhere; }
+.menu button { padding: 4px 12px; text-align: left; }
+.menu button:hover { background: var(--hover); }

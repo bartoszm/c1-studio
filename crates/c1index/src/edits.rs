@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use c1model::{Change, Op, PhotoId};
+use c1model::{Change, KeywordRemap, Op, PhotoId};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +16,15 @@ use serde::{Deserialize, Serialize};
 const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending");
 /// sequence number → JSON [`Event`].
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
+/// sequence number → JSON [`QueuedRemap`]: keyword tree changes, applied in order.
+const REMAPS: TableDefinition<u64, &[u8]> = TableDefinition::new("remaps");
+
+/// A keyword tree change waiting to be written.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QueuedRemap {
+    pub remap: KeywordRemap,
+    pub at: i64,
+}
 
 /// One field of one photo, edited in the app, waiting to be written to its source.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -68,6 +77,7 @@ impl Edits {
         let tx = db.begin_write()?;
         tx.open_table(PENDING)?;
         tx.open_table(EVENTS)?;
+        tx.open_table(REMAPS)?;
         tx.commit()?;
         Ok(Self { db })
     }
@@ -83,6 +93,17 @@ impl Edits {
         for entry in tx.open_table(PENDING)?.iter()? {
             let (key, bytes) = entry?;
             out.push((key.value().to_owned(), serde_json::from_slice(bytes.value())?));
+        }
+        Ok(out)
+    }
+
+    /// Queued keyword tree changes, in the order they apply.
+    pub fn remaps(&self) -> anyhow::Result<Vec<(u64, QueuedRemap)>> {
+        let tx = self.db.begin_read()?;
+        let mut out = Vec::new();
+        for entry in tx.open_table(REMAPS)?.iter()? {
+            let (seq, bytes) = entry?;
+            out.push((seq.value(), serde_json::from_slice(bytes.value())?));
         }
         Ok(out)
     }
@@ -115,6 +136,35 @@ impl EditsBatch {
     pub fn remove(&mut self, key: &str) -> anyhow::Result<()> {
         self.tx.open_table(PENDING)?.remove(key)?;
         Ok(())
+    }
+
+    pub fn add_remap(&mut self, remap: &QueuedRemap) -> anyhow::Result<u64> {
+        let mut table = self.tx.open_table(REMAPS)?;
+        let next = table.last()?.map_or(0, |(k, _)| k.value() + 1);
+        let bytes = serde_json::to_vec(remap)?;
+        table.insert(next, bytes.as_slice())?;
+        Ok(next)
+    }
+
+    pub fn get_remap(&self, seq: u64) -> anyhow::Result<Option<QueuedRemap>> {
+        let table = self.tx.open_table(REMAPS)?;
+        let Some(bytes) = table.get(seq)? else { return Ok(None) };
+        Ok(Some(serde_json::from_slice(bytes.value())?))
+    }
+
+    pub fn remove_remap(&mut self, seq: u64) -> anyhow::Result<()> {
+        self.tx.open_table(REMAPS)?.remove(seq)?;
+        Ok(())
+    }
+
+    /// Every queued entry with its key (for rewriting keys after a remap).
+    pub fn all(&self) -> anyhow::Result<Vec<(String, Pending)>> {
+        let mut out = Vec::new();
+        for entry in self.tx.open_table(PENDING)?.iter()? {
+            let (key, bytes) = entry?;
+            out.push((key.value().to_owned(), serde_json::from_slice(bytes.value())?));
+        }
+        Ok(out)
     }
 
     pub fn log(&mut self, event: &Event) -> anyhow::Result<()> {

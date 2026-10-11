@@ -8,8 +8,8 @@ use std::time::Instant;
 use anyhow::{Context, bail};
 use c1model::change::{Check, diff};
 use c1model::{
-    Change, Collection, Condition, Cursor, MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError,
-    SourceEvent,
+    Change, Collection, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap, MODEL_VERSION, Op, Photo, PhotoId,
+    PhotoSource, SmartRule, SourceError, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, TopDocs};
@@ -17,7 +17,7 @@ use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
 
-use crate::edits::{self, Edits, Event, Origin, Pending, now_ms, pending_key};
+use crate::edits::{self, Edits, Event, Origin, Pending, QueuedRemap, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
@@ -219,13 +219,18 @@ impl Library {
             keys[row] = Some(key);
         }
         *self.keys.write().unwrap() = keys;
+        self.refresh_distinct()?;
+        *self.smart.write().unwrap() =
+            self.store.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
+        Ok(())
+    }
 
+    /// The values substring filters match against, after keywords (or places) changed.
+    fn refresh_distinct(&self) -> anyhow::Result<()> {
         let searcher = self.reader.searcher();
         let counts = searcher.search(&AllQuery, &FacetCollector::new(&SUBSTRING_DIMS))?;
         *self.distinct.write().unwrap() =
             counts.into_iter().map(|(dim, values)| (dim, values.into_iter().map(|(v, _)| v).collect())).collect();
-        *self.smart.write().unwrap() =
-            self.store.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
         Ok(())
     }
 
@@ -238,6 +243,7 @@ impl Library {
         for (key, pending) in self.edits.pending()? {
             queued.entry(edits::photo_key(&key).to_owned()).or_default().push((key, pending));
         }
+        let remaps: Vec<KeywordRemap> = self.edits.remaps()?.into_iter().map(|(_, q)| q.remap).collect();
         let mut edits = self.edits.batch()?;
         let now = now_ms();
         let source_id = source.info().id.0;
@@ -276,6 +282,9 @@ impl Library {
                             (batch.next_row().map_err(source_err)?, None)
                         }
                     };
+                    for remap in &remaps {
+                        remap.apply(&mut photo.keywords);
+                    }
                     for (pending_key, mut pending) in queued.remove(&key).unwrap_or_default() {
                         match pending.change.op.check(&photo) {
                             // The source holds what the user wants: nothing left to write.
@@ -403,6 +412,9 @@ impl Library {
         batch.commit()?;
         edits.commit()?;
         self.reader.reload()?;
+        if undo.iter().any(|(_, op)| matches!(op, Op::AddKeywords { .. } | Op::RemoveKeywords { .. })) {
+            self.refresh_distinct()?;
+        }
         Ok(undo)
     }
 
@@ -625,8 +637,129 @@ impl Library {
         self.store.collections()
     }
 
-    pub fn keywords(&self) -> anyhow::Result<Vec<c1model::KeywordNode>> {
-        self.store.keywords()
+    /// The sources' keyword trees, as they will be once queued keyword changes are
+    /// written: moved keywords at their new paths (joined ones counted together), new
+    /// parents added, emptied groups gone.
+    pub fn keywords(&self) -> anyhow::Result<Vec<KeywordNode>> {
+        let mut nodes = self.store.keywords()?;
+        for (_, queued) in self.edits.remaps()? {
+            let remap = &queued.remap;
+            let mut out: Vec<KeywordNode> = Vec::with_capacity(nodes.len());
+            for node in nodes {
+                let path = remap.path(&node.path);
+                match out.iter_mut().find(|n| n.path == path) {
+                    Some(same) => same.uses += node.uses,
+                    None => out.push(KeywordNode { path, uses: node.uses }),
+                }
+            }
+            let parents: Vec<KeywordPath> =
+                out.iter().flat_map(|n| (1..n.path.0.len()).map(|k| KeywordPath(n.path.0[..k].to_vec()))).collect();
+            for parent in parents {
+                if !out.iter().any(|n| n.path == parent) {
+                    out.push(KeywordNode { path: parent, uses: 0 });
+                }
+            }
+            let paths: Vec<KeywordPath> = out.iter().map(|n| n.path.clone()).collect();
+            out.retain(|n| {
+                !remap.prune.contains(&n.path)
+                    || n.uses > 0
+                    || paths.iter().any(|c| c.0.len() > n.path.0.len() && c.0.starts_with(&n.path.0))
+            });
+            nodes = out;
+        }
+        Ok(nodes)
+    }
+
+    /// Queues a keyword tree change and shows it at once: every photo carrying a moved
+    /// keyword is rewritten here, and queued keyword edits follow the keywords to their
+    /// new paths. Returns its number, for [`Library::undo_remap`].
+    pub fn remap_keywords(&self, remap: KeywordRemap) -> anyhow::Result<u64> {
+        if remap.map.is_empty() && remap.prune.is_empty() {
+            bail!("{}: nothing would change", remap.label);
+        }
+        let _writing = self.writing.lock().unwrap();
+        let carrying = Filter {
+            keywords_under: remap.map.iter().map(|(from, _)| from.to_pipe()).collect(),
+            trashed: Trashed::Include,
+            ..Filter::default()
+        };
+        let rows = self.query(&carrying, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+        let mut writer = self.writer()?;
+        let mut batch = self.store.batch()?;
+        let mut edits = self.edits.batch()?;
+        for row in rows {
+            let Some(mut photo) = batch.photo(row)? else { continue };
+            if remap.apply(&mut photo.keywords) {
+                let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
+                batch.put_photo(row, &photo, fingerprint)?;
+                writer.delete_term(Term::from_field_u64(self.fields.row, row));
+                writer.add_document(schema::document(&self.fields, row, &photo))?;
+            }
+        }
+        // Queued keyword edits name keywords by path: they move with them.
+        for (key, mut pending) in edits.all()? {
+            let moved = match &pending.change.op {
+                Op::AddKeywords { paths } if remap.moves(&paths[0]) => {
+                    Op::AddKeywords { paths: vec![remap.path(&paths[0])] }
+                }
+                Op::RemoveKeywords { paths } if remap.moves(&paths[0]) => {
+                    Op::RemoveKeywords { paths: vec![remap.path(&paths[0])] }
+                }
+                _ => continue,
+            };
+            pending.change.op = moved;
+            edits.remove(&key)?;
+            let what = pending.change.op.queue_key().unwrap_or_default();
+            edits.put(&pending_key(&pending.change.photo, &what), &pending)?;
+        }
+        let seq = edits.add_remap(&QueuedRemap { remap, at: now_ms() })?;
+        writer.commit()?;
+        batch.commit()?;
+        edits.commit()?;
+        self.reader.reload()?;
+        self.refresh_distinct()?;
+        Ok(seq)
+    }
+
+    /// Queued keyword tree changes, in order.
+    pub fn remaps(&self) -> anyhow::Result<Vec<(u64, QueuedRemap)>> {
+        self.edits.remaps()
+    }
+
+    /// Drops a queued keyword tree change. The photos it rewrote are read from their
+    /// source again by the next sync, which must follow (with the remaining changes laid
+    /// over them). Queued keyword edits that moved with it stay where they are.
+    pub fn undo_remap(&self, seq: u64) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        let mut edits = self.edits.batch()?;
+        let Some(queued) = edits.get_remap(seq)? else { return Ok(()) };
+        edits.remove_remap(seq)?;
+        let moved: Vec<String> = queued.remap.map.iter().map(|(_, to)| to.to_pipe()).collect();
+        let carrying = Filter { keywords_under: moved, trashed: Trashed::Include, ..Filter::default() };
+        let rows = self.query(&carrying, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+        let mut batch = self.store.batch()?;
+        for row in rows {
+            if let Some(photo) = batch.photo(row)? {
+                // A fingerprint no photo has: the next sync takes the source's version.
+                batch.put_photo(row, &photo, 0)?;
+            }
+        }
+        // And that sync reads everything, not only what changed in the source.
+        for (key, _) in batch.metas_with_prefix("cursor:")? {
+            batch.remove_meta(&key)?;
+        }
+        batch.commit()?;
+        edits.commit()
+    }
+
+    /// After a source took these keyword tree changes: they are done.
+    pub fn settle_remaps(&self, seqs: &[u64]) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        let mut edits = self.edits.batch()?;
+        for seq in seqs {
+            edits.remove_remap(*seq)?;
+        }
+        edits.commit()
     }
 
     /// `#875`, an exact name, a case-insensitive name, or a unique path suffix — the
