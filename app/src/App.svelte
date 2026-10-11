@@ -6,9 +6,10 @@
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS, FIELD_NAMES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
-  import { albumTree, pathTree, searchTree, type Node } from "./lib/tree";
+  import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import CopyDialog from "./CopyDialog.svelte";
+  import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import Info from "./Info.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
@@ -17,9 +18,9 @@
   import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = ["rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder"];
+  const DIMS: Dim[] = ["rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag"];
   /** Groups listed as plain values; the rest are trees. */
-  const FLAT: Dim[] = ["rating", "color", "camera", "country"];
+  const FLAT: Dim[] = ["rating", "color", "camera"];
 
   let status = $state<api.Status | null>(null);
   /** The source menu in the header; open by itself when nothing could be opened. */
@@ -457,6 +458,20 @@
     filter = { ...filter, folder: filter.folder === n.value ? undefined : n.value };
     run();
   }
+  function pickPlace(n: Node) {
+    filter = { ...filter, place_under: filter.place_under === n.value ? undefined : n.value };
+    run();
+  }
+  /** Photos in view with a country but no ISO code (from the index's flags). */
+  let missingCodes = $derived(result?.facets.flag?.find(([v]) => v === "no_country_code")?.[1] ?? 0);
+  let fillingCodes = $state(false);
+  async function codesFilled(undo: [number, api.Op][]) {
+    if (undo.length) {
+      undoStack.push({ ops: undo });
+      redoStack = [];
+    }
+    await edited();
+  }
   function pickKeyword(n: Node) {
     filter = { ...filter, keywords_under: filter.keywords_under?.[0] === n.value ? undefined : [n.value] };
     run();
@@ -564,11 +579,12 @@
 
   const TITLES: Record<string, string> = {
     rating: "Rating", color: "Colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
-    albums: "Albums", folders: "Folders", keywords: "Keywords",
+    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location",
   };
 
   let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart));
   let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
+  let places = $derived(placeTree(result?.facets.place_tree ?? []));
   let keywords = $derived(pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword"));
   // While searching, the tree shows only matches (and the branches above them), opened.
   let keywordView = $derived(searchTree(keywords, keywordSearch));
@@ -716,6 +732,8 @@
     collections: (v) =>
       v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
+    place_under: (v) => [{ what: "Place", text: placeText(v) }],
+    no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
   };
   function monthText(key: string) {
     const [y, m] = key.split("-").map(Number);
@@ -809,7 +827,7 @@
     onalbum={showAlbum}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
-    onplace={(field, value) => applyEdit({ Place: { [field]: value } })}
+    onplace={(fields) => applyEdit({ Place: fields })}
     ongeo={(value) => applyEdit({ Geo: value })}
     oniptc={(field, value) => applyEdit({ Iptc: { [field]: value } })}
     clip={clipText}
@@ -868,6 +886,17 @@
       {/if}
     </section>
     {@render dates()}
+    <section>
+      {@render head("places")}
+      {#if !folded.has("places")}
+        <Tree nodes={places} selected={filter.place_under && "p:" + filter.place_under} {expanded} onpick={pickPlace} />
+        {#if missingCodes}
+          <button class="tree-action" onclick={() => (fillingCodes = true)} title="Fill in the ISO codes of these photos' countries">
+            {missingCodes.toLocaleString()} without an ISO country code · Fill in…
+          </button>
+        {/if}
+      {/if}
+    </section>
     <section>
       {@render head("folders")}
       {#if !folded.has("folders")}
@@ -1025,6 +1054,10 @@
     onclose={() => (keywordDialog = null)}
     ondone={applyRemap}
   />
+{/if}
+
+{#if fillingCodes}
+  <CountryCodesDialog {filter} onclose={() => (fillingCodes = false)} ondone={codesFilled} />
 {/if}
 
 {#if copying}

@@ -3,7 +3,7 @@
 
 import type { Collection } from "./api";
 
-export type Icon = "album" | "smart" | "group" | "project" | "folder" | "keyword" | "date";
+export type Icon = "album" | "smart" | "group" | "project" | "folder" | "keyword" | "date" | "place";
 
 export type Node = {
   /** Unique across all trees: `a:<id>`, `f:<path>`, `k:<path>`. */
@@ -112,4 +112,26 @@ export function searchTree(nodes: Node[], query: string): { nodes: Node[]; open:
     return out;
   }
   return { nodes: q ? walk(nodes) : nodes, open };
+}
+
+/** What a level of the place tree is called when the photo has no value for it. */
+const NO_PLACE = ["(no country)", "(no state)", "(no city)", "(no location)"];
+
+/** Country › State › City › Location, from the `place_tree` facet. A missing level
+ *  (`—` in the index) keeps its place, named for what is missing. */
+export function placeTree(values: [string, number][]): Node[] {
+  const name = (nodes: Node[], depth: number) => {
+    for (const n of nodes) {
+      if (n.name === "—") n.name = NO_PLACE[depth] ?? "—";
+      name(n.children, depth + 1);
+    }
+  };
+  const roots = pathTree(values, "|", "p:", "place");
+  name(roots, 0);
+  return roots;
+}
+
+/** `Poland|—|Kraków` → `Poland › (no state) › Kraków`. */
+export function placeText(path: string): string {
+  return path.split("|").map((part, i) => (part === "—" ? NO_PLACE[i] ?? part : part)).join(" › ");
 }

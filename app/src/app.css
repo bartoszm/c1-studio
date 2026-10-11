@@ -457,3 +457,7 @@ footer > span { white-space: nowrap; }
 /* A description typed in the details panel: lines kept, grows with them. */
 .info-panel textarea.field { display: block; resize: vertical; min-height: 2.6em; line-height: 1.35; font: inherit; }
 .info-panel label[title] { cursor: help; }
+
+/* An action under a tree: "Fill in…". */
+.tree-action { display: block; max-width: calc(100% - 34px); margin: 4px 8px 2px 26px; padding: 2px 6px; text-align: left; font-size: 12px; color: #e8b03a; border-radius: 3px; }
+.tree-action:hover { background: var(--hover); }

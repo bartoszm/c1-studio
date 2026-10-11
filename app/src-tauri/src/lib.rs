@@ -329,6 +329,41 @@ async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u6
     s.library.edit(&changes).map_err(|e| format!("{e:#}"))
 }
 
+/// Photos in view with a country but no ISO country code, by country.
+#[tauri::command]
+async fn missing_country_codes(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, Vec<u64>)>, String> {
+    let s = app.session()?;
+    let filter = Filter { no_country_code: true, ..filter };
+    let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
+    let rows = s.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.rows;
+    let mut by_country: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for row in rows {
+        if let Some(country) = s.library.photo(row).map_err(text)?.and_then(|p| p.place.country) {
+            by_country.entry(country).or_default().push(row);
+        }
+    }
+    Ok(by_country.into_iter().collect())
+}
+
+/// Sets the ISO country code on photos, as one edit (one undo). Each item: the photos
+/// and their code.
+#[tauri::command]
+async fn set_country_codes(app: State<'_, App>, items: Vec<(Vec<u64>, String)>) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    let mut changes = Vec::new();
+    for (rows, code) in items {
+        let code = clean_text("country_code", &code).ok_or("an empty country code")?;
+        for row in rows {
+            if let Some(photo) = s.library.photo(row).map_err(text)? {
+                let value = Place { country_code: Some(code.clone()), ..photo.place.clone() };
+                changes.push((row, Op::SetPlace { base: photo.place, value }));
+            }
+        }
+    }
+    s.touched();
+    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+}
+
 /// Pastes fields copied from one photo (as it was when copied) onto others, as one
 /// edit. Returns the ops that undo it.
 #[tauri::command]
@@ -918,6 +953,8 @@ pub fn run() {
             edit,
             edit_ops,
             paste,
+            missing_country_codes,
+            set_country_codes,
             keywords,
             remap_keywords,
             undo_remap,

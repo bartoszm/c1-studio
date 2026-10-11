@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { codeFor, nameFor } from "./lib/countries";
   import { COLORS, bytes, camera, date, exposure, folderOf, geoText, parseGeo } from "./lib/format";
 
   const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
@@ -30,7 +31,8 @@
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
     /** A location field typed in; "" clears it. */
-    onplace: (field: api.PlaceField, value: string) => void;
+    /** Location fields typed in; "" clears one. */
+    onplace: (fields: Partial<Record<api.PlaceField, string>>) => void;
     ongeo: (value: [number, number] | null) => void;
     /** An IPTC text field typed in; "" clears it. */
     oniptc: (field: api.CaptionField, value: string) => void;
@@ -92,6 +94,23 @@
       geoError = null;
       input.blur();
     }
+  }
+
+  // Country and ISO code go together: a country fills its code (and clearing it clears
+  // the code); a code typed where there is no country fills the country.
+  function withCode(field: api.PlaceField, value: string, place: api.Photo["place"]) {
+    const fields: Partial<Record<api.PlaceField, string>> = { [field]: value };
+    if (field === "country") {
+      const code = value.trim() ? codeFor(value) : "";
+      if (code !== null) fields.country_code = code;
+      // A name the app does not know: the old country's code would now be wrong. A code
+      // that never matched the country (set by hand) is left alone.
+      else if (place.country_code && codeFor(place.country ?? "") === place.country_code) fields.country_code = "";
+    } else if (field === "country_code" && value.trim() && !place.country) {
+      const name = nameFor(value);
+      if (name) fields.country = name;
+    }
+    return fields;
   }
 
   // A description has lines: Enter adds one, Ctrl+Enter (or leaving) saves.
@@ -256,7 +275,7 @@
             maxlength={field === "country_code" ? 3 : undefined}
             spellcheck="false"
             onkeydown={(e) => fieldKeys(e, shown)}
-            onchange={(e) => onplace(field, e.currentTarget.value)}
+            onchange={(e) => onplace(withCode(field, e.currentTarget.value, p.place))}
           />
         </dd>
       {/each}

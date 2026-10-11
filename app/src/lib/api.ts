@@ -4,7 +4,8 @@
 import { invoke } from "@tauri-apps/api/core";
 
 export type Dim =
-  | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city";
+  | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
+  | "place_tree" | "flag";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -22,6 +23,10 @@ export type Filter = {
   month?: string;
   /** `YYYY-MM-Www`: the days of an ISO week inside a month. */
   week?: string;
+  /** A place and everything in it: `Poland|Malopolska`, a missing level as `—`. */
+  place_under?: string;
+  /** Only photos with a country but no ISO country code. */
+  no_country_code?: boolean;
   /** Capture time. */
   captured?: TimeRange;
   camera?: string;
@@ -210,6 +215,11 @@ export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit
 /** Pastes fields copied from `from` onto the photos at `rows`; returns the ops that undo it. */
 export const paste = (rows: number[], from: Photo, fields: CopyField[]) =>
   invoke<[number, Op][]>("paste", { rows, from, fields });
+/** Photos in view with a country but no ISO code, by country. */
+export const missingCountryCodes = (filter: Filter) =>
+  invoke<[string, number[]][]>("missing_country_codes", { filter });
+/** Sets ISO codes on photos as one edit; returns the ops that undo it. */
+export const setCountryCodes = (items: [number[], string][]) => invoke<[number, Op][]>("set_country_codes", { items });
 export const editOps = (changes: [number, Op][]) => invoke<[number, Op][]>("edit_ops", { changes });
 /** Every keyword path in the catalog with its use count. */
 export const keywords = () => invoke<[string, number][]>("keywords");

@@ -704,8 +704,24 @@ in `<data dir>/settings.json`) writes the queue by itself.
   saves. Several photos selected: a field typed applies to all. Copy/paste offers the
   same groups.
 
+### Location tree and ISO country codes
+
+- **Tree:** `Dim::PlaceTree` (index schema 5) holds `Country|State|City|Location` and
+  every level above it, a missing level as `—` so the levels stay strict (`Poland|—|
+  Kraków`: no state). Filter `place_under`; the sidebar's Location section replaces
+  the flat Country list, `(no state)` and the like for missing levels.
+- **Country ↔ ISO code** (`app/src/lib/countries.ts`): names from the browser's ICU
+  region names in English, Polish and the user's language (retired codes such as DD
+  left out), plus aliases (USA, UK, England, Hong Kong…). Typing a country fills its
+  code, clearing it clears the code, an unknown name clears a code that belonged to the
+  old country; a code typed with no country fills the country. Codes are never learned
+  from the catalog, whose own pairs include China/HK and UK.
+- **Fill in:** flag `no_country_code` counts photos with a country but no code; the
+  dialog lists their countries with the code each name gives and sets them as one edit
+  (`set_country_codes`). On a copy of fuji: 7,857 photos filled and written (23 s,
+  debug build), none left without a code, both metadata rows, integrity ok.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.
 2. A list of backups, with restore.
-3. A Country › State › City › Location tree in the sidebar.

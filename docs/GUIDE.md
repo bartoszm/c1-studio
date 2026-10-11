@@ -87,12 +87,16 @@ the Date tree still shows every year.
   months shows under each with its own days. *Custom range…* takes a From and a To day
   (either can stay empty) or *Last 7, 30, 90 or 365 days*. A range and a pick in the
   tree replace each other.
+- **Location:** Country › State › City › Location, each including everything below it.
+  A level the photos have no value for keeps its place as *(no state)*, *(no city)* and
+  so on, so a city without a state is not mixed in with the states. Below the tree,
+  *N without an ISO country code · Fill in…* lists those photos' countries with the code
+  each name gives (change it or untick a row) and fills them as one edit.
 - **Folders:** the folder tree; a folder includes everything below it.
 - **Keywords:** the keyword tree; a keyword includes the keywords below it. The *Find a
   keyword* box above it shows only matching keywords, with their branches open. Esc
   clears it. Right-click a keyword to change the tree (see [Keyword tree](#keyword-tree)).
-- **Rating, Colour, Camera, Country:** one value each. Camera and Country list the ten
-  most common.
+- **Rating, Colour, Camera:** one value each. Camera lists the ten most common.
 
 **From the details panel.** The camera, each keyword (or any level of it), each album
 and the folder are links: clicking one filters by it.
@@ -130,7 +134,7 @@ photos with edits not yet written, and the panel lists which fields.
 | Colour tag | `-` red, `+` green, `*` yellow. Or click a dot in the panel; clicking the current one clears it. |
 | Add a keyword | Ctrl+K (with the panel shown), or the *Add a keyword* field in the panel. It completes from the catalog, most used first. Nested keywords are typed with `\|`: `trips \| japan`. A keyword that does not exist yet is created. |
 | Remove a keyword | × next to it in the panel. Keywords under it go too; the × says so. |
-| Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. |
+| Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
 
