@@ -315,6 +315,3 @@ Keys do not act while you type in a field.
   `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The sidebar layout, tile size and the copy clipboard: the app's own browser storage.
-
-## Not yet
-
