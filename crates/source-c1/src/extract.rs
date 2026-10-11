@@ -42,7 +42,8 @@ SELECT v.Z_PK, v.ZINDEX, v.ZISMODIFIED,
        m.ZCONTENT_DESCRIPTION, m.ZCONTENT_HEADLINE, m.ZSTATUS_TITLE,
        m.ZCONTACT_CREATOR, m.ZSTATUS_COPYRIGHTNOTICE,
        m.ZIMAGE_CITY, m.ZIMAGE_STATE, m.ZIMAGE_COUNTRY, m.ZIMAGE_LOCATION,
-       m.ZIMAGE_ISOCOUNTRYCODE
+       m.ZIMAGE_ISOCOUNTRYCODE,
+       m.ZSTATUS_JOBIDENTIFIER, m.ZSTATUS_INSTRUCTIONS, m.ZSTATUS_SOURCE
   FROM ZVARIANT v
   JOIN ZIMAGE i           ON i.Z_PK   = v.ZIMAGE
   JOIN ZPATHLOCATION p    ON p.Z_PK   = i.ZIMAGELOCATION
@@ -205,6 +206,9 @@ fn load_variants(
                 title: text(28)?,
                 creator: text(29)?,
                 copyright: text(30)?,
+                job_id: text(36)?,
+                instructions: text(37)?,
+                source: text(38)?,
             },
             place: Place {
                 city: text(31)?,

@@ -105,6 +105,9 @@ export const FIELD_NAMES: Record<string, string> = {
   headline: "headline",
   creator: "creator",
   copyright: "copyright",
+  job_id: "job identifier",
+  instructions: "instructions",
+  source: "source",
 };
 
 /** `50.061400, 19.936600`, or a dash. */

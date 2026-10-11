@@ -27,13 +27,18 @@
       ["location", "Location", text(photo.place.location)],
       ["geo", "GPS", photo.geo ? geoText(photo.geo) : null],
     ]],
-    ["Caption", [
-      ["description", "Description", text(photo.iptc.description)],
-      ["title", "Title", text(photo.iptc.title)],
+    ["IPTC – Content", [
       ["headline", "Headline", text(photo.iptc.headline)],
-      ["creator", "Creator", text(photo.iptc.creator)],
+      ["description", "Description", text(photo.iptc.description)],
+    ]],
+    ["IPTC – Image", [["title", "Title (object name)", text(photo.iptc.title)]]],
+    ["IPTC – Status", [
+      ["job_id", "Job identifier", text(photo.iptc.job_id)],
+      ["instructions", "Instructions", text(photo.iptc.instructions)],
+      ["source", "Source", text(photo.iptc.source)],
       ["copyright", "Copyright", text(photo.iptc.copyright)],
     ]],
+    ["IPTC – Contact", [["creator", "Creator", text(photo.iptc.creator)]]],
   ]);
 
   // svelte-ignore state_referenced_locally

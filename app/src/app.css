@@ -453,3 +453,7 @@ footer .compat.untested { border-color: #7a3a3a; color: var(--error); }
 .compat-detail .note { color: var(--text); }
 footer .sync.failed { color: var(--error); cursor: help; }
 footer > span { white-space: nowrap; }
+
+/* A description typed in the details panel: lines kept, grows with them. */
+.info-panel textarea.field { display: block; resize: vertical; min-height: 2.6em; line-height: 1.35; font: inherit; }
+.info-panel label[title] { cursor: help; }

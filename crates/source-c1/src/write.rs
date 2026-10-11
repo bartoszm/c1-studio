@@ -106,13 +106,21 @@ struct Current {
 
 /// The text fields' columns on ZVARIANTMETADATA, in the order of `iptc_fields` and
 /// `place_fields`.
-const IPTC_COLUMNS: [&str; 5] =
-    ["ZCONTENT_DESCRIPTION", "ZCONTENT_HEADLINE", "ZSTATUS_TITLE", "ZCONTACT_CREATOR", "ZSTATUS_COPYRIGHTNOTICE"];
+const IPTC_COLUMNS: [&str; 8] = [
+    "ZCONTENT_DESCRIPTION",
+    "ZCONTENT_HEADLINE",
+    "ZSTATUS_TITLE",
+    "ZCONTACT_CREATOR",
+    "ZSTATUS_COPYRIGHTNOTICE",
+    "ZSTATUS_JOBIDENTIFIER",
+    "ZSTATUS_INSTRUCTIONS",
+    "ZSTATUS_SOURCE",
+];
 const PLACE_COLUMNS: [&str; 5] =
     ["ZIMAGE_CITY", "ZIMAGE_STATE", "ZIMAGE_COUNTRY", "ZIMAGE_ISOCOUNTRYCODE", "ZIMAGE_LOCATION"];
 
-fn iptc_fields(i: &Iptc) -> [&Option<String>; 5] {
-    [&i.description, &i.headline, &i.title, &i.creator, &i.copyright]
+fn iptc_fields(i: &Iptc) -> [&Option<String>; 8] {
+    [&i.description, &i.headline, &i.title, &i.creator, &i.copyright, &i.job_id, &i.instructions, &i.source]
 }
 fn place_fields(p: &Place) -> [&Option<String>; 5] {
     [&p.city, &p.state, &p.country, &p.country_code, &p.location]
@@ -124,7 +132,8 @@ fn current(con: &Connection, variant_pk: i64) -> Result<Option<Current>> {
                 m.ZCONTENT_DESCRIPTION, m.ZCONTENT_HEADLINE, m.ZSTATUS_TITLE, m.ZCONTACT_CREATOR,
                 m.ZSTATUS_COPYRIGHTNOTICE,
                 m.ZIMAGE_CITY, m.ZIMAGE_STATE, m.ZIMAGE_COUNTRY, m.ZIMAGE_ISOCOUNTRYCODE, m.ZIMAGE_LOCATION,
-                i.ZGPSLATITUDE, i.ZGPSLONGITUDE
+                i.ZGPSLATITUDE, i.ZGPSLONGITUDE,
+                m.ZSTATUS_JOBIDENTIFIER, m.ZSTATUS_INSTRUCTIONS, m.ZSTATUS_SOURCE
            FROM ZVARIANT v
            JOIN ZVARIANTMETADATA m ON m.ZLAYER = v.ZADJUSTMENTLAYER
            JOIN ZIMAGE i ON i.Z_PK = v.ZIMAGE
@@ -146,6 +155,9 @@ fn current(con: &Connection, variant_pk: i64) -> Result<Option<Current>> {
                     title: text(4)?,
                     creator: text(5)?,
                     copyright: text(6)?,
+                    job_id: text(14)?,
+                    instructions: text(15)?,
+                    source: text(16)?,
                 },
                 place: Place {
                     city: text(7)?,
@@ -286,12 +298,12 @@ fn write_change(con: &Connection, variant_pk: i64, op: &Op) -> Result<usize> {
     Ok(rows.len())
 }
 
-fn changed_columns<'a>(
-    columns: &[&'static str; 5],
-    base: [&Option<String>; 5],
-    value: [&'a Option<String>; 5],
+fn changed_columns<'a, const N: usize>(
+    columns: &[&'static str; N],
+    base: [&Option<String>; N],
+    value: [&'a Option<String>; N],
 ) -> Vec<(&'static str, Option<&'a str>)> {
-    (0..5).filter(|&i| base[i] != value[i]).map(|i| (columns[i], value[i].as_deref())).collect()
+    (0..N).filter(|&i| base[i] != value[i]).map(|i| (columns[i], value[i].as_deref())).collect()
 }
 
 /// Sets text columns on both metadata rows. Returns the rows touched.
@@ -664,6 +676,36 @@ pub(crate) mod tests {
         );
         assert_eq!(text_by_layer(&con, 2, "ZSTATUS_COPYRIGHTNOTICE"), [(17, s("B. M.")), (18, None), (20, s("B. M."))]);
         assert_eq!(text_by_layer(&con, 2, "ZSTATUS_TITLE"), [(17, None), (18, None), (20, None)]);
+    }
+
+    #[test]
+    fn title_and_status_fields_go_to_both_layers_and_clear_to_null() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        let value = Iptc {
+            title: s("DSCF0743"),
+            description: s("Line one\nLine two"),
+            job_id: s("JOB-7"),
+            instructions: s("Embargo until Monday"),
+            source: s("Archiwum"),
+            ..Iptc::default()
+        };
+        let p = plan(&con, &[], &[change(3, Op::SetIptc { base: Iptc::default(), value: value.clone() })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        let both = |v: &str| [(17, s(v)), (18, None), (20, s(v))];
+        assert_eq!(text_by_layer(&con, 3, "ZSTATUS_TITLE"), both("DSCF0743"));
+        assert_eq!(text_by_layer(&con, 3, "ZCONTENT_DESCRIPTION"), both("Line one\nLine two"));
+        assert_eq!(text_by_layer(&con, 3, "ZSTATUS_JOBIDENTIFIER"), both("JOB-7"));
+        assert_eq!(text_by_layer(&con, 3, "ZSTATUS_INSTRUCTIONS"), both("Embargo until Monday"));
+        assert_eq!(text_by_layer(&con, 3, "ZSTATUS_SOURCE"), both("Archiwum"));
+        // Read back the way it was written: done.
+        let again = plan(&con, &[], &[change(3, Op::SetIptc { base: Iptc::default(), value: value.clone() })], pk);
+        assert_eq!(again.unwrap().no_ops.len(), 1);
+        let cleared = Iptc { job_id: None, ..value.clone() };
+        let p = plan(&con, &[], &[change(3, Op::SetIptc { base: value, value: cleared })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+        assert_eq!(text_by_layer(&con, 3, "ZSTATUS_JOBIDENTIFIER"), [(17, None), (18, None), (20, None)]);
+        assert_eq!(text_by_layer(&con, 3, "ZSTATUS_TITLE"), both("DSCF0743"));
     }
 
     #[test]

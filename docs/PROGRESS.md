@@ -674,8 +674,38 @@ in `<data dir>/settings.json`) writes the queue by itself.
   reads, shown in full in the empty grid ("sync failed" in the footer). Why the last
   sync failed is kept in the session, so the window shows it however late it asks.
 
+### Editable IPTC fields
+
+- **Fields** (the set the Python oracle writes, so the differential test checks each):
+
+  | In the panel | Capture One section | Column |
+  |---|---|---|
+  | Headline | IPTC – Content | `ZCONTENT_HEADLINE` |
+  | Description (several lines) | IPTC – Content | `ZCONTENT_DESCRIPTION` |
+  | Title (IPTC Object Name) | IPTC – Image | `ZSTATUS_TITLE` |
+  | Job ID | IPTC – Status | `ZSTATUS_JOBIDENTIFIER` |
+  | Instructions | IPTC – Status | `ZSTATUS_INSTRUCTIONS` |
+  | Source | IPTC – Status | `ZSTATUS_SOURCE` |
+  | Copyright | IPTC – Status | `ZSTATUS_COPYRIGHTNOTICE` |
+  | Creator | IPTC – Contact | `ZCONTACT_CREATOR` |
+
+  Title is IPTC's Object Name, a short formal identifier, not a caption; Capture One
+  shows it under IPTC – Image, and so does the panel, with that said on hover.
+- **Model:** `Iptc` gains `job_id`, `instructions`, `source` (`#[serde(default)]`, so
+  queued edits still load); `MODEL_VERSION` 3, so the library re-reads the catalog
+  once.
+- **Writing** as before: only changed columns, adjustment and combined rows, NULL when
+  cleared. CLI `c1cat iptc --set-job-id/--set-instructions/--set-source`. The
+  differential test adds Title, Headline, a two-line Description and the status
+  fields, set and cleared: SAME.
+- **Panel:** Location stays its own section (Country, Code, State, City, Location,
+  GPS); below it IPTC – Content, Image, Status and Contact, typed in place like
+  Location. Description is a text area: Enter adds a line, Ctrl+Enter or leaving
+  saves. Several photos selected: a field typed applies to all. Copy/paste offers the
+  same groups.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.
 2. A list of backups, with restore.
-3. Editing captions in the details panel (they are written and pasted already).
+3. A Country › State › City › Location tree in the sidebar.

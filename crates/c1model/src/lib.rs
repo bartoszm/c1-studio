@@ -25,4 +25,4 @@ pub use source::{
 
 /// Bumped whenever a serialised [`Photo`] or [`Collection`] changes shape, so stored copies
 /// are rebuilt.
-pub const MODEL_VERSION: u32 = 2;
+pub const MODEL_VERSION: u32 = 3;

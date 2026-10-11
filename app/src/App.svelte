@@ -811,6 +811,7 @@
     oncamera={(camera) => only({ camera })}
     onplace={(field, value) => applyEdit({ Place: { [field]: value } })}
     ongeo={(value) => applyEdit({ Geo: value })}
+    oniptc={(field, value) => applyEdit({ Iptc: { [field]: value } })}
     clip={clipText}
     oncopy={openCopy}
     onpaste={pasteClip}

@@ -138,6 +138,12 @@ enum Command {
         #[arg(long)]
         set_copyright: Option<String>,
         #[arg(long)]
+        set_instructions: Option<String>,
+        #[arg(long)]
+        set_job_id: Option<String>,
+        #[arg(long)]
+        set_source: Option<String>,
+        #[arg(long)]
         set_city: Option<String>,
         #[arg(long)]
         set_state: Option<String>,
@@ -499,6 +505,9 @@ fn main() -> anyhow::Result<()> {
             select,
             set_creator,
             set_copyright,
+            set_instructions,
+            set_job_id,
+            set_source,
             set_city,
             set_state,
             set_country,
@@ -506,7 +515,7 @@ fn main() -> anyhow::Result<()> {
             set_location,
             write,
         } => {
-            let iptc = [&set_creator, &set_copyright];
+            let iptc = [&set_creator, &set_copyright, &set_instructions, &set_job_id, &set_source];
             let place = [&set_city, &set_state, &set_country, &set_country_code, &set_location];
             if iptc.iter().chain(&place).all(|v| v.is_none()) {
                 anyhow::bail!("pass at least one field, e.g. --set-city 'Kraków' --set-country Poland");
@@ -520,6 +529,9 @@ fn main() -> anyhow::Result<()> {
                     let mut value = p.iptc.clone();
                     set_text(&mut value.creator, &set_creator);
                     set_text(&mut value.copyright, &set_copyright);
+                    set_text(&mut value.instructions, &set_instructions);
+                    set_text(&mut value.job_id, &set_job_id);
+                    set_text(&mut value.source, &set_source);
                     ops.push(Op::SetIptc { base: p.iptc.clone(), value });
                 }
                 if touches_place {

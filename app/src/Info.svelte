@@ -9,7 +9,7 @@
   let {
     row, version, picked, queued, collections, keywords, clip,
     onrate, oncolor, onaddkeyword, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onplace, ongeo, oncopy, onpaste,
+    onplace, ongeo, oniptc, oncopy, onpaste,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -32,6 +32,8 @@
     /** A location field typed in; "" clears it. */
     onplace: (field: api.PlaceField, value: string) => void;
     ongeo: (value: [number, number] | null) => void;
+    /** An IPTC text field typed in; "" clears it. */
+    oniptc: (field: api.CaptionField, value: string) => void;
     /** What the clipboard holds, for showing; null when empty. */
     clip: string | null;
     oncopy: () => void;
@@ -74,7 +76,7 @@
   /** How a queued edit reads: `rating`, `colour`, `keyword "street"`. */
   function fieldName(f: string) {
     if (f.startsWith("keyword:")) return `keyword “${f.slice(8)}”`;
-    return ({ color: "colour", place: "location", geo: "GPS", iptc: "caption" } as Record<string, string>)[f] ?? f;
+    return ({ color: "colour", place: "location", geo: "GPS", iptc: "IPTC fields" } as Record<string, string>)[f] ?? f;
   }
 
   const PLACE_FIELDS: [api.PlaceField, string][] = [
@@ -91,6 +93,28 @@
       input.blur();
     }
   }
+
+  // A description has lines: Enter adds one, Ctrl+Enter (or leaving) saves.
+  function textKeys(e: KeyboardEvent, shown: string) {
+    const area = e.currentTarget as HTMLTextAreaElement;
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) area.blur();
+    else if (e.key === "Escape") {
+      area.value = shown;
+      area.blur();
+    }
+  }
+
+  // The IPTC fields, grouped as Capture One groups them. Location has its own section.
+  const TITLE_HINT =
+    "IPTC Object Name: a short identifier of the image, such as a file or job code, not a caption " +
+    "(that is the Description). Capture One shows it under IPTC – Image.";
+  const IPTC_GROUPS: [string, [api.CaptionField, string, string?][]][] = [
+    ["IPTC – Content", [["headline", "Headline"], ["description", "Description"]]],
+    ["IPTC – Image", [["title", "Title", TITLE_HINT]]],
+    ["IPTC – Status", [["job_id", "Job ID", "Job identifier (original transmission reference)"],
+      ["instructions", "Instructions"], ["source", "Source", "Who holds the original"], ["copyright", "Copyright"]]],
+    ["IPTC – Contact", [["creator", "Creator"]]],
+  ];
 
   let geoError = $state<string | null>(null);
   function commitGeo(e: Event) {
@@ -257,16 +281,40 @@
     </dl>
     {#if geoError}<p class="error">{geoError}</p>{/if}
 
-    {#if p.iptc.title || p.iptc.headline || p.iptc.description || p.iptc.creator || p.iptc.copyright}
-      <h3>Caption</h3>
-      <dl>
-        {#if p.iptc.title}<dt>Title</dt><dd>{p.iptc.title}</dd>{/if}
-        {#if p.iptc.headline}<dt>Headline</dt><dd>{p.iptc.headline}</dd>{/if}
-        {#if p.iptc.description}<dt>Description</dt><dd class="text">{p.iptc.description}</dd>{/if}
-        {#if p.iptc.creator}<dt>Creator</dt><dd>{p.iptc.creator}</dd>{/if}
-        {#if p.iptc.copyright}<dt>Copyright</dt><dd>{p.iptc.copyright}</dd>{/if}
+    {#each IPTC_GROUPS as [title, fields] (title)}
+      <h3>{title}</h3>
+      <dl class="fields" class:queued={queued.includes("iptc")}>
+        {#each fields as [field, label, hint] (field)}
+          {@const shown = p.iptc[field] ?? ""}
+          <dt><label for="iptc-{field}" title={hint}>{label}</label></dt>
+          <dd>
+            {#if field === "description"}
+              <textarea
+                id="iptc-{field}"
+                class="field text"
+                rows={Math.min(8, Math.max(2, shown.split("\n").length))}
+                value={shown}
+                placeholder={picked > 1 ? `set on ${picked} photos` : "—"}
+                title="Enter adds a line; Ctrl+Enter or leaving the field saves; Escape puts it back"
+                onkeydown={(e) => textKeys(e, shown)}
+                onchange={(e) => oniptc(field, e.currentTarget.value)}
+              ></textarea>
+            {:else}
+              <input
+                id="iptc-{field}"
+                class="field"
+                value={shown}
+                placeholder={picked > 1 ? `set on ${picked} photos` : field === "title" ? "object name" : "—"}
+                title={hint}
+                spellcheck={field !== "title" && field !== "job_id"}
+                onkeydown={(e) => fieldKeys(e, shown)}
+                onchange={(e) => oniptc(field, e.currentTarget.value)}
+              />
+            {/if}
+          </dd>
+        {/each}
       </dl>
-    {/if}
+    {/each}
 
     <h3>File</h3>
     <dl>

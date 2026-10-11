@@ -133,13 +133,23 @@ pub struct Exif {
     pub height: Option<u32>,
 }
 
+/// IPTC text fields. `title` is IPTC's Object Name: a short formal identifier of the
+/// image (Capture One shows it under IPTC – Image), not a caption; `description` is the
+/// caption.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Iptc {
     pub title: Option<String>,
     pub headline: Option<String>,
     pub description: Option<String>,
     pub creator: Option<String>,
     pub copyright: Option<String>,
+    /// IPTC Job Identifier (Original Transmission Reference).
+    pub job_id: Option<String>,
+    /// IPTC Special Instructions.
+    pub instructions: Option<String>,
+    /// IPTC Source: who holds the original.
+    pub source: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
