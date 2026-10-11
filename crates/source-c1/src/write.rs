@@ -450,6 +450,9 @@ pub struct Backup {
     /// this backup covers. While the catalog still matches, the next write reuses it.
     #[serde(default)]
     pub after_write: Option<(u64, u64)>,
+    /// Why it was made, when not before an ordinary write.
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// Size and modification time (ns).
@@ -476,6 +479,19 @@ pub fn backups(catalog: &Path, dir: &Path) -> Vec<Backup> {
 /// even if something touched the file meanwhile. Reuses the newest backup when the
 /// catalog has not changed since it was made, and keeps only the newest `keep`.
 pub fn backup(catalog: &Path, dir: &Path, keep: usize) -> Result<Backup> {
+    make_backup(catalog, dir, keep, None, None)
+}
+
+/// As [`backup`]. With `note` (a backup before a restore) it must hold the catalog as it
+/// is now, so one covering only an earlier state is not reused; `protect` is never
+/// pruned (the backup about to be restored).
+fn make_backup(
+    catalog: &Path,
+    dir: &Path,
+    keep: usize,
+    note: Option<String>,
+    protect: Option<&Path>,
+) -> Result<Backup> {
     let stamp = file_stamp(catalog)?;
     let (source_size, source_mtime) = stamp;
     let all = backups(catalog, dir);
@@ -484,6 +500,7 @@ pub fn backup(catalog: &Path, dir: &Path, keep: usize) -> Result<Backup> {
     }
     // Only the app wrote since the newest backup, and not long ago: it still covers this.
     if let Some(newest) = all.first()
+        && note.is_none()
         && newest.after_write == Some(stamp)
         && now_ms().saturating_sub(newest.created_ms) < SHARED_BACKUP_MS
     {
@@ -511,14 +528,51 @@ pub fn backup(catalog: &Path, dir: &Path, keep: usize) -> Result<Backup> {
         millis: started.elapsed().as_millis(),
         created_ms: now_ms(),
         after_write: None,
+        note,
     };
     let manifest = manifest_path(&target);
     fs::write(&manifest, serde_json::to_vec_pretty(&record).map_err(|e| SourceError::Other(e.to_string()))?)?;
-    for stale in backups(catalog, dir).into_iter().skip(keep.max(1)) {
+    for stale in backups(catalog, dir).into_iter().skip(keep.max(1)).filter(|b| Some(b.backup.as_path()) != protect) {
         let _ = fs::remove_file(&stale.backup);
         let _ = fs::remove_file(manifest_path(&stale.backup));
     }
     Ok(record)
+}
+
+/// Puts one of the catalog's backups (named by file name) back as the catalog, through
+/// SQLite's backup API. The catalog as it is now is backed up first and that backup is
+/// returned, so a restore can be undone by restoring it. Only after [`preflight`].
+pub(crate) fn restore(catalog: &Path, dir: &Path, keep: usize, name: &str) -> Result<Backup> {
+    let chosen = backups(catalog, dir)
+        .into_iter()
+        .find(|b| b.backup.file_name().is_some_and(|f| f.to_string_lossy() == name))
+        .ok_or_else(|| SourceError::NotFound(format!("backup {name}")))?;
+    // A backup that is damaged, or of a schema this build does not write, is refused
+    // before anything changes.
+    let from =
+        Connection::open_with_flags(&chosen.backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(db_err)?;
+    let check: String = from.query_row("PRAGMA quick_check", [], |r| r.get(0)).map_err(db_err)?;
+    if check != "ok" {
+        return Err(SourceError::Other(format!("the backup is damaged: {check}")));
+    }
+    let zversion = catalog::zversion(&from)?;
+    if zversion != EXPECTED_ZVERSION {
+        return Err(SourceError::Schema(format!("the backup's ZVERSION is {zversion}, expected {EXPECTED_ZVERSION}")));
+    }
+    drop(from);
+    let when = chosen.created.get(..16).unwrap_or(&chosen.created).replace('T', " ");
+    let before =
+        make_backup(catalog, dir, keep, Some(format!("before restoring the backup of {when}")), Some(&chosen.backup))?;
+    let mut con = open_write(catalog)?;
+    con.restore(rusqlite::MAIN_DB, &chosen.backup, None::<fn(rusqlite::backup::Progress)>).map_err(db_err)?;
+    let check: String = con.query_row("PRAGMA quick_check", [], |r| r.get(0)).map_err(db_err)?;
+    if check != "ok" {
+        return Err(SourceError::Other(format!(
+            "the restored catalog does not check out ({check}); the one it replaced is in {}",
+            before.backup.display()
+        )));
+    }
+    Ok(before)
 }
 
 /// Records that the app just wrote to the catalog under `backup`'s cover.
@@ -880,6 +934,60 @@ pub(crate) mod tests {
         let copy = Connection::open(&kept[0].backup).unwrap();
         let n: i64 = copy.query_row("SELECT COUNT(*) FROM ZVARIANT", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 5);
+    }
+
+    fn rating_of(catalog: &Path, variant: i64) -> Option<i64> {
+        let con = Connection::open(catalog).unwrap();
+        by_layer(&con, variant, "ZBASIC_RATING")[0].1
+    }
+
+    fn rate(catalog: &Path, variant: i64, stars: u8) {
+        let mut con = Connection::open(catalog).unwrap();
+        let p = plan(&con, &[], &[], &[change(variant, Op::SetRating { base: None, value: Some(stars) })], pk).unwrap();
+        write(&mut con, &p, pk).unwrap();
+    }
+
+    #[test]
+    fn a_restore_puts_a_backup_back_and_can_itself_be_undone() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        let Some(con) = fixture(&catalog) else { return };
+        drop(con);
+        let store = dir.path().join("backups");
+        let unrated = backup(&catalog, &store, 1).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        rate(&catalog, 1, 5);
+        assert_eq!(rating_of(&catalog, 1), Some(5));
+
+        // Keeping one, the backup being restored still survives the one made first.
+        let name = unrated.backup.file_name().unwrap().to_string_lossy().into_owned();
+        let before = restore(&catalog, &store, 1, &name).unwrap();
+        assert_eq!(rating_of(&catalog, 1), None);
+        assert!(before.note.as_deref().is_some_and(|n| n.starts_with("before restoring the backup of")));
+        assert_eq!(rating_of(&before.backup, 1), Some(5), "the replaced catalog is kept");
+        assert_eq!(backups(&catalog, &store).len(), 2);
+
+        // Undone by restoring that one.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let undo = before.backup.file_name().unwrap().to_string_lossy().into_owned();
+        restore(&catalog, &store, 5, &undo).unwrap();
+        assert_eq!(rating_of(&catalog, 1), Some(5));
+        assert!(restore(&catalog, &store, 5, "nope.cocatalogdb").is_err());
+    }
+
+    #[test]
+    fn a_backup_of_another_schema_is_not_restored() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        let Some(con) = fixture(&catalog) else { return };
+        drop(con);
+        let store = dir.path().join("backups");
+        let old = backup(&catalog, &store, 5).unwrap();
+        Connection::open(&old.backup).unwrap().execute("UPDATE ZVERSIONINFO SET ZVERSION = 1650", []).unwrap();
+        rate(&catalog, 2, 3);
+        let name = old.backup.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(matches!(restore(&catalog, &store, 5, &name), Err(SourceError::Schema(_))));
+        assert_eq!(rating_of(&catalog, 2), Some(3), "nothing changed");
     }
 
     #[test]

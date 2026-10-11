@@ -33,6 +33,19 @@ enum Command {
     Sync,
     /// Catalog and library state.
     Status,
+    /// The backups made before writes, newest first.
+    Backups {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Put a backup (by file name, from `backups`) back as the catalog. The catalog as it
+    /// is now is backed up first. A dry run unless --apply is given.
+    Restore {
+        #[arg(value_name = "BACKUP")]
+        name: String,
+        #[arg(long)]
+        apply: bool,
+    },
     /// List matching photos.
     Find {
         #[command(flatten)]
@@ -939,6 +952,40 @@ fn main() -> anyhow::Result<()> {
             let session = open(cli.catalog.as_ref())?;
             let report = session.library.sync(&session.source)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::Backups { json } => {
+            let session = open(cli.catalog.as_ref())?;
+            let list = session.source.backups();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+            } else {
+                for b in &list {
+                    let note = b.note.as_deref().map(|n| format!("  ({n})")).unwrap_or_default();
+                    println!(
+                        "{}  {:>6} MB  {}{note}",
+                        b.created.replace('T', " "),
+                        b.size / 1_000_000,
+                        b.backup.display()
+                    );
+                }
+                println!("{} backup(s)", list.len());
+            }
+        }
+        Command::Restore { name, apply } => {
+            let session = open(cli.catalog.as_ref())?;
+            let Some(chosen) = session.source.backups().into_iter().find(|b| b.backup.ends_with(&name)) else {
+                anyhow::bail!("no backup {name:?}; `backups` lists them");
+            };
+            println!("restore   {} ({})", chosen.backup.display(), chosen.created.replace('T', " "));
+            println!("over      {}", session.source.catalog_path().display());
+            if !apply {
+                println!("dry run: nothing changed; add --apply to restore (the catalog is backed up first)");
+                return Ok(());
+            }
+            let file = chosen.backup.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let before = PhotoSource::restore(&session.source, &file)?;
+            println!("restored; the catalog it replaced is kept as {}", before.path);
+            sync(&session, true)?;
         }
         Command::Status => {
             let session = open(cli.catalog.as_ref())?;

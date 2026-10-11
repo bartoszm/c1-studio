@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
-    Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint, ImageTier,
-    Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
+    BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
+    ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
 };
 use serde::{Deserialize, Serialize};
 use sources::Recent;
@@ -819,6 +819,37 @@ async fn write_apply(app: AppHandle) -> Result<WriteReport, String> {
     .map_err(text)?
 }
 
+/// The backups made before writes, and whether the source can be written now (a
+/// restore needs that as much as a write does).
+#[derive(Serialize)]
+struct Backups {
+    list: Vec<BackupInfo>,
+    status: WriteStatus,
+}
+
+#[tauri::command]
+async fn backups(app: State<'_, App>) -> Result<Backups, String> {
+    let s = app.session()?;
+    Ok(Backups { list: s.source.backups().map_err(text)?, status: s.source.write_status() })
+}
+
+/// Puts a backup back as the catalog, then reads it in. Queued edits stay queued.
+/// Returns the backup of the catalog it replaced.
+#[tauri::command]
+async fn restore_backup(app: AppHandle, id: String) -> Result<BackupInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = app.state::<App>().session()?;
+        let before = {
+            let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+            s.source.restore(&id).map_err(text)?
+        };
+        run_sync(&app)?;
+        Ok(before)
+    })
+    .await
+    .map_err(text)?
+}
+
 /// What autosave is doing, for the footer.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "lowercase")]
@@ -1142,6 +1173,8 @@ pub fn run() {
             change_collection,
             undo_collection,
             collection_changes,
+            backups,
+            restore_backup,
             keyword_counts,
             pending,
             discard,

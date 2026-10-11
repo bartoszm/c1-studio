@@ -255,6 +255,12 @@ export const albumCounts = (rows: number[]) => invoke<[string, number][]>("album
 export const changeCollection = (change: CollectionChange) =>
   invoke<[number, CollectionChange]>("change_collection", { change });
 export const undoCollection = (seq: number) => invoke<void>("undo_collection", { seq });
+/** A copy of the catalog kept before writing to it. */
+export type BackupInfo = { id: string; path: string; created_ms: number; size: number; note: string | null };
+/** The backups, newest first, and whether the catalog can be written now (a restore needs it). */
+export const backups = () => invoke<{ list: BackupInfo[]; status: WriteStatus }>("backups");
+/** Puts a backup back as the catalog; returns the backup of the catalog it replaced. */
+export const restoreBackup = (id: string) => invoke<BackupInfo>("restore_backup", { id });
 /** Queued album changes: number, what it does, the collection it is about. */
 export const collectionChanges = () => invoke<[number, string, string][]>("collection_changes");
 export const keywordUsers = (paths: string[]) => invoke<number>("keyword_users", { paths });

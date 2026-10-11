@@ -21,8 +21,8 @@ use std::sync::Mutex;
 
 use c1model::source::Result;
 use c1model::{
-    ApplyPlan, ApplyReport, Capabilities, Change, CollectionChange, Cursor, Field, ImageFormat, ImageRef, ImageTier,
-    KeywordRemap, PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
+    ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Cursor, Field, ImageFormat, ImageRef,
+    ImageTier, KeywordRemap, PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
@@ -230,6 +230,37 @@ impl PhotoSource for CaptureOne {
         drop(con);
         write::wrote(&self.catalog, &backup)?;
         Ok(ApplyReport { applied, backup: Some(backup.backup.display().to_string()) })
+    }
+
+    fn backups(&self) -> Result<Vec<BackupInfo>> {
+        Ok(CaptureOne::backups(self).iter().map(backup_info).collect())
+    }
+
+    /// Refuses while Capture One or anything else has the catalog open, as a write does.
+    fn restore(&self, id: &str) -> Result<BackupInfo> {
+        let _guard = self.snapshot_lock.lock().unwrap();
+        write::preflight(&self.catalog)?;
+        let before = write::restore(&self.catalog, &self.backup_dir(), write::KEEP_BACKUPS, id)?;
+        Ok(backup_info(&before))
+    }
+}
+
+fn backup_info(b: &Backup) -> BackupInfo {
+    // Manifests from before `created_ms` carry only the local time.
+    let created_ms = if b.created_ms > 0 {
+        b.created_ms
+    } else {
+        chrono::NaiveDateTime::parse_from_str(&b.created, "%Y-%m-%dT%H:%M:%S%.f")
+            .ok()
+            .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+            .map_or(0, |t| t.timestamp_millis().max(0) as u64)
+    };
+    BackupInfo {
+        id: b.backup.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        path: b.backup.display().to_string(),
+        created_ms,
+        size: b.size,
+        note: b.note.clone(),
     }
 }
 
