@@ -4,9 +4,10 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS } from "./lib/format";
+  import { COLORS, FIELD_NAMES } from "./lib/format";
   import { albumTree, pathTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
+  import CopyDialog from "./CopyDialog.svelte";
   import Info from "./Info.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -266,6 +267,53 @@
     await run(true);
   }
 
+  // Copy and paste between photos. The clipboard holds the photo as it was when copied,
+  // and which fields to take from it; it survives restarts.
+  type Clipboard = { from: api.Photo; fields: api.CopyField[] };
+  function rememberedClip(): Clipboard | null {
+    try {
+      const c = JSON.parse(localStorage.getItem("clipboard") ?? "null");
+      return c?.from && Array.isArray(c.fields) ? c : null;
+    } catch {
+      return null;
+    }
+  }
+  let clipboard = $state<Clipboard | null>(rememberedClip());
+  let copying = $state<api.Photo | null>(null);
+  $effect(() => {
+    try {
+      localStorage.setItem("clipboard", JSON.stringify(clipboard));
+    } catch {
+      // Not remembered across restarts, that's all.
+    }
+  });
+  let clipText = $derived(
+    clipboard &&
+      `${clipboard.from.file.name}: ${[...new Set(clipboard.fields.map((f) => FIELD_NAMES[f] ?? f))].join(", ")}`,
+  );
+
+  async function openCopy() {
+    const row = selected === null ? undefined : rowAt(selected);
+    if (row === undefined) return;
+    copying = await api.photo(row);
+  }
+
+  async function pasteClip() {
+    const rows = targets();
+    if (!clipboard || !rows.length) return;
+    try {
+      const undo = await api.paste(rows, clipboard.from, clipboard.fields);
+      if (undo.length) {
+        undoStack.push({ ops: undo });
+        redoStack = [];
+      }
+      editError = null;
+    } catch (e) {
+      editError = String(e);
+    }
+    await edited();
+  }
+
   async function applyEdit(edit: api.Edit) {
     const rows = targets();
     if (!rows.length) return;
@@ -485,7 +533,7 @@
       keywordMenu = null;
       return;
     }
-    if (writing || keywordDialog || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || keywordDialog || copying || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && !e.altKey) {
@@ -493,6 +541,8 @@
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
+      else if (key === "c" && e.shiftKey) openCopy();
+      else if (key === "v" && e.shiftKey) pasteClip();
       else if ((key === "=" || key === "+") && !viewing) grid?.step(true);
       else if (key === "-" && !viewing) grid?.step(false);
       else if (key === "0" && !viewing) tiles = DEFAULT_TILES;
@@ -568,6 +618,11 @@
     onalbum={showAlbum}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
+    onplace={(field, value) => applyEdit({ Place: { [field]: value } })}
+    ongeo={(value) => applyEdit({ Geo: value })}
+    clip={clipText}
+    oncopy={openCopy}
+    onpaste={pasteClip}
   />
 {/snippet}
 
@@ -745,6 +800,15 @@
     keywords={keywordList}
     onclose={() => (keywordDialog = null)}
     ondone={applyRemap}
+  />
+{/if}
+
+{#if copying}
+  <CopyDialog
+    photo={copying}
+    fields={clipboard?.fields ?? ["country", "country_code", "state", "city", "location", "geo"]}
+    oncopy={(fields) => { if (copying) clipboard = { from: copying, fields }; }}
+    onclose={() => (copying = null)}
   />
 {/if}
 

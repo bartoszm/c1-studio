@@ -317,3 +317,28 @@ footer .edit-error { color: var(--error); }
 .tiles input[type="number"].fixed { border-color: var(--accent); }
 .tiles input[type="number"]:focus { outline: none; border-color: var(--queued); }
 .tiles .shape { width: auto; padding: 0 6px; margin-left: 4px; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+
+/* Location fields typed in the details panel: plain text until hovered or focused. */
+.info-panel dl.fields { align-items: center; gap: 2px 8px; margin-top: 4px; }
+.info-panel dl.fields + dl.fields { margin-top: 2px; }
+.info-panel .field {
+  width: 100%;
+  padding: 2px 5px;
+  margin-left: -6px;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+}
+.info-panel .field::placeholder { color: #5a5a5a; }
+.info-panel .field:hover { border-color: var(--line); }
+.info-panel .field:focus { outline: none; background: var(--bg); border-color: var(--queued); }
+.info-panel .field.code { width: 4.5em; text-transform: uppercase; }
+.info-panel dl.fields.queued .field { color: var(--queued); }
+
+/* Copy and paste between photos. */
+.info-panel .clip { display: flex; align-items: center; gap: 6px; margin-top: 10px; min-width: 0; }
+.info-panel .clip button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; white-space: nowrap; }
+.info-panel .clip button:hover { background: var(--hover); }
+.info-panel .clip-what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }

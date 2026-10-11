@@ -8,7 +8,9 @@ use std::time::Instant;
 
 use anyhow::Context;
 use c1index::{Dim, Filter, Library, QueryOptions, Sort};
-use c1model::{ApplyPlan, Change, ColorLabel, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource};
+use c1model::{
+    ApplyPlan, Change, ColorLabel, GeoOrigin, GeoPoint, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource,
+};
 use clap::{Parser, Subcommand};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 
@@ -110,6 +112,54 @@ enum Command {
         select: Selector,
         #[arg(long, value_name = "NAME")]
         set: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Set or clear the caption, headline or title. An empty value clears.
+    Describe {
+        #[command(flatten)]
+        select: Selector,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        headline: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Set or clear IPTC contact and location fields. An empty value clears. Prefixed
+    /// with --set- (as the Python tool does) so they never read as filters.
+    Iptc {
+        #[command(flatten)]
+        select: Selector,
+        #[arg(long)]
+        set_creator: Option<String>,
+        #[arg(long)]
+        set_copyright: Option<String>,
+        #[arg(long)]
+        set_city: Option<String>,
+        #[arg(long)]
+        set_state: Option<String>,
+        #[arg(long)]
+        set_country: Option<String>,
+        #[arg(long)]
+        set_country_code: Option<String>,
+        #[arg(long)]
+        set_location: Option<String>,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Set or clear GPS coordinates. Stored per image: every variant of it moves.
+    Geo {
+        #[command(flatten)]
+        select: Selector,
+        #[arg(long, allow_hyphen_values = true)]
+        lat: Option<f64>,
+        #[arg(long, allow_hyphen_values = true)]
+        lon: Option<f64>,
+        #[arg(long)]
+        clear: bool,
         #[command(flatten)]
         write: WriteFlags,
     },
@@ -261,6 +311,13 @@ fn parse_dims(text: &str) -> anyhow::Result<Vec<Dim>> {
         .collect()
 }
 
+/// A text field from the command line: absent leaves it, empty clears it.
+fn set_text(field: &mut Option<String>, given: &Option<String>) {
+    if let Some(text) = given {
+        *field = (!text.is_empty()).then(|| text.clone());
+    }
+}
+
 /// Plans `op` for every matching photo and, with `--apply`, writes it. Capture One must
 /// be closed for the write; the plan works either way.
 fn edit(
@@ -268,6 +325,16 @@ fn edit(
     select: &Selector,
     flags: &WriteFlags,
     op: impl Fn(&Photo) -> Op,
+) -> anyhow::Result<()> {
+    edit_many(catalog, select, flags, |p| vec![op(p)])
+}
+
+/// As [`edit`], with any number of ops per photo.
+fn edit_many(
+    catalog: Option<&PathBuf>,
+    select: &Selector,
+    flags: &WriteFlags,
+    ops: impl Fn(&Photo) -> Vec<Op>,
 ) -> anyhow::Result<()> {
     let session = open(catalog)?;
     if !flags.no_sync {
@@ -281,7 +348,7 @@ fn edit(
     let mut changes = Vec::with_capacity(result.rows.len());
     for row in result.rows {
         if let Some(photo) = session.library.photo(row)? {
-            changes.push(Change { op: op(&photo), photo: photo.id });
+            changes.extend(ops(&photo).into_iter().map(|op| Change { op, photo: photo.id.clone() }));
         }
     }
     let plan = session.source.plan(&changes)?;
@@ -415,6 +482,70 @@ fn main() -> anyhow::Result<()> {
                 })?),
             };
             edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetColor { base: p.color, value })?;
+        }
+        Command::Describe { select, description, headline, title, write } => {
+            if description.is_none() && headline.is_none() && title.is_none() {
+                anyhow::bail!("pass --description, --headline or --title");
+            }
+            edit(cli.catalog.as_ref(), &select, &write, |p| {
+                let mut value = p.iptc.clone();
+                set_text(&mut value.description, &description);
+                set_text(&mut value.headline, &headline);
+                set_text(&mut value.title, &title);
+                Op::SetIptc { base: p.iptc.clone(), value }
+            })?;
+        }
+        Command::Iptc {
+            select,
+            set_creator,
+            set_copyright,
+            set_city,
+            set_state,
+            set_country,
+            set_country_code,
+            set_location,
+            write,
+        } => {
+            let iptc = [&set_creator, &set_copyright];
+            let place = [&set_city, &set_state, &set_country, &set_country_code, &set_location];
+            if iptc.iter().chain(&place).all(|v| v.is_none()) {
+                anyhow::bail!("pass at least one field, e.g. --set-city 'Kraków' --set-country Poland");
+            }
+            let touches_iptc = iptc.iter().any(|v| v.is_some());
+            let touches_place = place.iter().any(|v| v.is_some());
+            // One command, up to two ops per photo: planned and written together.
+            edit_many(cli.catalog.as_ref(), &select, &write, |p| {
+                let mut ops = Vec::new();
+                if touches_iptc {
+                    let mut value = p.iptc.clone();
+                    set_text(&mut value.creator, &set_creator);
+                    set_text(&mut value.copyright, &set_copyright);
+                    ops.push(Op::SetIptc { base: p.iptc.clone(), value });
+                }
+                if touches_place {
+                    let mut value = p.place.clone();
+                    set_text(&mut value.city, &set_city);
+                    set_text(&mut value.state, &set_state);
+                    set_text(&mut value.country, &set_country);
+                    set_text(&mut value.country_code, &set_country_code);
+                    set_text(&mut value.location, &set_location);
+                    ops.push(Op::SetPlace { base: p.place.clone(), value });
+                }
+                ops
+            })?;
+        }
+        Command::Geo { select, lat, lon, clear, write } => {
+            let value = match (lat, lon, clear) {
+                (Some(lat), Some(lon), false) => {
+                    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                        anyhow::bail!("latitude is -90..90 and longitude -180..180");
+                    }
+                    Some(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual })
+                }
+                (None, None, true) => None,
+                _ => anyhow::bail!("pass --lat and --lon, or --clear"),
+            };
+            edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetGeo { base: p.geo, value })?;
         }
         Command::Keyword { action } => {
             let (select, write, op) = match action {

@@ -59,7 +59,7 @@ pub fn extract(con: &Connection, catalog_dir: &Path, source: &SourceId) -> Resul
 }
 
 /// Text columns use both NULL and '' for "nothing".
-fn blank(value: Option<String>) -> Option<String> {
+pub(crate) fn blank(value: Option<String>) -> Option<String> {
     value.filter(|s| !s.trim().is_empty())
 }
 

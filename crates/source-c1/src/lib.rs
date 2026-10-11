@@ -89,7 +89,7 @@ impl PhotoSource for CaptureOne {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            writable: vec![Field::Rating, Field::Color, Field::Keywords],
+            writable: vec![Field::Rating, Field::Color, Field::Keywords, Field::Iptc, Field::Place, Field::Geo],
             tiers: vec![ImageTier::Thumb, ImageTier::Preview, ImageTier::Original],
             geo_per_asset: true,
             collections: true,

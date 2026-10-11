@@ -139,7 +139,17 @@ export type Edit =
   | { Rating: number | null }
   | { Color: Color | null }
   | { AddKeywords: string[] }
-  | { RemoveKeywords: string[] };
+  | { RemoveKeywords: string[] }
+  /** Location fields by name; "" clears one. */
+  | { Place: Partial<Record<PlaceField, string>> }
+  | { Iptc: Partial<Record<CaptionField, string>> }
+  /** Latitude, longitude; null clears. */
+  | { Geo: [number, number] | null };
+export type PlaceField = "country" | "country_code" | "state" | "city" | "location";
+export type CaptionField = "description" | "title" | "headline" | "creator" | "copyright";
+/** What can be copied from one photo to others. `keywords` adds them; `keywords_exact`
+ *  makes the targets' keywords the same. */
+export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | PlaceField | "geo" | CaptionField;
 
 export const status = () => invoke<Status>("status");
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
@@ -149,6 +159,9 @@ export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");
 /** Returns the ops that undo it. */
 export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit", { rows, edit });
+/** Pastes fields copied from `from` onto the photos at `rows`; returns the ops that undo it. */
+export const paste = (rows: number[], from: Photo, fields: CopyField[]) =>
+  invoke<[number, Op][]>("paste", { rows, from, fields });
 export const editOps = (changes: [number, Op][]) => invoke<[number, Op][]>("edit_ops", { changes });
 /** Every keyword path in the catalog with its use count. */
 export const keywords = () => invoke<[string, number][]>("keywords");

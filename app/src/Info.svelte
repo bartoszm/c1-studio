@@ -1,14 +1,15 @@
 <script lang="ts">
   import * as api from "./lib/api";
-  import { COLORS, bytes, camera, date, exposure, folderOf } from "./lib/format";
+  import { COLORS, bytes, camera, date, exposure, folderOf, geoText, parseGeo } from "./lib/format";
 
   const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords,
+    row, version, picked, queued, collections, keywords, clip,
     onrate, oncolor, onaddkeyword, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
+    onplace, ongeo, oncopy, onpaste,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -28,6 +29,13 @@
     onalbum: (id: string) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
+    /** A location field typed in; "" clears it. */
+    onplace: (field: api.PlaceField, value: string) => void;
+    ongeo: (value: [number, number] | null) => void;
+    /** What the clipboard holds, for showing; null when empty. */
+    clip: string | null;
+    oncopy: () => void;
+    onpaste: () => void;
   } = $props();
 
   let photo = $state<api.Photo | null>(null);
@@ -66,7 +74,32 @@
   /** How a queued edit reads: `rating`, `colour`, `keyword "street"`. */
   function fieldName(f: string) {
     if (f.startsWith("keyword:")) return `keyword “${f.slice(8)}”`;
-    return f === "color" ? "colour" : f;
+    return ({ color: "colour", place: "location", geo: "GPS", iptc: "caption" } as Record<string, string>)[f] ?? f;
+  }
+
+  const PLACE_FIELDS: [api.PlaceField, string][] = [
+    ["country", "Country"], ["country_code", "Code"], ["state", "State"], ["city", "City"], ["location", "Location"],
+  ];
+
+  // Typed fields commit on Enter or leaving the field; Escape puts the value back.
+  function fieldKeys(e: KeyboardEvent, shown: string) {
+    const input = e.currentTarget as HTMLInputElement;
+    if (e.key === "Enter") input.blur();
+    else if (e.key === "Escape") {
+      input.value = shown;
+      geoError = null;
+      input.blur();
+    }
+  }
+
+  let geoError = $state<string | null>(null);
+  function commitGeo(e: Event) {
+    const parsed = parseGeo((e.currentTarget as HTMLInputElement).value);
+    if (typeof parsed === "string") geoError = parsed;
+    else {
+      geoError = null;
+      ongeo(parsed);
+    }
   }
 
   // Sorted, so the list keeps still while keywords are added and removed.
@@ -76,9 +109,6 @@
 
   let albums = $derived(
     (photo?.collections ?? []).map((id) => collections.get(id)).filter((c): c is api.Collection => !!c),
-  );
-  let place = $derived(
-    photo ? [photo.place.location, photo.place.city, photo.place.state, photo.place.country].filter(Boolean) : [],
   );
 </script>
 
@@ -115,6 +145,15 @@
           onclick={() => oncolor(p.color === c ? null : c)}
         ></button>
       {/each}
+    </div>
+    <div class="clip">
+      <button title="Choose what to copy from this photo (Ctrl+Shift+C)" onclick={oncopy}>Copy…</button>
+      {#if clip}
+        <button title="Paste onto {picked > 1 ? `the ${picked} selected photos` : 'this photo'} (Ctrl+Shift+V)" onclick={onpaste}>
+          Paste{picked > 1 ? ` to ${picked.toLocaleString()}` : ""}
+        </button>
+        <span class="clip-what" title={clip}>{clip}</span>
+      {/if}
     </div>
     {#if picked > 1}<p class="hint">Edits apply to the {picked.toLocaleString()} selected photos.</p>{/if}
     {#if queued.length}
@@ -178,19 +217,45 @@
       </ul>
     {/if}
 
-    {#if place.length || p.geo}
-      <h3>Place</h3>
-      <dl>
-        {#if place.length}<dt>Where</dt><dd>{place.join(", ")}</dd>{/if}
-        {#if p.geo}
-          <dt>GPS</dt>
-          <dd>
-            {p.geo.lat.toFixed(5)}, {p.geo.lon.toFixed(5)}{#if p.geo.alt !== null} · {Math.round(p.geo.alt)} m{/if}
-            <span class="muted">({p.geo.origin.toLowerCase()})</span>
-          </dd>
-        {/if}
-      </dl>
-    {/if}
+    <h3>Location</h3>
+    <dl class="fields" class:queued={queued.includes("place")}>
+      {#each PLACE_FIELDS as [field, label] (field)}
+        {@const shown = p.place[field] ?? ""}
+        <dt><label for="place-{field}">{label}</label></dt>
+        <dd>
+          <input
+            id="place-{field}"
+            class="field"
+            class:code={field === "country_code"}
+            value={shown}
+            placeholder={picked > 1 ? `set on ${picked} photos` : "—"}
+            maxlength={field === "country_code" ? 3 : undefined}
+            spellcheck="false"
+            onkeydown={(e) => fieldKeys(e, shown)}
+            onchange={(e) => onplace(field, e.currentTarget.value)}
+          />
+        </dd>
+      {/each}
+    </dl>
+    <dl class="fields" class:queued={queued.includes("geo")}>
+      {#key p.geo}
+        {@const shown = p.geo ? geoText(p.geo) : ""}
+        <dt><label for="place-geo">GPS</label></dt>
+        <dd>
+          <input
+            id="place-geo"
+            class="field"
+            value={shown}
+            placeholder="latitude, longitude"
+            title="Decimal (50.0614, 19.9366), with N/S/E/W, or degrees, minutes and seconds. Empty clears it."
+            spellcheck="false"
+            onkeydown={(e) => fieldKeys(e, shown)}
+            onchange={commitGeo}
+          />
+        </dd>
+      {/key}
+    </dl>
+    {#if geoError}<p class="error">{geoError}</p>{/if}
 
     {#if p.iptc.title || p.iptc.headline || p.iptc.description || p.iptc.creator || p.iptc.copyright}
       <h3>Caption</h3>

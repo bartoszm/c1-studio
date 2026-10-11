@@ -27,6 +27,12 @@ pub struct Change {
     pub op: Op,
 }
 
+/// Where a geo point is, for comparing: two points at the same spot are the same
+/// whatever their origin (a manual position reads back from a source as stored data).
+pub fn spot(geo: &Option<GeoPoint>) -> Option<(f64, f64)> {
+    geo.map(|g| (g.lat, g.lon))
+}
+
 /// Outcome of checking one change against a photo's current state.
 pub enum Check {
     Apply,
@@ -54,7 +60,7 @@ impl Op {
             Op::SetColor { base, value } => compare(base, value, &photo.color),
             Op::SetIptc { base, value } => compare(base, value, &photo.iptc),
             Op::SetPlace { base, value } => compare(base, value, &photo.place),
-            Op::SetGeo { base, value } => compare(base, value, &photo.geo),
+            Op::SetGeo { base, value } => compare(&spot(base), &spot(value), &spot(&photo.geo)),
             Op::AddKeywords { paths } => {
                 if paths.iter().all(|p| photo.keywords.contains(p)) {
                     Check::NoOp
@@ -206,7 +212,7 @@ impl Op {
             Op::SetColor { base, value } => base == value,
             Op::SetIptc { base, value } => base == value,
             Op::SetPlace { base, value } => base == value,
-            Op::SetGeo { base, value } => base == value,
+            Op::SetGeo { base, value } => spot(base) == spot(value),
             Op::AddKeywords { paths } | Op::RemoveKeywords { paths } => paths.is_empty(),
             _ => false,
         }
