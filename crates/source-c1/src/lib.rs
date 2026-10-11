@@ -10,19 +10,21 @@ mod config;
 mod extract;
 mod process;
 mod smart;
+mod write;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use c1model::source::Result;
 use c1model::{
-    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, ImageFormat, ImageRef, ImageTier, PhotoId, PhotoSource,
-    SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
+    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoId,
+    PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
 pub use config::{catalog_id, data_dir, find_catalog};
 pub use extract::{Extract, extract};
+pub use write::Backup;
 
 pub struct CaptureOne {
     catalog: PathBuf,
@@ -60,6 +62,16 @@ impl CaptureOne {
         self.catalog.parent().expect("a catalog file has a parent directory")
     }
 
+    /// Where backups made before each write go.
+    pub fn backup_dir(&self) -> PathBuf {
+        self.work_dir.join("backups")
+    }
+
+    /// Backups of this catalog, newest first.
+    pub fn backups(&self) -> Vec<Backup> {
+        write::backups(&self.catalog, &self.backup_dir())
+    }
+
     fn variant_pk(&self, id: &PhotoId) -> Result<i64> {
         if id.source != self.id {
             return Err(SourceError::NotFound(format!("{id} belongs to another source")));
@@ -75,9 +87,8 @@ impl PhotoSource for CaptureOne {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Read-only until the write path is ported with differential tests (stage 2).
         Capabilities {
-            writable: vec![],
+            writable: vec![Field::Rating, Field::Color],
             tiers: vec![ImageTier::Thumb, ImageTier::Preview, ImageTier::Original],
             geo_per_asset: true,
             collections: true,
@@ -152,17 +163,107 @@ impl PhotoSource for CaptureOne {
     }
 
     fn write_status(&self) -> WriteStatus {
-        match process::running_capture_one() {
-            Some(name) => WriteStatus::Locked { by: name },
-            None => WriteStatus::ReadOnly,
+        write::status(&self.catalog)
+    }
+
+    /// Reads the live catalog, so it works while Capture One is open.
+    fn plan(&self, changes: &[Change]) -> Result<ApplyPlan> {
+        let con = catalog::open_live(&self.catalog)?;
+        write::plan(&con, changes, |c| self.variant_pk(&c.photo))
+    }
+
+    /// Refuses while Capture One or anything else has the catalog open, backs it up,
+    /// then writes the plan in one transaction after checking it still holds.
+    fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport> {
+        if plan.apply.is_empty() {
+            return Ok(ApplyReport::default());
+        }
+        let _guard = self.snapshot_lock.lock().unwrap();
+        write::preflight(&self.catalog)?;
+        let backup = write::backup(&self.catalog, &self.backup_dir(), write::KEEP_BACKUPS)?;
+        let mut con = write::open_write(&self.catalog)?;
+        let applied = write::write(&mut con, plan, |c| self.variant_pk(&c.photo))?;
+        Ok(ApplyReport { applied, backup: Some(backup.backup.display().to_string()) })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use c1model::{Op, conformance};
+
+    use super::*;
+
+    fn source() -> (tempfile::TempDir, CaptureOne) {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("fixture.cocatalogdb");
+        drop(write::tests::fixture(&catalog));
+        let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
+        (dir, source)
+    }
+
+    fn ready(source: &CaptureOne) -> bool {
+        let status = source.write_status();
+        if status != WriteStatus::Ready {
+            eprintln!("write checks skipped: {status:?}");
+        }
+        status == WriteStatus::Ready
+    }
+
+    #[test]
+    fn fixture_conforms_for_reads_and_writes() {
+        let (_dir, source) = source();
+        assert_eq!(conformance::check_read(&source), Vec::<String>::new());
+        if ready(&source) {
+            let probe = PhotoId::new(&source.info().id, "3");
+            assert_eq!(conformance::check_write(&source, &probe), Vec::<String>::new());
         }
     }
 
-    fn plan(&self, _changes: &[Change]) -> Result<ApplyPlan> {
-        Err(SourceError::Unsupported("writing to Capture One (stage 2)"))
+    #[test]
+    fn apply_backs_up_first_and_the_next_snapshot_sees_the_change() {
+        let (_dir, source) = source();
+        if !ready(&source) {
+            return;
+        }
+        let id = PhotoId::new(&source.info().id, "2");
+        let plan = source
+            .plan(&[Change {
+                photo: id.clone(),
+                op: Op::SetColor { base: None, value: Some(c1model::ColorLabel::Red) },
+            }])
+            .unwrap();
+        let report = source.apply(&plan).unwrap();
+        assert_eq!(report.applied, 1);
+        let backup = source.backups();
+        assert_eq!(backup.len(), 1);
+        assert_eq!(report.backup.as_deref(), Some(backup[0].backup.display().to_string().as_str()));
+
+        let mut color = None;
+        source
+            .snapshot(None, &mut |e| {
+                if let SourceEvent::Upsert(p) = e
+                    && p.id == id
+                {
+                    color = p.color;
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(color, Some(c1model::ColorLabel::Red));
+
+        // The backup still holds the catalog as it was.
+        let old = rusqlite::Connection::open(&backup[0].backup).unwrap();
+        let tag: Option<i64> = old
+            .query_row("SELECT m.ZCOLOR_TAG_INDEX FROM ZVARIANT v JOIN ZVARIANTMETADATA m ON m.ZLAYER = v.ZADJUSTMENTLAYER WHERE v.Z_PK = 2", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tag, None);
     }
 
-    fn apply(&self, _plan: &ApplyPlan) -> Result<ApplyReport> {
-        Err(SourceError::Unsupported("writing to Capture One (stage 2)"))
+    #[test]
+    fn edits_other_than_rating_and_colour_are_refused_for_now() {
+        let (_dir, source) = source();
+        let id = PhotoId::new(&source.info().id, "1");
+        let add = Change { photo: id, op: Op::AddKeywords { paths: vec![c1model::KeywordPath::from_pipe("x")] } };
+        assert!(matches!(source.plan(&[add]), Err(SourceError::Unsupported(_))));
     }
 }

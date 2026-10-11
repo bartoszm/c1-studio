@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::Context;
-use c1index::{Dim, Library, QueryOptions, Sort};
-use c1model::{ImageTier, PhotoSource};
+use c1index::{Dim, Filter, Library, QueryOptions, Sort};
+use c1model::{Change, ColorLabel, ImageTier, Op, Photo, PhotoSource};
 use clap::{Parser, Subcommand};
 use source_c1::{CaptureOne, data_dir, find_catalog};
 
@@ -91,6 +91,28 @@ enum Command {
         #[arg(long)]
         no_sync: bool,
     },
+    /// Set or clear the star rating. A dry run unless --apply is given.
+    Rate {
+        #[command(flatten)]
+        select: Selector,
+        /// 0 to 5; 0 means unrated.
+        #[arg(long, value_name = "0-5")]
+        set: Option<u8>,
+        #[arg(long)]
+        clear: bool,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
+    /// Set the colour tag (none, red, orange, yellow, green, blue, pink, purple).
+    #[command(alias = "colour")]
+    Color {
+        #[command(flatten)]
+        select: Selector,
+        #[arg(long, value_name = "NAME")]
+        set: String,
+        #[command(flatten)]
+        write: WriteFlags,
+    },
     /// Time the library against the stage-0 speed gate on synthetic photos.
     Bench {
         #[arg(long, default_value_t = 250_000)]
@@ -112,6 +134,18 @@ enum Command {
         #[arg(long, default_value = "rating,color,year,camera,lens,keyword_tree,collection,country")]
         dims: String,
     },
+}
+
+#[derive(clap::Args)]
+struct WriteFlags {
+    /// Write to the catalog. Without it nothing is written and the plan is shown.
+    #[arg(long)]
+    apply: bool,
+    /// Print the outcome as JSON.
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    no_sync: bool,
 }
 
 struct Session {
@@ -154,6 +188,63 @@ fn parse_dims(text: &str) -> anyhow::Result<Vec<Dim>> {
         .collect()
 }
 
+/// Plans `op` for every matching photo and, with `--apply`, writes it. Capture One must
+/// be closed for the write; the plan works either way.
+fn edit(
+    catalog: Option<&PathBuf>,
+    select: &Selector,
+    flags: &WriteFlags,
+    op: impl Fn(&Photo) -> Op,
+) -> anyhow::Result<()> {
+    let session = open(catalog)?;
+    if !flags.no_sync {
+        sync(&session, true)?;
+    }
+    let filter = select.to_filter(&session.library)?;
+    if filter == Filter::default() {
+        anyhow::bail!("refusing to run without a selection; add at least one filter (e.g. --id, --album, --rating)");
+    }
+    let result = session.library.query(&filter, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?;
+    let mut changes = Vec::with_capacity(result.rows.len());
+    for row in result.rows {
+        if let Some(photo) = session.library.photo(row)? {
+            changes.push(Change { op: op(&photo), photo: photo.id });
+        }
+    }
+    let plan = session.source.plan(&changes)?;
+    let report = if flags.apply { Some(session.source.apply(&plan)?) } else { None };
+    if report.is_some() {
+        sync(&session, true)?;
+    }
+    let ids = |list: &[Change]| list.iter().map(|c| c.photo.ext.clone()).collect::<Vec<_>>();
+    if flags.json {
+        let out = serde_json::json!({
+            "applied": report.as_ref().map(|r| r.applied),
+            "backup": report.as_ref().and_then(|r| r.backup.clone()),
+            "apply": ids(&plan.apply),
+            "unchanged": ids(&plan.no_ops),
+            "conflicts": plan.conflicts.iter().map(|c| (c.change.photo.ext.clone(), c.current.clone())).collect::<Vec<_>>(),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+    println!("{} to change, {} already so, {} in conflict", plan.apply.len(), plan.no_ops.len(), plan.conflicts.len());
+    for c in plan.conflicts.iter().take(20) {
+        println!("  conflict {}: the catalog now holds {}", c.change.photo.ext, c.current);
+    }
+    match report {
+        Some(r) => {
+            println!("written: {}", r.applied);
+            if let Some(b) = r.backup {
+                println!("backup: {b}");
+            }
+        }
+        None if !plan.apply.is_empty() => println!("dry run: nothing written; add --apply to write"),
+        None => {}
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -190,6 +281,23 @@ fn main() -> anyhow::Result<()> {
                     Err(e) => eprintln!("{}: {e}", id.ext),
                 }
             }
+        }
+        Command::Rate { select, set, clear, write } => {
+            let value = match (set, clear) {
+                (Some(n @ 0..=5), false) => (n > 0).then_some(n),
+                (None, true) => None,
+                _ => anyhow::bail!("pass --set 0..5 or --clear"),
+            };
+            edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetRating { base: p.rating, value })?;
+        }
+        Command::Color { select, set, write } => {
+            let value = match set.trim().to_ascii_lowercase().as_str() {
+                "none" => None,
+                name => Some(ColorLabel::from_name(name).with_context(|| {
+                    format!("unknown colour {set:?}; choose none, red, orange, yellow, green, blue, pink or purple")
+                })?),
+            };
+            edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetColor { base: p.color, value })?;
         }
         Command::Bench { photos, keywords, queries, seed, dir, rebuild, dims } => {
             bench::bench(&bench::Config { photos, keywords, queries, seed, dir, rebuild, dims: parse_dims(&dims)? })?;

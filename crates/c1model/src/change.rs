@@ -34,18 +34,21 @@ pub enum Check {
     Conflict(String),
 }
 
+/// Checks a set-field op: the field already holds `value` (nothing to do), still holds
+/// `base` (apply), or holds something else (someone changed it meanwhile).
+pub fn compare<T: PartialEq + std::fmt::Debug>(base: &T, value: &T, current: &T) -> Check {
+    if current == value {
+        Check::NoOp
+    } else if current != base {
+        Check::Conflict(format!("{current:?}"))
+    } else {
+        Check::Apply
+    }
+}
+
 impl Op {
     /// Compares `base` with `photo` and decides what applying this op would mean.
     pub fn check(&self, photo: &Photo) -> Check {
-        fn compare<T: PartialEq + std::fmt::Debug>(base: &T, value: &T, current: &T) -> Check {
-            if current == value {
-                Check::NoOp
-            } else if current != base {
-                Check::Conflict(format!("{current:?}"))
-            } else {
-                Check::Apply
-            }
-        }
         match self {
             Op::SetRating { base, value } => compare(base, value, &photo.rating),
             Op::SetColor { base, value } => compare(base, value, &photo.color),
