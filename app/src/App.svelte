@@ -10,6 +10,7 @@
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
+  import PlaceDialog from "./PlaceDialog.svelte";
   import Info from "./Info.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
@@ -65,6 +66,9 @@
   let remapCount = $state(0);
   let keywordSearch = $state("");
   let keywordMenu = $state<{ x: number; y: number; node: Node } | null>(null);
+  /** The Location tree's right-click menu, and its rename / join dialog. */
+  let placeMenu = $state<{ x: number; y: number; node: Node } | null>(null);
+  let placeDialog = $state<{ mode: "rename" | "join"; path: string } | null>(null);
   let keywordDialog = $state<{ mode: "rename" | "join" | "group"; start: string } | null>(null);
 
   // Sidebar layout survives restarts: which branches are open, which sections folded.
@@ -638,11 +642,12 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (e.key === "Escape" && keywordMenu) {
+    if (e.key === "Escape" && (keywordMenu || placeMenu)) {
       keywordMenu = null;
+      placeMenu = null;
       return;
     }
-    if (writing || keywordDialog || copying || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || keywordDialog || placeDialog || fillingCodes || copying || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && !e.altKey) {
@@ -889,7 +894,13 @@
     <section>
       {@render head("places")}
       {#if !folded.has("places")}
-        <Tree nodes={places} selected={filter.place_under && "p:" + filter.place_under} {expanded} onpick={pickPlace} />
+        <Tree
+          nodes={places}
+          selected={filter.place_under && "p:" + filter.place_under}
+          {expanded}
+          onpick={pickPlace}
+          oncontext={(node, e) => (placeMenu = { x: e.clientX, y: e.clientY, node })}
+        />
         {#if missingCodes}
           <button class="tree-action" onclick={() => (fillingCodes = true)} title="Fill in the ISO codes of these photos' countries">
             {missingCodes.toLocaleString()} without an ISO country code · Fill in…
@@ -1053,6 +1064,27 @@
     keywords={keywordList}
     onclose={() => (keywordDialog = null)}
     ondone={applyRemap}
+  />
+{/if}
+
+{#if placeMenu}
+  {@const node = placeMenu.node}
+  <div class="menu-shield" role="presentation" onclick={() => (placeMenu = null)} oncontextmenu={(e) => { e.preventDefault(); placeMenu = null; }}></div>
+  <div class="menu" role="menu" style:left="{placeMenu.x}px" style:top="{placeMenu.y}px">
+    <div class="menu-title">{placeText(node.value)}</div>
+    <button role="menuitem" onclick={() => { placeDialog = { mode: "rename", path: node.value }; placeMenu = null; }}>
+      {node.value.endsWith("—") ? "Set a name…" : "Rename…"}
+    </button>
+    <button role="menuitem" onclick={() => { placeDialog = { mode: "join", path: node.value }; placeMenu = null; }}>Join into…</button>
+  </div>
+{/if}
+
+{#if placeDialog}
+  <PlaceDialog
+    mode={placeDialog.mode}
+    path={placeDialog.path}
+    onclose={() => (placeDialog = null)}
+    ondone={codesFilled}
   />
 {/if}
 

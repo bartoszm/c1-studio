@@ -721,6 +721,18 @@ in `<data dir>/settings.json`) writes the queue by itself.
   (`set_country_codes`). On a copy of fuji: 7,857 photos filled and written (23 s,
   debug build), none left without a code, both metadata rows, integrity ok.
 
+### Renaming and joining places
+
+- Right-click in the Location tree: **Rename…** / **Join into…** (**Set a name…** on a
+  missing level). One primitive, `move_place(from, to, code)`: every photo at or under
+  `from` takes `to`'s levels (same depth), keeping the levels below; queued as
+  `SetPlace` edits, one undo. A country renamed to a known name takes its ISO code.
+- Join lists the places at the same level from the whole catalog, names equal but for
+  case and accents first (Krakow / Kraków / krakow), then siblings, then the most used.
+- No new catalog writes: `SetPlace` is the path the differential test covers. On a copy
+  of fuji: Krakow joined Kraków, USA renamed into United States (US, 3,095 photos),
+  hong-kong → Hong Kong and undone; written, integrity ok.
+
 ### Next
 
 1. Albums: add and remove photos, create albums, with a differential test.

@@ -92,6 +92,12 @@ the Date tree still shows every year.
   so on, so a city without a state is not mixed in with the states. Below the tree,
   *N without an ISO country code · Fill in…* lists those photos' countries with the code
   each name gives (change it or untick a row) and fills them as one edit.
+  Right-click a place to **Rename…** it (Krakow → Kraków; USA → United States, with
+  its ISO code) or **Join into…** another place at the same level (similar names such
+  as Krakow / Kraków / krakow are offered first). Every photo at or under it changes,
+  keeping the levels below, as one edit; a rename to a name that exists joins them.
+  On a missing level (*(no state)*) it is **Set a name…**: e.g. give all of Poland's
+  photos without a state one.
 - **Folders:** the folder tree; a folder includes everything below it.
 - **Keywords:** the keyword tree; a keyword includes the keywords below it. The *Find a
   keyword* box above it shows only matching keywords, with their branches open. Esc
