@@ -4,7 +4,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS, FIELD_NAMES } from "./lib/format";
+  import { COLORS, FIELD_NAMES, stars } from "./lib/format";
   import { albumTree, pathTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import CopyDialog from "./CopyDialog.svelte";
@@ -586,6 +586,53 @@
 
   let byId = $derived(new Map(collections.map((c) => [c.id, c])));
 
+  // The filter as chips above the grid, one per value; × on a chip drops just that value.
+  // `rest` is what the field holds without it (undefined lets go of the field).
+  type Chip = { what?: string; text: string; title?: string; dot?: string; stars?: boolean; rest?: unknown };
+  const without = <T,>(list: T[], v: T) => {
+    const left = list.filter((x) => x !== v);
+    return left.length ? left : undefined;
+  };
+  function ratingText(r: NonNullable<Filter["rating"]>): string {
+    if (r === "None") return "unrated";
+    if (r === "Any") return "rated";
+    const { min, max } = r.Values;
+    if (min !== undefined && min === max) return stars(min);
+    if (min !== undefined && max !== undefined) return `★ ${min}–${max}`;
+    return min !== undefined ? `★ ${min}+` : `★ up to ${max}`;
+  }
+  /** Every filter field, in the order its chips show. A new field needs a line here. */
+  const CHIPS: { [K in keyof Filter]-?: (v: NonNullable<Filter[K]>) => Chip[] } = {
+    text: (v) => [{ what: "Search", text: `“${v}”` }],
+    rating: (v) => [{ text: ratingText(v), stars: typeof v === "object" }],
+    color: (v) =>
+      typeof v === "string"
+        ? [{ what: "Colour", text: v === "None" ? "none" : "any" }]
+        : v.Values.map((c) => {
+            const rest = without(v.Values, c);
+            return { what: "Colour", text: c.toLowerCase(), dot: COLORS[c.toLowerCase()], rest: rest && { Values: rest } };
+          }),
+    year: (v) => [{ text: String(v) }],
+    camera: (v) => [{ what: "Camera", text: v }],
+    country: (v) => [{ what: "Country", text: v }],
+    keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
+    collections: (v) =>
+      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
+    folder: (v) => [{ what: "Folder", text: v }],
+  };
+  let chips = $derived(
+    (Object.keys(CHIPS) as (keyof Filter)[]).flatMap((key) => {
+      const v = filter[key];
+      return v === undefined ? [] : CHIPS[key](v as never).map((c) => ({ ...c, key }));
+    }),
+  );
+
+  function dropChip(key: keyof Filter, rest: unknown) {
+    filter = { ...filter, [key]: rest };
+    if (key === "text") search = "";
+    run();
+  }
+
   function fold(key: string) {
     if (folded.has(key)) folded.delete(key);
     else folded.add(key);
@@ -632,7 +679,6 @@
   <header>
     <span class="brand">C1 Studio</span>
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
-    {#if active}<button class="clear" onclick={clearAll}>Clear filters</button>{/if}
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
@@ -721,6 +767,24 @@
       {/if}
     {/each}
   </aside>
+
+  {#if active}
+    <div class="filters" role="group" aria-label="Filters">
+      {#each chips as chip}
+        <span class="chip" title={chip.title}>
+          {#if chip.dot}<i class="dot" style:background={chip.dot}></i>{/if}
+          {#if chip.what}<span class="what">{chip.what}:</span>{/if}
+          <span class="text" class:stars={chip.stars}>{chip.text}</span>
+          <button
+            class="drop"
+            aria-label="Remove {chip.what ?? ''} {chip.text}"
+            onclick={() => dropChip(chip.key, chip.rest)}
+          >×</button>
+        </span>
+      {/each}
+      <button class="clear" onclick={clearAll}>Clear filters</button>
+    </div>
+  {/if}
 
   <Grid
     bind:this={grid}
