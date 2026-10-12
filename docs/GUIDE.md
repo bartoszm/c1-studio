@@ -251,8 +251,20 @@ network; everything else works without one).
 - Click a cluster to zoom to its photos; click a single photo to show it in the
   details panel.
 - **Grid follows map** (on by default) makes the grid show only the photos in view: pan
-  and zoom to filter. The chip *Map: area in view* drops it. Off, the grid keeps its
+  and zoom to filter. The chip *Map: area* drops it. Off, the grid keeps its
   own filter.
+- **Pick an area:** Shift+drag a box on the map. The grid then shows just its photos
+  (and stops following the map); the chip *Map: area* drops it.
+- **Find a place:** the box at the map's top left searches OpenStreetMap's Nominatim by
+  name and flies there. With photos picked in the strip, *Put N picked photos here*
+  places them at the place found.
+- **GPX…** (Map tab) gives photos a position from a recorded track by when they were
+  taken. Choose the file, then say what the camera's clock showed against UTC (hours
+  east: Poland is 1 in winter, 2 in summer; Capture One keeps the camera's own time).
+  The dialog counts the photos in view the track places, as you change the offset; a
+  wrong offset places none. Photos in a gap longer than the limit (15 minutes) are left
+  alone, as are photos that already have a position unless you tick *Also move…*.
+  Positions between two points are interpolated. One undoable edit.
 - **Setting a position:** drag a single photo's tile to a new place, or drag photos
   (one or several picked) from the grid onto the map. This is a Location edit like any
   other: queued, undoable, written with *Write to Capture One*. A position belongs to

@@ -264,6 +264,20 @@ export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", 
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
+export type GpxSettings = { path: string; offset_minutes: number; max_gap_minutes: number; overwrite: boolean };
+export type GpxPlan = {
+  fixes: number;
+  from: number;
+  to: number;
+  candidates: number;
+  matched: number;
+  sample: [number, number, number][];
+};
+/** The system dialog for a GPX file; null if cancelled. */
+export const pickGpx = () => invoke<string | null>("pick_gpx");
+export const gpxPlan = (filter: Filter, settings: GpxSettings) => invoke<GpxPlan>("gpx_plan", { filter, settings });
+/** Places the photos the track covers; returns the ops that undo it. */
+export const gpxApply = (filter: Filter, settings: GpxSettings) => invoke<[number, Op][]>("gpx_apply", { filter, settings });
 export type Group = { id: string; size: number; rows: number[] };
 /** Duplicate groups (or series) among the photos the filter selects, biggest first. */
 export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
