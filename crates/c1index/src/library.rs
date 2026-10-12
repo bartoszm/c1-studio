@@ -12,7 +12,7 @@ use c1model::{
     MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::{Count, DocSetCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
@@ -20,6 +20,7 @@ use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, 
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
+use crate::geo::{self, Located, MapResult, MapView};
 use crate::looks::{Look, Looks, Record};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
@@ -724,6 +725,43 @@ impl Library {
         }
         result.micros = started.elapsed().as_micros();
         Ok(result)
+    }
+
+    /// The photos `filter` selects that have a position, clustered for `view`. A filter's
+    /// own `within` is set aside, so the map keeps showing the places around the area it
+    /// picked.
+    pub fn map(&self, filter: &Filter, view: &MapView) -> anyhow::Result<MapResult> {
+        let distinct = self.distinct.read().unwrap();
+        let smart = self.smart.read().unwrap();
+        let filter = Filter { within: None, gps: Some(true), ..filter.clone() };
+        let query = expand(&filter, &smart)?.to_query(&self.index, &self.fields, &distinct)?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((
+                fast.u64("row")?,
+                fast.f64("lat")?,
+                fast.f64("lon")?,
+                fast.u64("rating_sort")?,
+                fast.f64("sharpness")?,
+            ));
+        }
+        let points: Vec<Located> = docs
+            .iter()
+            .filter_map(|a| {
+                let (row, lat, lon, rating, sharp) = &columns[a.segment_ord as usize];
+                Some(Located {
+                    row: row.first(a.doc_id)?,
+                    lat: lat.first(a.doc_id)?,
+                    lon: lon.first(a.doc_id)?,
+                    rating: rating.first(a.doc_id).unwrap_or(0),
+                    sharpness: sharp.first(a.doc_id).unwrap_or(0.0),
+                })
+            })
+            .collect();
+        Ok(geo::cluster(&points, view))
     }
 
     /// How many photos each smart album holds among those `filter` selects, setting

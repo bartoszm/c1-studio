@@ -208,6 +208,12 @@ async fn query(app: State<'_, App>, filter: Filter, options: QueryOptions) -> Re
     app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))
 }
 
+/// The map's markers for the photos `filter` selects, clustered for what the map shows.
+#[tauri::command]
+async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Result<c1index::MapResult, String> {
+    app.session()?.library.map(&filter, &view).map_err(|e| format!("{e:#}"))
+}
+
 /// Smart album id → how many photos it holds under `filter` (its album pick aside).
 #[tauri::command]
 async fn smart_counts(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, u64)>, String> {
@@ -1244,6 +1250,7 @@ pub fn run() {
             status,
             query,
             smart_counts,
+            map,
             photo,
             collections,
             sync,

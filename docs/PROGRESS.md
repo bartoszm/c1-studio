@@ -935,7 +935,27 @@ in `<data dir>/settings.json`) writes the queue by itself.
   (not variants, not burst frames), series; library: filters, groups by regroup,
   analyses outliving the store.
 
+## Stage 4: the map
+
+- **`c1index::geo`:** `Library::map(filter, view)` takes the photos the filter selects
+  that have a position (lat, lon, rating, sharpness from fast fields), and clusters
+  those in the view in Web Mercator pixels: 72 px cells laid on the whole world, so a
+  marker keeps its photos while the map pans; from zoom 17 only photos at the same spot
+  (about 1 m) share a marker. A cluster carries its centre, count, best photo (rating,
+  then sharpness) and bounds. A filter's own `within` is set aside, so the map keeps
+  showing the places around the area it picked. Tauri command `map`.
+- **App:** `MapPane.svelte` (MapLibre GL 6, OpenFreeMap positron turned dark by a CSS
+  filter on the canvas only, HTML markers with thumbnails: discs below zoom 5). Header
+  *Map* toggle; *grid follows map* sets `filter.within` to the view (debounced), chip
+  *Map: area in view*. Single markers are draggable and photos can be dropped from the
+  grid onto the map: both are `Edit::Geo` through the normal queue. The view is
+  remembered. CSP allows tiles.openfreemap.org and workers; the MapLibre worker is
+  bundled with Vite (`?worker&url`).
+- **Tested** on a fuji backup copy: 809 photos with a position, clusters at 3 zooms,
+  click-to-zoom, grid following, marker drag and drop from the grid queued `SetGeo`.
+  Unit tests for clustering and `Library::map`.
+
 ### Next
 
-1. Stage 4: the map (zoom-dependent clusters, the map as a filter, editing GPS), then
-   time travel.
+1. Stage 4, rest: lasso or box selection on the map, GPX import, place search and
+   reverse geocoding, photo direction; then time travel (trips, timeline, event log).
