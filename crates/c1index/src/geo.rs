@@ -123,7 +123,7 @@ pub fn cluster(points: &[Located], view: &MapView) -> MapResult {
         })
         .collect();
     // The same order every time, for a steady redraw.
-    result.clusters.sort_by(|a, b| a.best.cmp(&b.best));
+    result.clusters.sort_by_key(|c| c.best);
     result
 }
 
