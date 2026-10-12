@@ -170,6 +170,110 @@ async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String>
     }))
 }
 
+/// The system dialog for a GPX track; None if cancelled.
+#[tauri::command]
+async fn pick_gpx(app: AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().set_title("GPX track").add_filter("GPX track", &["gpx"]).blocking_pick_file();
+        picked.map(|p| p.into_path().map(|p| p.display().to_string())).transpose().map_err(text)
+    })
+    .await
+    .map_err(text)?
+}
+
+#[derive(Deserialize)]
+struct GpxSettings {
+    path: String,
+    /// The camera clock's distance east of UTC, in minutes: Capture One keeps the time on
+    /// the camera's clock.
+    offset_minutes: i64,
+    /// Fixes further apart than this are a break in the recording.
+    max_gap_minutes: i64,
+    /// Also move photos that already have a position.
+    overwrite: bool,
+}
+
+#[derive(Serialize)]
+struct GpxPlan {
+    fixes: usize,
+    /// The track's first and last fix, UTC milliseconds.
+    from: i64,
+    to: i64,
+    /// Photos in view taken during the track.
+    candidates: usize,
+    /// Of them, the ones the track places.
+    matched: usize,
+    /// A few of them, to show: row, latitude, longitude.
+    sample: Vec<(u64, f64, f64)>,
+}
+
+/// How many photos were considered, the track, and the photos it places with where.
+type GpxMatches = (usize, Vec<c1index::gpx::Fix>, Vec<(u64, Photo, (f64, f64))>);
+
+/// The photos `filter` selects that the track places: row, the photo's position then (for
+/// undo), and the new one.
+fn gpx_matches(s: &Session, filter: &Filter, set: &GpxSettings) -> Result<GpxMatches, String> {
+    let file = std::fs::read_to_string(&set.path).map_err(|e| format!("{}: {e}", set.path))?;
+    let fixes = c1index::gpx::parse(&file).map_err(text_of)?;
+    let offset = set.offset_minutes * 60_000;
+    let (first, last) = (fixes[0].at + offset, fixes[fixes.len() - 1].at + offset);
+    let window = c1index::TimeRange {
+        from: Some(filter.captured.and_then(|c| c.from).map_or(first, |f| f.max(first))),
+        to: Some(filter.captured.and_then(|c| c.to).map_or(last, |t| t.min(last))),
+    };
+    let narrowed = Filter {
+        captured: Some(window),
+        gps: if set.overwrite { filter.gps } else { Some(false) },
+        within: if set.overwrite { filter.within } else { None },
+        ..filter.clone()
+    };
+    let rows = s.library.query(&narrowed, &QueryOptions::default()).map_err(text)?.rows;
+    let mut found = Vec::new();
+    for row in &rows {
+        let Some(photo) = s.library.photo(*row).map_err(text)? else { continue };
+        let Some(taken) = photo.captured_at else { continue };
+        if let Some(at) = c1index::gpx::locate(&fixes, taken - offset, set.max_gap_minutes * 60_000) {
+            found.push((*row, photo, at));
+        }
+    }
+    Ok((rows.len(), fixes, found))
+}
+
+fn text_of(e: anyhow::Error) -> String {
+    format!("{e:#}")
+}
+
+/// What importing the track would do to the photos `filter` selects.
+#[tauri::command]
+async fn gpx_plan(app: State<'_, App>, filter: Filter, settings: GpxSettings) -> Result<GpxPlan, String> {
+    let s = app.session()?;
+    let (candidates, fixes, found) = gpx_matches(&s, &filter, &settings)?;
+    Ok(GpxPlan {
+        fixes: fixes.len(),
+        from: fixes[0].at,
+        to: fixes[fixes.len() - 1].at,
+        candidates,
+        matched: found.len(),
+        sample: found.iter().take(5).map(|(row, _, (lat, lon))| (*row, *lat, *lon)).collect(),
+    })
+}
+
+/// Gives the photos the track places their positions, as one edit. Returns the ops that undo it.
+#[tauri::command]
+async fn gpx_apply(app: State<'_, App>, filter: Filter, settings: GpxSettings) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    let (_, _, found) = gpx_matches(&s, &filter, &settings)?;
+    let changes: Vec<(u64, Op)> = found
+        .into_iter()
+        .map(|(row, photo, (lat, lon))| {
+            let value = GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Gpx };
+            (row, Op::SetGeo { base: photo.geo, value: Some(value) })
+        })
+        .collect();
+    s.touched();
+    s.library.edit(&changes).map_err(text_of)
+}
+
 /// Duplicate groups (or series) among the photos `filter` selects, biggest first.
 #[tauri::command]
 async fn groups(app: State<'_, App>, filter: Filter, series: bool) -> Result<Vec<c1index::Group>, String> {
@@ -1257,6 +1361,9 @@ pub fn run() {
             query,
             smart_counts,
             map,
+            pick_gpx,
+            gpx_plan,
+            gpx_apply,
             groups,
             photo,
             collections,

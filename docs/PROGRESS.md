@@ -964,7 +964,15 @@ in `<data dir>/settings.json`) writes the queue by itself.
   `groups`; click shows the group). The tab is remembered. (The viewer's `.stage` CSS
   class once collided with a layout wrapper of the same name: the wrapper is `.pane`.)
 
+- **Box select** (Shift+drag on the map → `filter.within`, grid stops following), **place
+  search** (Nominatim from the page; CSP allows it; *Put N picked photos here*), **GPX
+  import** (`c1index::gpx`: hand-scanned trkpt/rtept with times, interpolation within a
+  gap; commands `pick_gpx`, `gpx_plan`, `gpx_apply`; `GpxDialog.svelte`). The camera
+  clock's UTC offset is asked for because Capture One keeps camera time. Tested with a
+  generated track on the fuji copy: offset +2 placed 78 photos, offset 0 none, origin
+  Gpx, undo restored the queue.
+
 ### Next
 
-1. Stage 4, rest: lasso or box selection on the map, GPX import, place search and
-   reverse geocoding, photo direction; then time travel (trips, timeline, event log).
+1. Stage 4, rest: reverse geocoding of place fields (offline, GeoNames), photo direction;
+   then time travel (trips, timeline, event log).
