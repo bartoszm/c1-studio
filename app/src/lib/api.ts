@@ -264,6 +264,9 @@ export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", 
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
+export type Group = { id: string; size: number; rows: number[] };
+/** Duplicate groups (or series) among the photos the filter selects, biggest first. */
+export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 export const collections = () => invoke<Collection[]>("collections");

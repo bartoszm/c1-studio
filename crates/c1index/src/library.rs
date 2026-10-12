@@ -87,6 +87,18 @@ pub struct QueryResult {
     pub micros: u128,
 }
 
+/// Photos shown for a group of alike photos.
+const GROUP_SHOWN: usize = 6;
+
+/// A duplicate group or series: its id (a [`Filter::group`] value), how many of its photos
+/// the filter selects, and the first few.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Group {
+    pub id: String,
+    pub size: usize,
+    pub rows: Vec<u64>,
+}
+
 /// A queued edit, with the row of its photo if the library still has it.
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingEdit {
@@ -218,6 +230,28 @@ impl Library {
     }
 
     /// What the analysis found for a photo, if it has been measured.
+    /// The duplicate groups (or series) among the photos `filter` selects, biggest first:
+    /// each with how many of its photos match and a few of them to show.
+    pub fn groups(&self, filter: &Filter, series: bool, limit: usize) -> anyhow::Result<Vec<Group>> {
+        let narrowed =
+            Filter { duplicates: filter.duplicates || !series, series: filter.series || series, ..filter.clone() };
+        let rows = self.query(&narrowed, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+        let mut by: HashMap<String, Group> = HashMap::new();
+        for row in rows {
+            let Some(look) = self.look(row) else { continue };
+            let Some(id) = (if series { look.series } else { look.duplicates }) else { continue };
+            let group = by.entry(id.clone()).or_insert_with(|| Group { id, size: 0, rows: Vec::new() });
+            group.size += 1;
+            if group.rows.len() < GROUP_SHOWN {
+                group.rows.push(row);
+            }
+        }
+        let mut out: Vec<Group> = by.into_values().collect();
+        out.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.id.cmp(&b.id)));
+        out.truncate(limit);
+        Ok(out)
+    }
+
     pub fn look(&self, row: u64) -> Option<Look> {
         let key = self.keys.read().unwrap().get(row as usize)?.clone()?;
         self.seen.read().unwrap().get(&key).cloned()

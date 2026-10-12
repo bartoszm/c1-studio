@@ -4,7 +4,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
+  import { COLORS, FIELD_NAMES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
@@ -15,6 +15,7 @@
   import PlaceDialog from "./PlaceDialog.svelte";
   import Info from "./Info.svelte";
   import MapPane from "./MapPane.svelte";
+  import AnalysisPane from "./AnalysisPane.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -25,13 +26,6 @@
   const DIMS: Dim[] = [
     "rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag",
     "shape", "hue", "light", "focus",
-  ];
-  /** The analysis' groups in the sidebar: dimension, title, filter field, value order. */
-  const LOOKS: [Dim, string, "shape" | "hues" | "light" | "focus", string[]][] = [
-    ["shape", "Shape", "shape", ["landscape", "portrait", "square", "panorama"]],
-    ["hue", "Main colour", "hues", []],
-    ["light", "Light", "light", ["dark", "medium", "bright", "clipped highlights", "blocked shadows", "low contrast"]],
-    ["focus", "Focus", "focus", ["sharp", "soft", "blurry"]],
   ];
   /** Groups listed as plain values; the rest are trees. */
   const FLAT: Dim[] = ["rating", "color", "camera"];
@@ -53,16 +47,29 @@
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
   let syncFailed = $state<string | null>(null);
-  let grid: Grid;
+  let grid = $state<Grid>();
 
-  // The map, shown above the grid. While it follows, the grid shows what the map shows.
-  let mapOn = $state(remembered("map").includes("on"));
+  // Three views of the same filter: the grid, the map (with a strip of photos under it)
+  // and the analysis. While the map follows, the grid shows what the map shows.
+  type Tab = "photos" | "map" | "analysis";
+  function rememberedTab(): Tab {
+    try {
+      const t = localStorage.getItem("tab");
+      if (t === "map" || t === "analysis") return t;
+    } catch {
+      // Opens on the photos.
+    }
+    return "photos";
+  }
+  let tab = $state<Tab>(rememberedTab());
+  let mapOn = $derived(tab === "map");
   let follow = $state(!remembered("map").includes("free"));
   /** A photo picked on the map: the panel shows it and edits reach it when nothing else is picked. */
   let mapRow = $state<number | null>(null);
   $effect(() => {
     try {
-      localStorage.setItem("map", JSON.stringify([...(mapOn ? ["on"] : []), ...(follow ? [] : ["free"])]));
+      localStorage.setItem("map", JSON.stringify(follow ? [] : ["free"]));
+      localStorage.setItem("tab", tab);
     } catch {
       // Not remembered, that's all.
     }
@@ -77,7 +84,7 @@
       run(true);
     }, 250);
   }
-  /** Leaving the map, or letting go of it, lifts the area it set. */
+  /** Letting go of the map's area. */
   function mapReleased() {
     clearTimeout(followTimer);
     if (filter.within) {
@@ -85,10 +92,10 @@
       run(true);
     }
   }
-  function toggleMap() {
-    mapOn = !mapOn;
-    if (!mapOn) mapReleased();
+  function showTab(next: Tab) {
+    tab = next;
     mapRow = null;
+    viewing = false;
   }
   function toggleFollow() {
     follow = !follow;
@@ -673,12 +680,10 @@
     filter = { ...filter, [key]: next.length ? next : undefined };
     run();
   }
-  const flagCount = (name: string) => result?.facets.flag?.find(([v]) => v === name)?.[1] ?? 0;
-  function lookValues(dim: Dim, order: string[]): [string, number][] {
-    const all = result?.facets[dim] ?? [];
-    if (!order.length) return all;
-    const rank = (v: string) => (order.includes(v) ? order.indexOf(v) : order.length);
-    return [...all].sort((a, b) => rank(a[0]) - rank(b[0]));
+  function toggleFlag(flag: "duplicates" | "series" | "analysed") {
+    const on = flag === "analysed" ? filter.analysed === false : !!filter[flag];
+    filter = { ...filter, [flag]: on ? undefined : flag === "analysed" ? false : true };
+    run();
   }
   function pickFolder(n: Node) {
     filter = { ...filter, folder: filter.folder === n.value ? undefined : n.value };
@@ -1100,44 +1105,6 @@
   </section>
 {/snippet}
 
-{#snippet looksSection()}
-  {@const any = LOOKS.some(([dim]) => result?.facets[dim]?.length) || flagCount("duplicate") || flagCount("series")}
-  {#if any || analysis?.running}
-    <section>
-      {@render head("look")}
-      {#if !folded.has("look")}
-        {#each LOOKS as [dim, title, key, order] (dim)}
-          {@const list = lookValues(dim, order)}
-          {#if list.length}
-            <div class="subhead">{title}</div>
-            {#each list as [value, n] (value)}
-              <button class="facet" class:on={filter[key]?.includes(value)} onclick={() => toggleList(key, value)}>
-                {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? "#888"}></i>{/if}
-                <span class="name">{value}</span>
-                <span class="n">{n.toLocaleString()}</span>
-              </button>
-            {/each}
-          {/if}
-        {/each}
-        {#if flagCount("duplicate") || flagCount("series") || filter.duplicates || filter.series}
-          <div class="subhead">Alike</div>
-          <button class="facet" class:on={filter.duplicates} title="Photos that look the same as another image" onclick={() => { filter = { ...filter, duplicates: filter.duplicates ? undefined : true }; run(); }}>
-            <span class="name">duplicates</span><span class="n">{flagCount("duplicate").toLocaleString()}</span>
-          </button>
-          <button class="facet" class:on={filter.series} title="Bursts: three or more taken seconds apart, looking alike" onclick={() => { filter = { ...filter, series: filter.series ? undefined : true }; run(); }}>
-            <span class="name">in a series</span><span class="n">{flagCount("series").toLocaleString()}</span>
-          </button>
-        {/if}
-        {#if result && result.total > flagCount("analysed")}
-          <button class="tree-action" onclick={() => { filter = { ...filter, analysed: filter.analysed === false ? undefined : false }; run(); }}>
-            {(result.total - flagCount("analysed")).toLocaleString()} not measured yet
-          </button>
-        {/if}
-      {/if}
-    </section>
-  {/if}
-{/snippet}
-
 {#snippet details()}
   {@const row = selected === null ? mapRow ?? undefined : rowAt(selected)}
   <Info
@@ -1181,7 +1148,12 @@
   <header>
     <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
-    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+    <nav class="tabs" aria-label="View">
+      <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
+      <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
+      <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
+    </nav>
+    <div class="tiles" class:gone={tab === "analysis"} title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
         type="range"
@@ -1218,7 +1190,6 @@
         onclick={openSync}
       >⇉ Copy to {(picked.size - 1).toLocaleString()} selected</button>
     {/if}
-    <button class="toggle" class:on={mapOn} title="Map: where the photos were taken" onclick={toggleMap}>Map</button>
     {#if mapOn}
       <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
@@ -1262,7 +1233,6 @@
       {/if}
     </section>
     {@render dates()}
-    {@render looksSection()}
     <section>
       {@render head("places")}
       {#if !folded.has("places")}
@@ -1344,7 +1314,7 @@
     </div>
   {/if}
 
-  <div class="stage">
+  <div class="pane" class:strip={mapOn}>
   {#if mapOn}
     <MapPane
       {filter}
@@ -1357,6 +1327,19 @@
       onerror={(text) => (editError = text)}
     />
   {/if}
+  {#if tab === "analysis"}
+    <AnalysisPane
+      {filter}
+      facets={result?.facets ?? {}}
+      total={result?.total ?? 0}
+      {analysis}
+      {version}
+      ontoggle={toggleList}
+      onflag={toggleFlag}
+      ongroup={(id) => { filter = { ...filter, group: id }; showTab("photos"); run(); }}
+      onshow={() => showTab("photos")}
+    />
+  {:else}
   <Grid
     bind:this={grid}
     total={result?.total ?? 0}
@@ -1382,6 +1365,7 @@
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
+  {/if}
   </div>
 
   {#if showInfo && !viewing}{@render details()}{/if}

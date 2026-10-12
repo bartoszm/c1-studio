@@ -99,8 +99,8 @@ the Date tree still shows every year.
   keeping the levels below, as one edit; a rename to a name that exists joins them.
   On a missing level (*(no state)*) it is **Set a name…**: e.g. give all of Poland's
   photos without a state one.
-- **Look:** what each photo looks like, measured from its thumbnail (see
-  [Look](#look)): Shape, Main colour, Light, Focus, and Alike (duplicates, series).
+- **Look:** what each photo looks like, measured from its thumbnail: see the
+  **Analysis** tab and [Look](#look).
   Several values in one group show photos with any of them.
 - **Folders:** the folder tree; a folder includes everything below it.
 - **Keywords:** the keyword tree; a keyword includes the keywords below it. The *Find a
@@ -242,7 +242,7 @@ written before the photo edits, and undone with Ctrl+Z.
 
 ## Map
 
-**Map** in the header puts a map above the grid (OpenFreeMap tiles, so it needs a
+The **Map** tab fills the area with a map and keeps a strip of the photos below it (OpenFreeMap tiles, so it needs a
 network; everything else works without one).
 
 - It shows the photos the filters select that have a position. Far out, a disc with the
@@ -266,7 +266,7 @@ first time takes a few minutes for a big catalog (about four for 100,000 photos 
 after that only new photos, and photos whose thumbnail Capture One rendered again, are
 measured. The results stay with the library and are never written to the catalog.
 
-What the sidebar's **Look** section offers:
+What the **Analysis** tab offers (the tabs above the grid are *Photos*, *Map* and *Analysis*; all three share one filter):
 
 - **Shape:** landscape, portrait, square, or panorama (2:1 and longer), as cropped.
 - **Main colour:** *black & white*; else the colours making up a sixth of the picture
