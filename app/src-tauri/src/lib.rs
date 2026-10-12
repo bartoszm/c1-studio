@@ -1447,6 +1447,21 @@ mod tests {
     }
 
     #[test]
+    fn pasting_a_location_onto_its_own_source_changes_nothing() {
+        let all = ["country", "country_code", "state", "city", "location", "geo"];
+        let from = Photo { geo: Some(geo_point(50.06, 19.94).unwrap()), ..photo(1, &[], Some("Kraków")) };
+        // The source among the targets: no place change (the library skips the same GPS).
+        let own = paste_ops(&from, &fields(&all), &from, false).unwrap();
+        assert!(own.iter().all(|op| matches!(op, Op::SetGeo { base, value } if base == value)));
+        // Another photo gets the place and the GPS.
+        let ops = paste_ops(&from, &fields(&all), &photo(2, &[], None), false).unwrap();
+        assert!(ops.iter().any(|op| matches!(op, Op::SetGeo { value: Some(_), .. })));
+        assert!(
+            ops.iter().any(|op| matches!(op, Op::SetPlace { value, .. } if value.city.as_deref() == Some("Kraków")))
+        );
+    }
+
+    #[test]
     fn keywords_are_added_or_made_the_same() {
         let from = photo(1, &["street", "city|night"], None);
         let to = photo(2, &["street", "b&w"], None);
