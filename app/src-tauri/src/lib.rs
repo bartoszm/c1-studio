@@ -1081,7 +1081,9 @@ mod tests {
         // Another photo gets the place and the GPS.
         let ops = paste_ops(&from, &fields(&all), &photo(2, &[], None)).unwrap();
         assert!(ops.iter().any(|op| matches!(op, Op::SetGeo { value: Some(_), .. })));
-        assert!(ops.iter().any(|op| matches!(op, Op::SetPlace { value, .. } if value.city.as_deref() == Some("Kraków"))));
+        assert!(
+            ops.iter().any(|op| matches!(op, Op::SetPlace { value, .. } if value.city.as_deref() == Some("Kraków")))
+        );
     }
 
     #[test]
