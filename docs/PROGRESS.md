@@ -955,6 +955,15 @@ in `<data dir>/settings.json`) writes the queue by itself.
   click-to-zoom, grid following, marker drag and drop from the grid queued `SetGeo`.
   Unit tests for clustering and `Library::map`.
 
+- **Tabs** (the user's request): *Photos | Map | Analysis* in the header, one filter for
+  all. Map = full map with a 190 px strip of the grid under it (the strip is where photos
+  are dragged from); leaving the map tab keeps the area, so it can be looked at in
+  Photos. Analysis (`AnalysisPane.svelte`) replaces the sidebar's Look section: measuring
+  progress, bar charts of shape / colour / light / focus (click to filter), and the
+  duplicate groups and series as rows of thumbnails (`Library::groups`, command
+  `groups`; click shows the group). The tab is remembered. (The viewer's `.stage` CSS
+  class once collided with a layout wrapper of the same name: the wrapper is `.pane`.)
+
 ### Next
 
 1. Stage 4, rest: lasso or box selection on the map, GPX import, place search and

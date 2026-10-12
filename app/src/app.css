@@ -193,8 +193,15 @@ aside section { padding: 4px 0; }
 .range .actions .primary { border: 0; background: var(--queued); color: #fff; font-weight: 600; }
 .dot { width: 10px; height: 10px; border-radius: 50%; border: 1px solid #555; }
 
-.stage { grid-area: main; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.stage > main { flex: 1 1 45%; min-height: 120px; }
+.pane { grid-area: main; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.pane > main { flex: 1 1 45%; min-height: 120px; }
+.pane.strip > main { flex: 0 0 190px; min-height: 0; }
+.pane.strip > .map { flex: 1 1 auto; }
+.tabs { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.tabs button { padding: 3px 12px; }
+.tabs button:hover { background: var(--hover); }
+.tabs button.on { background: var(--on); font-weight: 600; }
+.tiles.gone { display: none; }
 .follow { display: flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
 main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps the measured width true */
 .space { position: relative; }

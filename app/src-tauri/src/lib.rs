@@ -170,6 +170,12 @@ async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String>
     }))
 }
 
+/// Duplicate groups (or series) among the photos `filter` selects, biggest first.
+#[tauri::command]
+async fn groups(app: State<'_, App>, filter: Filter, series: bool) -> Result<Vec<c1index::Group>, String> {
+    app.session()?.library.groups(&filter, series, 300).map_err(text)
+}
+
 #[tauri::command]
 async fn analysis_state(app: State<'_, App>) -> Result<AnalysisState, String> {
     Ok(app.session()?.analysis.lock().unwrap().clone())
@@ -1251,6 +1257,7 @@ pub fn run() {
             query,
             smart_counts,
             map,
+            groups,
             photo,
             collections,
             sync,

@@ -896,6 +896,10 @@ fn analyses_are_searchable_and_grouped() {
     let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
     assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
     assert_eq!(lib.regroup().unwrap(), 0, "nothing changed");
+    let groups = lib.groups(&Filter::default(), false, 10).unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!((groups[0].size, groups[0].rows.len()), (2, 2));
+    assert!(lib.groups(&Filter::default(), true, 10).unwrap().is_empty());
     // Counted per value, as the sidebar shows them.
     let r = lib
         .query(&Filter::default(), &QueryOptions { facets: vec![Dim::Shape, Dim::Focus], ..QueryOptions::default() })
