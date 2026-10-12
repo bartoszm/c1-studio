@@ -24,8 +24,14 @@ ROOT = Path(__file__).resolve().parents[2]
 PYTHON_WSL = "/home/bartoszm/miniconda3/bin/python3"
 LEGACY_WSL = "/mnt/c" + str(ROOT / "legacy" / "c1cat-py")[2:].replace("\\", "/")
 
-# Changed on every write; when it was written, not what.
-VOLATILE = {("ZDOCUMENTCONTENT", "ZDATEMODIFIED")}
+# Changed on every write; when it was written, not what. A new collection's uuid is random.
+VOLATILE = {
+    ("ZDOCUMENTCONTENT", "ZDATEMODIFIED"),
+    ("ZCOLLECTION", "ZUUID"),
+    ("ZCOLLECTION", "ZDATECREATED"),
+    ("ZCOLLECTION", "ZDATEMODIFIED"),
+    ("ZCOLLECTION", "ZCONTENTMODIFIEDDATE"),
+}
 
 
 def wsl_path(path: Path) -> str:
@@ -55,6 +61,12 @@ def pick(catalog: Path) -> dict[str, list[int]]:
     # The first keyword in the tree: a child under it shifts every interval after it.
     out["first_root"] = con.execute(
         "SELECT ZNAME FROM ZKEYWORD WHERE ZPARENT IS NULL ORDER BY ZLEFT LIMIT 1").fetchone()[0]
+    # An album Capture One made, and one of its photos (with no sibling variant in it).
+    album, member = con.execute(
+        "SELECT vc.ZCOLLECTION, vc.ZVARIANT FROM ZVARIANTINCOLLECTION vc JOIN ZCOLLECTION c ON c.Z_PK = vc.ZCOLLECTION"
+        " JOIN ZVARIANT v ON v.Z_PK = vc.ZVARIANT WHERE c.Z_ENT = 2 AND (SELECT COUNT(*) FROM ZVARIANT s"
+        " WHERE s.ZIMAGE = v.ZIMAGE) = 1 ORDER BY vc.ZCOLLECTION, vc.ZVARIANT LIMIT 1").fetchone()
+    out["album"], out["member"] = f"#{album}", [member]
     con.close()
     return out
 
@@ -102,6 +114,22 @@ def edits(g: dict) -> list[tuple[str, list[str], list[int]]]:
         ("geo", ["--lat", "-33.8688", "--lon", "151.2093"], g["gps_comma"][:1]),
         ("geo", ["--lat", "52", "--lon", "-1"], g["rated"][:1]),
         ("geo", ["--clear"], g["gps"][1:2] + g["gps_comma"][1:2]),
+        # Albums: made, filled, emptied, renamed and deleted; smart albums are a rule.
+        ("group", ["create", "difftest group"], []),
+        ("album", ["create", "difftest album", "--parent", "difftest group"], []),
+        ("album", ["add", "difftest album"], g["plain"] + g["rated"]),
+        ("album", ["remove", "difftest album"], g["plain"][:2] + g["top"][:1]),
+        ("album", ["add", "difftest staged", "--create"], g["top"]),
+        ("album", ["rename", "difftest staged", "--to", "difftest renamed"], []),
+        ("smart", ["create", "difftest smart", "--rating", ">=4", "--keyword", "street", "--year", "2025"], []),
+        ("smart", ["create", "difftest any", "--match", "any", "--keyword", "cola", "--keyword", "a & b",
+                   "--parent", "difftest group"], []),
+        ("album", ["add", g["album"]], g["plain"][2:4]),
+        ("album", ["remove", g["album"]], g["member"]),
+        ("group", ["create", "difftest doomed"], []),
+        ("album", ["add", "difftest doomed inside", "--create", "--parent", "difftest doomed"], g["rated"][:2]),
+        ("album", ["delete", "difftest doomed", "--force-children"], []),
+        ("album", ["delete", "difftest smart"], []),
     ]
 
 
@@ -120,7 +148,8 @@ def python_side(catalog: Path, steps) -> None:
     for n, (command, value, pks) in enumerate(steps):
         # Rating and colour use the mirror only to resolve --id, so it is built once. Keyword
         # edits start from the keywords the mirror holds, so it must be current for them.
-        sync = [] if n == 0 or command == "keyword" else ["--no-sync"]
+        # Album edits name albums made by earlier steps, so the mirror must have them.
+        sync = [] if n == 0 or command in ("keyword", "album", "group", "smart") else ["--no-sync"]
         argv = ["--catalog", wsl_path(catalog), "--quiet", *sync, command, *value, *ids(pks), "--apply", "--no-backup"]
         script = f"cd {LEGACY_WSL} && {PYTHON_WSL} -m c1cat " + " ".join(f"'{a}'" for a in argv)
         run(["wsl.exe", "-e", "bash", "-lc", script])
@@ -142,10 +171,17 @@ def rust_side(exe: Path, catalog: Path, data: Path, steps) -> list[dict]:
     return reports
 
 
+# Link tables: a row's Z_PK is a bare rowid nothing points at, and each side inserts
+# links in its own order (Python in its selector's order, Rust album by album), so
+# they are compared as sets.
+UNORDERED = {"ZIMAGEINCOLLECTION", "ZVARIANTINCOLLECTION", "ZIMAGEINCOLLECTIONPROPERTIES"}
+
+
 def table_rows(con: sqlite3.Connection, table: str):
     columns = [r[1] for r in con.execute(f"PRAGMA table_info({table})")]
-    keep = [c for c in columns if (table, c) not in VOLATILE]
-    return keep, con.execute(f"SELECT {', '.join(keep)} FROM {table} ORDER BY rowid").fetchall()
+    keep = [c for c in columns if (table, c) not in VOLATILE and not (table in UNORDERED and c == "Z_PK")]
+    order = ", ".join(keep) if table in UNORDERED else "rowid"
+    return keep, con.execute(f"SELECT {', '.join(keep)} FROM {table} ORDER BY {order}").fetchall()
 
 
 def compare(a: Path, b: Path, original: Path) -> int:

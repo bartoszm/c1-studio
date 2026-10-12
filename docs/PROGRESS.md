@@ -733,7 +733,238 @@ in `<data dir>/settings.json`) writes the queue by itself.
   of fuji: Krakow joined Kraków, USA renamed into United States (US, 3,095 photos),
   hong-kong → Hong Kong and undone; written, integrity ok.
 
+### Several photos: shared keywords, fill and sync
+
+- **Keywords of a selection:** with several photos picked, the panel lists every
+  keyword any of them has (`keyword_counts`). One on only some is dimmed with a count
+  (3/5) and a + that adds it to all; *Add to all* does so for each such keyword; ×
+  removes from all. Read 80 ms after the selection settles, so Shift+arrows stay quick.
+- **Fill** (Ctrl+Alt+V, or *Fill* next to *Paste*): `paste_ops(.., fill)` only sets
+  fields the target leaves empty and adds the keywords it lacks; an empty source never
+  clears, and *replace theirs* turns into an add. A unit test pins it.
+- **Sync to N…** (Ctrl+Shift+S): the Copy dialog, opened on the focused photo, puts the
+  ticked fields straight onto the rest of the selection, *Overwrite* or *Fill*
+  (remembered). The choice also lands on the clipboard.
+- **Range by keyboard:** Shift with arrows, Page Up/Down, Home and End extends the
+  selection like Shift+click.
+
+### Albums and smart albums
+
+- **Two kinds, as in Capture One:** an *album* holds the photos put into it
+  (`ZVARIANTINCOLLECTION` and `ZIMAGEINCOLLECTION` links); a *smart album* holds none,
+  only its rule (`ZSMARTCRITERIA`). Only albums take photos: putting one into a smart
+  album, a group or a project is refused (`membership_problem`), in the library, the
+  plan and the write.
+- **Model:** `CollectionChange` (c1model): `Create` (album, smart album with its rule,
+  or group; in a group or project or at the top level), `Rename`, `SetRule` (smart
+  albums), `Delete` (with everything inside). A new collection's id is
+  `new:<uuid>`; the uuid is written to `ZUUID`, so later changes and photo edits in the
+  same write find it, and the next sync brings Capture One's own id. `ApplyPlan.collections`
+  are written after the keyword tree and before photo edits. `PhotoSource::plan_after`
+  takes them; `check_collection` says why one can no longer be written.
+  `CollectionChange::apply_to` is the reference behaviour (the in-memory source
+  follows it, giving made albums ids of its own as a real source would).
+- **Capture One's own collections:** the root names Recent Captures, Recent Imports,
+  All Images and the Trash. `Collection.system` marks them (`MODEL_VERSION` 4, so the
+  library re-reads once): never renamed, deleted or given albums from the app. The
+  albums Capture One makes in Recent Imports are the user's. Projects are not deleted
+  here.
+- **Writing** (`source-c1/src/albums.rs`, ported from Python's `collections.py`): rows
+  as Python makes them (`ZPROJECT` from the parent, `ZCOLLECTIONINDEX` after the
+  siblings, the default search and filter blobs byte for byte); smart rules in Capture
+  One's layout (`smart::criteria`, CRLF and the disabled `ANY` block, read back equal),
+  `Rating {min, max}` as *is* or *at least*; membership album by album, refused if it
+  would leave more links that do not match. Deleting also removes what pointed at the
+  collection: `ZSELECTEDVARIANTS`, `ZCOMPAREVARIANTS`, and the document's selected
+  collection (moved to All Images). The Python `delete` did not, and cleared
+  `ZPRIMARYVARIANT` where it held the *collection's* pk (it holds a variant): both
+  fixed in the oracle too.
+- **Library:** album changes queue in `edits.redb` (table `collections`) and show at
+  once (`Library::collections` lays them over the store; smart rules follow). Deleting
+  an album drops the queued edits that put photos into it, kept with the change so
+  undoing it brings them back. Undoing a new album takes what was queued for it since:
+  changes to it, albums made in it, photos put into it. Photo membership edits queue
+  per album (`collection:<id>`) like keywords.
+- **CLI:** `album create|rename|delete|add|remove`, `group create`, `smart create|rule`,
+  named and flagged as the Python ones.
+- **In the app:**
+  - the + beside Albums and a right-click on an album: New album / smart album /
+    group, Put the N selected photos here, Edit rule… (match all or any of *Keyword
+    contains*, *Rating is*, *Rating is at least*, *Captured in year*: the conditions
+    every smart album in the fuji catalog uses), Rename…, Delete… (lists what goes);
+  - the details panel's Albums: × takes photos out, *Put in an album* completes from
+    the albums, *New album…* can take the selected photos; with several selected, an
+    album holding only some shows 3/5 and + puts the rest in;
+  - queued albums show in blue; the Write dialog lists album changes before photo
+    edits, with *Drop these* for ones that can no longer be written; Ctrl+Z / Ctrl+Y.
+- **Tests:**
+  - model: changes and paths, what is refused, membership queue keys;
+  - write level (run with Capture One open): albums made, filled and emptied, a group
+    deleted with its album, links and selected collection; Capture One's own left alone;
+  - source level (Capture One closed): the same through `PhotoSource`;
+  - library: made here, filled, a smart album by its rule, written and back under
+    the source's ids; delete and undo; undoing a new album takes its queue.
+  - differential: `writetest.py` adds groups, albums, filling, emptying, `--create`,
+    rename, two smart albums (all and any, `&` escaped), adding to and taking from an
+    album Capture One made, and deleting a group with an album in it. ZCOLLECTION:
+    SAME. The link tables were compared by rowid and differed only in insertion order
+    (Python inserts in its selector's order, Rust album by album); they are now
+    compared as sets, since nothing points at a link row's `Z_PK`. On a copy of fuji:
+    SAME (111 changes, every table).
+  - end to end on a copy of fuji in a second instance: a new album filled with three
+    photos from the panel, a smart album *street* ∧ ★★★★+ (5,086 photos, the same as
+    Capture One's own "street 4+"), a smart album refusing a photo, rename with undo
+    and redo, written (own ids #907 and #908 after the sync), then a photo taken out
+    and the smart album deleted, written; the album row matches Capture One's fields
+    and `integrity_check` is ok.
+
+### Backups and restore
+
+- **Contract:** `PhotoSource::backups()` (newest first) and `restore(id)`, which
+  returns the backup of what it replaced; `BackupInfo` (id, path, time, size, note).
+  Defaults: none, and restore unsupported.
+- **Capture One** (`write::restore`): the backup is checked first (`quick_check`, and the
+  schema this build writes; anything else is refused before the catalog changes). Then
+  the catalog as it is now is backed up *fresh* (a backup only covering an earlier
+  state, which ordinary writes may share, does not do), noted *before restoring the
+  backup of …*, and never prunes the backup being restored. The backup is copied over
+  the catalog with SQLite's backup API (`Connection::restore`), and the result checked.
+  Refused like a write while Capture One or anything else holds the catalog.
+- **App:** *Backups…* in the source menu: the list (when, how long ago, size, note) and
+  *Restore…* with a confirmation that says what is undone and that it can be undone.
+  After a restore the catalog is read in; queued edits stay queued.
+- **CLI:** `c1cat backups [--json]`, `c1cat restore BACKUP [--apply]`.
+- **Tests:** restore and undo of it (keeping one backup, the one restored survives the
+  backup made first); a backup of another schema is refused with the catalog unchanged.
+  In the app, on a copy of fuji: restoring the backup from before the albums were
+  written took them away, the replaced catalog showed at the top, and restoring it
+  brought them back.
+
+### Albums in the left panel, drag and drop, moving
+
+- Asked for (2026-10-11): album management in the left panel, photos added by drag and
+  drop, taken out from the photo's album list or the album itself.
+- **Left panel:** *+ Album*, *+ Smart album*, *+ Group* under the title (the + menu went),
+  and a hint line. The details panel keeps the photo's albums with × (and 3/5 with +
+  for several); its *Put in an album* field and *New album…* went.
+- **Drag and drop** (`dragDropEnabled: false` in the Tauri window, which otherwise takes
+  drops for files on Windows): grid tiles onto an album put them in (the picked photos
+  if the tile is picked); an album or group onto a group or project moves it, onto
+  the Albums title to the top level. Drop targets light up.
+- **Delete** while the grid shows an album takes the picked photos out of it.
+- **Moving:** `CollectionChange::Move` (model: not into itself or what is under it, not
+  where it is, not a project or a group holding one, not Capture One's own). Capture One:
+  `ZPARENT`, `ZCOLLECTIONINDEX` after the new siblings, and `ZPROJECT` set again for it
+  and everything under it (into a project and out tested). Menu: *Move to…* (a dialog
+  with the places it can go) and *Move to the top level*.
+- **Fixed:** the album menu's *Put the N selected photos here* (and the new *Move to the
+  top level*) did nothing: the menu was closed before the album was read, and Svelte 5's
+  `{@const}` then read an empty menu.
+
+### Copy and paste like Capture One
+
+- Reported: "copying properties between photos does not work". The paste itself worked
+  (checked in the sandbox with real keys and clicks); what failed was silence. A paste
+  onto photos already holding the values changed nothing and said nothing, and Ctrl+C /
+  Ctrl+V did nothing (only Ctrl+Shift+C / V did).
+- **Tiles** show ↑ (copy at once) and ↓ (Paste from …) on hover, as Capture One's do.
+- **Paste…** (↓, the panel, Ctrl+Shift+V) chooses the fields and **Overwrite** or
+  **Merge** (was "Fill": empty fields filled, keywords added); the choice is
+  remembered for Ctrl+V. Ctrl+C copies, Ctrl+V pastes, Ctrl+Alt+V merges.
+- The footer says what a paste did ("Pasted onto 3 photos") or that nothing changed.
+- **Tested** in the sandbox on the fuji copy: ↑ and ↓, the paste dialog with Merge,
+  two photos dragged onto an album, an album dragged into a group and moved back from
+  the menu, Delete in an album; all written, `integrity_check` ok.
+
+- **Changed after:** the user wanted one big button that copies from a photo into the
+  selected ones, not tile buttons. The tile ↑/↓ went; **⇉ Copy to N selected** in the
+  header (shown with several picked) opens the field choice with Overwrite or Merge
+  and puts the focused photo's fields on the rest (what *Sync to N…* did, renamed
+  *Copy to N…* in the panel too).
+
+## Stage 3: local analysis
+
+### Measuring photos
+
+- **`crates/c1analysis`** (pure functions over pixels, `image` only): from a render at
+  most 512 px long, which Capture One's thumbnails about are:
+  - shape (width, height of the render: crop and rotation included);
+  - main colours: k-means (k 5) in CIE Lab over a 64 px copy, started from pixels
+    spread through the lightness range so the same picture gives the same palette;
+    mean Lab chroma for black and white;
+  - tones: mean and spread of luminance, shares clipped at either end;
+  - sharpness: the variance of the Laplacian in the best of a 4×4 grid of tiles, so a
+    sharp subject on a soft background counts;
+  - a difference hash (64 bits).
+  Classes (`shape`, `hues`, `light`, `focus`) are made from these at index time;
+  `VERSION` re-measures, `CLASSES` only rebuilds the index.
+- **Groups** (`groups.rs`): duplicates are different images (not variants of one) taken
+  at the same instant whose hashes are at most 3 bits apart (found through four 16-bit
+  bands; featureless hashes, near all 0 or all 1, are left out). Series: one camera,
+  each photo within 4 s of the one before and at most 22 bits from it, three or more.
+- **Library:** results in `analysis.redb` (by photo key, with the render's size and
+  modification time, so a photo is measured again only when Capture One renders it
+  again; kept apart from the store, which is dropped when its format changes). In
+  memory with each photo's groups (`dup:<row>`, `series:<row>`, named after the
+  group's first row); every document is built with them. New dimensions `shape`,
+  `hue`, `light`, `focus`, `group`; flags `analysed`, `duplicate`, `series`; fast
+  fields `sharpness`, `brightness`. Filter fields to match, and a sharpness range.
+- **Runner** (`c1index::analyse::run`): stats each photo's thumbnail, measures the ones
+  that changed in batches of 1000 across threads, commits each batch, then regroups.
+  The app runs it after every sync on half the cores (footer: *measuring photos N /
+  M*), stops it when another catalog opens; `c1cat analyse [--threads] [--stats]`.
+
+### Tuned on the fuji catalog
+
+- **Speed:** 95,704 thumbnails (all there are) in 4 min 9 s on 11 threads, 2.6 ms a
+  photo, none unreadable. Release build; dev builds optimise `c1analysis` too.
+- **First thresholds were wrong for this catalog** (`--stats` and contact sheets drawn
+  in the app):
+  - focus: grain and JPEG noise lift the Laplacian everywhere (median 4,141); 99.6%
+    were "sharp". Looked at by eye, below ~300 is motion-blurred or missed, up to
+    ~700 soft or low in detail (fog): blurry < 300 (1.6%), soft < 700 (3.8%);
+  - light: a low-key catalog (median brightness 0.31); dark < 0.2, bright > 0.55;
+  - colour: black and grey dominated the colour photos; colour names now leave out
+    black, white and grey (*muted* when no colour shows);
+  - duplicates: "alike within 3 bits" chained unrelated dark frames into one group of
+    100+, and caught burst frames; requiring the same instant leaves real ones
+    (1,629 photos, checked on a contact sheet: the same frame twice).
+- **Result:** black & white 40,290; landscape 92,041, portrait 3,660; series 14,718.
+- **Tests:** shapes, colours and their names, black and white, light, sharp and soft
+  (and a sharp patch on a plain background), hashes of alike pictures, duplicates
+  (not variants, not burst frames), series; library: filters, groups by regroup,
+  analyses outliving the store.
+
+## Stage 4: the map
+
+- **`c1index::geo`:** `Library::map(filter, view)` takes the photos the filter selects
+  that have a position (lat, lon, rating, sharpness from fast fields), and clusters
+  those in the view in Web Mercator pixels: 72 px cells laid on the whole world, so a
+  marker keeps its photos while the map pans; from zoom 17 only photos at the same spot
+  (about 1 m) share a marker. A cluster carries its centre, count, best photo (rating,
+  then sharpness) and bounds. A filter's own `within` is set aside, so the map keeps
+  showing the places around the area it picked. Tauri command `map`.
+- **App:** `MapPane.svelte` (MapLibre GL 6, OpenFreeMap positron turned dark by a CSS
+  filter on the canvas only, HTML markers with thumbnails: discs below zoom 5). Header
+  *Map* toggle; *grid follows map* sets `filter.within` to the view (debounced), chip
+  *Map: area in view*. Single markers are draggable and photos can be dropped from the
+  grid onto the map: both are `Edit::Geo` through the normal queue. The view is
+  remembered. CSP allows tiles.openfreemap.org and workers; the MapLibre worker is
+  bundled with Vite (`?worker&url`).
+- **Tested** on a fuji backup copy: 809 photos with a position, clusters at 3 zooms,
+  click-to-zoom, grid following, marker drag and drop from the grid queued `SetGeo`.
+  Unit tests for clustering and `Library::map`.
+
+- **Tabs** (the user's request): *Photos | Map | Analysis* in the header, one filter for
+  all. Map = full map with a 190 px strip of the grid under it (the strip is where photos
+  are dragged from); leaving the map tab keeps the area, so it can be looked at in
+  Photos. Analysis (`AnalysisPane.svelte`) replaces the sidebar's Look section: measuring
+  progress, bar charts of shape / colour / light / focus (click to filter), and the
+  duplicate groups and series as rows of thumbnails (`Library::groups`, command
+  `groups`; click shows the group). The tab is remembered. (The viewer's `.stage` CSS
+  class once collided with a layout wrapper of the same name: the wrapper is `.pane`.)
+
 ### Next
 
-1. Albums: add and remove photos, create albums, with a differential test.
-2. A list of backups, with restore.
+1. Stage 4, rest: lasso or box selection on the map, GPX import, place search and
+   reverse geocoding, photo direction; then time travel (trips, timeline, event log).

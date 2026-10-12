@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Dim =
   | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
-  | "place_tree" | "flag";
+  | "place_tree" | "flag" | "shape" | "hue" | "light" | "focus" | "group";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -35,7 +35,46 @@ export type Filter = {
   collections?: string[];
   /** Folder subtree, `H:/fotos/2026`. */
   folder?: string;
+  /** From the analysis, each any of its values. */
+  shape?: string[];
+  hues?: string[];
+  light?: string[];
+  focus?: string[];
+  /** One duplicate group or series: `dup:<row>`, `series:<row>`. */
+  group?: string;
+  duplicates?: boolean;
+  series?: boolean;
+  /** Measured by the analysis, or not yet. */
+  analysed?: boolean;
+  /** Only photos with a position inside this area (the map's view). */
+  within?: BBox;
 };
+export type BBox = { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
+/** One marker on the map: a photo (count 1) or a cluster; `best` is the photo shown for it. */
+export type Cluster = { lat: number; lon: number; count: number; best: number; bounds: BBox };
+export type MapResult = { located: number; in_view: number; clusters: Cluster[] };
+
+/** What the analysis found for a photo, with its classes and groups (id, size). */
+export type LookView = {
+  analysis: {
+    width: number;
+    height: number;
+    palette: { rgb: [number, number, number]; share: number }[];
+    chroma: number;
+    brightness: number;
+    contrast: number;
+    highlights: number;
+    shadows: number;
+    sharpness: number;
+  };
+  shape: string;
+  hues: string[];
+  light: string[];
+  focus: string;
+  duplicates: [string, number] | null;
+  series: [string, number] | null;
+};
+export type AnalysisState = { running: boolean; done: number; total: number; failed: number };
 
 export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
 
@@ -137,14 +176,25 @@ export type Condition =
   | { Rating: { min: number; max: number } }
   | { Year: number }
   | { Unsupported: string };
+export type SmartRule = { match_all: boolean; conditions: Condition[] };
 export type Collection = {
   id: string;
   name: string;
   kind: CollectionKind;
   parent: string | null;
   path: string;
-  rule: { match_all: boolean; conditions: Condition[] } | null;
+  rule: SmartRule | null;
+  /** Capture One's own (Recent Imports): never renamed, deleted or given albums here. */
+  system: boolean;
 };
+/** An album change. A new one's id is `new:<uuid>`; send "" and the app makes one. */
+export type CollectionChange =
+  | { Create: { id: string; name: string; kind: "Album" | "Smart" | "Group"; parent: string | null; rule: SmartRule | null } }
+  | { Rename: { id: string; name: string } }
+  | { SetRule: { id: string; rule: SmartRule } }
+  | { Delete: { id: string } }
+  /** Into a group or project; null is the top level. */
+  | { Move: { id: string; parent: string | null } };
 
 /** An edit as Rust's `c1model::Op` serialises it; only the field edits are sent from here. */
 export type Op =
@@ -172,6 +222,9 @@ export type WritePlan = {
   /** Keyword tree changes, written first: number and what they do. */
   remaps: [number, string][];
   blocked_remaps: [number, string, string][];
+  /** Album changes, written after the keyword tree and before photo edits. */
+  collections: [number, string][];
+  blocked_collections: [number, string, string][];
 };
 
 /** A keyword tree change. Paths join levels with `|`. */
@@ -189,7 +242,10 @@ export type Edit =
   | { Place: Partial<Record<PlaceField, string>> }
   | { Iptc: Partial<Record<CaptionField, string>> }
   /** Latitude, longitude; null clears. */
-  | { Geo: [number, number] | null };
+  | { Geo: [number, number] | null }
+  /** Into an album or out of it, by collection id. */
+  | { AddToAlbum: string }
+  | { RemoveFromAlbum: string };
 export type PlaceField = "country" | "country_code" | "state" | "city" | "location";
 /** IPTC text fields. `title` is IPTC's Object Name: a short identifier, not a caption. */
 export type CaptionField =
@@ -206,15 +262,21 @@ export const pickSource = (provider: string) => invoke<string | null>("pick_sour
 export const openSource = (spec: SourceSpec) => invoke<void>("open_source", { spec });
 export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", { spec });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
+/** The photos the filter selects that have a position, clustered for the map's view. */
+export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
+export type Group = { id: string; size: number; rows: number[] };
+/** Duplicate groups (or series) among the photos the filter selects, biggest first. */
+export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");
 /** Returns the ops that undo it. */
 export const edit = (rows: number[], edit: Edit) => invoke<[number, Op][]>("edit", { rows, edit });
-/** Pastes fields copied from `from` onto the photos at `rows`; returns the ops that undo it. */
-export const paste = (rows: number[], from: Photo, fields: CopyField[]) =>
-  invoke<[number, Op][]>("paste", { rows, from, fields });
+/** Pastes fields copied from `from` onto the photos at `rows`; `fill` only fills the
+ *  fields they leave empty (keywords are added). Returns the ops that undo it. */
+export const paste = (rows: number[], from: Photo, fields: CopyField[], fill = false) =>
+  invoke<[number, Op][]>("paste", { rows, from, fields, fill });
 /** Photos in view with a country but no ISO code, by country. */
 export const missingCountryCodes = (filter: Filter) =>
   invoke<[string, number[]][]>("missing_country_codes", { filter });
@@ -231,6 +293,24 @@ export const keywords = () => invoke<[string, number][]>("keywords");
 export const remapKeywords = (request: RemapRequest) => invoke<number>("remap_keywords", { request });
 export const undoRemap = (seq: number) => invoke<void>("undo_remap", { seq });
 export const remaps = () => invoke<[number, string][]>("remaps");
+/** The keywords on the photos at `rows`, with how many of them carry each. */
+export const keywordCounts = (rows: number[]) => invoke<[string, number][]>("keyword_counts", { rows });
+/** The albums the photos at `rows` are in, with how many of them each holds. */
+export const albumCounts = (rows: number[]) => invoke<[string, number][]>("album_counts", { rows });
+/** Queues an album change; returns its number (for undo) and the change as queued (for redo). */
+export const changeCollection = (change: CollectionChange) =>
+  invoke<[number, CollectionChange]>("change_collection", { change });
+export const undoCollection = (seq: number) => invoke<void>("undo_collection", { seq });
+export const look = (row: number) => invoke<LookView | null>("look", { row });
+export const analysisState = () => invoke<AnalysisState>("analysis_state");
+/** A copy of the catalog kept before writing to it. */
+export type BackupInfo = { id: string; path: string; created_ms: number; size: number; note: string | null };
+/** The backups, newest first, and whether the catalog can be written now (a restore needs it). */
+export const backups = () => invoke<{ list: BackupInfo[]; status: WriteStatus }>("backups");
+/** Puts a backup back as the catalog; returns the backup of the catalog it replaced. */
+export const restoreBackup = (id: string) => invoke<BackupInfo>("restore_backup", { id });
+/** Queued album changes: number, what it does, the collection it is about. */
+export const collectionChanges = () => invoke<[number, string, string][]>("collection_changes");
 export const keywordUsers = (paths: string[]) => invoke<number>("keyword_users", { paths });
 export const pending = () => invoke<PendingEdit[]>("pending");
 export const discard = (keys: string[]) => invoke<void>("discard", { keys });

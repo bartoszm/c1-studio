@@ -354,6 +354,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "c1analysis"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+]
+
+[[package]]
 name = "c1cat"
 version = "0.1.0"
 dependencies = [
@@ -386,6 +394,8 @@ name = "c1index"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "c1analysis",
+ "c1image",
  "c1model",
  "chrono",
  "postcard",
@@ -396,6 +406,7 @@ dependencies = [
  "tantivy",
  "tempfile",
  "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
@@ -413,6 +424,7 @@ name = "c1studio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "c1analysis",
  "c1image",
  "c1index",
  "c1model",

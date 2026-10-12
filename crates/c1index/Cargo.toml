@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 c1model.workspace = true
+c1analysis.workspace = true
+c1image.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 serde.workspace = true
@@ -15,6 +17,7 @@ postcard.workspace = true
 redb.workspace = true
 tantivy.workspace = true
 chrono.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

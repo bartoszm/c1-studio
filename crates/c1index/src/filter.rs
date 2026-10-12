@@ -161,6 +161,24 @@ pub struct Filter {
     pub has_local_layers: bool,
     pub trashed: Trashed,
     pub variant_index: Option<u32>,
+    /// From the analysis, each any of its values: `landscape`, `portrait`, ...
+    pub shape: Vec<String>,
+    /// Main colours: `blue`, `black & white`, ...
+    pub hues: Vec<String>,
+    /// `dark`, `medium`, `bright`, `clipped highlights`, `blocked shadows`, `low contrast`.
+    pub light: Vec<String>,
+    /// `sharp`, `soft`, `blurry`.
+    pub focus: Vec<String>,
+    /// One duplicate group or series: `dup:<row>`, `series:<row>`.
+    pub group: Option<String>,
+    /// Only photos that look like another image.
+    pub duplicates: bool,
+    /// Only photos in a burst.
+    pub series: bool,
+    /// Measured by the analysis, or not yet.
+    pub analysed: Option<bool>,
+    /// Detail in the sharpest part of the picture (see `c1analysis::Analysis::sharpness`).
+    pub sharpness: Option<Range>,
     /// Each of these too.
     pub all_of: Vec<Filter>,
     /// At least one of these, when any are given.
@@ -262,6 +280,11 @@ impl Filter {
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
             Dim::PlaceTree => f.place_under = None,
+            Dim::Shape => f.shape.clear(),
+            Dim::Hue => f.hues.clear(),
+            Dim::Light => f.light.clear(),
+            Dim::Focus => f.focus.clear(),
+            Dim::Group => f.group = None,
             Dim::Flag => {}
         }
         f
@@ -429,6 +452,30 @@ impl Filter {
             Trashed::Exclude => must_not.push(has(flag::TRASHED)),
             Trashed::Include => {}
             Trashed::Only => must.push(has(flag::TRASHED)),
+        }
+        for (dim, values) in
+            [(Dim::Shape, &self.shape), (Dim::Hue, &self.hues), (Dim::Light, &self.light), (Dim::Focus, &self.focus)]
+        {
+            if !values.is_empty() {
+                must.push(any_of(f.dim(dim), values.iter().cloned()));
+            }
+        }
+        if let Some(g) = &self.group {
+            must.push(term(f.dim(Dim::Group), g));
+        }
+        if self.duplicates {
+            must.push(has(flag::DUPLICATE));
+        }
+        if self.series {
+            must.push(has(flag::SERIES));
+        }
+        if let Some(r) = &self.sharpness {
+            must.push(range_f64(f.sharpness, r));
+        }
+        match self.analysed {
+            Some(true) => must.push(has(flag::ANALYSED)),
+            Some(false) => must_not.push(has(flag::ANALYSED)),
+            None => {}
         }
         if let Some(i) = self.variant_index {
             let i = f64::from(i);

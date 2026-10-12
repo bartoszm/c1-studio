@@ -17,6 +17,8 @@ export type Node = {
   container?: boolean;
   /** Why it cannot be picked. */
   disabled?: string;
+  /** Changed here and not yet written to the source. */
+  queued?: boolean;
   children: Node[];
 };
 
@@ -61,6 +63,7 @@ export function albumTree(
   collections: Collection[],
   counts: Map<string, number>,
   smart: Map<string, number> | null,
+  queued: Set<string> = new Set(),
 ): Node[] {
   const nodes = new Map<string, Node>();
   for (const c of collections) {
@@ -75,6 +78,7 @@ export function albumTree(
       count: c.kind === "Group" ? undefined : c.kind === "Smart" ? smart?.get(c.id) : (counts.get(c.id) ?? 0),
       container: c.kind === "Group",
       disabled: unsupported && "Unsupported" in unsupported ? `Rule not supported: ${unsupported.Unsupported}` : undefined,
+      queued: queued.has(c.id),
       children: [],
     });
   }

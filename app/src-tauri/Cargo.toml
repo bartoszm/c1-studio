@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 c1model.workspace = true
 source-c1.workspace = true
 c1index.workspace = true
+c1analysis.workspace = true
 c1image.workspace = true
 anyhow.workspace = true
 serde.workspace = true

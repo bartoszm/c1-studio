@@ -47,6 +47,19 @@ pub struct AssetId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct CollectionId(pub String);
 
+impl CollectionId {
+    /// An id for a collection made in the app and not yet written: `new:<uuid>`. The uuid
+    /// is the one the source stores, so the collection is found again once written.
+    pub fn new_local(uuid: &str) -> Self {
+        Self(format!("new:{uuid}"))
+    }
+
+    /// The uuid of a collection made in the app; `None` for one the source made.
+    pub fn local_uuid(&self) -> Option<&str> {
+        self.0.strip_prefix("new:")
+    }
+}
+
 /// A keyword with its hierarchy: `["places", "poland", "wroclaw"]`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct KeywordPath(pub Vec<String>);
@@ -237,6 +250,10 @@ pub struct Collection {
     pub path: String,
     /// What a smart album selects. Its members are not stored, only this.
     pub rule: Option<SmartRule>,
+    /// The source's own (Capture One's Recent Imports): shown, never renamed, deleted or
+    /// filled with albums from the app.
+    #[serde(default)]
+    pub system: bool,
 }
 
 /// A smart album's rule, in terms the library can evaluate.
