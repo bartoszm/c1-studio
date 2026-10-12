@@ -7,3 +7,5 @@
 # Dumped from the live catalog on first test run; it is Capture One's schema, not ours.
 /crates/source-c1/tests/fixtures/schema.sql
 __pycache__/
+app/target/
+app/src-tauri/target/
