@@ -33,6 +33,18 @@ enum Command {
     Sync,
     /// Catalog and library state.
     Status,
+    /// Measure each photo's thumbnail (shape, colours, light, focus, a hash for
+    /// duplicates and bursts); only photos not measured yet, or whose thumbnail changed.
+    Analyse {
+        /// Worker threads; all cores but one by default.
+        #[arg(long)]
+        threads: Option<usize>,
+        /// Print the spread of each measure and how many photos fall in each class.
+        #[arg(long)]
+        stats: bool,
+        #[arg(long)]
+        no_sync: bool,
+    },
     /// The backups made before writes, newest first.
     Backups {
         #[arg(long)]
@@ -702,6 +714,61 @@ fn albums(
     Ok(())
 }
 
+/// The spread of each measure (percentiles) and the size of each class.
+fn print_stats(library: &Library) {
+    let looks = library.looks();
+    let n = looks.len();
+    if n == 0 {
+        println!("nothing measured");
+        return;
+    }
+    let spread = |name: &str, mut v: Vec<f32>| {
+        v.sort_by(f32::total_cmp);
+        let at = |q: f64| v[((v.len() - 1) as f64 * q) as usize];
+        println!(
+            "{name:<11} p1 {:>8.2}  p5 {:>8.2}  p10 {:>8.2}  p25 {:>8.2}  p50 {:>8.2}  p75 {:>8.2}  p95 {:>8.2}",
+            at(0.01),
+            at(0.05),
+            at(0.1),
+            at(0.25),
+            at(0.5),
+            at(0.75),
+            at(0.95)
+        );
+    };
+    println!("{n} photos measured");
+    spread("sharpness", looks.iter().map(|l| l.analysis.sharpness).collect());
+    spread("brightness", looks.iter().map(|l| l.analysis.brightness).collect());
+    spread("contrast", looks.iter().map(|l| l.analysis.contrast).collect());
+    spread("chroma", looks.iter().map(|l| l.analysis.chroma).collect());
+    spread("highlights", looks.iter().map(|l| l.analysis.highlights).collect());
+    spread("shadows", looks.iter().map(|l| l.analysis.shadows).collect());
+    let mut classes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for l in &looks {
+        let a = &l.analysis;
+        *classes.entry(format!("shape  {}", a.shape())).or_default() += 1;
+        *classes.entry(format!("focus  {}", a.focus())).or_default() += 1;
+        for h in a.hues() {
+            *classes.entry(format!("hue    {h}")).or_default() += 1;
+        }
+        for v in a.light() {
+            *classes.entry(format!("light  {v}")).or_default() += 1;
+        }
+    }
+    for (class, count) in classes {
+        println!("{class:<28} {count:>7}  {:>5.1}%", 100.0 * count as f64 / n as f64);
+    }
+    let dups: std::collections::HashSet<_> = looks.iter().filter_map(|l| l.duplicates.clone()).collect();
+    let series: std::collections::HashSet<_> = looks.iter().filter_map(|l| l.series.clone()).collect();
+    println!(
+        "duplicates: {} photos in {} groups; series: {} photos in {}",
+        looks.iter().filter(|l| l.duplicates.is_some()).count(),
+        dups.len(),
+        looks.iter().filter(|l| l.series.is_some()).count(),
+        series.len()
+    );
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -952,6 +1019,33 @@ fn main() -> anyhow::Result<()> {
             let session = open(cli.catalog.as_ref())?;
             let report = session.library.sync(&session.source)?;
             println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        Command::Analyse { threads, stats, no_sync } => {
+            let session = open(cli.catalog.as_ref())?;
+            if !no_sync {
+                sync(&session, false)?;
+            }
+            let stop = std::sync::atomic::AtomicBool::new(false);
+            let threads = threads.unwrap_or_else(c1index::analyse::default_threads);
+            let done = c1index::analyse::run(&session.library, &session.source, threads, &stop, |p| {
+                eprintln!(
+                    "measured {} of {} ({} unreadable) in {:.1} s",
+                    p.done,
+                    p.total,
+                    p.failed,
+                    p.millis as f64 / 1000.0
+                );
+            })?;
+            let per = if done.done > 0 { done.millis as f64 / done.done as f64 } else { 0.0 };
+            println!(
+                "{} measured, {} unreadable, {:.1} s ({per:.2} ms a photo, {threads} threads)",
+                done.done,
+                done.failed,
+                done.millis as f64 / 1000.0
+            );
+            if stats {
+                print_stats(&session.library);
+            }
         }
         Command::Backups { json } => {
             let session = open(cli.catalog.as_ref())?;

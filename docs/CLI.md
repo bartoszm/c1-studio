@@ -218,6 +218,20 @@ and *Recent Imports* are never changed, and projects are deleted in Capture One.
 - `--json` prints the outcome as JSON: `applied`, `backup`, and the ids to `apply`,
   `unchanged` and in `conflicts` (album commands add `collections`, what they do).
 
+## Analysis
+
+`analyse` measures each photo's thumbnail (shape, main colours, light, focus, and a
+hash for duplicates and bursts), only photos not measured yet or whose thumbnail
+changed, then works out duplicate groups and series again.
+
+```powershell
+& $c1 analyse                 # all cores but one
+& $c1 analyse --threads 4 --stats
+```
+
+`--stats` prints each measure's spread (percentiles) and how many photos fall in each
+class, for checking the thresholds against a catalog.
+
 ## Benchmark
 
 `bench` times the library against the stage-0 speed gate on synthetic photos; it does

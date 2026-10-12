@@ -38,6 +38,20 @@ struct Session {
     last_edit: Mutex<Instant>,
     /// What autosave last reported, sent to the window only when it changes.
     autosave_state: Mutex<AutosaveState>,
+    /// Measuring photos in the background (stage 3): one run at a time, stopped when
+    /// another source opens.
+    analysing: AtomicBool,
+    analysis_stop: AtomicBool,
+    analysis: Mutex<AnalysisState>,
+}
+
+/// How far the background analysis has got, for the footer.
+#[derive(Clone, Debug, Default, Serialize)]
+struct AnalysisState {
+    running: bool,
+    done: usize,
+    total: usize,
+    failed: usize,
 }
 
 impl Session {
@@ -88,7 +102,77 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
         autosave_state: Mutex::new(AutosaveState::Off),
+        analysing: AtomicBool::new(false),
+        analysis_stop: AtomicBool::new(false),
+        analysis: Mutex::new(AnalysisState::default()),
     })
+}
+
+/// Measures the photos not measured yet, in the background, unless that is under way.
+/// Uses half the cores, so the window stays quick.
+fn start_analysis(app: &AppHandle) {
+    let Ok(s) = app.state::<App>().session() else { return };
+    if s.analysing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1));
+        let report = |state: AnalysisState| {
+            *s.analysis.lock().unwrap() = state.clone();
+            let _ = handle.emit("analysis", state);
+        };
+        let result = c1index::analyse::run(&s.library, s.source.as_ref(), threads, &s.analysis_stop, |p| {
+            report(AnalysisState { running: true, done: p.done, total: p.total, failed: p.failed });
+        });
+        let last = s.analysis.lock().unwrap().clone();
+        report(AnalysisState { running: false, ..last });
+        if let Err(e) = result {
+            let _ = handle.emit("sync-failed", format!("analysis: {e:#}"));
+        }
+        let _ = handle.emit("analysis-done", ());
+        s.analysing.store(false, Ordering::SeqCst);
+    });
+}
+
+/// What the analysis found for a photo: its measures, classes, and the duplicate group
+/// and series it is in, with their sizes.
+#[derive(Serialize)]
+struct LookView {
+    analysis: c1analysis::Analysis,
+    shape: &'static str,
+    hues: Vec<&'static str>,
+    light: Vec<&'static str>,
+    focus: &'static str,
+    duplicates: Option<(String, usize)>,
+    series: Option<(String, usize)>,
+}
+
+#[tauri::command]
+async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String> {
+    let s = app.session()?;
+    let Some(look) = s.library.look(row) else { return Ok(None) };
+    let size = |group: Option<String>| -> Result<Option<(String, usize)>, String> {
+        let Some(group) = group else { return Ok(None) };
+        let filter = Filter { group: Some(group.clone()), ..Filter::default() };
+        let options = QueryOptions { limit: Some(0), ..QueryOptions::default() };
+        Ok(Some((group, s.library.query(&filter, &options).map_err(text)?.total)))
+    };
+    let a = &look.analysis;
+    Ok(Some(LookView {
+        shape: a.shape(),
+        hues: a.hues(),
+        light: a.light(),
+        focus: a.focus(),
+        duplicates: size(look.duplicates.clone())?,
+        series: size(look.series.clone())?,
+        analysis: look.analysis,
+    }))
+}
+
+#[tauri::command]
+async fn analysis_state(app: State<'_, App>) -> Result<AnalysisState, String> {
+    Ok(app.session()?.analysis.lock().unwrap().clone())
 }
 
 fn text(e: impl std::fmt::Display) -> String {
@@ -155,6 +239,7 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     if report.full || report.added + report.updated + report.deleted > 0 {
         let _ = app.emit("library-changed", &report);
     }
+    start_analysis(app);
     Ok(report)
 }
 
@@ -1105,7 +1190,11 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
             .await
             .map_err(text)??
     };
-    // The old session closes once the last task using it is done with it.
+    // The old session closes once the last task using it is done with it; its analysis
+    // stops after the batch it is on.
+    if let Ok(old) = &app.state::<App>().0.read().unwrap().session {
+        old.analysis_stop.store(true, Ordering::SeqCst);
+    }
     *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
     Recent::remember(&spec)?;
     sync_in_background(&app);
@@ -1175,6 +1264,8 @@ pub fn run() {
             collection_changes,
             backups,
             restore_backup,
+            look,
+            analysis_state,
             keyword_counts,
             pending,
             discard,

@@ -10,7 +10,7 @@
   let {
     row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onaddalbum, onremovealbum,
+    onaddalbum, onremovealbum, onlook,
     onplace, ongeo, oniptc, oncopy, onpaste, onpastechoose, onsync,
   }: {
     row: number | undefined;
@@ -38,6 +38,8 @@
     /** Puts the selected photos into an album, or takes them out. */
     onaddalbum: (id: string) => void;
     onremovealbum: (id: string) => void;
+    /** Filters by something the analysis found (a duplicate group, a series). */
+    onlook: (f: api.Filter) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
     /** A location field typed in; "" clears it. */
@@ -73,6 +75,16 @@
       (e) => { if (current === row) failed = String(e); },
     );
   });
+
+  /** What the analysis found, once the photo has been measured. */
+  let look = $state<api.LookView | null>(null);
+  $effect(() => {
+    const current = row;
+    void version;
+    look = null;
+    if (current !== undefined) api.look(current).then((l) => { if (current === row) look = l; }).catch(() => {});
+  });
+  const hex = (rgb: number[]) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
 
   let typed = $state("");
   let typedError = $state<string | null>(null);
@@ -330,6 +342,30 @@
       {/each}
     </ul>
     {#if !albumRows.length}<p class="hint">In no album. Drag photos onto an album in the sidebar to put them in.</p>{/if}
+
+    {#if look}
+      {@const a = look.analysis}
+      <h3>Look</h3>
+      <div class="palette" title="The main colours, by share of the picture">
+        {#each a.palette as s}
+          <i style:background={hex(s.rgb)} style:flex-grow={s.share} title="{hex(s.rgb)} · {Math.round(s.share * 100)}%"></i>
+        {/each}
+      </div>
+      <dl class="fields look">
+        <dt>Shape</dt><dd>{look.shape}</dd>
+        <dt>Colour</dt><dd>{look.hues.join(", ")}</dd>
+        <dt>Light</dt><dd title="Mean brightness {Math.round(a.brightness * 100)}%, contrast {Math.round(a.contrast * 100)}%">{look.light.join(", ")}</dd>
+        <dt>Focus</dt><dd title="Detail in the sharpest part: {Math.round(a.sharpness)}">{look.focus}</dd>
+      </dl>
+      {#if look.duplicates}
+        {@const [group, n] = look.duplicates}
+        <button class="link look-link" onclick={() => onlook({ group })}>Looks like {n - 1} other photo{n === 2 ? "" : "s"}: show them</button>
+      {/if}
+      {#if look.series}
+        {@const [group, n] = look.series}
+        <button class="link look-link" onclick={() => onlook({ group })}>One of a series of {n}: show it</button>
+      {/if}
+    {/if}
 
     <h3>Location</h3>
     <dl class="fields" class:queued={queued.includes("place")}>

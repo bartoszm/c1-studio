@@ -840,3 +840,68 @@ fn undoing_a_new_album_takes_what_was_queued_for_it() {
     assert_eq!(lib.collections().unwrap().len(), 1);
     assert!(lib.photo(row_of(&lib, 5)).unwrap().unwrap().collections.is_empty());
 }
+
+fn look(w: u32, h: u32, rgb: [u8; 3], sharpness: f32, hash: u64) -> c1analysis::Analysis {
+    c1analysis::Analysis {
+        width: w,
+        height: h,
+        palette: vec![c1analysis::Swatch { rgb, share: 1.0 }],
+        chroma: 40.0,
+        brightness: 0.5,
+        contrast: 0.2,
+        highlights: 0.0,
+        shadows: 0.0,
+        sharpness,
+        hash,
+    }
+}
+
+#[test]
+fn analyses_are_searchable_and_grouped() {
+    let (_d, lib, source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [40, 80, 210], 5000.0, h)),
+        (key(2), (1, 1), look(400, 600, [40, 80, 210], 10.0, h ^ 1)),
+        (key(3), (1, 1), look(600, 400, [200, 30, 30], 400.0, !h)),
+    ])
+    .unwrap();
+    assert_eq!(ids(&lib, &Filter { shape: vec!["portrait".into()], ..Filter::default() }), [2]);
+    assert_eq!(ids(&lib, &Filter { hues: vec!["blue".into()], ..Filter::default() }), [1, 2]);
+    assert_eq!(ids(&lib, &Filter { focus: vec!["blurry".into(), "soft".into()], ..Filter::default() }), [2, 3]);
+    assert_eq!(ids(&lib, &Filter { analysed: Some(false), ..Filter::default() }), [4, 5, 6, 7, 8, 10]);
+    // 1 and 2 look the same, but were taken a day apart: not duplicates.
+    assert_eq!(lib.regroup().unwrap(), 0);
+    // Taken at the same instant (imported twice), they are; groups come with regroup.
+    let one = source.photo(&lib.photo_id(row_of(&lib, 1)).unwrap()).unwrap().captured_at;
+    source.edit_externally(&lib.photo_id(row_of(&lib, 2)).unwrap(), |p| p.captured_at = one);
+    lib.sync(&source).unwrap();
+    assert!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }).is_empty());
+    assert_eq!(lib.regroup().unwrap(), 2);
+    assert_eq!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }), [1, 2]);
+    let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
+    assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
+    assert_eq!(lib.regroup().unwrap(), 0, "nothing changed");
+    // Counted per value, as the sidebar shows them.
+    let r = lib
+        .query(&Filter::default(), &QueryOptions { facets: vec![Dim::Shape, Dim::Focus], ..QueryOptions::default() })
+        .unwrap();
+    assert!(r.facets[&Dim::Shape].contains(&("landscape".into(), 2)));
+    assert_eq!(lib.analysed().len(), 3);
+}
+
+#[test]
+fn analyses_outlive_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);
+    {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        let key = lib.photo_id(row_of(&lib, 1)).unwrap().key();
+        lib.put_analyses(vec![(key, (7, 7), look(600, 400, [40, 80, 210], 500.0, 1))]).unwrap();
+    }
+    let lib = Library::open(dir.path()).unwrap();
+    assert_eq!(ids(&lib, &Filter { hues: vec!["blue".into()], ..Filter::default() }), [1]);
+    assert_eq!(lib.analysed().values().next(), Some(&(7, 7)));
+}

@@ -5,7 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Dim =
   | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
-  | "place_tree" | "flag";
+  | "place_tree" | "flag" | "shape" | "hue" | "light" | "focus" | "group";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -35,7 +35,40 @@ export type Filter = {
   collections?: string[];
   /** Folder subtree, `H:/fotos/2026`. */
   folder?: string;
+  /** From the analysis, each any of its values. */
+  shape?: string[];
+  hues?: string[];
+  light?: string[];
+  focus?: string[];
+  /** One duplicate group or series: `dup:<row>`, `series:<row>`. */
+  group?: string;
+  duplicates?: boolean;
+  series?: boolean;
+  /** Measured by the analysis, or not yet. */
+  analysed?: boolean;
 };
+
+/** What the analysis found for a photo, with its classes and groups (id, size). */
+export type LookView = {
+  analysis: {
+    width: number;
+    height: number;
+    palette: { rgb: [number, number, number]; share: number }[];
+    chroma: number;
+    brightness: number;
+    contrast: number;
+    highlights: number;
+    shadows: number;
+    sharpness: number;
+  };
+  shape: string;
+  hues: string[];
+  light: string[];
+  focus: string;
+  duplicates: [string, number] | null;
+  series: [string, number] | null;
+};
+export type AnalysisState = { running: boolean; done: number; total: number; failed: number };
 
 export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
 
@@ -257,6 +290,8 @@ export const albumCounts = (rows: number[]) => invoke<[string, number][]>("album
 export const changeCollection = (change: CollectionChange) =>
   invoke<[number, CollectionChange]>("change_collection", { change });
 export const undoCollection = (seq: number) => invoke<void>("undo_collection", { seq });
+export const look = (row: number) => invoke<LookView | null>("look", { row });
+export const analysisState = () => invoke<AnalysisState>("analysis_state");
 /** A copy of the catalog kept before writing to it. */
 export type BackupInfo = { id: string; path: string; created_ms: number; size: number; note: string | null };
 /** The backups, newest first, and whether the catalog can be written now (a restore needs it). */

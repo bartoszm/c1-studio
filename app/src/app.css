@@ -393,6 +393,11 @@ footer .edit-error { color: var(--error); }
 .node.drop { background: var(--queued); }
 .node.drop .name, .node.drop .n, .node.drop .icon { color: #fff; }
 .edit-note { color: var(--muted); }
+/* The Look section: subheads in the sidebar, the palette in the details panel. */
+.subhead { padding: 6px 8px 2px 26px; font-size: 11px; color: #777; }
+.info-panel .palette { display: flex; height: 18px; margin: 4px 0 8px; border-radius: 3px; overflow: hidden; }
+.info-panel .palette i { min-width: 3px; }
+.info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
 .copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; }
 .copy-to:hover { filter: brightness(1.12); }

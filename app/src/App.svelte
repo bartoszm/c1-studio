@@ -4,7 +4,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS, FIELD_NAMES, stars } from "./lib/format";
+  import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
@@ -21,7 +21,17 @@
   import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = ["rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag"];
+  const DIMS: Dim[] = [
+    "rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag",
+    "shape", "hue", "light", "focus",
+  ];
+  /** The analysis' groups in the sidebar: dimension, title, filter field, value order. */
+  const LOOKS: [Dim, string, "shape" | "hues" | "light" | "focus", string[]][] = [
+    ["shape", "Shape", "shape", ["landscape", "portrait", "square", "panorama"]],
+    ["hue", "Main colour", "hues", []],
+    ["light", "Light", "light", ["dark", "medium", "bright", "clipped highlights", "blocked shadows", "low contrast"]],
+    ["focus", "Focus", "focus", ["sharp", "soft", "blurry"]],
+  ];
   /** Groups listed as plain values; the rest are trees. */
   const FLAT: Dim[] = ["rating", "color", "camera"];
 
@@ -67,6 +77,9 @@
     clearTimeout(noteTimer);
     noteTimer = setTimeout(() => (editNote = null), 4000);
   }
+  /** The background analysis, for the footer. */
+  let analysis = $state<api.AnalysisState | null>(null);
+  let countsAt = 0;
   /** What is being dragged: photos (onto an album) or an album (onto a group). */
   let dragging = $state<{ rows: number[] } | { album: string } | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
@@ -248,11 +261,21 @@
   onMount(() => {
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
+    api.analysisState().then((s) => (analysis = s)).catch(() => {});
     const off = [
       listen("library-changed", () => { syncNote = ""; syncFailed = null; refresh(true); }),
       listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
       listen("queue-written", () => { edited(); }),
+      listen<api.AnalysisState>("analysis", (e) => {
+        analysis = e.payload;
+        // Counts catch up now and then while photos are measured.
+        if (Date.now() - countsAt > 20000) {
+          countsAt = Date.now();
+          run(true);
+        }
+      }),
+      listen("analysis-done", () => { version++; refresh(true); }),
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
@@ -590,6 +613,20 @@
     filter = { ...filter, collections: filter.collections?.[0] === n.value ? undefined : [n.value] };
     run();
   }
+  /** A value of a many-valued filter field on or off (the analysis' groups). */
+  function toggleList(key: "shape" | "hues" | "light" | "focus", value: string) {
+    const list = filter[key] ?? [];
+    const next = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+    filter = { ...filter, [key]: next.length ? next : undefined };
+    run();
+  }
+  const flagCount = (name: string) => result?.facets.flag?.find(([v]) => v === name)?.[1] ?? 0;
+  function lookValues(dim: Dim, order: string[]): [string, number][] {
+    const all = result?.facets[dim] ?? [];
+    if (!order.length) return all;
+    const rank = (v: string) => (order.includes(v) ? order.indexOf(v) : order.length);
+    return [...all].sort((a, b) => rank(a[0]) - rank(b[0]));
+  }
   function pickFolder(n: Node) {
     filter = { ...filter, folder: filter.folder === n.value ? undefined : n.value };
     run();
@@ -715,7 +752,7 @@
 
   const TITLES: Record<string, string> = {
     rating: "Rating", color: "Colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
-    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location",
+    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look",
   };
 
   let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart, queuedAlbums));
@@ -928,6 +965,14 @@
     folder: (v) => [{ what: "Folder", text: v }],
     place_under: (v) => [{ what: "Place", text: placeText(v) }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
+    shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
+    hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: "Light", text: x, rest: without(v, x) })),
+    focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
+    group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
+    duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
+    series: (v) => (v ? [{ text: "in a series" }] : []),
+    analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
   };
   function monthText(key: string) {
     const [y, m] = key.split("-").map(Number);
@@ -1001,6 +1046,44 @@
   </section>
 {/snippet}
 
+{#snippet looksSection()}
+  {@const any = LOOKS.some(([dim]) => result?.facets[dim]?.length) || flagCount("duplicate") || flagCount("series")}
+  {#if any || analysis?.running}
+    <section>
+      {@render head("look")}
+      {#if !folded.has("look")}
+        {#each LOOKS as [dim, title, key, order] (dim)}
+          {@const list = lookValues(dim, order)}
+          {#if list.length}
+            <div class="subhead">{title}</div>
+            {#each list as [value, n] (value)}
+              <button class="facet" class:on={filter[key]?.includes(value)} onclick={() => toggleList(key, value)}>
+                {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? "#888"}></i>{/if}
+                <span class="name">{value}</span>
+                <span class="n">{n.toLocaleString()}</span>
+              </button>
+            {/each}
+          {/if}
+        {/each}
+        {#if flagCount("duplicate") || flagCount("series") || filter.duplicates || filter.series}
+          <div class="subhead">Alike</div>
+          <button class="facet" class:on={filter.duplicates} title="Photos that look the same as another image" onclick={() => { filter = { ...filter, duplicates: filter.duplicates ? undefined : true }; run(); }}>
+            <span class="name">duplicates</span><span class="n">{flagCount("duplicate").toLocaleString()}</span>
+          </button>
+          <button class="facet" class:on={filter.series} title="Bursts: three or more taken seconds apart, looking alike" onclick={() => { filter = { ...filter, series: filter.series ? undefined : true }; run(); }}>
+            <span class="name">in a series</span><span class="n">{flagCount("series").toLocaleString()}</span>
+          </button>
+        {/if}
+        {#if result && result.total > flagCount("analysed")}
+          <button class="tree-action" onclick={() => { filter = { ...filter, analysed: filter.analysed === false ? undefined : false }; run(); }}>
+            {(result.total - flagCount("analysed")).toLocaleString()} not measured yet
+          </button>
+        {/if}
+      {/if}
+    </section>
+  {/if}
+{/snippet}
+
 {#snippet details()}
   {@const row = selected === null ? undefined : rowAt(selected)}
   <Info
@@ -1024,6 +1107,7 @@
     sharedAlbums={selectionAlbums}
     onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
+    onlook={(f) => only(f)}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
     onplace={(fields) => applyEdit({ Place: fields })}
@@ -1118,6 +1202,7 @@
       {/if}
     </section>
     {@render dates()}
+    {@render looksSection()}
     <section>
       {@render head("places")}
       {#if !folded.has("places")}
@@ -1246,6 +1331,11 @@
     {/if}
     {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
+    {#if analysis?.running && analysis.total}
+      <span class="sync" title="Shape, colours, light, focus and a likeness hash, from each photo's thumbnail">
+        measuring photos {analysis.done.toLocaleString()} / {analysis.total.toLocaleString()}
+      </span>
+    {/if}
     <span class="autosave" class:alone={!syncNote}>
       {#if autosaveOn}
         {@const [note, attention] = autosaveText(autosaveState)}
