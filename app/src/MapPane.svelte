@@ -8,7 +8,7 @@
   import type { BBox, Cluster, Filter } from "./lib/api";
 
   let {
-    filter, version, focus, dragRows, onview, onpick, onsetgeo, onerror,
+    filter, version, focus, dragRows, pickedRows, onbox, onview, onpick, onsetgeo, onerror,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
     filter: Filter;
@@ -18,6 +18,10 @@
     focus: number | null;
     /** Photos being dragged from the grid, to be dropped on the map. */
     dragRows: number[] | null;
+    /** The photos picked in the strip: *Put them here* places them at a searched place. */
+    pickedRows: number[];
+    /** Shift+drag picked an area: the grid shows just its photos. */
+    onbox: (bounds: BBox) => void;
     /** What the map shows now (null: not known yet); the grid can follow it. */
     onview: (bounds: BBox) => void;
     onpick: (row: number) => void;
@@ -188,6 +192,8 @@
       return;
     }
     map.touchZoomRotate.disableRotation();
+    map.boxZoom.disable();
+    box.addEventListener("mousedown", startBox, true);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
     map.on("error", (e: unknown) => {
@@ -197,6 +203,7 @@
     });
     map.once("load", () => { failed = null; moved(); });
     return () => {
+      box.removeEventListener("mousedown", startBox, true);
       map?.remove();
       map = undefined;
       markers.clear();
@@ -220,6 +227,70 @@
     return () => watch.disconnect();
   });
 
+  // Shift+drag draws an area; its photos become the grid's filter.
+  let rubber = $state<{ x: number; y: number; w: number; h: number } | null>(null);
+  function startBox(e: MouseEvent) {
+    if (!e.shiftKey || e.button !== 0 || !map) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const r = box.getBoundingClientRect();
+    const [x0, y0] = [e.clientX - r.left, e.clientY - r.top];
+    const at = (m: MouseEvent) => {
+      const [x, y] = [Math.min(Math.max(m.clientX - r.left, 0), r.width), Math.min(Math.max(m.clientY - r.top, 0), r.height)];
+      return { x: Math.min(x, x0), y: Math.min(y, y0), w: Math.abs(x - x0), h: Math.abs(y - y0) };
+    };
+    const move = (m: MouseEvent) => (rubber = at(m));
+    const up = (m: MouseEvent) => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      const a = at(m);
+      rubber = null;
+      if (a.w < 6 || a.h < 6 || !map) return;
+      const nw = map.unproject([a.x, a.y]);
+      const se = map.unproject([a.x + a.w, a.y + a.h]);
+      onbox({ min_lat: se.lat, max_lat: nw.lat, min_lon: nw.lng, max_lon: se.lng });
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  }
+
+  // Finding a place by name (OpenStreetMap's Nominatim): to look at it, or to put photos there.
+  type Hit = { name: string; lat: number; lon: number; box: [number, number, number, number] | null };
+  let query = $state("");
+  let hits = $state<Hit[]>([]);
+  let searching = $state(false);
+  let searched = $state(false);
+  let chosen = $state<Hit | null>(null);
+  async function search(e: Event) {
+    e.preventDefault();
+    const q = query.trim();
+    if (!q) return;
+    searching = true;
+    try {
+      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`);
+      const list = (await res.json()) as { display_name: string; lat: string; lon: string; boundingbox?: string[] }[];
+      hits = list.map((h) => ({
+        name: h.display_name,
+        lat: +h.lat,
+        lon: +h.lon,
+        box: h.boundingbox ? [+h.boundingbox[2], +h.boundingbox[0], +h.boundingbox[3], +h.boundingbox[1]] : null,
+      }));
+      searched = true;
+    } catch {
+      hits = [];
+      onerror("The place search needs a network.");
+    } finally {
+      searching = false;
+    }
+  }
+  function go(h: Hit) {
+    chosen = h;
+    hits = [];
+    searched = false;
+    if (h.box && map) map.fitBounds([[h.box[0], h.box[1]], [h.box[2], h.box[3]]], { padding: 40, maxZoom: 17 });
+    else map?.flyTo({ center: [h.lon, h.lat], zoom: 14 });
+  }
+
   let over = $state(false);
   function dropped(e: DragEvent) {
     over = false;
@@ -241,10 +312,33 @@
   ondrop={dropped}
 >
   <div class="canvas" bind:this={box}></div>
+  {#if rubber}<div class="rubber" style:left="{rubber.x}px" style:top="{rubber.y}px" style:width="{rubber.w}px" style:height="{rubber.h}px"></div>{/if}
+  <form class="find" onsubmit={search}>
+    <input
+      type="search"
+      placeholder="Find a place"
+      spellcheck="false"
+      bind:value={query}
+      oninput={() => { searched = false; hits = []; }}
+      onkeydown={(e) => { if (e.key === "Escape") { query = ""; hits = []; chosen = null; e.currentTarget.blur(); } }}
+    />
+    {#if searching}<span class="muted">searching…</span>{/if}
+    {#if hits.length}
+      <ul>{#each hits as h}<li><button type="button" onclick={() => go(h)}>{h.name}</button></li>{/each}</ul>
+    {:else if searched}<span class="muted">No such place.</span>{/if}
+    {#if chosen && pickedRows.length}
+      <button
+        type="button"
+        class="put"
+        title={chosen.name}
+        onclick={() => { onsetgeo(pickedRows, chosen!.lat, chosen!.lon); chosen = null; }}
+      >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
+    {/if}
+  </form>
   <div class="note">
     {#if failed}{failed}
     {:else if located === 0}No photos here have a position yet. Drag some from below onto the map.
-    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view{/if}
+    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Shift+drag picks an area{/if}
   </div>
 </div>
 
@@ -254,6 +348,14 @@
   .canvas { position: absolute; inset: 0; }
   /* The style is light; this turns it dark without touching the markers. */
   .canvas :global(.maplibregl-canvas) { filter: invert(1) hue-rotate(180deg) brightness(0.85) contrast(0.9); }
+  .rubber { position: absolute; border: 2px dashed #3b82f6; background: rgba(59, 130, 246, 0.15); pointer-events: none; z-index: 3; }
+  .find { position: absolute; left: 8px; top: 8px; width: 280px; z-index: 4; display: flex; flex-direction: column; gap: 4px; }
+  .find input { width: 100%; padding: 4px 8px; border-radius: 3px; border: 1px solid var(--line, #444); background: rgba(20, 20, 20, 0.9); color: inherit; font: inherit; }
+  .find ul { margin: 0; padding: 0; list-style: none; background: rgba(20, 20, 20, 0.95); border: 1px solid var(--line, #444); border-radius: 3px; }
+  .find li button { display: block; width: 100%; padding: 4px 8px; text-align: left; font-size: 12px; }
+  .find li button:hover { background: var(--hover, #333); }
+  .find .muted { font-size: 12px; padding: 2px 8px; background: rgba(20, 20, 20, 0.8); border-radius: 3px; }
+  .find .put { padding: 4px 8px; border-radius: 3px; background: var(--queued, #3b82f6); color: #fff; font-weight: 600; }
   .note {
     position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; font-size: 12px;
     background: rgba(20, 20, 20, 0.8); border-radius: 3px; pointer-events: none;

@@ -6,6 +6,7 @@ pub mod edits;
 pub mod facets;
 pub mod filter;
 pub mod geo;
+pub mod gpx;
 pub mod library;
 pub mod looks;
 pub mod schema;

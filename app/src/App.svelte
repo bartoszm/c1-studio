@@ -16,6 +16,7 @@
   import Info from "./Info.svelte";
   import MapPane from "./MapPane.svelte";
   import AnalysisPane from "./AnalysisPane.svelte";
+  import GpxDialog from "./GpxDialog.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -100,6 +101,13 @@
   function toggleFollow() {
     follow = !follow;
     if (!follow) mapReleased();
+  }
+  /** An area drawn on the map: the grid keeps to it, whatever the map shows next. */
+  function mapBox(bounds: api.BBox) {
+    follow = false;
+    clearTimeout(followTimer);
+    filter = { ...filter, within: bounds };
+    run(true);
   }
   function mapPick(row: number) {
     picked.clear();
@@ -695,6 +703,7 @@
   }
   /** Photos in view with a country but no ISO code (from the index's flags). */
   let missingCodes = $derived(result?.facets.flag?.find(([v]) => v === "no_country_code")?.[1] ?? 0);
+  let importingGpx = $state(false);
   let fillingCodes = $state(false);
   async function codesFilled(undo: [number, api.Op][]) {
     if (undo.length) {
@@ -875,7 +884,7 @@
       albumMenu = null;
       return;
     }
-    if (writing || showBackups || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -1031,7 +1040,7 @@
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
-    within: () => [{ what: "Map", text: "area in view" }],
+    within: () => [{ what: "Map", text: "area" }],
   };
   function monthText(key: string) {
     const [y, m] = key.split("-").map(Number);
@@ -1194,6 +1203,7 @@
       <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
       </label>
+      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
     {/if}
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
@@ -1321,6 +1331,8 @@
       {version}
       focus={selected === null ? mapRow : (rowAt(selected) ?? null)}
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
+      pickedRows={[...picked]}
+      onbox={mapBox}
       onview={mapMoved}
       onpick={mapPick}
       onsetgeo={mapSetGeo}
@@ -1515,6 +1527,10 @@
     onclose={() => (placeDialog = null)}
     ondone={codesFilled}
   />
+{/if}
+
+{#if importingGpx}
+  <GpxDialog {filter} onclose={() => (importingGpx = false)} ondone={codesFilled} />
 {/if}
 
 {#if fillingCodes}
