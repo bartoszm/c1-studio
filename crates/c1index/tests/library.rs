@@ -118,6 +118,19 @@ fn substring_text_folder_and_geo() {
 }
 
 #[test]
+fn map_clusters_the_filtered_photos_with_a_position() {
+    let (_d, lib, _s) = setup();
+    let world = c1index::BBox { min_lat: -85.0, max_lat: 85.0, min_lon: -180.0, max_lon: 180.0 };
+    let view = c1index::MapView { bounds: world, zoom: 2.0 };
+    let all = lib.map(&Filter::default(), &view).unwrap();
+    assert_eq!((all.located, all.clusters.len(), all.clusters[0].best), (1, 1, 7));
+    // Another photo's filter leaves nothing to show; a filter's own area is set aside.
+    assert_eq!(lib.map(&Filter { camera: Some("x100".into()), ..Filter::default() }, &view).unwrap().located, 0);
+    let near = Filter { within: Some(c1index::BBox::around(10.0, 10.0, 5.0)), ..Filter::default() };
+    assert_eq!(lib.map(&near, &view).unwrap().located, 1);
+}
+
+#[test]
 fn numeric_collection_and_edit_filters() {
     let (_d, lib, _s) = setup();
     let iso = Filter { iso: Some(Range::parse("300-500").unwrap()), ..Filter::default() };

@@ -14,6 +14,7 @@
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import PlaceDialog from "./PlaceDialog.svelte";
   import Info from "./Info.svelte";
+  import MapPane from "./MapPane.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -53,6 +54,57 @@
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
   let syncFailed = $state<string | null>(null);
   let grid: Grid;
+
+  // The map, shown above the grid. While it follows, the grid shows what the map shows.
+  let mapOn = $state(remembered("map").includes("on"));
+  let follow = $state(!remembered("map").includes("free"));
+  /** A photo picked on the map: the panel shows it and edits reach it when nothing else is picked. */
+  let mapRow = $state<number | null>(null);
+  $effect(() => {
+    try {
+      localStorage.setItem("map", JSON.stringify([...(mapOn ? ["on"] : []), ...(follow ? [] : ["free"])]));
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+  let followTimer: ReturnType<typeof setTimeout>;
+  function mapMoved(bounds: api.BBox) {
+    if (!follow) return;
+    clearTimeout(followTimer);
+    followTimer = setTimeout(() => {
+      if (!mapOn || !follow) return;
+      filter = { ...filter, within: bounds };
+      run(true);
+    }, 250);
+  }
+  /** Leaving the map, or letting go of it, lifts the area it set. */
+  function mapReleased() {
+    clearTimeout(followTimer);
+    if (filter.within) {
+      filter = { ...filter, within: undefined };
+      run(true);
+    }
+  }
+  function toggleMap() {
+    mapOn = !mapOn;
+    if (!mapOn) mapReleased();
+    mapRow = null;
+  }
+  function toggleFollow() {
+    follow = !follow;
+    if (!follow) mapReleased();
+  }
+  function mapPick(row: number) {
+    picked.clear();
+    selected = null;
+    mapRow = row;
+  }
+  async function mapSetGeo(rows: number[], lat: number, lon: number) {
+    dragging = null;
+    const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
+    await applyEdit({ Geo: at }, rows);
+    if (!editError) note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+  }
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
   const picked = new SvelteSet<number>();
@@ -344,7 +396,7 @@
   /** The photos an edit applies to: the picked ones, else the focused one. */
   function targets(): number[] {
     if (picked.size) return [...picked];
-    const row = selected === null ? undefined : rowAt(selected);
+    const row = selected === null ? mapRow ?? undefined : rowAt(selected);
     return row === undefined ? [] : [row];
   }
 
@@ -561,6 +613,7 @@
       anchor = i;
     }
     selected = i;
+    mapRow = null;
   }
 
   async function pickAll() {
@@ -973,6 +1026,7 @@
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
+    within: () => [{ what: "Map", text: "area in view" }],
   };
   function monthText(key: string) {
     const [y, m] = key.split("-").map(Number);
@@ -1085,7 +1139,7 @@
 {/snippet}
 
 {#snippet details()}
-  {@const row = selected === null ? undefined : rowAt(selected)}
+  {@const row = selected === null ? mapRow ?? undefined : rowAt(selected)}
   <Info
     {row}
     {version}
@@ -1121,7 +1175,7 @@
   />
 {/snippet}
 
-<svelte:window onkeydown={onkey} />
+<svelte:window onkeydown={onkey} ondragend={() => (dragging = null)} />
 
 <div class="app" class:with-info={showInfo}>
   <header>
@@ -1163,6 +1217,12 @@
         title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
         onclick={openSync}
       >⇉ Copy to {(picked.size - 1).toLocaleString()} selected</button>
+    {/if}
+    <button class="toggle" class:on={mapOn} title="Map: where the photos were taken" onclick={toggleMap}>Map</button>
+    {#if mapOn}
+      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
+        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
+      </label>
     {/if}
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
@@ -1284,6 +1344,19 @@
     </div>
   {/if}
 
+  <div class="stage">
+  {#if mapOn}
+    <MapPane
+      {filter}
+      {version}
+      focus={selected === null ? mapRow : (rowAt(selected) ?? null)}
+      dragRows={dragging && "rows" in dragging ? dragging.rows : null}
+      onview={mapMoved}
+      onpick={mapPick}
+      onsetgeo={mapSetGeo}
+      onerror={(text) => (editError = text)}
+    />
+  {/if}
   <Grid
     bind:this={grid}
     total={result?.total ?? 0}
@@ -1309,6 +1382,7 @@
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
+  </div>
 
   {#if showInfo && !viewing}{@render details()}{/if}
 

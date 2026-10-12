@@ -240,6 +240,24 @@ project in it.
 Every album change shows at once (in blue until written), is queued like any edit,
 written before the photo edits, and undone with Ctrl+Z.
 
+## Map
+
+**Map** in the header puts a map above the grid (OpenFreeMap tiles, so it needs a
+network; everything else works without one).
+
+- It shows the photos the filters select that have a position. Far out, a disc with the
+  number of photos; closer, a tile with the best photo of each cluster (highest rating,
+  then sharpest) and the count in its corner; at street level, single photos.
+- Click a cluster to zoom to its photos; click a single photo to show it in the
+  details panel.
+- **Grid follows map** (on by default) makes the grid show only the photos in view: pan
+  and zoom to filter. The chip *Map: area in view* drops it. Off, the grid keeps its
+  own filter.
+- **Setting a position:** drag a single photo's tile to a new place, or drag photos
+  (one or several picked) from the grid onto the map. This is a Location edit like any
+  other: queued, undoable, written with *Write to Capture One*. A position belongs to
+  the image, so every variant of the photo moves.
+
 ## Look
 
 The app measures every photo from Capture One's thumbnail (which carries your edits and

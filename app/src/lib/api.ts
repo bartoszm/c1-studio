@@ -46,7 +46,13 @@ export type Filter = {
   series?: boolean;
   /** Measured by the analysis, or not yet. */
   analysed?: boolean;
+  /** Only photos with a position inside this area (the map's view). */
+  within?: BBox;
 };
+export type BBox = { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
+/** One marker on the map: a photo (count 1) or a cluster; `best` is the photo shown for it. */
+export type Cluster = { lat: number; lon: number; count: number; best: number; bounds: BBox };
+export type MapResult = { located: number; in_view: number; clusters: Cluster[] };
 
 /** What the analysis found for a photo, with its classes and groups (id, size). */
 export type LookView = {
@@ -256,6 +262,8 @@ export const pickSource = (provider: string) => invoke<string | null>("pick_sour
 export const openSource = (spec: SourceSpec) => invoke<void>("open_source", { spec });
 export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", { spec });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
+/** The photos the filter selects that have a position, clustered for the map's view. */
+export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 export const collections = () => invoke<Collection[]>("collections");
