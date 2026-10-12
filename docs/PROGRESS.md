@@ -882,6 +882,60 @@ in `<data dir>/settings.json`) writes the queue by itself.
   and puts the focused photo's fields on the rest (what *Sync to N…* did, renamed
   *Copy to N…* in the panel too).
 
+## Stage 3: local analysis
+
+### Measuring photos
+
+- **`crates/c1analysis`** (pure functions over pixels, `image` only): from a render at
+  most 512 px long, which Capture One's thumbnails about are:
+  - shape (width, height of the render: crop and rotation included);
+  - main colours: k-means (k 5) in CIE Lab over a 64 px copy, started from pixels
+    spread through the lightness range so the same picture gives the same palette;
+    mean Lab chroma for black and white;
+  - tones: mean and spread of luminance, shares clipped at either end;
+  - sharpness: the variance of the Laplacian in the best of a 4×4 grid of tiles, so a
+    sharp subject on a soft background counts;
+  - a difference hash (64 bits).
+  Classes (`shape`, `hues`, `light`, `focus`) are made from these at index time;
+  `VERSION` re-measures, `CLASSES` only rebuilds the index.
+- **Groups** (`groups.rs`): duplicates are different images (not variants of one) taken
+  at the same instant whose hashes are at most 3 bits apart (found through four 16-bit
+  bands; featureless hashes, near all 0 or all 1, are left out). Series: one camera,
+  each photo within 4 s of the one before and at most 22 bits from it, three or more.
+- **Library:** results in `analysis.redb` (by photo key, with the render's size and
+  modification time, so a photo is measured again only when Capture One renders it
+  again; kept apart from the store, which is dropped when its format changes). In
+  memory with each photo's groups (`dup:<row>`, `series:<row>`, named after the
+  group's first row); every document is built with them. New dimensions `shape`,
+  `hue`, `light`, `focus`, `group`; flags `analysed`, `duplicate`, `series`; fast
+  fields `sharpness`, `brightness`. Filter fields to match, and a sharpness range.
+- **Runner** (`c1index::analyse::run`): stats each photo's thumbnail, measures the ones
+  that changed in batches of 1000 across threads, commits each batch, then regroups.
+  The app runs it after every sync on half the cores (footer: *measuring photos N /
+  M*), stops it when another catalog opens; `c1cat analyse [--threads] [--stats]`.
+
+### Tuned on the fuji catalog
+
+- **Speed:** 95,704 thumbnails (all there are) in 4 min 9 s on 11 threads, 2.6 ms a
+  photo, none unreadable. Release build; dev builds optimise `c1analysis` too.
+- **First thresholds were wrong for this catalog** (`--stats` and contact sheets drawn
+  in the app):
+  - focus: grain and JPEG noise lift the Laplacian everywhere (median 4,141); 99.6%
+    were "sharp". Looked at by eye, below ~300 is motion-blurred or missed, up to
+    ~700 soft or low in detail (fog): blurry < 300 (1.6%), soft < 700 (3.8%);
+  - light: a low-key catalog (median brightness 0.31); dark < 0.2, bright > 0.55;
+  - colour: black and grey dominated the colour photos; colour names now leave out
+    black, white and grey (*muted* when no colour shows);
+  - duplicates: "alike within 3 bits" chained unrelated dark frames into one group of
+    100+, and caught burst frames; requiring the same instant leaves real ones
+    (1,629 photos, checked on a contact sheet: the same frame twice).
+- **Result:** black & white 40,290; landscape 92,041, portrait 3,660; series 14,718.
+- **Tests:** shapes, colours and their names, black and white, light, sharp and soft
+  (and a sharp patch on a plain background), hashes of alike pictures, duplicates
+  (not variants, not burst frames), series; library: filters, groups by regroup,
+  analyses outliving the store.
+
 ### Next
 
-1. Stage 3: local analysis (orientation, colours, exposure, sharpness, duplicates).
+1. Stage 4: the map (zoom-dependent clusters, the map as a filter, editing GPS), then
+   time travel.

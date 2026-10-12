@@ -99,6 +99,9 @@ the Date tree still shows every year.
   keeping the levels below, as one edit; a rename to a name that exists joins them.
   On a missing level (*(no state)*) it is **Set a name…**: e.g. give all of Poland's
   photos without a state one.
+- **Look:** what each photo looks like, measured from its thumbnail (see
+  [Look](#look)): Shape, Main colour, Light, Focus, and Alike (duplicates, series).
+  Several values in one group show photos with any of them.
 - **Folders:** the folder tree; a folder includes everything below it.
 - **Keywords:** the keyword tree; a keyword includes the keywords below it. The *Find a
   keyword* box above it shows only matching keywords, with their branches open. Esc
@@ -237,6 +240,36 @@ project in it.
 Every album change shows at once (in blue until written), is queued like any edit,
 written before the photo edits, and undone with Ctrl+Z.
 
+## Look
+
+The app measures every photo from Capture One's thumbnail (which carries your edits and
+crop) in the background: after a sync, the footer says *measuring photos N / M*. The
+first time takes a few minutes for a big catalog (about four for 100,000 photos here);
+after that only new photos, and photos whose thumbnail Capture One rendered again, are
+measured. The results stay with the library and are never written to the catalog.
+
+What the sidebar's **Look** section offers:
+
+- **Shape:** landscape, portrait, square, or panorama (2:1 and longer), as cropped.
+- **Main colour:** *black & white*; else the colours making up a sixth of the picture
+  or more (red, orange, brown, yellow, green, teal, blue, purple, pink); else the one
+  that shows most, or *muted* when none really does. Black, white and grey are not
+  listed as colours.
+- **Light:** dark, medium or bright by mean brightness, plus *clipped highlights*,
+  *blocked shadows* and *low contrast*.
+- **Focus:** sharp, soft or blurry, by the detail in the sharpest part of the picture
+  (so a sharp subject on a soft background is sharp). Fog and plain walls have little
+  detail too, and show as soft.
+- **Alike:** *duplicates* are one picture twice: taken at the same instant and looking
+  the same (imported twice, or saved again; variants of one image do not count).
+  *In a series* are bursts: three or more photos from one camera, seconds apart, each
+  looking much like the one before.
+- *N not measured yet*, while the analysis is still going.
+
+The details panel's **Look** shows the photo's main colours as a bar, its classes, and
+for a duplicate or a burst a link to the others (*Looks like 1 other photo: show them*,
+*One of a series of 7: show it*).
+
 ## Writing to Capture One
 
 Nothing is written to the catalog until you ask, or turn Autosave on.
@@ -306,7 +339,7 @@ Keys do not act while you type in a field.
 
 ## Where things are kept
 
-- The library, the edit queue, the autosave setting and backups:
-  `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+- The library, the edit queue, the analysis (`library\analysis.redb`), the autosave
+  setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The sidebar layout, tile size and the copy clipboard: the app's own browser storage.

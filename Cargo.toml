@@ -13,6 +13,7 @@ c1model = { path = "crates/c1model" }
 source-c1 = { path = "crates/source-c1" }
 c1index = { path = "crates/c1index" }
 c1image = { path = "crates/c1image" }
+c1analysis = { path = "crates/c1analysis" }
 
 anyhow = "1"
 thiserror = "2"
@@ -35,3 +36,7 @@ uuid = { version = "1", features = ["v4"] }
 # benchmarks misleading. Optimising them costs one slower first build.
 [profile.dev.package."*"]
 opt-level = 2
+
+# Pixel loops: unoptimised they are ten times slower, even in a debug build.
+[profile.dev.package.c1analysis]
+opt-level = 3

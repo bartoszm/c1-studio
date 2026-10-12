@@ -20,6 +20,7 @@ use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, 
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
+use crate::looks::{Look, Looks, Record};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 
@@ -119,6 +120,10 @@ pub struct Library {
     smart: RwLock<HashMap<String, SmartRule>>,
     /// Edits made here and not yet written to their source, and the change log.
     edits: Edits,
+    /// What photos look like (stage 3), stored, and in memory by photo key with the
+    /// duplicate groups and series they fall in.
+    looks: Looks,
+    seen: RwLock<HashMap<String, Look>>,
     /// One writer at a time: syncs and edits both rewrite documents.
     writing: Mutex<()>,
 }
@@ -150,8 +155,7 @@ impl Library {
             batch.commit()?;
         }
 
-        let current = store.meta("index_schema")?.and_then(|v| v.parse::<u32>().ok());
-        let rebuild = current != Some(SCHEMA_VERSION);
+        let rebuild = store.meta("index_schema")? != Some(index_version());
         if rebuild && index_dir.exists() {
             std::fs::remove_dir_all(&index_dir)?;
         }
@@ -164,6 +168,12 @@ impl Library {
         schema::register_tokenizers(&index);
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
         let edits = Edits::open(&dir.join("edits.redb"))?;
+        let looks = Looks::open(&dir.join("analysis.redb"))?;
+        let seen = looks
+            .all()?
+            .into_iter()
+            .map(|(key, r)| (key, Look { analysis: r.analysis, stamp: r.stamp, duplicates: None, series: None }))
+            .collect();
 
         let library = Self {
             dir,
@@ -175,8 +185,15 @@ impl Library {
             distinct: RwLock::new(Distinct::new()),
             smart: RwLock::new(HashMap::new()),
             edits,
+            looks,
+            seen: RwLock::new(seen),
             writing: Mutex::new(()),
         };
+        // Groups as worked out now: the index is told of any that differ from last time.
+        let regrouped = library.group_looks()?;
+        if !rebuild {
+            library.reindex_keys(&regrouped)?;
+        }
         if rebuild {
             library.reindex()?;
         }
@@ -186,6 +203,133 @@ impl Library {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// A photo's search document, with what its analysis found.
+    fn doc(&self, row: u64, photo: &Photo) -> tantivy::TantivyDocument {
+        let seen = self.seen.read().unwrap();
+        schema::document(&self.fields, row, photo, seen.get(&photo.id.key()))
+    }
+
+    /// Every measured photo's analysis and groups.
+    pub fn looks(&self) -> Vec<Look> {
+        self.seen.read().unwrap().values().cloned().collect()
+    }
+
+    /// What the analysis found for a photo, if it has been measured.
+    pub fn look(&self, row: u64) -> Option<Look> {
+        let key = self.keys.read().unwrap().get(row as usize)?.clone()?;
+        self.seen.read().unwrap().get(&key).cloned()
+    }
+
+    /// Every photo's measured image (size, modification time), by key: a photo whose
+    /// image is the same need not be measured again.
+    pub fn analysed(&self) -> HashMap<String, (u64, u64)> {
+        self.seen.read().unwrap().iter().map(|(k, l)| (k.clone(), l.stamp)).collect()
+    }
+
+    /// Stores analyses and shows them at once (the groups follow with
+    /// [`Library::regroup`]).
+    pub fn put_analyses(&self, batch: Vec<(String, (u64, u64), c1analysis::Analysis)>) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let records: Vec<(String, Record)> = batch
+            .iter()
+            .map(|(k, stamp, a)| {
+                (k.clone(), Record { version: c1analysis::VERSION, stamp: *stamp, analysis: a.clone() })
+            })
+            .collect();
+        self.looks.put(&records)?;
+        let _writing = self.writing.lock().unwrap();
+        {
+            let mut seen = self.seen.write().unwrap();
+            for (key, stamp, analysis) in batch.iter().cloned() {
+                let old = seen.remove(&key);
+                let (duplicates, series) = old.map(|o| (o.duplicates, o.series)).unwrap_or_default();
+                seen.insert(key, Look { analysis, stamp, duplicates, series });
+            }
+        }
+        let keys: Vec<String> = batch.into_iter().map(|(k, _, _)| k).collect();
+        self.reindex_keys(&keys)
+    }
+
+    /// Works the duplicate groups and series out again over every measured photo, and
+    /// re-indexes the photos whose groups changed. Returns how many did.
+    pub fn regroup(&self) -> anyhow::Result<usize> {
+        let _writing = self.writing.lock().unwrap();
+        let changed = self.group_looks()?;
+        self.reindex_keys(&changed)?;
+        Ok(changed.len())
+    }
+
+    /// Sets each measured photo's groups; returns the keys whose groups changed.
+    fn group_looks(&self) -> anyhow::Result<Vec<String>> {
+        let mut members: Vec<(u64, String, c1analysis::Taken)> = Vec::new();
+        {
+            let seen = self.seen.read().unwrap();
+            if seen.is_empty() {
+                return Ok(Vec::new());
+            }
+            for (row, key) in self.store.keys()? {
+                let Some(look) = seen.get(&key) else { continue };
+                let Some(photo) = self.store.photo(row)? else { continue };
+                if photo.trashed {
+                    continue;
+                }
+                let taken = c1analysis::Taken {
+                    asset: photo.asset.0.clone(),
+                    camera: photo.exif.camera_model.clone(),
+                    at: photo.captured_at,
+                    hash: look.analysis.hash,
+                };
+                members.push((row, key, taken));
+            }
+        }
+        let taken: Vec<c1analysis::Taken> = members.iter().map(|(_, _, t)| t.clone()).collect();
+        let groups = c1analysis::group(&taken);
+        let mut wanted: HashMap<&str, (Option<String>, Option<String>)> = HashMap::new();
+        for (prefix, list) in [("dup", &groups.duplicates), ("series", &groups.series)] {
+            for group in list {
+                let name = format!("{prefix}:{}", group.iter().map(|&i| members[i].0).min().unwrap_or(0));
+                for &i in group {
+                    let slot = wanted.entry(members[i].1.as_str()).or_default();
+                    if prefix == "dup" {
+                        slot.0 = Some(name.clone());
+                    } else {
+                        slot.1 = Some(name.clone());
+                    }
+                }
+            }
+        }
+        let mut changed = Vec::new();
+        let mut seen = self.seen.write().unwrap();
+        for (key, look) in seen.iter_mut() {
+            let (duplicates, series) = wanted.remove(key.as_str()).unwrap_or_default();
+            if look.duplicates != duplicates || look.series != series {
+                look.duplicates = duplicates;
+                look.series = series;
+                changed.push(key.clone());
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Writes the documents of these photos again. The caller holds `writing`.
+    fn reindex_keys(&self, keys: &[String]) -> anyhow::Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self.writer()?;
+        for key in keys {
+            let Some(row) = self.store.row_of(key)? else { continue };
+            let Some(photo) = self.store.photo(row)? else { continue };
+            writer.delete_term(Term::from_field_u64(self.fields.row, row));
+            writer.add_document(self.doc(row, &photo))?;
+        }
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
     }
 
     fn writer(&self) -> anyhow::Result<IndexWriter> {
@@ -198,12 +342,12 @@ impl Library {
         let mut writer = self.writer()?;
         writer.delete_all_documents()?;
         self.store.for_each_photo(|row, photo| {
-            writer.add_document(schema::document(&self.fields, row, &photo))?;
+            writer.add_document(self.doc(row, &photo))?;
             Ok(())
         })?;
         writer.commit()?;
         let mut batch = self.store.batch()?;
-        batch.set_meta("index_schema", &SCHEMA_VERSION.to_string())?;
+        batch.set_meta("index_schema", &index_version())?;
         batch.commit()
     }
 
@@ -319,9 +463,7 @@ impl Library {
                     }
                     seen.insert(row);
                     batch.put_photo(row, &photo, fingerprint).map_err(source_err)?;
-                    writer
-                        .add_document(schema::document(&self.fields, row, &photo))
-                        .map_err(|e| SourceError::Other(e.to_string()))?;
+                    writer.add_document(self.doc(row, &photo)).map_err(|e| SourceError::Other(e.to_string()))?;
                 }
                 SourceEvent::Delete(id) => {
                     let key = id.key();
@@ -353,7 +495,7 @@ impl Library {
             }
         }
         batch.set_meta(&cursor_key, &end.0)?;
-        batch.set_meta("index_schema", &SCHEMA_VERSION.to_string())?;
+        batch.set_meta("index_schema", &index_version())?;
 
         // Index first: if we crash between the two commits the store still holds the old
         // fingerprints, so the next sync redoes the work instead of losing it.
@@ -435,7 +577,7 @@ impl Library {
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
             batch.put_photo(row, &after, fingerprint)?;
             writer.delete_term(Term::from_field_u64(self.fields.row, row));
-            writer.add_document(schema::document(&self.fields, row, &after))?;
+            writer.add_document(self.doc(row, &after))?;
         }
         writer.commit()?;
         batch.commit()?;
@@ -538,7 +680,7 @@ impl Library {
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
             batch.put_photo(row, &photo, fingerprint)?;
             writer.delete_term(Term::from_field_u64(self.fields.row, row));
-            writer.add_document(schema::document(&self.fields, row, &photo))?;
+            writer.add_document(self.doc(row, &photo))?;
         }
         writer.commit()?;
         batch.commit()?;
@@ -819,7 +961,7 @@ impl Library {
                 let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
                 batch.put_photo(row, &photo, fingerprint)?;
                 writer.delete_term(Term::from_field_u64(self.fields.row, row));
-                writer.add_document(schema::document(&self.fields, row, &photo))?;
+                writer.add_document(self.doc(row, &photo))?;
             }
         }
         // Queued keyword edits name keywords by path: they move with them.
@@ -916,6 +1058,12 @@ impl Library {
 /// An id for an album made in the app: a fresh uuid, which the source stores with it.
 pub fn new_collection_id() -> CollectionId {
     CollectionId::new_local(&uuid::Uuid::new_v4().to_string())
+}
+
+/// What the index was built with: its schema, and the rules that turn an analysis into
+/// classes (`c1analysis::CLASSES`). Either changing rebuilds it.
+fn index_version() -> String {
+    format!("{SCHEMA_VERSION}.{}", c1analysis::CLASSES)
 }
 
 /// The album an op puts a photo into or takes it out of.
