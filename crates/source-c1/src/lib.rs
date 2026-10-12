@@ -5,6 +5,7 @@
 //! `legacy/c1cat-py/skills/capture-one-catalog/references/schema.md` documents every
 //! schema fact relied on here; each one was verified against a real catalog.
 
+mod albums;
 mod catalog;
 mod compat;
 mod config;
@@ -20,8 +21,8 @@ use std::sync::Mutex;
 
 use c1model::source::Result;
 use c1model::{
-    ApplyPlan, ApplyReport, Capabilities, Change, Cursor, Field, ImageFormat, ImageRef, ImageTier, KeywordRemap,
-    PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
+    ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Cursor, Field, ImageFormat, ImageRef,
+    ImageTier, KeywordRemap, PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
@@ -99,7 +100,15 @@ impl PhotoSource for CaptureOne {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            writable: vec![Field::Rating, Field::Color, Field::Keywords, Field::Iptc, Field::Place, Field::Geo],
+            writable: vec![
+                Field::Rating,
+                Field::Color,
+                Field::Keywords,
+                Field::Iptc,
+                Field::Place,
+                Field::Geo,
+                Field::Collections,
+            ],
             tiers: vec![ImageTier::Thumb, ImageTier::Preview, ImageTier::Original],
             geo_per_asset: true,
             collections: true,
@@ -181,25 +190,36 @@ impl PhotoSource for CaptureOne {
 
     /// Reads the live catalog, so it works while Capture One is open.
     fn plan(&self, changes: &[Change]) -> Result<ApplyPlan> {
-        self.plan_after(&[], changes)
+        self.plan_after(&[], &[], changes)
     }
 
-    fn plan_after(&self, remaps: &[KeywordRemap], changes: &[Change]) -> Result<ApplyPlan> {
+    fn plan_after(
+        &self,
+        remaps: &[KeywordRemap],
+        collections: &[CollectionChange],
+        changes: &[Change],
+    ) -> Result<ApplyPlan> {
         let con = catalog::open_live(&self.catalog)?;
-        let mut plan = write::plan(&con, remaps, changes, |c| self.variant_pk(&c.photo))?;
+        let mut plan = write::plan(&con, remaps, collections, changes, |c| self.variant_pk(&c.photo))?;
         plan.remaps = remaps.to_vec();
+        plan.collections = collections.to_vec();
         Ok(plan)
     }
 
-    /// Refuses while Capture One or anything else has the catalog open, backs it up,
-    /// then writes the plan in one transaction after checking it still holds.
     fn check_remap(&self, earlier: &[KeywordRemap], remap: &KeywordRemap) -> Result<Option<String>> {
         let con = catalog::open_live(&self.catalog)?;
         keywords::check_remap(&con, earlier, remap)
     }
 
+    fn check_collection(&self, earlier: &[CollectionChange], change: &CollectionChange) -> Result<Option<String>> {
+        let con = catalog::open_live(&self.catalog)?;
+        albums::check(&con, earlier, change)
+    }
+
+    /// Refuses while Capture One or anything else has the catalog open, backs it up,
+    /// then writes the plan in one transaction after checking it still holds.
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport> {
-        if plan.apply.is_empty() && plan.remaps.is_empty() {
+        if plan.apply.is_empty() && plan.remaps.is_empty() && plan.collections.is_empty() {
             return Ok(ApplyReport::default());
         }
         let _guard = self.snapshot_lock.lock().unwrap();
@@ -211,11 +231,44 @@ impl PhotoSource for CaptureOne {
         write::wrote(&self.catalog, &backup)?;
         Ok(ApplyReport { applied, backup: Some(backup.backup.display().to_string()) })
     }
+
+    fn backups(&self) -> Result<Vec<BackupInfo>> {
+        Ok(CaptureOne::backups(self).iter().map(backup_info).collect())
+    }
+
+    /// Refuses while Capture One or anything else has the catalog open, as a write does.
+    fn restore(&self, id: &str) -> Result<BackupInfo> {
+        let _guard = self.snapshot_lock.lock().unwrap();
+        write::preflight(&self.catalog)?;
+        let before = write::restore(&self.catalog, &self.backup_dir(), write::KEEP_BACKUPS, id)?;
+        Ok(backup_info(&before))
+    }
+}
+
+fn backup_info(b: &Backup) -> BackupInfo {
+    // Manifests from before `created_ms` carry only the local time.
+    let created_ms = if b.created_ms > 0 {
+        b.created_ms
+    } else {
+        chrono::NaiveDateTime::parse_from_str(&b.created, "%Y-%m-%dT%H:%M:%S%.f")
+            .ok()
+            .and_then(|t| t.and_local_timezone(chrono::Local).earliest())
+            .map_or(0, |t| t.timestamp_millis().max(0) as u64)
+    };
+    BackupInfo {
+        id: b.backup.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        path: b.backup.display().to_string(),
+        created_ms,
+        size: b.size,
+        note: b.note.clone(),
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use c1model::{Op, conformance};
+    use std::collections::HashMap;
+
+    use c1model::{Collection, CollectionId, CollectionKind, Condition, Op, SmartRule, conformance};
 
     use super::*;
 
@@ -327,11 +380,103 @@ mod tests {
         assert_eq!(tag, None);
     }
 
+    /// The source's collections, and each photo's (by variant pk).
+    fn read(source: &CaptureOne) -> (Vec<Collection>, HashMap<String, Vec<CollectionId>>) {
+        let mut collections = Vec::new();
+        let mut members = HashMap::new();
+        source
+            .snapshot(None, &mut |e| {
+                match e {
+                    SourceEvent::Collections(c) => collections = c,
+                    SourceEvent::Upsert(p) => {
+                        members.insert(p.id.ext.clone(), p.collections.clone());
+                    }
+                    _ => {}
+                }
+                Ok(())
+            })
+            .unwrap();
+        (collections, members)
+    }
+
     #[test]
-    fn edits_not_ported_yet_are_refused() {
+    fn albums_are_made_filled_renamed_and_deleted() {
         let Some((_dir, source)) = source() else { return };
-        let id = PhotoId::new(&source.info().id, "1");
-        let add = Change { photo: id, op: Op::AddToCollection { collection: c1model::CollectionId("1".into()) } };
-        assert!(matches!(source.plan(&[add]), Err(SourceError::Unsupported(_))));
+        if !ready(&source) {
+            return;
+        }
+        let sid = source.info().id;
+        let (group, album, smart) =
+            (CollectionId::new_local("g-1"), CollectionId::new_local("a-1"), CollectionId::new_local("s-1"));
+        let rule = SmartRule { match_all: true, conditions: vec![Condition::Rating { min: 4, max: 5 }] };
+        let create = |id: &CollectionId, name: &str, kind, parent: Option<&CollectionId>, rule| {
+            CollectionChange::Create { id: id.clone(), name: name.into(), kind, parent: parent.cloned(), rule }
+        };
+        let creates = [
+            create(&group, "trips", CollectionKind::Group, None, None),
+            create(&album, "japan", CollectionKind::Album, Some(&group), None),
+            create(&smart, "best", CollectionKind::Smart, None, Some(rule.clone())),
+        ];
+        let member = |pk: &str, c: &CollectionId, add: bool| Change {
+            photo: PhotoId::new(&sid, pk),
+            op: if add {
+                Op::AddToCollection { collection: c.clone() }
+            } else {
+                Op::RemoveFromCollection { collection: c.clone() }
+            },
+        };
+        // Photos go into an album made in the same write; never into a smart album.
+        let plan = source
+            .plan_after(
+                &[],
+                &creates,
+                &[member("1", &album, true), member("2", &album, true), member("3", &smart, true)],
+            )
+            .unwrap();
+        assert_eq!(plan.apply.len(), 2);
+        assert!(plan.conflicts[0].current.contains("smart album"), "{:?}", plan.conflicts);
+        assert_eq!(source.apply(&plan).unwrap().applied, 5);
+
+        let (collections, members) = read(&source);
+        let japan = collections.iter().find(|c| c.name == "japan").unwrap().clone();
+        assert_eq!((japan.path.as_str(), japan.kind), ("trips / japan", CollectionKind::Album));
+        let best = collections.iter().find(|c| c.name == "best").unwrap().clone();
+        assert_eq!((best.kind, best.rule.as_ref()), (CollectionKind::Smart, Some(&rule)));
+        assert_eq!(members["1"], std::slice::from_ref(&japan.id));
+        assert_eq!(members["2"], std::slice::from_ref(&japan.id));
+        assert!(members["3"].is_empty());
+
+        // By the catalog's own ids from here on.
+        let changes = [
+            CollectionChange::Rename { id: japan.id.clone(), name: "nippon".into() },
+            CollectionChange::SetRule { id: best.id.clone(), rule: SmartRule { match_all: false, ..rule.clone() } },
+        ];
+        let plan =
+            source.plan_after(&[], &changes, &[member("2", &japan.id, false), member("3", &japan.id, false)]).unwrap();
+        assert_eq!((plan.apply.len(), plan.no_ops.len()), (1, 1));
+        source.apply(&plan).unwrap();
+        let (collections, members) = read(&source);
+        assert!(collections.iter().any(|c| c.path == "trips / nippon"));
+        assert!(!collections.iter().find(|c| c.id == best.id).unwrap().rule.as_ref().unwrap().match_all);
+        assert_eq!(members["1"], std::slice::from_ref(&japan.id));
+        assert!(members["2"].is_empty());
+
+        // A group goes with what is in it, links and all; the photos stay.
+        let trips = collections.iter().find(|c| c.name == "trips").unwrap().id.clone();
+        let delete = [CollectionChange::Delete { id: trips }, CollectionChange::Delete { id: best.id.clone() }];
+        source.apply(&source.plan_after(&[], &delete, &[]).unwrap()).unwrap();
+        let (collections, members) = read(&source);
+        assert!(collections.is_empty(), "{collections:?}");
+        assert_eq!(members.len(), 5);
+        assert!(members["1"].is_empty());
+        let con = rusqlite::Connection::open(source.catalog_path()).unwrap();
+        let links: i64 = con
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM ZIMAGEINCOLLECTION) + (SELECT COUNT(*) FROM ZVARIANTINCOLLECTION)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(links, 0);
     }
 }

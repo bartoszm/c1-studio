@@ -2,14 +2,40 @@
   import * as api from "./lib/api";
   import { geoText } from "./lib/format";
 
-  // Choose what to copy from one photo; pasting then puts those fields on others.
-  let { photo, fields, oncopy, onclose }: {
+  // Choose what to copy from one photo; pasting then puts those fields on others. With
+  // `sync`, the fields go straight onto the other selected photos; with `paste`, the
+  // clipboard's photo goes onto the selected ones. Either overwrites or merges.
+  let { photo, fields, sync, paste, oncopy, onclose }: {
     photo: api.Photo;
-    /** What was copied last time, ticked to start with. */
+    /** What was copied (or pasted) last time, ticked to start with. */
     fields: api.CopyField[];
-    oncopy: (fields: api.CopyField[]) => void;
+    /** How many other selected photos a sync puts the fields on. */
+    sync?: number;
+    /** How many photos a paste puts the clipboard's fields on. */
+    paste?: number;
+    /** `fill` (merge) fills just what the others leave empty and adds keywords. */
+    oncopy: (fields: api.CopyField[], fill: boolean) => void;
     onclose: () => void;
   } = $props();
+  /** How many photos the fields go onto; absent for a copy. */
+  let onto = $derived(sync ?? paste);
+
+  function rememberedFill() {
+    try {
+      return localStorage.getItem("syncFill") === "1";
+    } catch {
+      return false;
+    }
+  }
+  let fill = $state(rememberedFill());
+  $effect(() => {
+    try {
+      localStorage.setItem("syncFill", fill ? "1" : "0");
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+  let filling = $derived(onto !== undefined && fill);
 
   type Item = [api.CopyField, string, string | null];
   const text = (v: string | null | undefined) => v || null;
@@ -73,12 +99,14 @@
     groups.flatMap(([, items]) => items.map(([f]) => f)).filter((f) => chosen.has(f))
       .map((f) => (f === "keywords" && exact ? "keywords_exact" : f)) as api.CopyField[],
   );
-  let clears = $derived(groups.flatMap(([, items]) => items).filter(([f, , v]) => chosen.has(f) && v === null && !(f === "keywords" && !exact)));
+  let clears = $derived(
+    filling ? [] : groups.flatMap(([, items]) => items).filter(([f, , v]) => chosen.has(f) && v === null && !(f === "keywords" && !exact)),
+  );
 
   function submit(e?: Event) {
     e?.preventDefault();
     if (picked.length) {
-      oncopy(picked);
+      oncopy(picked, filling);
       onclose();
     }
   }
@@ -88,11 +116,29 @@
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="copy-title">
-    <h2 id="copy-title">Copy from {photo.file.name}</h2>
+    {#if onto !== undefined}
+      <h2 id="copy-title">
+        {sync !== undefined ? `Copy from ${photo.file.name} to ${sync.toLocaleString()} selected` : `Paste from ${photo.file.name}`}
+      </h2>
+      <p class="muted">
+        Tick what to put on {sync !== undefined ? "the other" : "the"} {onto.toLocaleString()}
+        {sync !== undefined ? "selected " : ""}photo{onto === 1 ? "" : "s"}; it is queued for Capture One like any edit{sync !== undefined ? ", and stays on the clipboard for pasting elsewhere" : ""}.
+      </p>
+      <div class="mode sync-mode" role="radiogroup" aria-label="How">
+        <label><input type="radio" name="sync-mode" checked={!fill} onchange={() => (fill = false)} /> Overwrite: their values are replaced</label>
+        <label><input type="radio" name="sync-mode" checked={fill} onchange={() => (fill = true)} /> Merge: only what theirs leave empty is filled, keywords are added</label>
+      </div>
+    {:else}
+      <h2 id="copy-title">Copy from {photo.file.name}</h2>
+      <p class="muted">
+        Tick what to copy. Paste (Ctrl+V) puts it on the selected photos, replacing their values; Merge (Ctrl+Alt+V)
+        only fills what they leave empty; Paste… (Ctrl+Shift+V) lets you choose. Each is queued for Capture One like
+        any edit.
+      </p>
+    {/if}
     {#if !has.size}
       <p class="warn">{photo.file.name} has nothing to copy: no location, keywords or marks. Is it the photo you meant? Copy takes the focused (last clicked) photo.</p>
     {/if}
-    <p class="muted">Tick what to copy. Paste puts it on the selected photos (Ctrl+Shift+V); it is queued for Capture One like any edit.</p>
 
     {#each groups as [title, items] (title)}
       {@const all = items.every(([f]) => chosen.has(f))}
@@ -111,7 +157,9 @@
             <span class="value" class:none={value === null} title={value ?? ""}>{value ?? "none"}</span>
           </label>
         {/each}
-        {#if title === "Keywords" && chosen.has("keywords")}
+        {#if title === "Keywords" && chosen.has("keywords") && filling}
+          <div class="mode">Keywords they lack are added; theirs stay.</div>
+        {:else if title === "Keywords" && chosen.has("keywords")}
           <div class="mode">
             <label><input type="radio" name="kw-mode" checked={!exact} onchange={() => (exact = false)} /> add to theirs</label>
             <label><input type="radio" name="kw-mode" checked={exact} onchange={() => (exact = true)} /> replace theirs</label>
@@ -128,7 +176,9 @@
       <button class="plain" onclick={filled}>Everything it has</button>
       <span class="spacer"></span>
       <button onclick={onclose}>Cancel</button>
-      <button class="primary" disabled={!picked.length} onclick={() => submit()}>Copy</button>
+      <button class="primary" disabled={!picked.length} onclick={() => submit()}>
+        {onto === undefined ? "Copy" : `${fill ? "Merge into" : sync !== undefined ? "Copy to" : "Paste onto"} ${onto.toLocaleString()}`}
+      </button>
     </div>
   </div>
 </div>
@@ -163,6 +213,7 @@
   .value { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
   .value.none { color: #5a5a5a; font-style: italic; }
   .mode { display: flex; gap: 16px; padding: 4px 0 0 18px; color: var(--muted); }
+  .sync-mode { flex-direction: column; gap: 4px; padding: 6px 0 2px; color: inherit; }
   input { margin: 0; accent-color: var(--queued); }
   .buttons { display: flex; align-items: center; gap: 8px; margin-top: 16px; }
   .spacer { flex: 1; }

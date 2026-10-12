@@ -8,9 +8,10 @@
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords, clip,
-    onrate, oncolor, onaddkeyword, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onplace, ongeo, oniptc, oncopy, onpaste,
+    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums,
+    onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
+    onaddalbum, onremovealbum, onlook,
+    onplace, ongeo, oniptc, oncopy, onpaste, onpastechoose, onsync,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -25,9 +26,20 @@
     onrate: (stars: number | null) => void;
     oncolor: (color: api.Color | null) => void;
     onaddkeyword: (path: string) => void;
+    /** Adds keywords to every selected photo: the ones only some of them have. */
+    onaddkeywords: (paths: string[]) => void;
+    /** With several photos selected: their keywords, and how many of them carry each. */
+    shared: [string, number][] | null;
     onremovekeyword: (path: string) => void;
     onkeyword: (path: string) => void;
     onalbum: (id: string) => void;
+    /** With several photos selected: the albums they are in, and how many each holds. */
+    sharedAlbums: [string, number][] | null;
+    /** Puts the selected photos into an album, or takes them out. */
+    onaddalbum: (id: string) => void;
+    onremovealbum: (id: string) => void;
+    /** Filters by something the analysis found (a duplicate group, a series). */
+    onlook: (f: api.Filter) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
     /** A location field typed in; "" clears it. */
@@ -39,7 +51,12 @@
     /** What the clipboard holds, for showing; null when empty. */
     clip: string | null;
     oncopy: () => void;
-    onpaste: () => void;
+    /** `fill` only fills what each photo leaves empty. */
+    onpaste: (fill: boolean) => void;
+    /** Opens the choice of what to paste, and how. */
+    onpastechoose: () => void;
+    /** Opens the choice of fields to take from this photo onto the other selected ones. */
+    onsync: () => void;
   } = $props();
 
   let photo = $state<api.Photo | null>(null);
@@ -58,6 +75,16 @@
       (e) => { if (current === row) failed = String(e); },
     );
   });
+
+  /** What the analysis found, once the photo has been measured. */
+  let look = $state<api.LookView | null>(null);
+  $effect(() => {
+    const current = row;
+    void version;
+    look = null;
+    if (current !== undefined) api.look(current).then((l) => { if (current === row) look = l; }).catch(() => {});
+  });
+  const hex = (rgb: number[]) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
 
   let typed = $state("");
   let typedError = $state<string | null>(null);
@@ -78,6 +105,7 @@
   /** How a queued edit reads: `rating`, `colour`, `keyword "street"`. */
   function fieldName(f: string) {
     if (f.startsWith("keyword:")) return `keyword “${f.slice(8)}”`;
+    if (f.startsWith("collection:")) return `album “${collections.get(f.slice(11))?.name ?? f.slice(11)}”`;
     return ({ color: "colour", place: "location", geo: "GPS", iptc: "IPTC fields" } as Record<string, string>)[f] ?? f;
   }
 
@@ -150,8 +178,25 @@
     [...(photo?.keywords ?? [])].sort((a, b) => a.join("|").localeCompare(b.join("|"), undefined, { sensitivity: "base" })),
   );
 
-  let albums = $derived(
-    (photo?.collections ?? []).map((id) => collections.get(id)).filter((c): c is api.Collection => !!c),
+  // One photo shows its keywords; several show every keyword any of them has, those on
+  // only some set apart, as Capture One does.
+  type KeywordRow = { full: string; path: string[]; n: number };
+  let keywordRows: KeywordRow[] = $derived(
+    picked > 1 && shared
+      ? shared.map(([full, n]) => ({ full, path: full.split("|"), n }))
+          .sort((a, b) => a.full.localeCompare(b.full, undefined, { sensitivity: "base" }))
+      : sortedKeywords.map((path) => ({ full: path.join("|"), path, n: picked })),
+  );
+  let partial = $derived(keywordRows.filter((k) => k.n < picked).map((k) => k.full));
+
+  // The albums the photo is in; with several selected, every album any of them is in,
+  // those holding only some set apart, as keywords are.
+  type AlbumRow = { c: api.Collection; n: number };
+  let albumRows: AlbumRow[] = $derived(
+    (picked > 1 && sharedAlbums ? sharedAlbums : (photo?.collections ?? []).map((id): [string, number] => [id, picked]))
+      .map(([id, n]) => ({ c: collections.get(id)!, n }))
+      .filter((r) => !!r.c)
+      .sort((a, b) => a.c.path.localeCompare(b.c.path, undefined, { sensitivity: "base" })),
   );
 </script>
 
@@ -191,13 +236,23 @@
     </div>
     <div class="clip">
       <button title="Choose what to copy from this photo (Ctrl+Shift+C)" onclick={oncopy}>Copy…</button>
-      {#if clip}
-        <button title="Paste onto {picked > 1 ? `the ${picked} selected photos` : 'this photo'} (Ctrl+Shift+V)" onclick={onpaste}>
-          Paste{picked > 1 ? ` to ${picked.toLocaleString()}` : ""}
+      {#if picked > 1}
+        <button title="Choose fields of this photo to put on the other {picked - 1} selected (Ctrl+Shift+S)" onclick={onsync}>
+          Copy to {(picked - 1).toLocaleString()}…
         </button>
-        <span class="clip-what" title={clip}>{clip}</span>
       {/if}
     </div>
+    {#if clip}
+      {@const onto = picked > 1 ? `the ${picked} selected photos` : "this photo"}
+      <div class="clip">
+        <button title="Paste onto {onto}, replacing what they have (Ctrl+Shift+V)" onclick={() => onpaste(false)}>
+          Paste{picked > 1 ? ` to ${picked.toLocaleString()}` : ""}
+        </button>
+        <button title="Merge: fill only the fields {onto} leave empty, add keywords (Ctrl+Alt+V)" onclick={() => onpaste(true)}>Merge</button>
+        <button title="Choose what to paste, and whether to overwrite or merge (Ctrl+Shift+V)" onclick={onpastechoose}>Paste…</button>
+        <span class="clip-what" title={clip}>{clip}</span>
+      </div>
+    {/if}
     {#if picked > 1}<p class="hint">Edits apply to the {picked.toLocaleString()} selected photos.</p>{/if}
     {#if queued.length}
       <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to Capture One.</p>
@@ -218,17 +273,29 @@
     </dl>
 
     <h3>Keywords</h3>
+    {#if partial.length}
+      <p class="partial-note">
+        <span>{partial.length} on only some of the {picked.toLocaleString()}</span>
+        <button title="Add {partial.length === 1 ? 'it' : `all ${partial.length}`} to every selected photo" onclick={() => onaddkeywords(partial)}>
+          Add to all
+        </button>
+      </p>
+    {/if}
     <ul class="links keywords">
-      {#each sortedKeywords as path (path.join("|"))}
-        {@const full = path.join("|")}
-        <li class:queued={queued.includes(`keyword:${full}`)}>
+      {#each keywordRows as { full, path, n } (full)}
+        <li class:queued={queued.includes(`keyword:${full}`)} class:partial={n < picked}>
           {#each path as part, i}
             {#if i}<span class="sep">›</span>{/if}
             <button class="link" onclick={() => onkeyword(path.slice(0, i + 1).join("|"))}>{part}</button>
           {/each}
+          {#if n < picked}
+            <span class="count" title="On {n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{n.toLocaleString()}/{picked.toLocaleString()}</span>
+            <button class="apply" title="Add to all {picked.toLocaleString()} selected photos" aria-label="Add {full} to all" onclick={() => onaddkeyword(full)}>+</button>
+          {/if}
           <button
             class="remove"
-            title={`Remove${sortedKeywords.some((k) => k.join("|").startsWith(full + "|")) ? ", with the keywords under it," : ""}${picked > 1 ? ` from the ${picked} selected photos` : ""}`}
+            class:after={n < picked}
+            title={`Remove${keywordRows.some((k) => k.full.startsWith(full + "|")) ? ", with the keywords under it," : ""}${picked > 1 ? ` from the ${picked} selected photos` : ""}`}
             aria-label="Remove {full}"
             onclick={() => onremovekeyword(full)}>×</button
           >
@@ -251,13 +318,53 @@
     </datalist>
     {#if typedError}<p class="error">{typedError}</p>{/if}
 
-    {#if albums.length}
-      <h3>Albums</h3>
-      <ul class="links">
-        {#each albums as c}
-          <li><button class="link" onclick={() => onalbum(c.id)}>{c.path}</button></li>
+    <h3>Albums</h3>
+    <ul class="links keywords albums">
+      {#each albumRows as { c, n } (c.id)}
+        <li class:queued={queued.includes(`collection:${c.id}`)} class:partial={n < picked}>
+          <button class="link" title={c.kind === "Project" ? "A project" : undefined} onclick={() => onalbum(c.id)}>{c.path}</button>
+          {#if n < picked}
+            <span class="count" title="Holds {n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{n.toLocaleString()}/{picked.toLocaleString()}</span>
+            {#if c.kind === "Album"}
+              <button class="apply" title="Put all {picked.toLocaleString()} selected photos in it" aria-label="Put all in {c.path}" onclick={() => onaddalbum(c.id)}>+</button>
+            {/if}
+          {/if}
+          {#if c.kind === "Album"}
+            <button
+              class="remove"
+              class:after={n < picked}
+              title="Take {picked > 1 ? `the ${picked} selected photos` : 'the photo'} out of it"
+              aria-label="Take out of {c.path}"
+              onclick={() => onremovealbum(c.id)}>×</button
+            >
+          {/if}
+        </li>
+      {/each}
+    </ul>
+    {#if !albumRows.length}<p class="hint">In no album. Drag photos onto an album in the sidebar to put them in.</p>{/if}
+
+    {#if look}
+      {@const a = look.analysis}
+      <h3>Look</h3>
+      <div class="palette" title="The main colours, by share of the picture">
+        {#each a.palette as s}
+          <i style:background={hex(s.rgb)} style:flex-grow={s.share} title="{hex(s.rgb)} · {Math.round(s.share * 100)}%"></i>
         {/each}
-      </ul>
+      </div>
+      <dl class="fields look">
+        <dt>Shape</dt><dd>{look.shape}</dd>
+        <dt>Colour</dt><dd>{look.hues.join(", ")}</dd>
+        <dt>Light</dt><dd title="Mean brightness {Math.round(a.brightness * 100)}%, contrast {Math.round(a.contrast * 100)}%">{look.light.join(", ")}</dd>
+        <dt>Focus</dt><dd title="Detail in the sharpest part: {Math.round(a.sharpness)}">{look.focus}</dd>
+      </dl>
+      {#if look.duplicates}
+        {@const [group, n] = look.duplicates}
+        <button class="link look-link" onclick={() => onlook({ group })}>Looks like {n - 1} other photo{n === 2 ? "" : "s"}: show them</button>
+      {/if}
+      {#if look.series}
+        {@const [group, n] = look.series}
+        <button class="link look-link" onclick={() => onlook({ group })}>One of a series of {n}: show it</button>
+      {/if}
     {/if}
 
     <h3>Location</h3>

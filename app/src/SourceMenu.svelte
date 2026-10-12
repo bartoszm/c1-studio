@@ -5,7 +5,11 @@
   // What is open, and the way to open something else: a recent source, one of a
   // provider's kind through the system dialog, or a typed path. The window reloads on
   // the new source.
-  let { open = $bindable(false) }: { open?: boolean } = $props();
+  let { open = $bindable(false), onbackups }: {
+    open?: boolean;
+    /** Opens the list of backups made before writes. */
+    onbackups?: () => void;
+  } = $props();
 
   let view = $state<api.SourcesView | null>(null);
   let busy = $state<string | null>(null);
@@ -89,6 +93,9 @@
           </div>
           {#if c.note}<div class="note">{c.note}</div>{/if}
         </div>
+      {/if}
+      {#if onbackups}
+        <button role="menuitem" onclick={() => { open = false; onbackups(); }}>Backups…</button>
       {/if}
     {/if}
     {#if view.error}<p class="source-note error">{view.error}</p>{/if}

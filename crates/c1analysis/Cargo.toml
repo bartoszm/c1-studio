@@ -1,0 +1,10 @@
+[package]
+name = "c1analysis"
+description = "What a photo looks like, measured from a small render: shape, colours, exposure, sharpness, a perceptual hash"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+image.workspace = true
+serde.workspace = true

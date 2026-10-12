@@ -19,11 +19,12 @@
         "minWidth": 900,
         "minHeight": 600,
         "theme": "Dark",
+        "dragDropEnabled": false,
         "backgroundColor": "#1e1e1e"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: c1img: http://c1img.localhost; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' data: blob: c1img: http://c1img.localhost https://tiles.openfreemap.org; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost https://tiles.openfreemap.org; worker-src 'self' blob:; child-src 'self' blob:"
     }
   },
   "bundle": {

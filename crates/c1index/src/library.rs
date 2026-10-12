@@ -6,20 +6,22 @@ use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
-use c1model::change::{Check, diff};
+use c1model::change::{Check, collection_problem, descendants, diff, membership_problem};
 use c1model::{
-    Change, Collection, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap, MODEL_VERSION, Op, Photo, PhotoId,
-    PhotoSource, SmartRule, SourceError, SourceEvent,
+    Change, Collection, CollectionChange, CollectionId, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap,
+    MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::{Count, DocSetCollector, TopDocs};
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
 
-use crate::edits::{self, Edits, Event, Origin, Pending, QueuedRemap, now_ms, pending_key};
+use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
+use crate::geo::{self, Located, MapResult, MapView};
+use crate::looks::{Look, Looks, Record};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 
@@ -85,6 +87,18 @@ pub struct QueryResult {
     pub micros: u128,
 }
 
+/// Photos shown for a group of alike photos.
+const GROUP_SHOWN: usize = 6;
+
+/// A duplicate group or series: its id (a [`Filter::group`] value), how many of its photos
+/// the filter selects, and the first few.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Group {
+    pub id: String,
+    pub size: usize,
+    pub rows: Vec<u64>,
+}
+
 /// A queued edit, with the row of its photo if the library still has it.
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingEdit {
@@ -119,6 +133,10 @@ pub struct Library {
     smart: RwLock<HashMap<String, SmartRule>>,
     /// Edits made here and not yet written to their source, and the change log.
     edits: Edits,
+    /// What photos look like (stage 3), stored, and in memory by photo key with the
+    /// duplicate groups and series they fall in.
+    looks: Looks,
+    seen: RwLock<HashMap<String, Look>>,
     /// One writer at a time: syncs and edits both rewrite documents.
     writing: Mutex<()>,
 }
@@ -150,8 +168,7 @@ impl Library {
             batch.commit()?;
         }
 
-        let current = store.meta("index_schema")?.and_then(|v| v.parse::<u32>().ok());
-        let rebuild = current != Some(SCHEMA_VERSION);
+        let rebuild = store.meta("index_schema")? != Some(index_version());
         if rebuild && index_dir.exists() {
             std::fs::remove_dir_all(&index_dir)?;
         }
@@ -164,6 +181,12 @@ impl Library {
         schema::register_tokenizers(&index);
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
         let edits = Edits::open(&dir.join("edits.redb"))?;
+        let looks = Looks::open(&dir.join("analysis.redb"))?;
+        let seen = looks
+            .all()?
+            .into_iter()
+            .map(|(key, r)| (key, Look { analysis: r.analysis, stamp: r.stamp, duplicates: None, series: None }))
+            .collect();
 
         let library = Self {
             dir,
@@ -175,8 +198,15 @@ impl Library {
             distinct: RwLock::new(Distinct::new()),
             smart: RwLock::new(HashMap::new()),
             edits,
+            looks,
+            seen: RwLock::new(seen),
             writing: Mutex::new(()),
         };
+        // Groups as worked out now: the index is told of any that differ from last time.
+        let regrouped = library.group_looks()?;
+        if !rebuild {
+            library.reindex_keys(&regrouped)?;
+        }
         if rebuild {
             library.reindex()?;
         }
@@ -186,6 +216,155 @@ impl Library {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// A photo's search document, with what its analysis found.
+    fn doc(&self, row: u64, photo: &Photo) -> tantivy::TantivyDocument {
+        let seen = self.seen.read().unwrap();
+        schema::document(&self.fields, row, photo, seen.get(&photo.id.key()))
+    }
+
+    /// Every measured photo's analysis and groups.
+    pub fn looks(&self) -> Vec<Look> {
+        self.seen.read().unwrap().values().cloned().collect()
+    }
+
+    /// What the analysis found for a photo, if it has been measured.
+    /// The duplicate groups (or series) among the photos `filter` selects, biggest first:
+    /// each with how many of its photos match and a few of them to show.
+    pub fn groups(&self, filter: &Filter, series: bool, limit: usize) -> anyhow::Result<Vec<Group>> {
+        let narrowed =
+            Filter { duplicates: filter.duplicates || !series, series: filter.series || series, ..filter.clone() };
+        let rows = self.query(&narrowed, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+        let mut by: HashMap<String, Group> = HashMap::new();
+        for row in rows {
+            let Some(look) = self.look(row) else { continue };
+            let Some(id) = (if series { look.series } else { look.duplicates }) else { continue };
+            let group = by.entry(id.clone()).or_insert_with(|| Group { id, size: 0, rows: Vec::new() });
+            group.size += 1;
+            if group.rows.len() < GROUP_SHOWN {
+                group.rows.push(row);
+            }
+        }
+        let mut out: Vec<Group> = by.into_values().collect();
+        out.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.id.cmp(&b.id)));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    pub fn look(&self, row: u64) -> Option<Look> {
+        let key = self.keys.read().unwrap().get(row as usize)?.clone()?;
+        self.seen.read().unwrap().get(&key).cloned()
+    }
+
+    /// Every photo's measured image (size, modification time), by key: a photo whose
+    /// image is the same need not be measured again.
+    pub fn analysed(&self) -> HashMap<String, (u64, u64)> {
+        self.seen.read().unwrap().iter().map(|(k, l)| (k.clone(), l.stamp)).collect()
+    }
+
+    /// Stores analyses and shows them at once (the groups follow with
+    /// [`Library::regroup`]).
+    pub fn put_analyses(&self, batch: Vec<(String, (u64, u64), c1analysis::Analysis)>) -> anyhow::Result<()> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let records: Vec<(String, Record)> = batch
+            .iter()
+            .map(|(k, stamp, a)| {
+                (k.clone(), Record { version: c1analysis::VERSION, stamp: *stamp, analysis: a.clone() })
+            })
+            .collect();
+        self.looks.put(&records)?;
+        let _writing = self.writing.lock().unwrap();
+        {
+            let mut seen = self.seen.write().unwrap();
+            for (key, stamp, analysis) in batch.iter().cloned() {
+                let old = seen.remove(&key);
+                let (duplicates, series) = old.map(|o| (o.duplicates, o.series)).unwrap_or_default();
+                seen.insert(key, Look { analysis, stamp, duplicates, series });
+            }
+        }
+        let keys: Vec<String> = batch.into_iter().map(|(k, _, _)| k).collect();
+        self.reindex_keys(&keys)
+    }
+
+    /// Works the duplicate groups and series out again over every measured photo, and
+    /// re-indexes the photos whose groups changed. Returns how many did.
+    pub fn regroup(&self) -> anyhow::Result<usize> {
+        let _writing = self.writing.lock().unwrap();
+        let changed = self.group_looks()?;
+        self.reindex_keys(&changed)?;
+        Ok(changed.len())
+    }
+
+    /// Sets each measured photo's groups; returns the keys whose groups changed.
+    fn group_looks(&self) -> anyhow::Result<Vec<String>> {
+        let mut members: Vec<(u64, String, c1analysis::Taken)> = Vec::new();
+        {
+            let seen = self.seen.read().unwrap();
+            if seen.is_empty() {
+                return Ok(Vec::new());
+            }
+            for (row, key) in self.store.keys()? {
+                let Some(look) = seen.get(&key) else { continue };
+                let Some(photo) = self.store.photo(row)? else { continue };
+                if photo.trashed {
+                    continue;
+                }
+                let taken = c1analysis::Taken {
+                    asset: photo.asset.0.clone(),
+                    camera: photo.exif.camera_model.clone(),
+                    at: photo.captured_at,
+                    hash: look.analysis.hash,
+                };
+                members.push((row, key, taken));
+            }
+        }
+        let taken: Vec<c1analysis::Taken> = members.iter().map(|(_, _, t)| t.clone()).collect();
+        let groups = c1analysis::group(&taken);
+        let mut wanted: HashMap<&str, (Option<String>, Option<String>)> = HashMap::new();
+        for (prefix, list) in [("dup", &groups.duplicates), ("series", &groups.series)] {
+            for group in list {
+                let name = format!("{prefix}:{}", group.iter().map(|&i| members[i].0).min().unwrap_or(0));
+                for &i in group {
+                    let slot = wanted.entry(members[i].1.as_str()).or_default();
+                    if prefix == "dup" {
+                        slot.0 = Some(name.clone());
+                    } else {
+                        slot.1 = Some(name.clone());
+                    }
+                }
+            }
+        }
+        let mut changed = Vec::new();
+        let mut seen = self.seen.write().unwrap();
+        for (key, look) in seen.iter_mut() {
+            let (duplicates, series) = wanted.remove(key.as_str()).unwrap_or_default();
+            if look.duplicates != duplicates || look.series != series {
+                look.duplicates = duplicates;
+                look.series = series;
+                changed.push(key.clone());
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Writes the documents of these photos again. The caller holds `writing`.
+    fn reindex_keys(&self, keys: &[String]) -> anyhow::Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mut writer = self.writer()?;
+        for key in keys {
+            let Some(row) = self.store.row_of(key)? else { continue };
+            let Some(photo) = self.store.photo(row)? else { continue };
+            writer.delete_term(Term::from_field_u64(self.fields.row, row));
+            writer.add_document(self.doc(row, &photo))?;
+        }
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
     }
 
     fn writer(&self) -> anyhow::Result<IndexWriter> {
@@ -198,12 +377,12 @@ impl Library {
         let mut writer = self.writer()?;
         writer.delete_all_documents()?;
         self.store.for_each_photo(|row, photo| {
-            writer.add_document(schema::document(&self.fields, row, &photo))?;
+            writer.add_document(self.doc(row, &photo))?;
             Ok(())
         })?;
         writer.commit()?;
         let mut batch = self.store.batch()?;
-        batch.set_meta("index_schema", &SCHEMA_VERSION.to_string())?;
+        batch.set_meta("index_schema", &index_version())?;
         batch.commit()
     }
 
@@ -220,8 +399,13 @@ impl Library {
         }
         *self.keys.write().unwrap() = keys;
         self.refresh_distinct()?;
+        self.refresh_smart()
+    }
+
+    /// The smart albums' rules, after albums changed (here or in a source).
+    fn refresh_smart(&self) -> anyhow::Result<()> {
         *self.smart.write().unwrap() =
-            self.store.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
+            self.collections()?.into_iter().filter_map(|c| Some((c.id.0, c.rule?))).collect();
         Ok(())
     }
 
@@ -314,9 +498,7 @@ impl Library {
                     }
                     seen.insert(row);
                     batch.put_photo(row, &photo, fingerprint).map_err(source_err)?;
-                    writer
-                        .add_document(schema::document(&self.fields, row, &photo))
-                        .map_err(|e| SourceError::Other(e.to_string()))?;
+                    writer.add_document(self.doc(row, &photo)).map_err(|e| SourceError::Other(e.to_string()))?;
                 }
                 SourceEvent::Delete(id) => {
                     let key = id.key();
@@ -348,7 +530,7 @@ impl Library {
             }
         }
         batch.set_meta(&cursor_key, &end.0)?;
-        batch.set_meta("index_schema", &SCHEMA_VERSION.to_string())?;
+        batch.set_meta("index_schema", &index_version())?;
 
         // Index first: if we crash between the two commits the store still holds the old
         // fingerprints, so the next sync redoes the work instead of losing it.
@@ -364,6 +546,15 @@ impl Library {
     /// their source. The library shows them at once. Returns, per row, the op that puts
     /// back what the photo showed before, for undo.
     pub fn edit(&self, changes: &[(u64, Op)]) -> anyhow::Result<Vec<(u64, Op)>> {
+        // Only albums take photos; a smart album's come from its rule.
+        if changes.iter().any(|(_, op)| membership(op).is_some()) {
+            let albums = self.collections()?;
+            for id in changes.iter().filter_map(|(_, op)| membership(op)) {
+                if let Some(why) = membership_problem(&albums, id) {
+                    bail!("{why}");
+                }
+            }
+        }
         let _writing = self.writing.lock().unwrap();
         let mut writer = self.writer()?;
         let mut batch = self.store.batch()?;
@@ -421,7 +612,7 @@ impl Library {
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
             batch.put_photo(row, &after, fingerprint)?;
             writer.delete_term(Term::from_field_u64(self.fields.row, row));
-            writer.add_document(schema::document(&self.fields, row, &after))?;
+            writer.add_document(self.doc(row, &after))?;
         }
         writer.commit()?;
         batch.commit()?;
@@ -524,7 +715,7 @@ impl Library {
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
             batch.put_photo(row, &photo, fingerprint)?;
             writer.delete_term(Term::from_field_u64(self.fields.row, row));
-            writer.add_document(schema::document(&self.fields, row, &photo))?;
+            writer.add_document(self.doc(row, &photo))?;
         }
         writer.commit()?;
         batch.commit()?;
@@ -568,6 +759,43 @@ impl Library {
         }
         result.micros = started.elapsed().as_micros();
         Ok(result)
+    }
+
+    /// The photos `filter` selects that have a position, clustered for `view`. A filter's
+    /// own `within` is set aside, so the map keeps showing the places around the area it
+    /// picked.
+    pub fn map(&self, filter: &Filter, view: &MapView) -> anyhow::Result<MapResult> {
+        let distinct = self.distinct.read().unwrap();
+        let smart = self.smart.read().unwrap();
+        let filter = Filter { within: None, gps: Some(true), ..filter.clone() };
+        let query = expand(&filter, &smart)?.to_query(&self.index, &self.fields, &distinct)?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((
+                fast.u64("row")?,
+                fast.f64("lat")?,
+                fast.f64("lon")?,
+                fast.u64("rating_sort")?,
+                fast.f64("sharpness")?,
+            ));
+        }
+        let points: Vec<Located> = docs
+            .iter()
+            .filter_map(|a| {
+                let (row, lat, lon, rating, sharp) = &columns[a.segment_ord as usize];
+                Some(Located {
+                    row: row.first(a.doc_id)?,
+                    lat: lat.first(a.doc_id)?,
+                    lon: lon.first(a.doc_id)?,
+                    rating: rating.first(a.doc_id).unwrap_or(0),
+                    sharpness: sharp.first(a.doc_id).unwrap_or(0.0),
+                })
+            })
+            .collect();
+        Ok(geo::cluster(&points, view))
     }
 
     /// How many photos each smart album holds among those `filter` selects, setting
@@ -648,8 +876,105 @@ impl Library {
         self.store.photo(row)
     }
 
+    /// The sources' albums, as they will be once queued album changes are written.
     pub fn collections(&self) -> anyhow::Result<Vec<Collection>> {
-        self.store.collections()
+        let mut all = self.store.collections()?;
+        for (_, queued) in self.edits.collections()? {
+            queued.change.apply_to(&mut all);
+        }
+        Ok(all)
+    }
+
+    /// Queues an album change and shows it at once. Deleting an album drops the queued
+    /// edits that put photos into it (or took them out). Returns its number, for
+    /// [`Library::undo_collection`].
+    pub fn change_collection(&self, change: CollectionChange) -> anyhow::Result<u64> {
+        let current = self.collections()?;
+        let label = change.label(&current);
+        if let Some(why) = collection_problem(&current, &change) {
+            bail!("{label}: {why}");
+        }
+        let seq = {
+            let _writing = self.writing.lock().unwrap();
+            let mut edits = self.edits.batch()?;
+            let mut dropped = Vec::new();
+            if let CollectionChange::Delete { id } = &change {
+                let gone = descendants(&current, id);
+                for (key, pending) in edits.all()? {
+                    if membership(&pending.change.op).is_some_and(|c| gone.contains(c)) {
+                        edits.remove(&key)?;
+                        dropped.push((key, pending));
+                    }
+                }
+            }
+            let seq = edits.add_collection(&QueuedCollection { change, label, at: now_ms(), dropped })?;
+            edits.commit()?;
+            seq
+        };
+        self.refresh_smart()?;
+        Ok(seq)
+    }
+
+    /// Queued album changes, in order.
+    pub fn collection_changes(&self) -> anyhow::Result<Vec<(u64, QueuedCollection)>> {
+        self.edits.collections()
+    }
+
+    /// Drops a queued album change, bringing back the edits it dropped. Dropping the
+    /// making of an album takes what was queued for it since: changes to it, albums made
+    /// in it, and photos put into it.
+    pub fn undo_collection(&self, seq: u64) -> anyhow::Result<()> {
+        let discard = {
+            let _writing = self.writing.lock().unwrap();
+            let mut edits = self.edits.batch()?;
+            let queued = edits.collections()?;
+            let Some((_, first)) = queued.iter().find(|(s, _)| *s == seq) else { return Ok(()) };
+            let mut undo = vec![seq];
+            let mut made: Vec<CollectionId> = Vec::new();
+            if let CollectionChange::Create { id, .. } = &first.change {
+                made.push(id.clone());
+                for (later, q) in queued.iter().filter(|(s, _)| *s > seq) {
+                    let inside =
+                        matches!(&q.change, CollectionChange::Create { parent: Some(p), .. } if made.contains(p));
+                    if made.contains(q.change.id()) || inside {
+                        undo.push(*later);
+                        if let CollectionChange::Create { id, .. } = &q.change {
+                            made.push(id.clone());
+                        }
+                    }
+                }
+            }
+            for (s, q) in queued.iter().filter(|(s, _)| undo.contains(s)) {
+                for (key, pending) in &q.dropped {
+                    edits.put(key, pending)?;
+                }
+                edits.remove_collection(*s)?;
+            }
+            let discard: Vec<String> = edits
+                .all()?
+                .into_iter()
+                .filter(|(_, p)| membership(&p.change.op).is_some_and(|c| made.contains(c)))
+                .map(|(key, _)| key)
+                .collect();
+            edits.commit()?;
+            discard
+        };
+        if !discard.is_empty() {
+            self.discard(&discard)?;
+        }
+        self.refresh_smart()
+    }
+
+    /// After a source took these album changes: they are done.
+    pub fn settle_collections(&self, seqs: &[u64]) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        let mut edits = self.edits.batch()?;
+        for seq in seqs {
+            edits.remove_collection(*seq)?;
+        }
+        edits.commit()?;
+        drop(_writing);
+        self.refresh_smart()
     }
 
     /// The sources' keyword trees, as they will be once queued keyword changes are
@@ -708,7 +1033,7 @@ impl Library {
                 let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
                 batch.put_photo(row, &photo, fingerprint)?;
                 writer.delete_term(Term::from_field_u64(self.fields.row, row));
-                writer.add_document(schema::document(&self.fields, row, &photo))?;
+                writer.add_document(self.doc(row, &photo))?;
             }
         }
         // Queued keyword edits name keywords by path: they move with them.
@@ -799,6 +1124,25 @@ impl Library {
             }
         }
         bail!("no collection named {name:?}")
+    }
+}
+
+/// An id for an album made in the app: a fresh uuid, which the source stores with it.
+pub fn new_collection_id() -> CollectionId {
+    CollectionId::new_local(&uuid::Uuid::new_v4().to_string())
+}
+
+/// What the index was built with: its schema, and the rules that turn an analysis into
+/// classes (`c1analysis::CLASSES`). Either changing rebuilds it.
+fn index_version() -> String {
+    format!("{SCHEMA_VERSION}.{}", c1analysis::CLASSES)
+}
+
+/// The album an op puts a photo into or takes it out of.
+fn membership(op: &Op) -> Option<&CollectionId> {
+    match op {
+        Op::AddToCollection { collection } | Op::RemoveFromCollection { collection } => Some(collection),
+        _ => None,
     }
 }
 

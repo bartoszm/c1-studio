@@ -18,7 +18,7 @@
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
   let {
-    total, rowAt, need, selected, picked, queued, onselect, onopen, children,
+    total, rowAt, need, selected, picked, queued, onselect, onopen, ondragcell, children,
     tiles, shape, ontiles, layout = $bindable(),
   }: {
     total: number;
@@ -35,6 +35,8 @@
     /** A click, with its modifier keys for adding to the selection. */
     onselect: (i: number, how?: { add: boolean; range: boolean }) => void;
     onopen: (i: number) => void;
+    /** A photo is being dragged (onto an album). */
+    ondragcell?: (i: number) => void;
     children?: Snippet;
     tiles: Tiles;
     shape: Shape;
@@ -160,8 +162,9 @@
     top = 0;
   }
 
-  /** Moves the selection by arrow key; returns false for keys it does not handle. */
-  export function move(key: string): boolean {
+  /** Moves the selection by arrow key; `range` (Shift) stretches the selection from where
+   *  it started instead. Returns false for keys it does not handle. */
+  export function move(key: string, range = false): boolean {
     const step: Record<string, number> = {
       ArrowLeft: -1, ArrowRight: 1, ArrowUp: -cols, ArrowDown: cols,
       PageUp: -cols * Math.max(1, Math.floor(height / lineH)), PageDown: cols * Math.max(1, Math.floor(height / lineH)),
@@ -173,7 +176,7 @@
     else return false;
     to = Math.max(0, Math.min(total - 1, to));
     if (total) {
-      onselect(to);
+      onselect(to, range ? { add: false, range: true } : undefined);
       reveal(to);
     }
     return true;
@@ -202,6 +205,12 @@
         style:transform="translate({PAD + (i % cols) * (cellW + GAP)}px, {PAD + Math.floor(i / cols) * lineH}px)"
         onclick={(e) => onselect(i, { add: e.ctrlKey || e.metaKey, range: e.shiftKey })}
         ondblclick={() => onopen(i)}
+        draggable={row !== undefined && !!ondragcell}
+        ondragstart={(e) => {
+          e.dataTransfer?.setData("text/plain", "photos");
+          if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+          ondragcell?.(i);
+        }}
       >
         {#if row !== undefined}
           <img src={api.thumbUrl(row)} alt="" decoding="async" />

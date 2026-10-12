@@ -6,13 +6,15 @@
 //! filter never matches a photo without that value — the same as SQL `NULL`.
 
 use c1model::Photo;
+
+use crate::looks::Look;
 use chrono::{Datelike, Local, TimeZone};
 use tantivy::schema::{FAST, Field, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAnalyzer};
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -52,13 +54,23 @@ pub enum Dim {
     /// `Country|State|City|Location` and every level above it, a missing level as
     /// [`NO_PLACE`]: counting this gives "photos at or under".
     PlaceTree,
+    /// From the analysis (stage 3): landscape, portrait, square, panorama.
+    Shape,
+    /// The colours a picture is mostly made of (`blue`), or `black & white`.
+    Hue,
+    /// dark, medium, bright; clipped highlights, blocked shadows, low contrast.
+    Light,
+    /// sharp, soft, blurry.
+    Focus,
+    /// The duplicate group and series a photo falls in: `dup:<row>`, `series:<row>`.
+    Group,
 }
 
 /// A level of [`Dim::PlaceTree`] the photo has no value for (`Poland|—|Kraków`: no state).
 pub const NO_PLACE: &str = "—";
 
 impl Dim {
-    pub const ALL: [Dim; 19] = [
+    pub const ALL: [Dim; 24] = [
         Dim::Source,
         Dim::Keyword,
         Dim::KeywordTree,
@@ -78,6 +90,11 @@ impl Dim {
         Dim::Flag,
         Dim::Folder,
         Dim::PlaceTree,
+        Dim::Shape,
+        Dim::Hue,
+        Dim::Light,
+        Dim::Focus,
+        Dim::Group,
     ];
 
     pub fn field_name(self) -> &'static str {
@@ -101,6 +118,11 @@ impl Dim {
             Dim::Flag => "flag",
             Dim::Folder => "folder_tree",
             Dim::PlaceTree => "place_tree",
+            Dim::Shape => "shape",
+            Dim::Hue => "hue",
+            Dim::Light => "light",
+            Dim::Focus => "focus",
+            Dim::Group => "group",
         }
     }
 }
@@ -116,6 +138,12 @@ pub mod flag {
     pub const TRASHED: &str = "trashed";
     /// A country without its ISO code.
     pub const NO_COUNTRY_CODE: &str = "no_country_code";
+    /// Measured by the analysis (stage 3).
+    pub const ANALYSED: &str = "analysed";
+    /// Looks the same as another image.
+    pub const DUPLICATE: &str = "duplicate";
+    /// One of a burst.
+    pub const SERIES: &str = "series";
 }
 
 /// The place's path and every level above it, down to its last known level:
@@ -160,6 +188,9 @@ pub struct Fields {
     pub lon: Field,
     pub variant_index: Field,
     pub kw_count: Field,
+    /// From the analysis, for sorting and ranges.
+    pub sharpness: Field,
+    pub brightness: Field,
     dims: Vec<(Dim, Field)>,
 }
 
@@ -200,6 +231,8 @@ pub fn build_schema() -> (Schema, Fields) {
         lon: b.add_f64_field("lon", num()),
         variant_index: b.add_u64_field("variant_index", num()),
         kw_count: b.add_u64_field("kw_count", num()),
+        sharpness: b.add_f64_field("sharpness", num()),
+        brightness: b.add_f64_field("brightness", num()),
         dims,
     };
     (b.build(), fields)
@@ -247,7 +280,7 @@ fn sort_key(ms: Option<i64>, row: u64) -> i64 {
     }
 }
 
-pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
+pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>) -> TantivyDocument {
     let mut doc = TantivyDocument::default();
     let mut dim = |d: Dim, value: &str| doc_add_str(&mut doc, f.dim(d), value);
     dim(Dim::Source, &photo.id.source.0);
@@ -297,10 +330,27 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),
         (flag::NO_COUNTRY_CODE, photo.place.country.is_some() && photo.place.country_code.is_none()),
+        (flag::ANALYSED, look.is_some()),
+        (flag::DUPLICATE, look.is_some_and(|l| l.duplicates.is_some())),
+        (flag::SERIES, look.is_some_and(|l| l.series.is_some())),
     ];
     for (name, set) in flags {
         if set {
             dim(Dim::Flag, name);
+        }
+    }
+    if let Some(look) = look {
+        let a = &look.analysis;
+        dim(Dim::Shape, a.shape());
+        for hue in a.hues() {
+            dim(Dim::Hue, hue);
+        }
+        for light in a.light() {
+            dim(Dim::Light, light);
+        }
+        dim(Dim::Focus, a.focus());
+        for group in [&look.duplicates, &look.series].into_iter().flatten() {
+            dim(Dim::Group, group);
         }
     }
 
@@ -367,6 +417,10 @@ pub fn document(f: &Fields, row: u64, photo: &Photo) -> TantivyDocument {
     }
     doc.add_u64(f.variant_index, u64::from(photo.variant_index));
     doc.add_u64(f.kw_count, photo.keywords.len() as u64);
+    if let Some(look) = look {
+        doc.add_f64(f.sharpness, f64::from(look.analysis.sharpness));
+        doc.add_f64(f.brightness, f64::from(look.analysis.brightness));
+    }
     doc
 }
 

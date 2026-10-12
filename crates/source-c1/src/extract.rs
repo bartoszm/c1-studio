@@ -242,7 +242,21 @@ fn kind_of(ent: i64) -> CollectionKind {
     }
 }
 
-fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
+/// Capture One's own collections, which the root names: Recent Captures, Recent Imports
+/// (a group holding an album per import), All Images and the Trash. Empty if the columns
+/// are missing.
+pub(crate) fn system_collections(con: &Connection) -> Vec<i64> {
+    con.query_row(
+        "SELECT ZLASTCAPTURESCOLLECTION, ZLASTIMPORTSCOLLECTION, ZALLIMAGESCOLLECTION, ZTRASHCOLLECTION
+           FROM ZCOLLECTION WHERE Z_PK = ?1",
+        [ROOT_COLLECTION_PK],
+        |r| Ok([r.get::<_, Option<i64>>(0)?, r.get(1)?, r.get(2)?, r.get(3)?]),
+    )
+    .map(|pks| pks.into_iter().flatten().collect())
+    .unwrap_or_default()
+}
+
+pub(crate) fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
     struct Row {
         pk: i64,
         ent: i64,
@@ -287,6 +301,7 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
         names.join(" / ")
     };
 
+    let system = system_collections(con);
     // The root (pk 1, "[Collection]") holds the catalog's tree; it is not a collection.
     Ok(rows
         .iter()
@@ -298,6 +313,7 @@ fn load_collections(con: &Connection) -> Result<Vec<Collection>> {
             parent: real_parent(row.parent).map(|p| CollectionId(p.to_string())),
             path: path_of(row),
             rule: (kind_of(row.ent) == CollectionKind::Smart).then(|| smart::parse(row.smart.as_deref().unwrap_or(""))),
+            system: system.contains(&row.pk),
         })
         .collect())
 }

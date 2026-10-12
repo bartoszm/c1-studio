@@ -52,7 +52,14 @@ export function stars(n: number | null | undefined): string {
 }
 
 /** What a field edit sets, as words: `{ field: "rating", from: "★★", to: "★★★★★" }`. */
-export function opText(op: Op): { field: string; from: string; to: string } | null {
+/** Swatches for the analysis' colour names. */
+export const HUES: Record<string, string> = {
+  black: "#111", white: "#eee", grey: "#888", brown: "#7a4a25", red: "#d33", orange: "#f08a24",
+  yellow: "#e6d23a", green: "#3a9a45", teal: "#1fa0a0", blue: "#3060d0", purple: "#8040c0", pink: "#e060a8",
+  "black & white": "linear-gradient(90deg, #000 50%, #fff 50%)",
+};
+
+export function opText(op: Op, albumName: (id: string) => string = (id) => id): { field: string; from: string; to: string } | null {
   if ("SetRating" in op) {
     const { base, value } = op.SetRating as { base: number | null; value: number | null };
     return { field: "rating", from: stars(base), to: stars(value) };
@@ -78,6 +85,11 @@ export function opText(op: Op): { field: string; from: string; to: string } | nu
     const add = "AddKeywords" in op;
     const { paths } = (add ? op.AddKeywords : op.RemoveKeywords) as { paths: string[][] };
     return { field: "keyword", from: "", to: `${add ? "+" : "−"} ${paths.map((p) => p.join("|")).join(", ")}` };
+  }
+  if ("AddToCollection" in op || "RemoveFromCollection" in op) {
+    const add = "AddToCollection" in op;
+    const { collection } = (add ? op.AddToCollection : op.RemoveFromCollection) as { collection: string };
+    return { field: "album", from: "", to: `${add ? "into" : "out of"} ${albumName(collection)}` };
   }
   return null;
 }

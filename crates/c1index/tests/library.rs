@@ -51,6 +51,7 @@ fn setup() -> (tempfile::TempDir, Library, MemorySource) {
         parent: None,
         path: "Best / for street".into(),
         rule: None,
+        system: false,
     };
     let source = MemorySource::new("mem", (1..=10).map(photo).collect(), vec![album]);
     let report = library.sync(&source).unwrap();
@@ -114,6 +115,19 @@ fn substring_text_folder_and_geo() {
     let near = Filter { within: Some(c1index::BBox::around(51.1, 17.0, 10.0)), ..Filter::default() };
     assert_eq!(ids(&lib, &near), [7]);
     assert_eq!(ids(&lib, &Filter { filename: Some("dscf000?.raf".into()), ..Filter::default() }).len(), 8);
+}
+
+#[test]
+fn map_clusters_the_filtered_photos_with_a_position() {
+    let (_d, lib, _s) = setup();
+    let world = c1index::BBox { min_lat: -85.0, max_lat: 85.0, min_lon: -180.0, max_lon: 180.0 };
+    let view = c1index::MapView { bounds: world, zoom: 2.0 };
+    let all = lib.map(&Filter::default(), &view).unwrap();
+    assert_eq!((all.located, all.clusters.len(), all.clusters[0].best), (1, 1, 7));
+    // Another photo's filter leaves nothing to show; a filter's own area is set aside.
+    assert_eq!(lib.map(&Filter { camera: Some("x100".into()), ..Filter::default() }, &view).unwrap().located, 0);
+    let near = Filter { within: Some(c1index::BBox::around(10.0, 10.0, 5.0)), ..Filter::default() };
+    assert_eq!(lib.map(&near, &view).unwrap().located, 1);
 }
 
 #[test]
@@ -302,6 +316,7 @@ fn smart_albums_follow_their_rules() {
         parent: None,
         path: id.into(),
         rule: Some(SmartRule { match_all, conditions }),
+        system: false,
     };
     let source = MemorySource::new(
         "mem",
@@ -613,7 +628,8 @@ fn a_queued_rename_shows_at_once_survives_a_sync_and_writes() {
     // Written: tree change first, then the photo edits planned as they will be.
     let remaps: Vec<_> = lib.remaps().unwrap();
     let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
-    let plan = source.plan_after(&remaps.iter().map(|(_, q)| q.remap.clone()).collect::<Vec<_>>(), &changes).unwrap();
+    let plan =
+        source.plan_after(&remaps.iter().map(|(_, q)| q.remap.clone()).collect::<Vec<_>>(), &[], &changes).unwrap();
     assert_eq!(plan.apply.len(), 1);
     source.apply(&plan).unwrap();
     lib.settle_remaps(&remaps.iter().map(|(s, _)| *s).collect::<Vec<_>>()).unwrap();
@@ -724,4 +740,185 @@ fn places_nest_country_state_city_location_with_gaps_kept() {
     assert_eq!(ids(&lib, &under("Poland|—")), [2]);
     // A country without its ISO code.
     assert_eq!(ids(&lib, &Filter { no_country_code: true, ..Filter::default() }), [2, 4]);
+}
+
+fn in_album(library: &Library, id: &CollectionId) -> Vec<u32> {
+    ids(library, &Filter { collections: vec![id.0.clone()], ..Filter::default() })
+}
+
+fn add_to(id: &CollectionId) -> Op {
+    Op::AddToCollection { collection: id.clone() }
+}
+
+#[test]
+fn albums_made_here_fill_show_and_write() {
+    let (_d, lib, source) = setup();
+    let trips = CollectionId::new_local("g-1");
+    let japan = CollectionId::new_local("a-1");
+    let best = CollectionId::new_local("s-1");
+    let create = |id: &CollectionId, name: &str, kind, parent: Option<&CollectionId>, rule| CollectionChange::Create {
+        id: id.clone(),
+        name: name.into(),
+        kind,
+        parent: parent.cloned(),
+        rule,
+    };
+    lib.change_collection(create(&trips, "trips", CollectionKind::Group, None, None)).unwrap();
+    lib.change_collection(create(&japan, "japan", CollectionKind::Album, Some(&trips), None)).unwrap();
+    let rule = SmartRule { match_all: true, conditions: vec![Condition::Rating { min: 3, max: 5 }] };
+    lib.change_collection(create(&best, "good", CollectionKind::Smart, None, Some(rule))).unwrap();
+    let all = lib.collections().unwrap();
+    assert_eq!(all.iter().find(|c| c.id == japan).unwrap().path, "trips / japan");
+
+    lib.edit(&[(row_of(&lib, 5), add_to(&japan)), (row_of(&lib, 6), add_to(&japan))]).unwrap();
+    assert_eq!(in_album(&lib, &japan), [5, 6]);
+    // A smart album is its rule: photos 3 and 8 are rated 3, 4 is rated 4.
+    assert_eq!(in_album(&lib, &best), [3, 4, 8]);
+    let err = lib.edit(&[(row_of(&lib, 1), add_to(&best))]).unwrap_err().to_string();
+    assert!(err.contains("smart album"), "{err}");
+
+    // Written as one: albums first, then the photos put into them.
+    let queued = lib.collection_changes().unwrap();
+    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
+    let plan =
+        source.plan_after(&[], &queued.iter().map(|(_, q)| q.change.clone()).collect::<Vec<_>>(), &changes).unwrap();
+    assert_eq!((plan.collections.len(), plan.apply.len()), (3, 2));
+    source.apply(&plan).unwrap();
+    lib.settle_collections(&queued.iter().map(|(s, _)| *s).collect::<Vec<_>>()).unwrap();
+    lib.settle(&plan.apply).unwrap();
+    lib.sync(&source).unwrap();
+    assert!(lib.collection_changes().unwrap().is_empty() && lib.pending().unwrap().is_empty());
+    // Now under the source's own ids.
+    let all = lib.collections().unwrap();
+    let japan = all.iter().find(|c| c.path == "trips / japan").unwrap();
+    assert!(japan.id.local_uuid().is_none());
+    assert_eq!(in_album(&lib, &japan.id), [5, 6]);
+    let good = all.iter().find(|c| c.name == "good").unwrap();
+    assert_eq!(in_album(&lib, &good.id), [3, 4, 8]);
+}
+
+#[test]
+fn deleting_an_album_and_undoing_it() {
+    let (_d, lib, source) = setup();
+    let album = CollectionId("10".into());
+    assert_eq!(in_album(&lib, &album), [1, 2, 3, 4]);
+    lib.edit(&[(row_of(&lib, 5), add_to(&album))]).unwrap();
+    let seq = lib.change_collection(CollectionChange::Delete { id: album.clone() }).unwrap();
+    assert!(lib.collections().unwrap().is_empty());
+    assert!(lib.pending().unwrap().is_empty(), "putting a photo into it is pointless now");
+    assert!(lib.edit(&[(row_of(&lib, 6), add_to(&album))]).is_err());
+    lib.undo_collection(seq).unwrap();
+    assert_eq!(lib.collections().unwrap().len(), 1);
+    assert_eq!(lib.pending().unwrap().len(), 1, "the edit it dropped is back");
+
+    // Deleted for real: the source loses the album and every photo's place in it.
+    lib.change_collection(CollectionChange::Delete { id: album.clone() }).unwrap();
+    let queued = lib.collection_changes().unwrap();
+    let plan = source.plan_after(&[], &[queued[0].1.change.clone()], &[]).unwrap();
+    source.apply(&plan).unwrap();
+    lib.settle_collections(&[queued[0].0]).unwrap();
+    lib.sync(&source).unwrap();
+    assert!(lib.collections().unwrap().is_empty());
+    assert!(source.photo(&lib.photo_id(row_of(&lib, 1)).unwrap()).unwrap().collections.is_empty());
+}
+
+#[test]
+fn undoing_a_new_album_takes_what_was_queued_for_it() {
+    let (_d, lib, _source) = setup();
+    let group = CollectionId::new_local("g-1");
+    let album = CollectionId::new_local("a-1");
+    let seq = lib
+        .change_collection(CollectionChange::Create {
+            id: group.clone(),
+            name: "trips".into(),
+            kind: CollectionKind::Group,
+            parent: None,
+            rule: None,
+        })
+        .unwrap();
+    lib.change_collection(CollectionChange::Create {
+        id: album.clone(),
+        name: "japan".into(),
+        kind: CollectionKind::Album,
+        parent: Some(group.clone()),
+        rule: None,
+    })
+    .unwrap();
+    lib.change_collection(CollectionChange::Rename { id: album.clone(), name: "nippon".into() }).unwrap();
+    lib.edit(&[(row_of(&lib, 5), add_to(&album))]).unwrap();
+    assert_eq!(lib.collections().unwrap().iter().find(|c| c.id == album).unwrap().path, "trips / nippon");
+    lib.undo_collection(seq).unwrap();
+    assert!(lib.collection_changes().unwrap().is_empty());
+    assert!(lib.pending().unwrap().is_empty());
+    assert_eq!(lib.collections().unwrap().len(), 1);
+    assert!(lib.photo(row_of(&lib, 5)).unwrap().unwrap().collections.is_empty());
+}
+
+fn look(w: u32, h: u32, rgb: [u8; 3], sharpness: f32, hash: u64) -> c1analysis::Analysis {
+    c1analysis::Analysis {
+        width: w,
+        height: h,
+        palette: vec![c1analysis::Swatch { rgb, share: 1.0 }],
+        chroma: 40.0,
+        brightness: 0.5,
+        contrast: 0.2,
+        highlights: 0.0,
+        shadows: 0.0,
+        sharpness,
+        hash,
+    }
+}
+
+#[test]
+fn analyses_are_searchable_and_grouped() {
+    let (_d, lib, source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [40, 80, 210], 5000.0, h)),
+        (key(2), (1, 1), look(400, 600, [40, 80, 210], 10.0, h ^ 1)),
+        (key(3), (1, 1), look(600, 400, [200, 30, 30], 400.0, !h)),
+    ])
+    .unwrap();
+    assert_eq!(ids(&lib, &Filter { shape: vec!["portrait".into()], ..Filter::default() }), [2]);
+    assert_eq!(ids(&lib, &Filter { hues: vec!["blue".into()], ..Filter::default() }), [1, 2]);
+    assert_eq!(ids(&lib, &Filter { focus: vec!["blurry".into(), "soft".into()], ..Filter::default() }), [2, 3]);
+    assert_eq!(ids(&lib, &Filter { analysed: Some(false), ..Filter::default() }), [4, 5, 6, 7, 8, 10]);
+    // 1 and 2 look the same, but were taken a day apart: not duplicates.
+    assert_eq!(lib.regroup().unwrap(), 0);
+    // Taken at the same instant (imported twice), they are; groups come with regroup.
+    let one = source.photo(&lib.photo_id(row_of(&lib, 1)).unwrap()).unwrap().captured_at;
+    source.edit_externally(&lib.photo_id(row_of(&lib, 2)).unwrap(), |p| p.captured_at = one);
+    lib.sync(&source).unwrap();
+    assert!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }).is_empty());
+    assert_eq!(lib.regroup().unwrap(), 2);
+    assert_eq!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }), [1, 2]);
+    let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
+    assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
+    assert_eq!(lib.regroup().unwrap(), 0, "nothing changed");
+    let groups = lib.groups(&Filter::default(), false, 10).unwrap();
+    assert_eq!(groups.len(), 1);
+    assert_eq!((groups[0].size, groups[0].rows.len()), (2, 2));
+    assert!(lib.groups(&Filter::default(), true, 10).unwrap().is_empty());
+    // Counted per value, as the sidebar shows them.
+    let r = lib
+        .query(&Filter::default(), &QueryOptions { facets: vec![Dim::Shape, Dim::Focus], ..QueryOptions::default() })
+        .unwrap();
+    assert!(r.facets[&Dim::Shape].contains(&("landscape".into(), 2)));
+    assert_eq!(lib.analysed().len(), 3);
+}
+
+#[test]
+fn analyses_outlive_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);
+    {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        let key = lib.photo_id(row_of(&lib, 1)).unwrap().key();
+        lib.put_analyses(vec![(key, (7, 7), look(600, 400, [40, 80, 210], 500.0, 1))]).unwrap();
+    }
+    let lib = Library::open(dir.path()).unwrap();
+    assert_eq!(ids(&lib, &Filter { hues: vec!["blue".into()], ..Filter::default() }), [1]);
+    assert_eq!(lib.analysed().values().next(), Some(&(7, 7)));
 }

@@ -8,10 +8,14 @@
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
+  import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
+  import BackupsDialog from "./BackupsDialog.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import PlaceDialog from "./PlaceDialog.svelte";
   import Info from "./Info.svelte";
+  import MapPane from "./MapPane.svelte";
+  import AnalysisPane from "./AnalysisPane.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -19,7 +23,10 @@
   import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = ["rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag"];
+  const DIMS: Dim[] = [
+    "rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag",
+    "shape", "hue", "light", "focus",
+  ];
   /** Groups listed as plain values; the rest are trees. */
   const FLAT: Dim[] = ["rating", "color", "camera"];
 
@@ -40,7 +47,71 @@
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
   let syncFailed = $state<string | null>(null);
-  let grid: Grid;
+  let grid = $state<Grid>();
+
+  // Three views of the same filter: the grid, the map (with a strip of photos under it)
+  // and the analysis. While the map follows, the grid shows what the map shows.
+  type Tab = "photos" | "map" | "analysis";
+  function rememberedTab(): Tab {
+    try {
+      const t = localStorage.getItem("tab");
+      if (t === "map" || t === "analysis") return t;
+    } catch {
+      // Opens on the photos.
+    }
+    return "photos";
+  }
+  let tab = $state<Tab>(rememberedTab());
+  let mapOn = $derived(tab === "map");
+  let follow = $state(!remembered("map").includes("free"));
+  /** A photo picked on the map: the panel shows it and edits reach it when nothing else is picked. */
+  let mapRow = $state<number | null>(null);
+  $effect(() => {
+    try {
+      localStorage.setItem("map", JSON.stringify(follow ? [] : ["free"]));
+      localStorage.setItem("tab", tab);
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+  let followTimer: ReturnType<typeof setTimeout>;
+  function mapMoved(bounds: api.BBox) {
+    if (!follow) return;
+    clearTimeout(followTimer);
+    followTimer = setTimeout(() => {
+      if (!mapOn || !follow) return;
+      filter = { ...filter, within: bounds };
+      run(true);
+    }, 250);
+  }
+  /** Letting go of the map's area. */
+  function mapReleased() {
+    clearTimeout(followTimer);
+    if (filter.within) {
+      filter = { ...filter, within: undefined };
+      run(true);
+    }
+  }
+  function showTab(next: Tab) {
+    tab = next;
+    mapRow = null;
+    viewing = false;
+  }
+  function toggleFollow() {
+    follow = !follow;
+    if (!follow) mapReleased();
+  }
+  function mapPick(row: number) {
+    picked.clear();
+    selected = null;
+    mapRow = row;
+  }
+  async function mapSetGeo(rows: number[], lat: number, lon: number) {
+    dragging = null;
+    const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
+    await applyEdit({ Geo: at }, rows);
+    if (!editError) note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+  }
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
   const picked = new SvelteSet<number>();
@@ -52,13 +123,30 @@
   /** Bumped after every edit, so the details panel reads the photo again. */
   let version = $state(0);
   let writing = $state(false);
+  let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
   let autosaveOn = $state(false);
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
+  /** A word on what an edit did, shown a few seconds in the footer. */
+  let editNote = $state<string | null>(null);
+  let noteTimer: ReturnType<typeof setTimeout>;
+  function note(text: string) {
+    editNote = text;
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => (editNote = null), 4000);
+  }
+  /** The background analysis, for the footer. */
+  let analysis = $state<api.AnalysisState | null>(null);
+  let countsAt = 0;
+  /** What is being dragged: photos (onto an album) or an album (onto a group). */
+  let dragging = $state<{ rows: number[] } | { album: string } | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
-  type Done = { ops: [number, api.Op][] } | { remap: number; request: api.RemapRequest };
-  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest };
+  type Done =
+    | { ops: [number, api.Op][] }
+    | { remap: number; request: api.RemapRequest }
+    | { collection: number; change: api.CollectionChange };
+  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest } | { change: api.CollectionChange };
   let undoStack: Done[] = [];
   let redoStack: Undone[] = [];
 
@@ -70,6 +158,15 @@
   let placeMenu = $state<{ x: number; y: number; node: Node } | null>(null);
   let placeDialog = $state<{ mode: "rename" | "join"; path: string } | null>(null);
   let keywordDialog = $state<{ mode: "rename" | "join" | "group"; start: string } | null>(null);
+  /** Albums with changes queued for Capture One (made, renamed, given a rule). */
+  let queuedAlbums = $state(new Set<string>());
+  /** The Albums tree's menu: on an album, or (`node` null) from the section's + button. */
+  let albumMenu = $state<{ x: number; y: number; node: Node | null } | null>(null);
+  let albumDialog = $state<{
+    mode: "create" | "rename" | "rule" | "delete" | "move";
+    kind?: "Album" | "Smart" | "Group";
+    collection?: api.Collection;
+  } | null>(null);
 
   // Sidebar layout survives restarts: which branches are open, which sections folded.
   function remembered(key: string): string[] {
@@ -210,7 +307,7 @@
       // another catalog) still says so.
       syncFailed = status.sync_error;
       if (syncFailed) syncNote = "sync failed";
-      collections = await api.collections();
+      await refreshCollections();
       await refreshKeywords();
       await refreshQueued();
       await run(keep);
@@ -223,11 +320,21 @@
   onMount(() => {
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
+    api.analysisState().then((s) => (analysis = s)).catch(() => {});
     const off = [
       listen("library-changed", () => { syncNote = ""; syncFailed = null; refresh(true); }),
       listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
       listen("queue-written", () => { edited(); }),
+      listen<api.AnalysisState>("analysis", (e) => {
+        analysis = e.payload;
+        // Counts catch up now and then while photos are measured.
+        if (Date.now() - countsAt > 20000) {
+          countsAt = Date.now();
+          run(true);
+        }
+      }),
+      listen("analysis-done", () => { version++; refresh(true); }),
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
@@ -244,7 +351,30 @@
     }
     queued = by;
     remapCount = (await api.remaps()).length;
-    queuedCount = list.length + remapCount;
+    const albumChanges = await api.collectionChanges();
+    queuedAlbums = new Set(albumChanges.map(([, , id]) => id));
+    queuedCount = list.length + remapCount + albumChanges.length;
+  }
+
+  /** The albums, after a change here or a sync. An album picked in the filter that is
+   *  gone (deleted, or written and back under Capture One's own id) is let go. */
+  async function refreshCollections() {
+    collections = await api.collections();
+    const ids = new Set(collections.map((c) => c.id));
+    const kept = filter.collections?.filter((id) => ids.has(id));
+    if (kept && kept.length !== filter.collections?.length) filter = { ...filter, collections: kept.length ? kept : undefined };
+  }
+
+  /** Queues an album change (shown at once), undoable like any edit. `fill` puts the
+   *  picked photos into a new album as well. */
+  async function applyCollection(change: api.CollectionChange, fill = false) {
+    const [seq, queuedChange] = await api.changeCollection(change);
+    undoStack.push({ collection: seq, change: queuedChange });
+    redoStack = [];
+    editError = null;
+    await refreshCollections();
+    if (fill && "Create" in queuedChange) await applyEdit({ AddToAlbum: queuedChange.Create.id });
+    else await edited();
   }
 
   async function refreshKeywords() {
@@ -273,7 +403,7 @@
   /** The photos an edit applies to: the picked ones, else the focused one. */
   function targets(): number[] {
     if (picked.size) return [...picked];
-    const row = selected === null ? undefined : rowAt(selected);
+    const row = selected === null ? mapRow ?? undefined : rowAt(selected);
     return row === undefined ? [] : [row];
   }
 
@@ -296,6 +426,61 @@
   }
   let clipboard = $state<Clipboard | null>(rememberedClip());
   let copying = $state<api.Photo | null>(null);
+  /** The keywords across the picked photos, with how many carry each; null for one. */
+  let selectionKeywords = $state<[string, number][] | null>(null);
+  let keywordsAsked = 0;
+  $effect(() => {
+    const rows = [...picked];
+    void version;
+    if (rows.length < 2 || !showInfo) {
+      selectionKeywords = null;
+      return;
+    }
+    // A moment's wait: Shift+arrow picks change faster than a big selection reads.
+    const mine = ++keywordsAsked;
+    const wait = setTimeout(() => {
+      api.keywordCounts(rows).then((c) => { if (mine === keywordsAsked) selectionKeywords = c; }).catch(() => {});
+    }, 80);
+    return () => clearTimeout(wait);
+  });
+  /** The albums the picked photos are in, with how many each holds; null for one. */
+  let selectionAlbums = $state<[string, number][] | null>(null);
+  let albumsAsked = 0;
+  $effect(() => {
+    const rows = [...picked];
+    void version;
+    if (rows.length < 2 || !showInfo) {
+      selectionAlbums = null;
+      return;
+    }
+    const mine = ++albumsAsked;
+    const wait = setTimeout(() => {
+      api.albumCounts(rows).then((c) => { if (mine === albumsAsked) selectionAlbums = c; }).catch(() => {});
+    }, 80);
+    return () => clearTimeout(wait);
+  });
+  /** Sync: the focused photo, whose fields go onto the rest of the selection. */
+  let syncing = $state<{ from: api.Photo; row: number } | null>(null);
+  /** Paste…: the photos the clipboard goes onto, with a choice of fields and how. */
+  let pasting = $state<number[] | null>(null);
+  /** What was pasted last, and how: Ctrl+V does the same again. */
+  function rememberedPaste(): api.CopyField[] | null {
+    try {
+      const f = JSON.parse(localStorage.getItem("pasteFields") ?? "null");
+      return Array.isArray(f) ? f : null;
+    } catch {
+      return null;
+    }
+  }
+  let pasteFields = $state<api.CopyField[] | null>(rememberedPaste());
+  $effect(() => {
+    try {
+      localStorage.setItem("pasteFields", JSON.stringify(pasteFields));
+    } catch {
+      // Not remembered, that's all.
+    }
+  });
+
   $effect(() => {
     try {
       localStorage.setItem("clipboard", JSON.stringify(clipboard));
@@ -314,14 +499,35 @@
     copying = await api.photo(row);
   }
 
-  async function pasteClip() {
-    const rows = targets();
-    if (!clipboard || !rows.length) return;
+  async function openSync() {
+    const row = selected === null ? undefined : rowAt(selected);
+    if (row === undefined || picked.size < 2) return;
+    const from = await api.photo(row);
+    if (from) syncing = { from, row };
+  }
+
+  /** Puts fields of `from` on the rest of the selection; they stay on the clipboard too. */
+  async function sync({ from, row }: { from: api.Photo; row: number }, fields: api.CopyField[], fill: boolean) {
+    clipboard = { from, fields };
+    pasteFields = null;
+    await pasteRows(targets().filter((r) => r !== row), from, fields, fill);
+  }
+
+  async function pasteClip(fill = false) {
+    if (clipboard) await pasteRows(targets(), clipboard.from, pasteFields ?? clipboard.fields, fill);
+  }
+
+  async function pasteRows(rows: number[], from: api.Photo, fields: api.CopyField[], fill: boolean) {
+    if (!rows.length) return;
     try {
-      const undo = await api.paste(rows, clipboard.from, clipboard.fields);
+      const undo = await api.paste(rows, from, fields, fill);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
+        const n = new Set(undo.map(([r]) => r)).size;
+        note(`${fill ? "Merged into" : "Pasted onto"} ${n.toLocaleString()} photo${n === 1 ? "" : "s"}`);
+      } else {
+        note(`Nothing to ${fill ? "merge" : "paste"}: ${rows.length === 1 ? "the photo holds" : "the photos hold"} these values already`);
       }
       editError = null;
     } catch (e) {
@@ -330,8 +536,7 @@
     await edited();
   }
 
-  async function applyEdit(edit: api.Edit) {
-    const rows = targets();
+  async function applyEdit(edit: api.Edit, rows = targets()) {
     if (!rows.length) return;
     try {
       const undo = await api.edit(rows, edit);
@@ -351,7 +556,11 @@
     if (!last) return;
     try {
       if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
-      else {
+      else if ("collection" in last) {
+        await api.undoCollection(last.collection);
+        redoStack.push({ change: last.change });
+        await refreshCollections();
+      } else {
         // The photos it touched are read from Capture One again: a moment on a big catalog.
         syncNote = "undoing the keyword change…";
         await api.undoRemap(last.remap);
@@ -374,7 +583,12 @@
     if (!last) return;
     try {
       if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
-      else {
+      else if ("change" in last) {
+        // The same id as before, so photo edits redone after it still find the album.
+        const [seq, change] = await api.changeCollection(last.change);
+        undoStack.push({ collection: seq, change });
+        await refreshCollections();
+      } else {
         undoStack.push({ remap: await api.remapKeywords(last.request), request: last.request });
         await refreshKeywords();
       }
@@ -406,6 +620,7 @@
       anchor = i;
     }
     selected = i;
+    mapRow = null;
   }
 
   async function pickAll() {
@@ -456,6 +671,18 @@
   // Trees: picking a node filters by it, picking it again lets go.
   function pickAlbum(n: Node) {
     filter = { ...filter, collections: filter.collections?.[0] === n.value ? undefined : [n.value] };
+    run();
+  }
+  /** A value of a many-valued filter field on or off (the analysis' groups). */
+  function toggleList(key: "shape" | "hues" | "light" | "focus", value: string) {
+    const list = filter[key] ?? [];
+    const next = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+    filter = { ...filter, [key]: next.length ? next : undefined };
+    run();
+  }
+  function toggleFlag(flag: "duplicates" | "series" | "analysed") {
+    const on = flag === "analysed" ? filter.analysed === false : !!filter[flag];
+    filter = { ...filter, [flag]: on ? undefined : flag === "analysed" ? false : true };
     run();
   }
   function pickFolder(n: Node) {
@@ -583,10 +810,10 @@
 
   const TITLES: Record<string, string> = {
     rating: "Rating", color: "Colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
-    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location",
+    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look",
   };
 
-  let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart));
+  let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart, queuedAlbums));
   let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
   let places = $derived(placeTree(result?.facets.place_tree ?? []));
   let keywords = $derived(pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword"));
@@ -642,21 +869,29 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (e.key === "Escape" && (keywordMenu || placeMenu)) {
+    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu)) {
       keywordMenu = null;
       placeMenu = null;
+      albumMenu = null;
       return;
     }
-    if (writing || keywordDialog || placeDialog || fillingCodes || copying || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
+    if (ctrl && e.altKey && !e.shiftKey && key === "v") {
+      pasteClip(true);
+      e.preventDefault();
+      return;
+    }
     if (ctrl && !e.altKey) {
       if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
-      else if (key === "c" && e.shiftKey) openCopy();
-      else if (key === "v" && e.shiftKey) pasteClip();
+      else if (key === "c" && (e.shiftKey || !window.getSelection()?.toString())) openCopy();
+      else if (key === "v" && e.shiftKey) { if (clipboard) pasting = targets(); }
+      else if (key === "v") pasteClip();
+      else if (key === "s" && e.shiftKey) openSync();
       else if ((key === "=" || key === "+") && !viewing) grid?.step(true);
       else if (key === "-" && !viewing) grid?.step(false);
       else if (key === "0" && !viewing) tiles = DEFAULT_TILES;
@@ -668,13 +903,20 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
+    else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing) {
+      const album = shownAlbum;
+      const n = targets().length;
+      applyEdit({ RemoveFromAlbum: album.id }).then(() => {
+        if (!editError) note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} taken out of “${album.name}”`);
+      });
+    }
     else if (viewing) return; // the viewer has its own keys
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
       const row = selected === null ? undefined : rowAt(selected);
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
-    else if (grid?.move(e.key)) e.preventDefault();
+    else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
   // Links in the info panel: filter by what was clicked.
@@ -699,6 +941,48 @@
   }
 
   let byId = $derived(new Map(collections.map((c) => [c.id, c])));
+
+  // Drag and drop in the Albums tree: photos onto an album put them in it; an album or
+  // group onto a group (or the Albums title, for the top level) moves it there.
+  function dragCell(i: number) {
+    const row = rowAt(i);
+    if (row === undefined) return;
+    dragging = { rows: picked.has(row) && picked.size > 1 ? [...picked] : [row] };
+  }
+  const movable = (c: api.Collection | undefined) => !!c && !c.system && c.kind !== "Project";
+  function dragAlbum(n: Node, starting: boolean) {
+    const ok = movable(byId.get(n.value));
+    if (ok && starting) dragging = { album: n.value };
+    return ok;
+  }
+  /** Can the dragged thing go into `target` (undefined: the top level)? */
+  function canDrop(target: api.Collection | undefined): boolean {
+    const d = dragging;
+    if (!d) return false;
+    if ("rows" in d) return target?.kind === "Album";
+    if (target && ((target.kind !== "Group" && target.kind !== "Project") || target.system)) return false;
+    for (let c = target; c; c = c.parent ? byId.get(c.parent) : undefined) if (c.id === d.album) return false;
+    return (byId.get(d.album)?.parent ?? undefined) !== target?.id;
+  }
+  async function drop(target: api.Collection | undefined) {
+    const d = dragging;
+    dragging = null;
+    if (!d) return;
+    if ("rows" in d && target) {
+      await applyEdit({ AddToAlbum: target.id }, d.rows);
+      if (!editError) note(`${d.rows.length.toLocaleString()} photo${d.rows.length === 1 ? "" : "s"} put into “${target.name}”`);
+    } else if ("album" in d) {
+      try {
+        await applyCollection({ Move: { id: d.album, parent: target?.id ?? null } });
+      } catch (e) {
+        editError = String(e);
+      }
+    }
+  }
+  /** The album the grid shows, if it is one photos can be taken out of. */
+  let shownAlbum = $derived(
+    filter.collections?.length === 1 && byId.get(filter.collections[0])?.kind === "Album" ? byId.get(filter.collections[0]) : undefined,
+  );
 
   // The filter as chips above the grid, one per value; × on a chip drops just that value.
   // `rest` is what the field holds without it (undefined lets go of the field).
@@ -739,6 +1023,15 @@
     folder: (v) => [{ what: "Folder", text: v }],
     place_under: (v) => [{ what: "Place", text: placeText(v) }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
+    shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
+    hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: "Light", text: x, rest: without(v, x) })),
+    focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
+    group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
+    duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
+    series: (v) => (v ? [{ text: "in a series" }] : []),
+    analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
+    within: () => [{ what: "Map", text: "area in view" }],
   };
   function monthText(key: string) {
     const [y, m] = key.split("-").map(Number);
@@ -813,7 +1106,7 @@
 {/snippet}
 
 {#snippet details()}
-  {@const row = selected === null ? undefined : rowAt(selected)}
+  {@const row = selected === null ? mapRow ?? undefined : rowAt(selected)}
   <Info
     {row}
     {version}
@@ -827,9 +1120,15 @@
       applyEdit({ AddKeywords: [path] });
     }}
     onremovekeyword={(path) => applyEdit({ RemoveKeywords: [path] })}
+    shared={selectionKeywords}
+    onaddkeywords={(paths) => applyEdit({ AddKeywords: paths })}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
+    sharedAlbums={selectionAlbums}
+    onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
+    onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
+    onlook={(f) => only(f)}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
     onplace={(fields) => applyEdit({ Place: fields })}
@@ -838,16 +1137,23 @@
     clip={clipText}
     oncopy={openCopy}
     onpaste={pasteClip}
+    onpastechoose={() => { if (clipboard) pasting = targets(); }}
+    onsync={openSync}
   />
 {/snippet}
 
-<svelte:window onkeydown={onkey} />
+<svelte:window onkeydown={onkey} ondragend={() => (dragging = null)} />
 
 <div class="app" class:with-info={showInfo}>
   <header>
-    <SourceMenu bind:open={choosingSource} />
+    <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
-    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+    <nav class="tabs" aria-label="View">
+      <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
+      <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
+      <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
+    </nav>
+    <div class="tiles" class:gone={tab === "analysis"} title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
         type="range"
@@ -877,6 +1183,18 @@
         onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
       >{shape}</button>
     </div>
+    {#if picked.size > 1 && selected !== null}
+      <button
+        class="copy-to"
+        title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
+        onclick={openSync}
+      >⇉ Copy to {(picked.size - 1).toLocaleString()} selected</button>
+    {/if}
+    {#if mapOn}
+      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
+        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
+      </label>
+    {/if}
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
@@ -884,10 +1202,34 @@
   </header>
 
   <aside>
-    <section>
+    <section
+      class="albums-section"
+      role="group"
+      aria-label="Albums"
+      class:drop={dragging && "album" in dragging && canDrop(undefined)}
+      ondragover={(e) => { if (canDrop(undefined)) e.preventDefault(); }}
+      ondrop={(e) => { if (canDrop(undefined)) { e.preventDefault(); drop(undefined); } }}
+    >
       {@render head("albums")}
       {#if !folded.has("albums")}
-        <Tree nodes={albums} selected={filter.collections && "a:" + filter.collections[0]} {expanded} onpick={pickAlbum} />
+        <div class="album-actions">
+          <button title="A new album, at the top level" onclick={() => (albumDialog = { mode: "create", kind: "Album" })}>+ Album</button>
+          <button title="A new smart album: a rule, not photos" onclick={() => (albumDialog = { mode: "create", kind: "Smart" })}>+ Smart album</button>
+          <button title="A new group, to hold albums" onclick={() => (albumDialog = { mode: "create", kind: "Group" })}>+ Group</button>
+        </div>
+        <Tree
+          nodes={albums}
+          selected={filter.collections && "a:" + filter.collections[0]}
+          {expanded}
+          onpick={pickAlbum}
+          oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
+          drag={dragAlbum}
+          candrop={(n) => canDrop(byId.get(n.value))}
+          ondropnode={(n) => drop(byId.get(n.value))}
+        />
+        <p class="tree-hint">
+          {#if shownAlbum}Delete takes the selected photos out of “{shownAlbum.name}”.{:else}Drag photos onto an album to put them in; drag an album onto a group to move it.{/if}
+        </p>
       {/if}
     </section>
     {@render dates()}
@@ -972,6 +1314,32 @@
     </div>
   {/if}
 
+  <div class="pane" class:strip={mapOn}>
+  {#if mapOn}
+    <MapPane
+      {filter}
+      {version}
+      focus={selected === null ? mapRow : (rowAt(selected) ?? null)}
+      dragRows={dragging && "rows" in dragging ? dragging.rows : null}
+      onview={mapMoved}
+      onpick={mapPick}
+      onsetgeo={mapSetGeo}
+      onerror={(text) => (editError = text)}
+    />
+  {/if}
+  {#if tab === "analysis"}
+    <AnalysisPane
+      {filter}
+      facets={result?.facets ?? {}}
+      total={result?.total ?? 0}
+      {analysis}
+      {version}
+      ontoggle={toggleList}
+      onflag={toggleFlag}
+      ongroup={(id) => { filter = { ...filter, group: id }; showTab("photos"); run(); }}
+      onshow={() => showTab("photos")}
+    />
+  {:else}
   <Grid
     bind:this={grid}
     total={result?.total ?? 0}
@@ -981,6 +1349,7 @@
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     onselect={pick}
+    ondragcell={dragCell}
     onopen={(i) => { pick(i); viewing = true; }}
     {tiles}
     {shape}
@@ -996,6 +1365,8 @@
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
+  {/if}
+  </div>
 
   {#if showInfo && !viewing}{@render details()}{/if}
 
@@ -1016,8 +1387,13 @@
       <span>{status.photos.toLocaleString()} in library</span>
       <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
     {/if}
-    {#if editError}<span class="edit-error">{editError}</span>{/if}
+    {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
+    {#if analysis?.running && analysis.total}
+      <span class="sync" title="Shape, colours, light, focus and a likeness hash, from each photo's thumbnail">
+        measuring photos {analysis.done.toLocaleString()} / {analysis.total.toLocaleString()}
+      </span>
+    {/if}
     <span class="autosave" class:alone={!syncNote}>
       {#if autosaveOn}
         {@const [note, attention] = autosaveText(autosaveState)}
@@ -1055,6 +1431,59 @@
       <button role="menuitem" onclick={() => quickRemap({ Ungroup: { path: node.value } })}>Ungroup</button>
     {/if}
   </div>
+{/if}
+
+{#if albumMenu}
+  {@const c = albumMenu.node ? byId.get(albumMenu.node.value) : undefined}
+  {@const holds = !c || ((c.kind === "Group" || c.kind === "Project") && !c.system)}
+  {@const beside = !!c && !holds && !(c.parent && byId.get(c.parent)?.system)}
+  {@const n = targets().length}
+  <div class="menu-shield" role="presentation" onclick={() => (albumMenu = null)} oncontextmenu={(e) => { e.preventDefault(); albumMenu = null; }}></div>
+  <div class="menu" role="menu" style:left="{albumMenu.x}px" style:top="{albumMenu.y}px">
+    {#if c}<div class="menu-title">{c.path}</div>{/if}
+    {#if c?.kind === "Album" && n}
+      <button role="menuitem" onclick={() => { const id = c.id; albumMenu = null; applyEdit({ AddToAlbum: id }); }}>
+        Put the {n === 1 ? "selected photo" : `${n.toLocaleString()} selected photos`} here
+      </button>
+    {/if}
+    {#if c?.kind === "Smart" && c.rule && ruleRows(c.rule)}
+      <button role="menuitem" onclick={() => { albumDialog = { mode: "rule", collection: c }; albumMenu = null; }}>Edit rule…</button>
+    {/if}
+    {#if holds || beside}
+      {#each [["Album", "album"], ["Smart", "smart album"], ["Group", "group"]] as const as [kind, noun]}
+        <button role="menuitem" onclick={() => { albumDialog = { mode: "create", kind, collection: c }; albumMenu = null; }}>
+          New {noun}{c && holds ? " in it" : ""}…
+        </button>
+      {/each}
+    {/if}
+    {#if c && !c.system}
+      <button role="menuitem" onclick={() => { albumDialog = { mode: "rename", collection: c }; albumMenu = null; }}>Rename…</button>
+      {#if movable(c)}
+        <button role="menuitem" onclick={() => { albumDialog = { mode: "move", collection: c }; albumMenu = null; }}>Move to…</button>
+        {#if c.parent}
+          <button role="menuitem" onclick={() => { const id = c.id; albumMenu = null; applyCollection({ Move: { id, parent: null } }).catch((e) => (editError = String(e))); }}>Move to the top level</button>
+        {/if}
+      {/if}
+      {#if c.kind !== "Project"}
+        <button role="menuitem" class="danger" onclick={() => { albumDialog = { mode: "delete", collection: c }; albumMenu = null; }}>Delete…</button>
+      {/if}
+    {:else if c?.system}
+      <div class="menu-note">Capture One's own: changed only there.</div>
+    {/if}
+  </div>
+{/if}
+
+{#if albumDialog}
+  <AlbumDialog
+    mode={albumDialog.mode}
+    kind={albumDialog.kind}
+    collection={albumDialog.collection}
+    {collections}
+    keywords={keywordList}
+    picked={targets().length}
+    onclose={() => (albumDialog = null)}
+    ondone={applyCollection}
+  />
 {/if}
 
 {#if keywordDialog}
@@ -1096,9 +1525,34 @@
   <CopyDialog
     photo={copying}
     fields={clipboard?.fields ?? ["country", "country_code", "state", "city", "location", "geo"]}
-    oncopy={(fields) => { if (copying) clipboard = { from: copying, fields }; }}
+    oncopy={(fields) => { if (copying) { clipboard = { from: copying, fields }; pasteFields = null; } }}
     onclose={() => (copying = null)}
   />
+{/if}
+
+{#if syncing}
+  <CopyDialog
+    photo={syncing.from}
+    sync={picked.size - 1}
+    fields={clipboard?.fields ?? ["keywords"]}
+    oncopy={(fields, fill) => { if (syncing) sync(syncing, fields, fill); }}
+    onclose={() => (syncing = null)}
+  />
+{/if}
+
+{#if pasting && clipboard}
+  {@const rows = pasting}
+  <CopyDialog
+    photo={clipboard.from}
+    paste={rows.length}
+    fields={pasteFields ?? clipboard.fields}
+    oncopy={(fields, fill) => { pasteFields = fields; if (clipboard) pasteRows(rows, clipboard.from, fields, fill); }}
+    onclose={() => (pasting = null)}
+  />
+{/if}
+
+{#if showBackups}
+  <BackupsDialog onclose={() => (showBackups = false)} onrestored={() => { syncNote = ""; refresh(true); }} />
 {/if}
 
 {#if writing}

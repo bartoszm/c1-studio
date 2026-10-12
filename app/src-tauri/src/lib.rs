@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
-    Change, Collection, ColorLabel, Compatibility, GeoOrigin, GeoPoint, ImageTier, Iptc, KeywordPath, KeywordRemap, Op,
-    Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
+    BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
+    ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
 };
 use serde::{Deserialize, Serialize};
 use sources::Recent;
@@ -38,6 +38,20 @@ struct Session {
     last_edit: Mutex<Instant>,
     /// What autosave last reported, sent to the window only when it changes.
     autosave_state: Mutex<AutosaveState>,
+    /// Measuring photos in the background (stage 3): one run at a time, stopped when
+    /// another source opens.
+    analysing: AtomicBool,
+    analysis_stop: AtomicBool,
+    analysis: Mutex<AnalysisState>,
+}
+
+/// How far the background analysis has got, for the footer.
+#[derive(Clone, Debug, Default, Serialize)]
+struct AnalysisState {
+    running: bool,
+    done: usize,
+    total: usize,
+    failed: usize,
 }
 
 impl Session {
@@ -88,7 +102,83 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
         autosave_state: Mutex::new(AutosaveState::Off),
+        analysing: AtomicBool::new(false),
+        analysis_stop: AtomicBool::new(false),
+        analysis: Mutex::new(AnalysisState::default()),
     })
+}
+
+/// Measures the photos not measured yet, in the background, unless that is under way.
+/// Uses half the cores, so the window stays quick.
+fn start_analysis(app: &AppHandle) {
+    let Ok(s) = app.state::<App>().session() else { return };
+    if s.analysing.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1));
+        let report = |state: AnalysisState| {
+            *s.analysis.lock().unwrap() = state.clone();
+            let _ = handle.emit("analysis", state);
+        };
+        let result = c1index::analyse::run(&s.library, s.source.as_ref(), threads, &s.analysis_stop, |p| {
+            report(AnalysisState { running: true, done: p.done, total: p.total, failed: p.failed });
+        });
+        let last = s.analysis.lock().unwrap().clone();
+        report(AnalysisState { running: false, ..last });
+        if let Err(e) = result {
+            let _ = handle.emit("sync-failed", format!("analysis: {e:#}"));
+        }
+        let _ = handle.emit("analysis-done", ());
+        s.analysing.store(false, Ordering::SeqCst);
+    });
+}
+
+/// What the analysis found for a photo: its measures, classes, and the duplicate group
+/// and series it is in, with their sizes.
+#[derive(Serialize)]
+struct LookView {
+    analysis: c1analysis::Analysis,
+    shape: &'static str,
+    hues: Vec<&'static str>,
+    light: Vec<&'static str>,
+    focus: &'static str,
+    duplicates: Option<(String, usize)>,
+    series: Option<(String, usize)>,
+}
+
+#[tauri::command]
+async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String> {
+    let s = app.session()?;
+    let Some(look) = s.library.look(row) else { return Ok(None) };
+    let size = |group: Option<String>| -> Result<Option<(String, usize)>, String> {
+        let Some(group) = group else { return Ok(None) };
+        let filter = Filter { group: Some(group.clone()), ..Filter::default() };
+        let options = QueryOptions { limit: Some(0), ..QueryOptions::default() };
+        Ok(Some((group, s.library.query(&filter, &options).map_err(text)?.total)))
+    };
+    let a = &look.analysis;
+    Ok(Some(LookView {
+        shape: a.shape(),
+        hues: a.hues(),
+        light: a.light(),
+        focus: a.focus(),
+        duplicates: size(look.duplicates.clone())?,
+        series: size(look.series.clone())?,
+        analysis: look.analysis,
+    }))
+}
+
+/// Duplicate groups (or series) among the photos `filter` selects, biggest first.
+#[tauri::command]
+async fn groups(app: State<'_, App>, filter: Filter, series: bool) -> Result<Vec<c1index::Group>, String> {
+    app.session()?.library.groups(&filter, series, 300).map_err(text)
+}
+
+#[tauri::command]
+async fn analysis_state(app: State<'_, App>) -> Result<AnalysisState, String> {
+    Ok(app.session()?.analysis.lock().unwrap().clone())
 }
 
 fn text(e: impl std::fmt::Display) -> String {
@@ -124,6 +214,12 @@ async fn query(app: State<'_, App>, filter: Filter, options: QueryOptions) -> Re
     app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))
 }
 
+/// The map's markers for the photos `filter` selects, clustered for what the map shows.
+#[tauri::command]
+async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Result<c1index::MapResult, String> {
+    app.session()?.library.map(&filter, &view).map_err(|e| format!("{e:#}"))
+}
+
 /// Smart album id → how many photos it holds under `filter` (its album pick aside).
 #[tauri::command]
 async fn smart_counts(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, u64)>, String> {
@@ -155,6 +251,7 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     if report.full || report.added + report.updated + report.deleted > 0 {
         let _ = app.emit("library-changed", &report);
     }
+    start_analysis(app);
     Ok(report)
 }
 
@@ -174,6 +271,9 @@ enum Edit {
     Iptc(BTreeMap<String, String>),
     /// Latitude and longitude in degrees; `None` clears.
     Geo(Option<[f64; 2]>),
+    /// Into an album, or out of it, by collection id.
+    AddToAlbum(String),
+    RemoveFromAlbum(String),
 }
 
 fn place_slot<'a>(place: &'a mut Place, name: &str) -> Option<&'a mut Option<String>> {
@@ -245,42 +345,68 @@ fn op_for(edit: &Edit, photo: &Photo) -> Result<Op, String> {
         Edit::Geo(value) => {
             Op::SetGeo { base: photo.geo, value: value.map(|[lat, lon]| geo_point(lat, lon)).transpose()? }
         }
+        Edit::AddToAlbum(id) => Op::AddToCollection { collection: CollectionId(id.clone()) },
+        Edit::RemoveFromAlbum(id) => Op::RemoveFromCollection { collection: CollectionId(id.clone()) },
     })
 }
 
 /// What pasting `fields` copied from `from` does to `to`. Keywords are added
 /// (`keywords`) or made the same (`keywords_exact`: the ones `from` lacks go first).
-fn paste_ops(from: &Photo, fields: &[String], to: &Photo) -> Result<Vec<Op>, String> {
+/// `fill` only fills what `to` leaves empty: its own values stay, and keywords are added.
+fn paste_ops(from: &Photo, fields: &[String], to: &Photo, fill: bool) -> Result<Vec<Op>, String> {
     let mut removes = Vec::new();
     let mut ops = Vec::new();
     let mut place = to.place.clone();
     let mut iptc = to.iptc.clone();
     for name in fields {
         match name.as_str() {
+            "rating" if fill => {
+                if to.rating.is_none() && from.rating.is_some() {
+                    ops.push(Op::SetRating { base: to.rating, value: from.rating })
+                }
+            }
             "rating" => ops.push(Op::SetRating { base: to.rating, value: from.rating }),
+            "color" if fill => {
+                if to.color.is_none() && from.color.is_some() {
+                    ops.push(Op::SetColor { base: to.color, value: from.color })
+                }
+            }
             "color" => ops.push(Op::SetColor { base: to.color, value: from.color }),
             "keywords" | "keywords_exact" => {
-                if name == "keywords_exact" {
+                if name == "keywords_exact" && !fill {
                     let gone: Vec<KeywordPath> =
                         to.keywords.iter().filter(|k| !from.keywords.contains(k)).cloned().collect();
                     if !gone.is_empty() {
                         removes.push(Op::RemoveKeywords { paths: gone });
                     }
                 }
-                if !from.keywords.is_empty() {
-                    ops.push(Op::AddKeywords { paths: from.keywords.clone() });
+                let new: Vec<KeywordPath> = if fill {
+                    from.keywords.iter().filter(|k| !to.keywords.contains(k)).cloned().collect()
+                } else {
+                    from.keywords.clone()
+                };
+                if !new.is_empty() {
+                    ops.push(Op::AddKeywords { paths: new });
+                }
+            }
+            "geo" if fill => {
+                if to.geo.is_none() && from.geo.is_some() {
+                    ops.push(Op::SetGeo { base: to.geo, value: from.geo })
                 }
             }
             "geo" => ops.push(Op::SetGeo { base: to.geo, value: from.geo }),
             other => {
                 let mut source_place = from.place.clone();
                 let mut source_iptc = from.iptc.clone();
-                if let Some(slot) = place_slot(&mut place, other) {
-                    *slot = place_slot(&mut source_place, other).and_then(|v| v.take());
+                let (slot, value) = if let Some(slot) = place_slot(&mut place, other) {
+                    (slot, place_slot(&mut source_place, other).and_then(|v| v.take()))
                 } else if let Some(slot) = iptc_slot(&mut iptc, other) {
-                    *slot = iptc_slot(&mut source_iptc, other).and_then(|v| v.take());
+                    (slot, iptc_slot(&mut source_iptc, other).and_then(|v| v.take()))
                 } else {
                     return Err(format!("cannot copy {other:?}"));
+                };
+                if !fill || slot.is_none() {
+                    *slot = value;
                 }
             }
         }
@@ -417,19 +543,20 @@ async fn set_country_codes(app: State<'_, App>, items: Vec<(Vec<u64>, String)>) 
 }
 
 /// Pastes fields copied from one photo (as it was when copied) onto others, as one
-/// edit. Returns the ops that undo it.
+/// edit; `fill` only fills fields they leave empty. Returns the ops that undo it.
 #[tauri::command]
 async fn paste(
     app: State<'_, App>,
     rows: Vec<u64>,
     from: Photo,
     fields: Vec<String>,
+    fill: Option<bool>,
 ) -> Result<Vec<(u64, Op)>, String> {
     let s = app.session()?;
     let mut changes = Vec::new();
     for row in rows {
         if let Some(photo) = s.library.photo(row).map_err(text)? {
-            changes.extend(paste_ops(&from, &fields, &photo)?.into_iter().map(|op| (row, op)));
+            changes.extend(paste_ops(&from, &fields, &photo, fill.unwrap_or(false))?.into_iter().map(|op| (row, op)));
         }
     }
     s.touched();
@@ -542,6 +669,74 @@ async fn remaps(app: State<'_, App>) -> Result<Vec<(u64, String)>, String> {
     Ok(list.into_iter().map(|(seq, q)| (seq, q.remap.label)).collect())
 }
 
+/// The keywords on the photos at `rows`, with how many of them carry each: the
+/// selection's keywords, on all of them or only on some.
+#[tauri::command]
+async fn keyword_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(String, u64)>, String> {
+    let s = app.session()?;
+    let mut counts = BTreeMap::<String, u64>::new();
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            for path in &photo.keywords {
+                *counts.entry(path.to_pipe()).or_default() += 1;
+            }
+        }
+    }
+    Ok(counts.into_iter().collect())
+}
+
+/// The albums the photos at `rows` are in, with how many of them each holds.
+#[tauri::command]
+async fn album_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(String, u64)>, String> {
+    let s = app.session()?;
+    let mut counts = BTreeMap::<String, u64>::new();
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            for id in &photo.collections {
+                *counts.entry(id.0.clone()).or_default() += 1;
+            }
+        }
+    }
+    Ok(counts.into_iter().collect())
+}
+
+/// Queues an album change; a new collection with an empty id gets one. Returns its
+/// number (for undo) and the change as queued (for redo, which keeps the id).
+#[tauri::command]
+async fn change_collection(
+    app: State<'_, App>,
+    mut change: CollectionChange,
+) -> Result<(u64, CollectionChange), String> {
+    if let CollectionChange::Create { id, .. } = &mut change
+        && id.0.is_empty()
+    {
+        *id = c1index::new_collection_id();
+    }
+    if let CollectionChange::Create { id, .. } = &change
+        && id.local_uuid().is_none()
+    {
+        return Err(format!("{} is not an id for a new album", id.0));
+    }
+    let s = app.session()?;
+    s.touched();
+    let seq = s.library.change_collection(change.clone()).map_err(|e| format!("{e:#}"))?;
+    Ok((seq, change))
+}
+
+#[tauri::command]
+async fn undo_collection(app: State<'_, App>, seq: u64) -> Result<(), String> {
+    let s = app.session()?;
+    s.touched();
+    s.library.undo_collection(seq).map_err(|e| format!("{e:#}"))
+}
+
+/// Queued album changes: number, what it does, and the collection it is about.
+#[tauri::command]
+async fn collection_changes(app: State<'_, App>) -> Result<Vec<(u64, String, String)>, String> {
+    let list = app.session()?.library.collection_changes().map_err(|e| format!("{e:#}"))?;
+    Ok(list.into_iter().map(|(seq, q)| (seq, q.label, q.change.id().0.clone())).collect())
+}
+
 /// How many photos carry any of these keywords (or keywords under them).
 #[tauri::command]
 async fn keyword_users(app: State<'_, App>, paths: Vec<String>) -> Result<usize, String> {
@@ -587,10 +782,20 @@ struct WritePlan {
     remaps: Vec<(u64, String)>,
     /// Keyword tree changes Capture One can no longer take, with why.
     blocked_remaps: Vec<(u64, String, String)>,
+    /// Album changes, written after the keyword tree and before photo edits.
+    collections: Vec<(u64, String)>,
+    /// Album changes Capture One can no longer take, with why.
+    blocked_collections: Vec<(u64, String, String)>,
 }
 
-/// The plan, what it shows, and the numbers of the keyword tree changes it carries.
-fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>), String> {
+/// The numbers of the queued structural changes a plan carries, settled once written.
+struct Carried {
+    remaps: Vec<u64>,
+    collections: Vec<u64>,
+}
+
+/// The plan, what it shows, and the queued keyword tree and album changes it carries.
+fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), String> {
     let pending = s.library.pending().map_err(|e| format!("{e:#}"))?;
     let (conflicts, ready): (Vec<_>, Vec<_>) = pending.into_iter().partition(|p| p.pending.theirs.is_some());
     let changes: Vec<Change> = ready.iter().map(|p| p.pending.change.clone()).collect();
@@ -604,7 +809,17 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>),
         }
     }
     let ok: Vec<KeywordRemap> = remaps.iter().map(|(_, r)| r.clone()).collect();
-    let plan = s.source.plan_after(&ok, &changes).map_err(text)?;
+    let mut collections: Vec<(u64, String, CollectionChange)> = Vec::new();
+    let mut blocked_collections = Vec::new();
+    for (seq, queued) in s.library.collection_changes().map_err(|e| format!("{e:#}"))? {
+        let earlier: Vec<CollectionChange> = collections.iter().map(|(_, _, c)| c.clone()).collect();
+        match s.source.check_collection(&earlier, &queued.change).map_err(text)? {
+            None => collections.push((seq, queued.label, queued.change)),
+            Some(why) => blocked_collections.push((seq, queued.label, why)),
+        }
+    }
+    let albums: Vec<CollectionChange> = collections.iter().map(|(_, _, c)| c.clone()).collect();
+    let plan = s.source.plan_after(&ok, &albums, &changes).map_err(text)?;
     let pick = |list: &[Change]| -> Vec<PendingEdit> {
         ready.iter().filter(|p| list.contains(&p.pending.change)).cloned().collect()
     };
@@ -625,9 +840,14 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Vec<u64>),
         blocked,
         remaps: remaps.iter().map(|(seq, r)| (*seq, r.label.clone())).collect(),
         blocked_remaps,
+        collections: collections.iter().map(|(seq, label, _)| (*seq, label.clone())).collect(),
+        blocked_collections,
     };
-    let seqs = remaps.iter().map(|(seq, _)| *seq).collect();
-    Ok((out, plan, seqs))
+    let carried = Carried {
+        remaps: remaps.iter().map(|(seq, _)| *seq).collect(),
+        collections: collections.iter().map(|(seq, _, _)| *seq).collect(),
+    };
+    Ok((out, plan, carried))
 }
 
 #[tauri::command]
@@ -664,15 +884,16 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
     let s = app.state::<App>().session()?;
     let report = {
         let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-        let (summary, plan, remaps) = plan_writes(&s)?;
+        let (summary, plan, carried) = plan_writes(&s)?;
         if !summary.conflicts.is_empty() {
             return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
         }
         let report = s.source.apply(&plan).map_err(text)?;
         let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
-        s.library.settle_remaps(&remaps).map_err(|e| format!("{e:#}"))?;
+        s.library.settle_remaps(&carried.remaps).map_err(|e| format!("{e:#}"))?;
+        s.library.settle_collections(&carried.collections).map_err(|e| format!("{e:#}"))?;
         s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
-        let blocked = summary.blocked.len() + summary.blocked_remaps.len();
+        let blocked = summary.blocked.len() + summary.blocked_remaps.len() + summary.blocked_collections.len();
         if report.applied == 0 && blocked > 0 {
             return Ok(Outcome::Attention { conflicts: 0, blocked });
         }
@@ -690,6 +911,37 @@ async fn write_apply(app: AppHandle) -> Result<WriteReport, String> {
         Outcome::Attention { conflicts, .. } => {
             Err(format!("{conflicts} edit(s) conflict with Capture One; choose a side first"))
         }
+    })
+    .await
+    .map_err(text)?
+}
+
+/// The backups made before writes, and whether the source can be written now (a
+/// restore needs that as much as a write does).
+#[derive(Serialize)]
+struct Backups {
+    list: Vec<BackupInfo>,
+    status: WriteStatus,
+}
+
+#[tauri::command]
+async fn backups(app: State<'_, App>) -> Result<Backups, String> {
+    let s = app.session()?;
+    Ok(Backups { list: s.source.backups().map_err(text)?, status: s.source.write_status() })
+}
+
+/// Puts a backup back as the catalog, then reads it in. Queued edits stay queued.
+/// Returns the backup of the catalog it replaced.
+#[tauri::command]
+async fn restore_backup(app: AppHandle, id: String) -> Result<BackupInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = app.state::<App>().session()?;
+        let before = {
+            let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+            s.source.restore(&id).map_err(text)?
+        };
+        run_sync(&app)?;
+        Ok(before)
     })
     .await
     .map_err(text)?
@@ -747,8 +999,9 @@ fn autosave_loop(app: AppHandle) {
             report_autosave(&app, &s, AutosaveState::Off);
             continue;
         }
-        let queued =
-            s.library.pending().map(|p| p.len()).unwrap_or(0) + s.library.remaps().map(|r| r.len()).unwrap_or(0);
+        let queued = s.library.pending().map(|p| p.len()).unwrap_or(0)
+            + s.library.remaps().map(|r| r.len()).unwrap_or(0)
+            + s.library.collection_changes().map(|c| c.len()).unwrap_or(0);
         if queued == 0 {
             report_autosave(&app, &s, AutosaveState::Idle);
             continue;
@@ -949,7 +1202,11 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
             .await
             .map_err(text)??
     };
-    // The old session closes once the last task using it is done with it.
+    // The old session closes once the last task using it is done with it; its analysis
+    // stops after the batch it is on.
+    if let Ok(old) = &app.state::<App>().0.read().unwrap().session {
+        old.analysis_stop.store(true, Ordering::SeqCst);
+    }
     *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
     Recent::remember(&spec)?;
     sync_in_background(&app);
@@ -999,6 +1256,8 @@ pub fn run() {
             status,
             query,
             smart_counts,
+            map,
+            groups,
             photo,
             collections,
             sync,
@@ -1013,6 +1272,15 @@ pub fn run() {
             undo_remap,
             remaps,
             keyword_users,
+            album_counts,
+            change_collection,
+            undo_collection,
+            collection_changes,
+            backups,
+            restore_backup,
+            look,
+            analysis_state,
+            keyword_counts,
             pending,
             discard,
             resolve,
@@ -1059,14 +1327,14 @@ mod tests {
     fn pasting_takes_only_the_chosen_fields() {
         let from = photo(4, &["street"], Some("Kraków"));
         let to = Photo { place: Place { country: Some("Japan".into()), ..Place::default() }, ..photo(1, &[], None) };
-        let ops = paste_ops(&from, &fields(&["rating", "city"]), &to).unwrap();
+        let ops = paste_ops(&from, &fields(&["rating", "city"]), &to, false).unwrap();
         assert_eq!(ops.len(), 2);
         assert!(matches!(ops[0], Op::SetRating { value: Some(4), .. }));
         let Op::SetPlace { value, .. } = &ops[1] else { panic!("{ops:?}") };
         // The city comes over; their country stays.
         assert_eq!((value.city.as_deref(), value.country.as_deref()), (Some("Kraków"), Some("Japan")));
         // Copying an empty field clears it.
-        let ops = paste_ops(&photo(4, &[], None), &fields(&["city"]), &photo(1, &[], Some("Oslo"))).unwrap();
+        let ops = paste_ops(&photo(4, &[], None), &fields(&["city"]), &photo(1, &[], Some("Oslo")), false).unwrap();
         let Op::SetPlace { value, .. } = &ops[0] else { panic!("{ops:?}") };
         assert_eq!(value.city, None);
     }
@@ -1076,10 +1344,10 @@ mod tests {
         let all = ["country", "country_code", "state", "city", "location", "geo"];
         let from = Photo { geo: Some(geo_point(50.06, 19.94).unwrap()), ..photo(1, &[], Some("Kraków")) };
         // The source among the targets: no place change (the library skips the same GPS).
-        let own = paste_ops(&from, &fields(&all), &from).unwrap();
+        let own = paste_ops(&from, &fields(&all), &from, false).unwrap();
         assert!(own.iter().all(|op| matches!(op, Op::SetGeo { base, value } if base == value)));
         // Another photo gets the place and the GPS.
-        let ops = paste_ops(&from, &fields(&all), &photo(2, &[], None)).unwrap();
+        let ops = paste_ops(&from, &fields(&all), &photo(2, &[], None), false).unwrap();
         assert!(ops.iter().any(|op| matches!(op, Op::SetGeo { value: Some(_), .. })));
         assert!(
             ops.iter().any(|op| matches!(op, Op::SetPlace { value, .. } if value.city.as_deref() == Some("Kraków")))
@@ -1090,16 +1358,40 @@ mod tests {
     fn keywords_are_added_or_made_the_same() {
         let from = photo(1, &["street", "city|night"], None);
         let to = photo(2, &["street", "b&w"], None);
-        let add = paste_ops(&from, &fields(&["keywords"]), &to).unwrap();
+        let add = paste_ops(&from, &fields(&["keywords"]), &to, false).unwrap();
         assert!(matches!(&add[..], [Op::AddKeywords { .. }]));
-        let exact = paste_ops(&from, &fields(&["keywords_exact"]), &to).unwrap();
+        let exact = paste_ops(&from, &fields(&["keywords_exact"]), &to, false).unwrap();
         // The removal first: the adds after it put back anything it takes under it.
         let [Op::RemoveKeywords { paths: gone }, Op::AddKeywords { paths: added }] = &exact[..] else {
             panic!("{exact:?}")
         };
         assert_eq!(gone, &[KeywordPath::from_pipe("b&w")]);
         assert_eq!(added.len(), 2);
-        assert!(paste_ops(&from, &fields(&["albums"]), &to).is_err());
+        assert!(paste_ops(&from, &fields(&["albums"]), &to, false).is_err());
+    }
+
+    #[test]
+    fn filling_keeps_what_the_target_has() {
+        let from =
+            Photo { geo: Some(geo_point(50.0, 19.9).unwrap()), ..photo(4, &["street", "night"], Some("Kraków")) };
+        let to =
+            Photo { place: Place { city: Some("Oslo".into()), ..Place::default() }, ..photo(1, &["street"], None) };
+        let all = fields(&["rating", "color", "keywords_exact", "city", "country", "geo"]);
+        let ops = paste_ops(&from, &all, &to, true).unwrap();
+        // Their rating stays; the colour is empty on both; keywords only gain.
+        let [Op::AddKeywords { paths }, Op::SetGeo { value: Some(_), .. }, Op::SetPlace { value, .. }] = &ops[..]
+        else {
+            panic!("{ops:?}")
+        };
+        assert_eq!(paths, &[KeywordPath::from_pipe("night")]);
+        assert_eq!((value.city.as_deref(), value.country.as_deref()), (Some("Oslo"), Some("Poland")));
+        // An unrated target takes the rating; an empty source never clears.
+        let unrated = Photo { rating: None, ..to.clone() };
+        assert!(matches!(
+            paste_ops(&from, &fields(&["rating"]), &unrated, true).unwrap()[..],
+            [Op::SetRating { value: Some(4), .. }]
+        ));
+        assert!(paste_ops(&photo(4, &[], None), &fields(&["city", "geo"]), &to, true).unwrap().is_empty());
     }
 
     #[test]
