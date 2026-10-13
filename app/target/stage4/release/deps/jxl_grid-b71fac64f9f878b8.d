@@ -1,0 +1,11 @@
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\jxl_grid-b71fac64f9f878b8.d: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\alloc_tracker.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\mutable_subgrid.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\shared_subgrid.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\simd.rs
+
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\libjxl_grid-b71fac64f9f878b8.rlib: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\alloc_tracker.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\mutable_subgrid.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\shared_subgrid.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\simd.rs
+
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\libjxl_grid-b71fac64f9f878b8.rmeta: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\alloc_tracker.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\mutable_subgrid.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\shared_subgrid.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\simd.rs
+
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\lib.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\alloc_tracker.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\mutable_subgrid.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\shared_subgrid.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\jxl-grid-0.6.2\src\simd.rs:

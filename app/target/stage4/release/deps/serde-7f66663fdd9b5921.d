@@ -1,0 +1,14 @@
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\serde-7f66663fdd9b5921.d: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\projects\c1-studio\app\src-tauri\../target/stage4\release\build\serde-0cfe5bc09de82b3f\out/private.rs
+
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\libserde-7f66663fdd9b5921.rlib: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\projects\c1-studio\app\src-tauri\../target/stage4\release\build\serde-0cfe5bc09de82b3f\out/private.rs
+
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\libserde-7f66663fdd9b5921.rmeta: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs C:\projects\c1-studio\app\src-tauri\../target/stage4\release\build\serde-0cfe5bc09de82b3f\out/private.rs
+
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\lib.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\integer128.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\mod.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\de.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.229\src\private\ser.rs:
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\build\serde-0cfe5bc09de82b3f\out/private.rs:
+
+# env-dep:OUT_DIR=C:\\projects\\c1-studio\\app\\src-tauri\\../target/stage4\\release\\build\\serde-0cfe5bc09de82b3f\\out

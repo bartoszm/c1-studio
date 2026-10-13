@@ -1,0 +1,10 @@
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\windows_threading-7822f8ec47bca7cb.d: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\bindings.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\pool.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\../readme.md
+
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\libwindows_threading-7822f8ec47bca7cb.rlib: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\bindings.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\pool.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\../readme.md
+
+C:\projects\c1-studio\app\src-tauri\../target/stage4\release\deps\libwindows_threading-7822f8ec47bca7cb.rmeta: C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\lib.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\bindings.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\pool.rs C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\../readme.md
+
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\lib.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\bindings.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\pool.rs:
+C:\Users\barto\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\windows-threading-0.2.1\src\../readme.md:

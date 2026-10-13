@@ -67,8 +67,12 @@
     ["IPTC – Contact", [["creator", "Creator", text(photo.iptc.creator)]]],
   ]);
 
+  // Start from what was copied last time, but only the fields this photo has: an empty
+  // one would be pasted as "clear", which is never what an unthinking Ctrl+Shift+C means.
   // svelte-ignore state_referenced_locally
-  let chosen = $state(new Set<api.CopyField>(fields.map((f) => (f === "keywords_exact" ? "keywords" : f))));
+  const has = new Set(groups.flatMap(([, items]) => items.filter(([, , v]) => v !== null).map(([f]) => f)));
+  // svelte-ignore state_referenced_locally
+  let chosen = $state(new Set<api.CopyField>(fields.map((f) => (f === "keywords_exact" ? "keywords" : f)).filter((f) => has.has(f))));
   // svelte-ignore state_referenced_locally
   let exact = $state(fields.includes("keywords_exact"));
 
@@ -131,6 +135,9 @@
         only fills what they leave empty; Paste… (Ctrl+Shift+V) lets you choose. Each is queued for Capture One like
         any edit.
       </p>
+    {/if}
+    {#if !has.size}
+      <p class="warn">{photo.file.name} has nothing to copy: no location, keywords or marks. Is it the photo you meant? Copy takes the focused (last clicked) photo.</p>
     {/if}
 
     {#each groups as [title, items] (title)}
