@@ -109,7 +109,7 @@ fn main() -> anyhow::Result<()> {
     let source = CaptureOne::open(&catalog, dir.join("work"))?;
     let library = Library::open(dir.join("library"))?;
     let mut scores: Vec<[f64; 3]> = vec![];
-    println!("{:22} {:>9} {:>7} {:>7}", "export", "thumbnail", "tones", "colours");
+    println!("{:22} {:>9} {:>7} {:>7} {:>8}", "export", "thumbnail", "tones", "colours", "as shown");
     let mut paths: Vec<_> = std::fs::read_dir(&folder)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
     paths.sort();
     for path in paths {
@@ -148,12 +148,15 @@ fn main() -> anyhow::Result<()> {
             let (w, _) = locate(&export, &small);
             mae(&w.crop(image), &export)
         };
-        let shown =
-            |m| -> anyhow::Result<RgbImage> { Ok(c1image::rotate(c1image::render_preview(&r, m)?, r.rotation)) };
-        let s = [compare(&thumb), compare(&shown(Matching::Tones)?), compare(&shown(Matching::Colours)?)];
+        let shown = |m| -> anyhow::Result<RgbImage> { Ok(c1image::frame(c1image::render_preview(&r, m)?, &r)) };
+        let colours = shown(Matching::Colours)?;
+        let s = [compare(&thumb), compare(&shown(Matching::Tones)?), compare(&colours)];
+        // Framed as Capture One frames it, the preview needs no search: `as shown` close to
+        // `colours` means the crop and straightening are right.
+        let direct = mae(&colours, &export);
         // A poor best match means the export is of no photo found, or was edited since.
         println!(
-            "{name:22} {:9.1} {:7.1} {:7.1}   window {:.0}% at ({:.2}, {:.2}), best of {} by {closeness:.1}, {id}",
+            "{name:22} {:9.1} {:7.1} {:7.1} {direct:8.1}   thumbnail window {:.0}% at ({:.2}, {:.2}), best of {} by {closeness:.1}, {id}",
             s[0],
             s[1],
             s[2],

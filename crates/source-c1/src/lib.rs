@@ -16,13 +16,15 @@ mod provider;
 mod smart;
 mod write;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use c1model::source::Result;
 use c1model::{
-    ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Cursor, Field, ImageFormat, ImageRef,
-    ImageTier, KeywordRemap, PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo, WriteStatus,
+    ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Crop, Cursor, Field, ImageFormat,
+    ImageRef, ImageTier, KeywordRemap, PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo,
+    WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
@@ -30,6 +32,8 @@ pub use config::{catalog_id, data_dir, find_catalog};
 pub use extract::{Extract, extract};
 pub use provider::CaptureOneProvider;
 pub use write::Backup;
+
+type CropsByVariant = HashMap<i64, Crop>;
 
 pub struct CaptureOne {
     catalog: PathBuf,
@@ -40,6 +44,8 @@ pub struct CaptureOne {
     version: Mutex<compat::CatalogVersion>,
     /// Serialises snapshots: each one copies the catalog into `work_dir`.
     snapshot_lock: Mutex<()>,
+    /// Thumbnail crops by variant, read in one go and again when the catalog changes.
+    thumbnail_crops: Mutex<Option<(Cursor, CropsByVariant)>>,
 }
 
 impl CaptureOne {
@@ -57,6 +63,7 @@ impl CaptureOne {
             work_dir: work_dir.into(),
             version: Mutex::new(version),
             snapshot_lock: Mutex::new(()),
+            thumbnail_crops: Mutex::new(None),
         })
     }
 
@@ -76,6 +83,17 @@ impl CaptureOne {
     /// Backups of this catalog, newest first.
     pub fn backups(&self) -> Vec<Backup> {
         write::backups(&self.catalog, &self.backup_dir())
+    }
+
+    /// The crop to show `variant_pk`'s thumbnail with.
+    fn thumbnail_crop(&self, variant_pk: i64) -> Result<Option<Crop>> {
+        let cursor = catalog::file_cursor(&self.catalog)?;
+        let mut cached = self.thumbnail_crops.lock().unwrap();
+        if cached.as_ref().is_none_or(|(at, _)| *at != cursor) {
+            let crops = catalog::thumbnail_crops(&catalog::open_live(&self.catalog)?)?;
+            *cached = Some((cursor, crops));
+        }
+        Ok(cached.as_ref().and_then(|(_, crops)| crops.get(&variant_pk).copied()))
     }
 
     fn variant_pk(&self, id: &PhotoId) -> Result<i64> {
@@ -165,6 +183,8 @@ impl PhotoSource for CaptureOne {
                     rotation: preview.rotation,
                     monochrome: preview.monochrome,
                     look: thumb.is_file().then_some(thumb),
+                    straighten: preview.straighten,
+                    crop: preview.crop,
                 }));
             }
         };
@@ -174,6 +194,7 @@ impl PhotoSource for CaptureOne {
             (_, Some("jxl")) => ImageFormat::JpegXl,
             _ => ImageFormat::Raw,
         };
+        let crop = if tier == ImageTier::Thumb { self.thumbnail_crop(vpk)? } else { None };
         Ok(path.filter(|p| p.is_file()).map(|path| ImageRef {
             path,
             format,
@@ -181,6 +202,8 @@ impl PhotoSource for CaptureOne {
             rotation: 0,
             monochrome: false,
             look: None,
+            straighten: 0.0,
+            crop,
         }))
     }
 

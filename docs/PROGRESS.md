@@ -1028,6 +1028,43 @@ the closest thumbnail, and finds the export inside each render by scale and offs
 - Local adjustments (masks, gradients, vignetting) and detail finer than the thumbnail
   are still not carried over.
 
+### Framing: straightening and crop
+
+The exports showed the viewer framing photos unlike Capture One. Over 600 sampled
+variants (400 cropped):
+
+- **`.cop` previews are the whole sensor image**, with no crop, straightening or
+  perspective fix: every one has the sensor's shape. (The note above that they come
+  cropped and straightened held for one sample only.)
+- **`.cot` thumbnails are straightened and perspective-fixed, on a canvas grown to hold
+  the turn** (a 3:2 frame turned 1.67° gives 450×307), **but not cropped**.
+- **`ZCROP`** is `centreX;centreY;width;height` in sensor pixels: the centre in the
+  sensor's orientation, the size in the displayed one (a portrait crop of a turned
+  photo only fits that way round). It is applied after the turn and straightening.
+- **Straightening without a crop** shows the largest frame of the picture's shape that
+  the turned picture fills: 1 / (long/short · sin θ + cos θ) of it, 96% at 1.43°.
+
+So `render_preview` now turns the preview by the full `ZROTATION` onto a grown canvas
+(`geometry::straighten`, bilinear), which frames it like the thumbnail, fits colours
+there, and `c1image::frame` cuts the crop (`ImageRef::{straighten, crop}`, `c1model::Crop`
+as offsets and sizes in fractions of the picture). Thumbnails get the same crop measured
+on their grown canvas (`config::on_canvas`); `source-c1` reads all of them in one query
+and again when the catalog file changes, and the app cuts and re-encodes only the
+thumbnails that have one.
+
+`exportcheck` gained an *as shown* column: the framed preview against the export with
+no search. On the 22 exports its median is 9.6, as good as the searched-for match
+(9.6, from 10.1 before straightening). Straightening fixed most of the worst: DSCF1893
+34 → 15, DSCF5614 23 → 15, untitled-1506 40 → 20.
+
+Still not done:
+
+- **Perspective (`ZGEOMETRYKEYSTONE*`).** DSCF5376_1 (tilt 21) and untitled-0245-2 (tilt
+  11) stay 28–32 off; the thumbnail has the fix, so the colour fit falls back for them.
+- **Lens distortion correction** (`ZLENSDISTORTION`: `radius,shift;…|amount|…`, on when
+  the amount is 100) zooms the picture a few percent: untitled-0395-3 is 40 off.
+- **Portrait crops** follow the rule above but no export checked them yet.
+
 ### Next
 
 1. Stage 4, rest: reverse geocoding of place fields (offline, GeoNames), photo direction;

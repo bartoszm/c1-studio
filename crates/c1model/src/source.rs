@@ -139,8 +139,27 @@ pub struct ImageRef {
     /// Render in black and white (the source's develop settings say so).
     pub monochrome: bool,
     /// A small render of the same picture with the source's edits applied (Capture One's
-    /// thumbnail). Its tones are matched onto this image, and if it is grey, so is this.
+    /// thumbnail), framed like this image once turned and straightened. Its colours are
+    /// matched onto this image, and if it is grey, so is this.
     pub look: Option<PathBuf>,
+    /// Clockwise degrees to straighten by after `rotation`, under 45 either way. The canvas
+    /// grows to hold the turned picture.
+    #[serde(default)]
+    pub straighten: f32,
+    /// The part of the turned and straightened picture to show.
+    #[serde(default)]
+    pub crop: Option<Crop>,
+}
+
+/// A crop, in the displayed orientation: the offset of its centre from the picture's
+/// centre and its size, as fractions of the picture's width and height before
+/// straightening grew the canvas.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Crop {
+    pub dx: f32,
+    pub dy: f32,
+    pub width: f32,
+    pub height: f32,
 }
 
 /// One item of a snapshot, delivered in order.

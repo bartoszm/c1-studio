@@ -19,8 +19,8 @@ const HIGHLIGHT_PERCENTILE: f64 = 99.5;
 /// Every n-th value is enough to place the percentile; 7 is coprime with 3 channels.
 const PERCENTILE_STRIDE: usize = 7;
 
-/// Rendered and the look differ in shape by more than this share: the look is from
-/// before a crop and says nothing pixel by pixel.
+/// Rendered and the look differ in shape by more than this share: they are not the same
+/// frame (a perspective fix only the look shows) and say nothing pixel by pixel.
 const SHAPE_TOLERANCE: f64 = 0.02;
 
 /// A table whose fitted pairs sit further from it than this (median, out of 255) was fitted
@@ -40,7 +40,8 @@ pub enum Matching {
     Colours,
 }
 
-/// A linear preview made displayable, before rotation, taking `matching` of `r.look`.
+/// A linear preview made displayable, taking `matching` of `r.look`: turned and
+/// straightened, which frames it like the look, but not cropped (see [`crate::frame`]).
 pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     let path = r.path.as_path();
     // A missing or broken thumbnail only costs the look, not the preview.
@@ -68,14 +69,15 @@ pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     let lut = srgb_lut();
     let last = (lut.len() - 1) as f32;
     let bytes = rgb.iter().map(|&v| lut[((v * scale).clamp(0.0, 1.0) * last + 0.5) as usize]).collect();
-    let mut image =
+    let image =
         RgbImage::from_raw(width, height, bytes).ok_or_else(|| decode_err(path, "pixel buffer has the wrong size"))?;
+    let mut image = crate::geometry::straighten(crate::rotate(image, r.rotation), r.straighten);
     let Some(look) = &look else { return Ok(image) };
     match matching {
         Matching::None => {}
         Matching::Tones => look.apply_tones(&mut image),
         Matching::Colours => {
-            match fit_colours(&image, look, r.rotation) {
+            match fit_colours(&image, look) {
                 Some(table) => table.apply(&mut image),
                 None => look.apply_tones(&mut image),
             }
@@ -87,17 +89,17 @@ pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     Ok(image)
 }
 
-/// The table that turns `image` (unrotated) into `look`, fitted at the look's size;
-/// `None` when the two are not the same frame.
-fn fit_colours(image: &RgbImage, look: &Look, rotation: u16) -> Option<Lut> {
-    let target = crate::rotate(look.render.clone(), (360 - rotation % 360) % 360);
+/// The table that turns `image` into `look`, fitted at the look's size; `None` when the
+/// two are not the same frame.
+fn fit_colours(image: &RgbImage, look: &Look) -> Option<Lut> {
+    let target = &look.render;
     let (w, h) = target.dimensions();
     let (iw, ih) = image.dimensions();
     let (a, b) = (f64::from(iw) * f64::from(h), f64::from(w) * f64::from(ih));
     if (a - b).abs() > SHAPE_TOLERANCE * a.max(b) {
         return None;
     }
-    Lut::fit(&shrink(image, w, h), &target).filter(|table| table.residual <= MAX_RESIDUAL)
+    Lut::fit(&shrink(image, w, h), target).filter(|table| table.residual <= MAX_RESIDUAL)
 }
 
 /// The mean of the pixels whose centres fall in each output pixel: a box filter, which is
@@ -122,6 +124,12 @@ fn shrink(image: &RgbImage, width: u32, height: u32) -> RgbImage {
         .flat_map(|s| std::array::from_fn::<u8, 3, _>(|c| ((s[c] + s[3] / 2) / s[3].max(1)) as u8))
         .collect();
     RgbImage::from_raw(w as u32, h as u32, bytes).expect("the buffer is sized from the dimensions")
+}
+
+/// Width and height of a JPEG-XL file, from its header alone.
+pub fn jxl_size(path: &Path) -> Result<(u32, u32)> {
+    let image = JxlImage::builder().open(path).map_err(|e| decode_err(path, e))?;
+    Ok((image.width(), image.height()))
 }
 
 /// Width, height and interleaved linear RGB, where 1.0 is the file's intensity target —
