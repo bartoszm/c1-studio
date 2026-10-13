@@ -1165,8 +1165,8 @@ async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
     std::fs::write(&s.settings_path, bytes).map_err(text)
 }
 
-/// `/thumb/<row>` serves Capture One's own thumbnail as stored: a JPEG with every edit.
-/// `/preview/<row>` renders the large preview (~250 ms) and sends it as JPEG.
+/// `/thumb/<row>` serves Capture One's own thumbnail: a JPEG with every edit, cut to the crop.
+/// `/preview/<row>` renders the large preview (~300 ms), framed alike, and sends it as JPEG.
 fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let mut parts = path.trim_start_matches('/').split('/');
     let tier = match parts.next() {
@@ -1178,7 +1178,8 @@ fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let s = app.state::<App>().session().map_err(anyhow::Error::msg)?;
     let Some(id) = s.library.photo_id(row) else { return Ok(None) };
     let Some(source) = s.source.image(&id, tier)? else { return Ok(None) };
-    if tier == ImageTier::Thumb {
+    // A thumbnail without a crop is sent as stored; cutting one costs ~5 ms.
+    if tier == ImageTier::Thumb && source.crop.is_none() {
         return Ok(Some(std::fs::read(&source.path)?));
     }
     let pixels = c1image::load(&source)?;

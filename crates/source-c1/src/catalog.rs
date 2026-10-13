@@ -113,6 +113,9 @@ pub(crate) struct PreviewSource {
     pub rotation: u16,
     /// Black and white is switched on, or the film curve is a monochrome simulation.
     pub monochrome: bool,
+    /// Clockwise degrees beyond `rotation`.
+    pub straighten: f32,
+    pub crop: Option<c1model::Crop>,
 }
 
 /// Where the variant's `.cop` preview should be, and how to render it.
@@ -121,9 +124,12 @@ pub(crate) struct PreviewSource {
 /// renders, styles included, and across 300 sampled variants it matched Capture One's own
 /// thumbnails best (48% closest; the default layer, 25%).
 ///
-/// The preview is already cropped and straightened, but stored before quarter turns.
-/// `ZROTATION` on the combined layer is the clockwise turn Capture One shows it with, the
-/// user's own rotation included; its fraction is the straightening, already applied.
+/// The preview is the whole sensor image as shot: no crop, straightening or perspective
+/// fix (600 sampled variants, 400 of them cropped; the thumbnail is straightened and
+/// fixed but not cropped either). `ZROTATION` on the combined layer is the clockwise turn
+/// Capture One shows it with, the user's own rotation included; what is left beyond the
+/// quarter turn is the straightening. `ZCROP` is applied after both; without one, a
+/// straightened picture is cut to what the turn fills.
 ///
 /// Black and white is either `ZBWENABLED` or a monochrome film simulation (Fuji ACROS,
 /// Monochrome, Sepia) as the film curve. Neither catches a raw shot in ACROS whose curve
@@ -132,7 +138,8 @@ pub(crate) struct PreviewSource {
 pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option<PreviewSource>> {
     con.query_row(
         "SELECT i.ZSIDECARPATH, c.ZROTATION, c.ZBWENABLED, c.ZFILMCURVE,
-                c.ZWHITEBALANCE, a.ZWHITEBALANCE, d.ZWHITEBALANCE
+                c.ZWHITEBALANCE, a.ZWHITEBALANCE, d.ZWHITEBALANCE,
+                c.ZCROP, i.ZWIDTH, i.ZHEIGHT
            FROM ZVARIANT v
            JOIN ZIMAGE i             ON i.Z_PK = v.ZIMAGE
            LEFT JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
@@ -142,7 +149,8 @@ pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option
         [variant_pk],
         |r| {
             let sidecar = r.get::<_, Option<String>>(0)?.unwrap_or_default();
-            let rotation = config::quarter_turn(r.get::<_, Option<f64>>(1)?.unwrap_or(0.0));
+            let degrees = r.get::<_, Option<f64>>(1)?.unwrap_or(0.0);
+            let rotation = config::quarter_turn(degrees);
             let curve = r.get::<_, Option<String>>(3)?.unwrap_or_default().to_lowercase();
             let monochrome = r.get::<_, Option<i64>>(2)?.unwrap_or(0) != 0
                 || ["acros", "monochrome", "sepia"].iter().any(|k| curve.contains(k));
@@ -153,11 +161,54 @@ pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option
                     break;
                 }
             }
-            Ok(PreviewSource { sidecar, white_balance, rotation, monochrome })
+            let (width, height) =
+                (r.get::<_, Option<f64>>(8)?.unwrap_or(0.0), r.get::<_, Option<f64>>(9)?.unwrap_or(0.0));
+            let crop = r
+                .get::<_, Option<String>>(7)?
+                .and_then(|c| config::display_crop(&c, width, height, degrees))
+                .or_else(|| config::straightened_crop(width, height, degrees));
+            let straighten = config::straightening(degrees);
+            Ok(PreviewSource { sidecar, white_balance, rotation, monochrome, straighten, crop })
         },
     )
     .optional()
     .map_err(db_err)
+}
+
+/// The crop of every variant that has one (its own, or the one straightening makes),
+/// measured for its `.cot` thumbnail, which is straightened onto a grown canvas already.
+pub(crate) fn thumbnail_crops(con: &Connection) -> Result<std::collections::HashMap<i64, c1model::Crop>> {
+    let mut statement = con
+        .prepare(
+            "SELECT v.Z_PK, c.ZCROP, c.ZROTATION, i.ZWIDTH, i.ZHEIGHT
+               FROM ZVARIANT v
+               JOIN ZIMAGE i             ON i.Z_PK = v.ZIMAGE
+               JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
+              WHERE c.ZCROP IS NOT NULL OR (c.ZROTATION IS NOT NULL AND c.ZROTATION <> 0)",
+        )
+        .map_err(db_err)?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
+                r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
+                r.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+            ))
+        })
+        .map_err(db_err)?;
+    let mut crops = std::collections::HashMap::new();
+    for row in rows {
+        let (vpk, crop, degrees, width, height) = row.map_err(db_err)?;
+        let crop = crop
+            .and_then(|c| config::display_crop(&c, width, height, degrees))
+            .or_else(|| config::straightened_crop(width, height, degrees));
+        if let Some(crop) = crop {
+            crops.insert(vpk, config::on_canvas(crop, width, height, degrees));
+        }
+    }
+    Ok(crops)
 }
 
 pub(crate) fn original_path(con: &Connection, catalog_dir: &Path, variant_pk: i64) -> Result<Option<String>> {
