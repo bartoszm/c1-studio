@@ -8,6 +8,22 @@
   export const MAX_COUNT = 30;
   /** What the grid laid out: tiles per row, their width, the width they share. */
   export type Layout = { cols: number; width: number; room: number };
+
+  /** A small copy of the photo as the drag image, above and right of the cursor, so the
+   *  cursor's tip (where a map drop lands) stays in sight. */
+  function ghost(transfer: DataTransfer, img: HTMLImageElement) {
+    const size = 64;
+    const scale = size / Math.max(img.naturalWidth || 1, img.naturalHeight || 1);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round((img.naturalWidth || size) * scale));
+    canvas.height = Math.max(1, Math.round((img.naturalHeight || size) * scale));
+    canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+    // Only drawn while in the document; gone once the browser has its picture.
+    canvas.style.cssText = "position:fixed;left:-1000px;top:0;border:2px solid #fff;border-radius:3px";
+    document.body.append(canvas);
+    transfer.setDragImage(canvas, -14, canvas.height + 14);
+    setTimeout(() => canvas.remove());
+  }
 </script>
 
 <script lang="ts">
@@ -209,6 +225,8 @@
         ondragstart={(e) => {
           e.dataTransfer?.setData("text/plain", "photos");
           if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+          const img = e.currentTarget.querySelector("img");
+          if (e.dataTransfer && img) ghost(e.dataTransfer, img);
           ondragcell?.(i);
         }}
       >
