@@ -83,6 +83,8 @@ export type ThumbsState = {
   made: number;
   failed: number;
   missing: number | null;
+  /** Why the last run could not make some, most common first, with how many each. */
+  reasons: [string, number][];
 };
 
 export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
@@ -329,6 +331,8 @@ export const analysisState = () => invoke<AnalysisState>("analysis_state");
 export const thumbsState = () => invoke<ThumbsState>("thumbs_state");
 /** Makes a thumbnail for every photo without one, in the background ("thumbs" events). */
 export const fillThumbnails = () => invoke<void>("fill_thumbnails");
+/** Opens the events log (background work and what failed) in the system's text viewer. */
+export const openLog = () => invoke<void>("open_log");
 
 /** Thumbnails that failed to load try again: one may have been made for them since. */
 let retries = 0;
