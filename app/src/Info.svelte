@@ -10,7 +10,7 @@
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces, places,
+    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, onlook,
     onplace, ongeo, oniptc, oncopy, onpaste, onpastechoose, onsync,
@@ -46,8 +46,6 @@
     oncamera: (model: string) => void;
     /** With several photos selected: their places, each with the photos that have it. */
     sharedPlaces: [Place, number[]][] | null;
-    /** Every place in the catalog (`place_tree` keys with counts), for suggestions. */
-    places: [string, number][];
     /** Location fields typed in, "" clearing one: on `rows`, or on every photo edited. */
     onplace: (fields: Partial<Record<api.PlaceField, string>>, rows?: number[]) => void;
     ongeo: (value: [number, number] | null) => void;
@@ -124,10 +122,12 @@
   let placeCounts = $derived(placeGroups?.map(([p, rows]): [Place, number] => [p, rows.length]) ?? null);
   let placeKeys = $derived(placeCounts ? treeKeys(placeCounts) : undefined);
   let placedGroups = $derived((placeGroups ?? []).filter(([p]) => !isEmpty(p)));
-  let unplaced = $derived(placeGroups?.find(([p]) => isEmpty(p))?.[1] ?? []);
+  let unplaced = $derived((placeGroups ?? []).filter(([p]) => isEmpty(p)).flatMap(([, rows]) => rows));
   let fillOpen = $state(false);
   const NO_PLACE: Place = { country: null, country_code: null, state: null, city: null, location: null };
-  const placeLabel = (place: Place) => placeText(keyOf(place));
+  const placeLabel = (place: Place) => (keyOf(place) ? placeText(keyOf(place)) : `ISO code ${place.country_code}`);
+  /** A place's own key in a list: the groups differ in some field, any of them. */
+  const placeId = (place: Place) => JSON.stringify(allFields(place));
 
   type FieldView = { shown: string; placeholder: string; title?: string };
   function fieldView(place: Place, field: api.PlaceField): FieldView {
@@ -404,7 +404,7 @@
         </p>
         {#if fillOpen && placedGroups.length}
           <ul class="links keywords fill-places">
-            {#each placedGroups as [place, rows] (keyOf(place) + place.country_code)}
+            {#each placedGroups as [place, rows] (placeId(place))}
               <li>
                 <button
                   class="link"
@@ -418,7 +418,7 @@
         {/if}
       {/if}
       <ul class="links keywords places">
-        {#each placedGroups as [place, rows] (keyOf(place) + place.country_code)}
+        {#each placedGroups as [place, rows] (placeId(place))}
           {@const n = rows.length}
           <li class:partial={n < picked}>
             <span class="link" title={place.country_code ? `ISO code ${place.country_code}` : "No ISO country code"}>{placeLabel(place)}</span>
@@ -462,7 +462,6 @@
               placeholder={view.placeholder}
               title={view.title}
               context={sharedPlace(p.place)}
-              catalog={places}
               selection={placeKeys}
               {picked}
               geo={p.geo}

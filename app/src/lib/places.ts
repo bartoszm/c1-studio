@@ -91,33 +91,24 @@ export type Sources = {
 export function suggest(level: Level, typed: string, context: Partial<Place>, sources: Sources, limit = 12): Suggestion[] {
   const depth = LEVELS.indexOf(level) + 1;
   const found = new Map<string, Suggestion>();
-  const counts = new Map(sources.catalog);
-  const add = (key: string, source: Source, n: number, path = parsePath(key)) => {
+  const add = (key: string, source: Source, n: number, path?: PlacePath) => {
     if (depthOf(key) !== depth || lastOf(key) === NONE) return;
     const had = found.get(key);
     if (had && RANK[had.source] <= RANK[source]) return;
+    path ??= parsePath(key);
     found.set(key, { path, key, value: path[level], parents: parentsText(path, depth), source, n });
   };
-  for (const [key] of sources.catalog) add(key, "catalog", counts.get(key) ?? 0);
+  for (const [key, n] of sources.catalog) add(key, "catalog", n);
   for (const [key, n] of sources.selection ?? []) add(key, "selection", n);
-  for (const [key] of sources.nearby ?? []) add(key, "nearby", counts.get(key) ?? 0);
+  if (sources.nearby?.length) {
+    const counts = new Map(sources.catalog);
+    for (const [key] of sources.nearby) add(key, "nearby", counts.get(key) ?? 0);
+  }
   if (sources.here?.[level]) {
-    // The geocoder's names may not be the catalog's (Lesser Poland, Małopolskie): a
-    // place the catalog has by that name in that country stands for it.
     const here = sources.here;
-    const sameCountry = (country: string) =>
-      !here.country || !country || same(country, here.country) || (!!here.code && codeFor(country) === here.code);
-    const known = sources.catalog.filter(([key]) => {
-      if (depthOf(key) !== depth) return false;
-      const path = parsePath(key);
-      return level === "country" ? sameCountry(path.country) : same(path[level], here[level]) && sameCountry(path.country);
-    });
+    const known = hereInCatalog(here, depth, sources.catalog);
     if (known.length) for (const [key, n] of known) add(key, "here", n);
-    else {
-      const path = { ...here };
-      for (const l of LEVELS.slice(depth)) path[l] = "";
-      add(pathKey(path, depth), "here", 0, path);
-    }
+    else add(...newPlaceHere(here, depth, context, sources.catalog));
   }
 
   const q = looseKey(typed);
@@ -129,6 +120,42 @@ export function suggest(level: Level, typed: string, context: Partial<Place>, so
     .sort((a, b) => order(a.rank, b.rank) || a.s.value.localeCompare(b.s.value))
     .slice(0, limit)
     .map(({ s }) => s);
+}
+
+/** The catalog's places at `depth` that stand for the geocoder's: the same name in the
+ *  same country, the most used first. Its names may not be the catalog's (Lesser
+ *  Poland, Małopolskie), so the levels between are not compared. */
+function hereInCatalog(here: PlacePath, depth: number, catalog: [string, number][]): [string, number][] {
+  const level = LEVELS[depth - 1];
+  const sameCountry = (country: string) =>
+    !here.country || !country || same(country, here.country) || (!!here.code && codeFor(country) === here.code);
+  return catalog
+    .filter(([key]) => {
+      if (depthOf(key) !== depth) return false;
+      const path = parsePath(key);
+      return (level === "country" || same(path[level], here[level])) && sameCountry(path.country);
+    })
+    .sort((a, b) => b[1] - a[1]);
+}
+
+/** The geocoder's place at `depth`, which the catalog does not have yet, with the levels
+ *  above named as the catalog names them where it has the nearest one (Stare Miasto in
+ *  the catalog's Kraków, Małopolskie, Poland); else as the photo has them; else as the
+ *  geocoder does. Picking it then never renames a level the photo or catalog has. */
+function newPlaceHere(here: PlacePath, depth: number, context: Partial<Place>, catalog: [string, number][]): [string, Source, number, PlacePath] {
+  const path: PlacePath = { country: "", state: "", city: "", location: "" };
+  path[LEVELS[depth - 1]] = here[LEVELS[depth - 1]];
+  let named = 0;
+  for (let d = depth - 1; d >= 1 && !named; d--) {
+    const [parent] = here[LEVELS[d - 1]] ? hereInCatalog(here, d, catalog) : [];
+    if (!parent) continue;
+    const known = parsePath(parent[0]);
+    for (const l of LEVELS.slice(0, d)) path[l] = known[l];
+    named = d;
+  }
+  for (const l of LEVELS.slice(named, depth - 1)) path[l] = (context[l] ?? "").trim() || here[l];
+  if (here.code && (!path.country || same(path.country, here.country) || codeFor(path.country) === here.code)) path.code = here.code;
+  return [pathKey(path, depth), "here", 0, path];
 }
 
 function order(a: number[], b: number[]): number {

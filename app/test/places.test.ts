@@ -52,12 +52,25 @@ test("nearby places and the geocoded one come before the rest", () => {
   const here = { country: "Polska", state: "Lesser Poland Voivodeship", city: "Kraków", location: "Stare Miasto", code: "PL" };
   const cities = suggest("city", "", {}, { catalog: CATALOG, here });
   assert.deepEqual(cities.filter((s) => s.source === "here").map((s) => s.key), ["Poland|Małopolskie|Kraków", "Poland|—|Kraków"]);
-  // One the catalog does not have comes as the geocoder names it.
+  // One the catalog does not have goes in the catalog's Kraków, not the geocoder's names.
   const [loc] = suggest("location", "", {}, { catalog: CATALOG, here });
   assert.equal(loc.source, "here");
-  assert.equal(loc.key, "Polska|Lesser Poland Voivodeship|Kraków|Stare Miasto");
+  assert.equal(loc.key, "Poland|Małopolskie|Kraków|Stare Miasto");
+  assert.equal(loc.path.code, "PL");
   // A country is matched by its code.
   assert.equal(suggest("country", "", {}, { catalog: CATALOG, here })[0].key, "Poland");
+});
+
+test("a new place from the geocoder keeps the photo's names above it", () => {
+  const here = { country: "Polska", state: "Lesser Poland Voivodeship", city: "Zakopane", location: "Krupówki", code: "PL" };
+  // The catalog has Poland but no Zakopane; the photo's state stays as it is.
+  const [city] = suggest("city", "", { state: "Małopolska" }, { catalog: CATALOG, here });
+  assert.equal(city.key, "Poland|Małopolska|Zakopane");
+  const fields = fillFor(city.path, "city", place({ state: "Małopolska" }));
+  assert.deepEqual(fields, { country: "Poland", state: "Małopolska", city: "Zakopane", country_code: "PL" });
+  // Nothing known anywhere: the geocoder's names.
+  const [far] = suggest("city", "", {}, { catalog: [], here });
+  assert.equal(far.key, "Polska|Lesser Poland Voivodeship|Zakopane");
 });
 
 test("picking a city fills the state, country and code but not the location", () => {

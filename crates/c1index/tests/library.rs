@@ -759,16 +759,24 @@ fn field_edits_build_on_each_other() {
     // Each edit sets one field on the place the photo has when it runs.
     let set = |field: fn(&mut Place) -> &mut Option<String>, text: &str| {
         let text = text.to_owned();
-        lib.edit_photos(&[row], move |_, photo| {
+        move |_: u64, photo: &Photo| {
             let mut value = photo.place.clone();
             *field(&mut value) = Some(text.clone());
             Ok(vec![Op::SetPlace { base: photo.place.clone(), value }])
-        })
-        .unwrap()
+        }
     };
-    set(|p| &mut p.country, "United States");
-    set(|p| &mut p.state, "New York");
-    set(|p| &mut p.location, "Brooklyn Bridge");
+    // The state and location are asked for while the country is still being written,
+    // as when they are typed during a save: they wait, then build on it.
+    let lib = &lib;
+    std::thread::scope(|s| {
+        lib.edit_photos(&[row], |row, photo| {
+            s.spawn(move || lib.edit_photos(&[row], set(|p| &mut p.state, "New York")).unwrap());
+            s.spawn(move || lib.edit_photos(&[row], set(|p| &mut p.location, "Brooklyn Bridge")).unwrap());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            set(|p| &mut p.country, "United States")(row, photo)
+        })
+        .unwrap();
+    });
     let place = lib.photo(row).unwrap().unwrap().place;
     assert_eq!(
         (place.country.as_deref(), place.state.as_deref(), place.location.as_deref()),
