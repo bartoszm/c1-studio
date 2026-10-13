@@ -106,7 +106,9 @@
       mapTile = null;
       filter = { ...filter, within: follow ? (mapView ?? undefined) : beforeTile };
     }
-    run(true);
+    // Other photos altogether: a selection kept by its place in the grid would land on
+    // one nobody chose, so it starts afresh.
+    run();
   }
   function sameBox(a: api.BBox | undefined | null, b: api.BBox | undefined | null): boolean {
     return !!a && !!b && a.min_lat === b.min_lat && a.max_lat === b.max_lat && a.min_lon === b.min_lon && a.max_lon === b.max_lon;

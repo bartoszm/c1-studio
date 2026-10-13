@@ -183,7 +183,8 @@
         e.stopPropagation();
         if (dragged) return;
         if (e.detail > 1) return;
-        if (tile && el.classList.contains("chosen") && covers(tile, c.bounds)) ontile(null, null);
+        // The picked tile itself lets go; one of its photos, zoomed in, is picked instead.
+        if (tile && sameBox(tile, c.bounds)) ontile(null, null);
         else ontile(c.bounds, single ? c.best : null);
       });
       el.addEventListener("dblclick", (e) => {
@@ -213,6 +214,10 @@
       }
     }
     mark();
+  }
+
+  function sameBox(a: BBox, b: BBox): boolean {
+    return a.min_lat === b.min_lat && a.max_lat === b.max_lat && a.min_lon === b.min_lon && a.max_lon === b.max_lon;
   }
 
   /** `outer` holds all of `inner`. */
@@ -446,6 +451,9 @@
   }
   /* A photo stands on a stem; the dot at its foot is the place. */
   .canvas :global(.pin) { display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+  /* Only the photo, stem and dot catch the mouse; the room beside the stem is the map's. */
+  .canvas :global(.pin:not(.disc)) { pointer-events: none; }
+  .canvas :global(.pin:not(.disc) > *) { pointer-events: auto; }
   .canvas :global(.pin .card) {
     position: relative; width: 56px; height: 56px; border: 2px solid #fff; border-radius: 4px;
     background: #333; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
