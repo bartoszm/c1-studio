@@ -523,3 +523,7 @@ footer > span { white-space: nowrap; }
 /* An action under a tree: "Fill in…". */
 .tree-action { display: block; max-width: calc(100% - 34px); margin: 4px 8px 2px 26px; padding: 2px 6px; text-align: left; font-size: 12px; color: #e8b03a; border-radius: 3px; }
 .tree-action:hover { background: var(--hover); }
+.info-panel .fill-places { margin: 0 0 6px 10px; }
+.info-panel .places li, .info-panel .fill-places li { flex-wrap: nowrap; }
+.info-panel .places li > .link, .info-panel .fill-places li > .link { flex: 1 1 auto; min-width: 0; text-align: left; }
+.info-panel .places .count, .info-panel .fill-places .count { flex: none; }

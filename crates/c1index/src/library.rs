@@ -429,6 +429,24 @@ impl Library {
         Ok(())
     }
 
+    /// Adds values edits brought to those substring filters match against, without a
+    /// pass over the whole index. Values no photo has any more stay until the next
+    /// refresh; a filter matching one finds nothing by it.
+    fn learn_distinct(&self, learned: HashSet<(Dim, String)>) {
+        if learned.is_empty() {
+            return;
+        }
+        let mut distinct = self.distinct.write().unwrap();
+        let dims: HashSet<Dim> = learned.iter().map(|(dim, _)| *dim).collect();
+        for dim in dims {
+            let values = distinct.entry(dim).or_default();
+            let known: HashSet<&String> = values.iter().collect();
+            let new: Vec<String> =
+                learned.iter().filter(|(d, v)| *d == dim && !known.contains(v)).map(|(_, v)| v.clone()).collect();
+            values.extend(new);
+        }
+    }
+
     /// Pulls a source's current state into the library. What changed there is logged as
     /// the source's doing.
     pub fn sync(&self, source: &dyn PhotoSource) -> anyhow::Result<SyncReport> {
@@ -641,6 +659,38 @@ impl Library {
 
     /// [`Library::edit`], logged as coming from `origin` (a GPX track, say).
     pub fn edit_as(&self, changes: &[(u64, Op)], origin: Origin) -> anyhow::Result<Vec<(u64, Op)>> {
+        self.edit_made(|_| Ok(changes.to_vec()), origin)
+    }
+
+    /// Like [`edit`](Self::edit), with each photo's ops made from the photo as it is when
+    /// the edit runs. Ops made from an earlier read could undo what was edited since: a
+    /// location typed while the city was still being saved would set the city back.
+    pub fn edit_photos(
+        &self,
+        rows: &[u64],
+        ops: impl Fn(u64, &Photo) -> anyhow::Result<Vec<Op>>,
+    ) -> anyhow::Result<Vec<(u64, Op)>> {
+        let made = |batch: &crate::store::Batch| {
+            let mut changes = Vec::new();
+            for &row in rows {
+                if let Some(photo) = batch.photo(row)? {
+                    changes.extend(ops(row, &photo)?.into_iter().map(|op| (row, op)));
+                }
+            }
+            Ok(changes)
+        };
+        self.edit_made(made, Origin::App)
+    }
+
+    fn edit_made(
+        &self,
+        make: impl FnOnce(&crate::store::Batch) -> anyhow::Result<Vec<(u64, Op)>>,
+        origin: Origin,
+    ) -> anyhow::Result<Vec<(u64, Op)>> {
+        let writing = self.writing.lock().unwrap();
+        let mut writer = self.writer()?;
+        let mut batch = self.store.batch()?;
+        let changes = &make(&batch)?;
         // Only albums take photos; a smart album's come from its rule.
         if changes.iter().any(|(_, op)| membership(op).is_some()) {
             let albums = self.collections()?;
@@ -650,12 +700,10 @@ impl Library {
                 }
             }
         }
-        let _writing = self.writing.lock().unwrap();
-        let mut writer = self.writer()?;
-        let mut batch = self.store.batch()?;
         let mut edits = self.edits.batch()?;
         let now = now_ms();
         let mut undo = Vec::new();
+        let mut learned = HashSet::new();
         // One op per keyword. Removing a keyword takes everything under it too (removing
         // `animal` takes `animal|dog`), each queued on its own so undo puts back exactly
         // what went.
@@ -698,6 +746,20 @@ impl Library {
                     edits.put(&key, &Pending { change, at: now, theirs })?;
                 }
             }
+            match &op {
+                Op::AddKeywords { paths } => learned.extend(
+                    paths
+                        .iter()
+                        .flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>())
+                        .map(|p| (Dim::KeywordTree, p)),
+                ),
+                Op::SetPlace { value, .. } => learned.extend(
+                    [(Dim::Country, &value.country), (Dim::State, &value.state), (Dim::City, &value.city)]
+                        .into_iter()
+                        .filter_map(|(dim, v)| Some((dim, v.clone()?))),
+                ),
+                _ => {}
+            }
             undo.push((row, shown.reverted()));
             edits.log(&Event { at: now, origin, what: What::Change(Change { photo: photo.id.clone(), op: shown }) })?;
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
@@ -709,9 +771,10 @@ impl Library {
         batch.commit()?;
         edits.commit()?;
         self.reader.reload()?;
-        if undo.iter().any(|(_, op)| matches!(op, Op::AddKeywords { .. } | Op::RemoveKeywords { .. })) {
-            self.refresh_distinct()?;
-        }
+        // The index's own lock goes with the writer; the next edit waits for both.
+        drop(writer);
+        drop(writing);
+        self.learn_distinct(learned);
         Ok(undo)
     }
 
@@ -987,6 +1050,11 @@ impl Library {
 
     pub fn photo(&self, row: u64) -> anyhow::Result<Option<Photo>> {
         self.store.photo(row)
+    }
+
+    /// The photos at `rows` that exist, read together: for a selection's summaries.
+    pub fn photos(&self, rows: &[u64], f: impl FnMut(u64, Photo)) -> anyhow::Result<()> {
+        self.store.photos(rows, f)
     }
 
     /// The sources' albums, as they will be once queued album changes are written.
