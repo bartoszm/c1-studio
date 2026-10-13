@@ -1065,7 +1065,63 @@ Still not done:
   the amount is 100) zooms the picture a few percent: untitled-0395-3 is 40 off.
 - **Portrait crops** follow the rule above but no export checked them yet.
 
+### Catalog history: the change log
+
+Time travel needs to know what changed and when. History builds up only from the day it
+is recorded, so it is recorded before its views. The log is the `events` table in
+`edits.redb`, which a `MODEL_VERSION` bump never wipes. Values are JSON, so entries
+written before the kinds below existed still read.
+
+- **`c1index::Event { at, origin, what }`.** `Origin` is `App`, `Source` or `Gpx`. `What`
+  is one of:
+  - `Change(Change)`: one field of one photo;
+  - `Added` / `Removed`: the photo id and its file name, so the entry still reads after the
+    photo is gone;
+  - `Collection { change, label }`: an album made, renamed, moved, given a new rule or
+    deleted;
+  - `Remap(KeywordRemap)`: a keyword tree change;
+  - `Written { photos, changes }`: queued edits reached the source;
+  - `Undone { label }`: a queued album or keyword tree change taken back.
+- **Per photo:** the multimap table `events_by_photo` (photo key → sequence numbers), filled
+  once from the existing log when it is first opened. `Library::photo_events` reads it.
+- **Sync logs Capture One's side:**
+  - `c1model::diff` now covers IPTC, place and GPS. A position counts as changed only when
+    it moves.
+  - Photos added and removed are logged.
+  - `collection_diff` compares the albums with the stored list.
+  - The first fill of a source logs none of this; `imported_at` dates those photos.
+  - Two cases are not credited to Capture One. Album changes the app just wrote, which come
+    back from the source, are not logged twice; an album the app made is matched by name
+    and kind, and photos in it are not logged as moving from the app's id to the source's.
+    And photos re-read after a keyword tree change was undone (fingerprint 0) are logged as
+    `App`.
+- **App side:**
+  - `Library::edit_as(changes, origin)`; GPX placements pass `Gpx`.
+  - Album and keyword tree changes are logged when queued, and again when undone.
+  - `settle` logs `Written`.
+- **Noticed sooner:** the app reads Capture One again when its window comes back into
+  focus (at most every 10 s) and every 5 minutes. An unchanged catalog costs a file stat.
+  Thumbnails and analysis are looked at again only when it changed.
+- **First view:** a collapsible **History** section at the bottom of the details panel. It
+  shows the date, who made the change (here / Capture One / GPX) and a one-line
+  description (`eventText` in `lib/format.ts`). Commands `photo_history(row)` and
+  `change_log(limit)`. The details panel also reads the photo again after a sync that
+  changed something; before, it kept showing the old values.
+- **Tested** with a second instance on a copy of the newest fuji backup:
+  - the first fill of 99k photos logged nothing;
+  - a rating set here showed as *here*;
+  - a caption and colour set with `c1cat` on the copy showed as *Capture One* after the
+    5-minute refresh;
+  - writing the queue logged one `Written` entry and nothing else.
+
+  The focus refresh was not driven: it would have taken the user's focus.
+- **Known limit:** what Capture One changed between the last sync and a store wipe shows
+  up as a fresh state, not as changes.
+
 ### Next
 
-1. Stage 4, rest: reverse geocoding of place fields (offline, GeoNames), photo direction;
-   then time travel (trips, timeline, event log).
+1. Time travel views on the change log: state on a date, growth of the collection, compare
+   two dates, restore a past state as a set of `Change`s.
+2. Trips: detection, editing, a timeline with route replay.
+3. Stage 4, rest: reverse geocoding of place fields (offline, GeoNames), photo direction,
+   lasso.

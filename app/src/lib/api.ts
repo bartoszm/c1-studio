@@ -214,6 +214,19 @@ export type Op =
   | { SetColor: { base: Color | null; value: Color | null } }
   | Record<string, unknown>;
 export type Change = { photo: { source: string; ext: string }; op: Op };
+/** Who made a logged change: this app, Capture One (seen by a sync), or a GPX track. */
+export type Origin = "App" | "Source" | "Gpx";
+type PhotoRef = { photo: { source: string; ext: string }; name: string };
+/** One entry of the change log (`c1index::Event`). */
+export type LogEvent = { at: number; origin: Origin } & (
+  | { change: Change }
+  | { added: PhotoRef }
+  | { removed: PhotoRef }
+  | { collection: { change: CollectionChange; label: string } }
+  | { remap: { label: string } }
+  | { written: { photos: number; changes: number } }
+  | { undone: { label: string } }
+);
 export type PendingEdit = {
   key: string;
   row: number | null;
@@ -295,6 +308,10 @@ export type Group = { id: string; size: number; rows: number[] };
 export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
+/** What the change log holds about a photo, newest first. */
+export const photoHistory = (row: number) => invoke<LogEvent[]>("photo_history", { row });
+/** The newest entries of the change log. */
+export const changeLog = (limit: number) => invoke<LogEvent[]>("change_log", { limit });
 export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");
 /** Returns the ops that undo it. */

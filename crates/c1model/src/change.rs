@@ -225,7 +225,8 @@ impl Op {
 }
 
 /// What changed between two versions of a photo, as ops that turn `old` into `new`:
-/// rating, colour, keywords and collections, the fields a history is kept of.
+/// rating, colour, keywords, IPTC fields, place, position and collections, the fields a
+/// history is kept of. A position counts as changed only when it moves.
 pub fn diff(old: &Photo, new: &Photo) -> Vec<Op> {
     let mut ops = Vec::new();
     if old.rating != new.rating {
@@ -233,6 +234,15 @@ pub fn diff(old: &Photo, new: &Photo) -> Vec<Op> {
     }
     if old.color != new.color {
         ops.push(Op::SetColor { base: old.color, value: new.color });
+    }
+    if old.iptc != new.iptc {
+        ops.push(Op::SetIptc { base: old.iptc.clone(), value: new.iptc.clone() });
+    }
+    if old.place != new.place {
+        ops.push(Op::SetPlace { base: old.place.clone(), value: new.place.clone() });
+    }
+    if spot(&old.geo) != spot(&new.geo) {
+        ops.push(Op::SetGeo { base: old.geo, value: new.geo });
     }
     let added: Vec<_> = new.keywords.iter().filter(|k| !old.keywords.contains(k)).cloned().collect();
     let removed: Vec<_> = old.keywords.iter().filter(|k| !new.keywords.contains(k)).cloned().collect();
@@ -249,6 +259,43 @@ pub fn diff(old: &Photo, new: &Photo) -> Vec<Op> {
         ops.push(Op::RemoveFromCollection { collection: c.clone() });
     }
     ops
+}
+
+/// What changed between two lists of collections, as changes that turn `old` into `new`:
+/// collections made, renamed, moved, given another rule and deleted, matched by id.
+pub fn collection_diff(old: &[Collection], new: &[Collection]) -> Vec<CollectionChange> {
+    let mut out = Vec::new();
+    for n in new {
+        let Some(o) = old.iter().find(|o| o.id == n.id) else {
+            out.push(CollectionChange::Create {
+                id: n.id.clone(),
+                name: n.name.clone(),
+                kind: n.kind,
+                parent: n.parent.clone(),
+                rule: n.rule.clone(),
+            });
+            continue;
+        };
+        if o.name != n.name {
+            out.push(CollectionChange::Rename { id: n.id.clone(), name: n.name.clone() });
+        }
+        if o.parent != n.parent {
+            out.push(CollectionChange::Move { id: n.id.clone(), parent: n.parent.clone() });
+        }
+        if o.rule != n.rule
+            && let Some(rule) = &n.rule
+        {
+            out.push(CollectionChange::SetRule { id: n.id.clone(), rule: rule.clone() });
+        }
+    }
+    // A deleted group takes what is in it: only its top is worth an entry.
+    let gone: Vec<&CollectionId> = old.iter().filter(|o| !new.iter().any(|n| n.id == o.id)).map(|o| &o.id).collect();
+    for o in old.iter().filter(|o| gone.contains(&&o.id)) {
+        if !o.parent.as_ref().is_some_and(|p| gone.contains(&p)) {
+            out.push(CollectionChange::Delete { id: o.id.clone() });
+        }
+    }
+    out
 }
 
 #[cfg(test)]

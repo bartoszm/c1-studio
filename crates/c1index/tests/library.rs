@@ -1,4 +1,6 @@
-use c1index::{Dim, Filter, Library, Presence, QueryOptions, Range, Sort, TimeRange, Trashed, parse_rating};
+use c1index::{
+    Dim, Filter, Library, Origin, Presence, QueryOptions, Range, Sort, TimeRange, Trashed, What, parse_rating,
+};
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
 use c1model::*;
@@ -446,9 +448,9 @@ fn queued_edits_stay_on_top_of_a_sync() {
 
     let events = lib.events(10).unwrap();
     assert_eq!(events[0].origin, c1index::Origin::Source);
-    assert_eq!(events[0].change.op, Op::AddKeywords { paths: vec![KeywordPath::from_pipe("night")] });
+    assert_eq!(op_of(&events[0]), &Op::AddKeywords { paths: vec![KeywordPath::from_pipe("night")] });
     assert_eq!(events[1].origin, c1index::Origin::App);
-    assert_eq!(events[1].change.op, Op::SetRating { base: Some(2), value: Some(5) });
+    assert_eq!(op_of(&events[1]), &Op::SetRating { base: Some(2), value: Some(5) });
 }
 
 #[test]
@@ -921,4 +923,159 @@ fn analyses_outlive_the_store() {
     let lib = Library::open(dir.path()).unwrap();
     assert_eq!(ids(&lib, &Filter { hues: vec!["blue".into()], ..Filter::default() }), [1]);
     assert_eq!(lib.analysed().values().next(), Some(&(7, 7)));
+}
+
+// The change log.
+
+fn op_of(event: &c1index::Event) -> &Op {
+    match &event.what {
+        What::Change(change) => &change.op,
+        other => panic!("not a change: {other:?}"),
+    }
+}
+
+#[test]
+fn the_first_fill_is_not_news() {
+    let (_d, lib, _s) = setup();
+    assert!(lib.events(10).unwrap().is_empty(), "photos and albums already there are not logged as added");
+}
+
+#[test]
+fn source_changes_to_every_kept_field_are_logged() {
+    let (_d, lib, source) = setup();
+    let id = lib.photo_id(row_of(&lib, 7)).unwrap();
+    source.edit_externally(&id, |p| {
+        p.iptc.description = Some("Rynek nocą".into());
+        p.place.city = Some("Breslau".into());
+        p.geo = Some(GeoPoint { lat: 51.12, lon: 17.04, alt: None, origin: GeoOrigin::Exif });
+    });
+    lib.sync(&source).unwrap();
+    let events = lib.photo_events(&id).unwrap();
+    assert_eq!(events.len(), 3);
+    assert!(events.iter().all(|e| e.origin == Origin::Source));
+    let ops: Vec<&Op> = events.iter().map(op_of).collect();
+    assert!(
+        ops.iter()
+            .any(|op| matches!(op, Op::SetIptc { value, .. } if value.description.as_deref() == Some("Rynek nocą")))
+    );
+    assert!(ops.iter().any(|op| matches!(op, Op::SetPlace { value, .. } if value.city.as_deref() == Some("Breslau"))));
+    assert!(ops.iter().any(|op| matches!(op, Op::SetGeo { value: Some(g), .. } if g.lat == 51.12)));
+
+    // A position that only changes its origin did not move.
+    source.edit_externally(&id, |p| p.geo.as_mut().unwrap().origin = GeoOrigin::Manual);
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.photo_events(&id).unwrap().len(), 3);
+}
+
+#[test]
+fn photos_added_and_removed_in_the_source_are_logged() {
+    let (_d, lib, source) = setup();
+    source.add_externally(photo(11));
+    let gone = lib.photo_id(row_of(&lib, 2)).unwrap();
+    source.remove_externally(&gone);
+    lib.sync(&source).unwrap();
+    let mut names: Vec<_> = lib
+        .events(10)
+        .unwrap()
+        .iter()
+        .map(|e| match &e.what {
+            What::Added { name, .. } => format!("+{name}"),
+            What::Removed { name, .. } => format!("-{name}"),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    names.sort();
+    assert_eq!(names, ["+DSCF0011.RAF", "-DSCF0002.RAF"]);
+    // Still found by the photo once it is gone.
+    assert_eq!(lib.photo_events(&gone).unwrap().len(), 1);
+}
+
+#[test]
+fn albums_changed_in_the_source_are_logged() {
+    let (_d, lib, source) = setup();
+    source.edit_collections_externally(|all| {
+        all[0].name = "street best".into();
+        all.push(Collection {
+            id: CollectionId("11".into()),
+            name: "night".into(),
+            kind: CollectionKind::Album,
+            parent: None,
+            path: "night".into(),
+            rule: None,
+            system: false,
+        });
+    });
+    lib.sync(&source).unwrap();
+    let labels: Vec<String> = lib
+        .events(10)
+        .unwrap()
+        .into_iter()
+        .map(|e| match e.what {
+            What::Collection { label, .. } => label,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(labels, ["New album “night”", "Rename “Best / for street” to “street best”"]);
+}
+
+#[test]
+fn albums_made_here_are_logged_once() {
+    let (_d, lib, source) = setup();
+    let japan = CollectionId::new_local("a-1");
+    let create = CollectionChange::Create {
+        id: japan.clone(),
+        name: "japan".into(),
+        kind: CollectionKind::Album,
+        parent: None,
+        rule: None,
+    };
+    lib.change_collection(create).unwrap();
+    lib.edit(&[(row_of(&lib, 5), add_to(&japan))]).unwrap();
+    let queued = lib.collection_changes().unwrap();
+    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
+    let plan = source.plan_after(&[], &[queued[0].1.change.clone()], &changes).unwrap();
+    source.apply(&plan).unwrap();
+    lib.settle_collections(&[queued[0].0]).unwrap();
+    lib.settle(&plan.apply).unwrap();
+    lib.sync(&source).unwrap();
+    let kinds: Vec<&str> = lib
+        .events(10)
+        .unwrap()
+        .iter()
+        .map(|e| match &e.what {
+            What::Change(_) => "change",
+            What::Collection { .. } => "collection",
+            What::Written { .. } => "written",
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    // Not again when the source sends the album back under its own id, nor the photo
+    // moving from the app's id to the source's.
+    assert_eq!(kinds, ["written", "change", "collection"]);
+}
+
+#[test]
+fn gpx_placements_carry_their_origin() {
+    let (_d, lib, _s) = setup();
+    let row = row_of(&lib, 1);
+    let value = Some(GeoPoint { lat: 50.0, lon: 19.9, alt: None, origin: GeoOrigin::Gpx });
+    lib.edit_as(&[(row, Op::SetGeo { base: None, value })], Origin::Gpx).unwrap();
+    lib.edit(&[(row, rate(Some(5)))]).unwrap();
+    let events = lib.photo_events(&lib.photo_id(row).unwrap()).unwrap();
+    assert_eq!(events.iter().map(|e| e.origin).collect::<Vec<_>>(), [Origin::App, Origin::Gpx]);
+}
+
+#[test]
+fn photo_history_outlives_reopening() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);
+    let id = {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        let row = row_of(&lib, 1);
+        lib.edit(&[(row, rate(Some(4)))]).unwrap();
+        lib.photo_id(row).unwrap()
+    };
+    let lib = Library::open(dir.path()).unwrap();
+    assert_eq!(lib.photo_events(&id).unwrap().len(), 1);
 }

@@ -9,13 +9,17 @@ use std::path::Path;
 
 use anyhow::Context;
 use c1model::{Change, CollectionChange, KeywordRemap, Op, PhotoId};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use redb::{
+    Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, ReadableTableMetadata, TableDefinition,
+};
 use serde::{Deserialize, Serialize};
 
 /// `<photo key>\u{1f}<field>` → JSON [`Pending`].
 const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending");
 /// sequence number → JSON [`Event`].
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
+/// photo key → sequence numbers of the events about that photo.
+const BY_PHOTO: MultimapTableDefinition<&str, u64> = MultimapTableDefinition::new("events_by_photo");
 /// sequence number → JSON [`QueuedRemap`]: keyword tree changes, applied in order.
 const REMAPS: TableDefinition<u64, &[u8]> = TableDefinition::new("remaps");
 /// sequence number → JSON [`QueuedCollection`]: album changes, applied in order.
@@ -60,13 +64,51 @@ pub enum Origin {
     App,
     /// Seen in the source by a sync (Capture One, or another program).
     Source,
+    /// Placed by a GPX track in this app.
+    Gpx,
 }
 
+/// One entry of the change log: when, from where, and what.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Event {
     pub at: i64,
     pub origin: Origin,
-    pub change: Change,
+    #[serde(flatten)]
+    pub what: What,
+}
+
+/// What an [`Event`] records. Entries written before the other kinds existed hold only a
+/// `change`, and still read as [`What::Change`].
+// Most entries are changes, and they are only passed through on their way to JSON.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum What {
+    /// One field of one photo.
+    Change(Change),
+    /// A photo the source did not have before.
+    Added { photo: PhotoId, name: String },
+    /// A photo the source no longer has; `name` keeps the entry readable.
+    Removed { photo: PhotoId, name: String },
+    /// An album, smart album or group made, renamed, moved or deleted.
+    Collection { change: CollectionChange, label: String },
+    /// A keyword tree change (rename, join, group, ungroup).
+    Remap(KeywordRemap),
+    /// Queued edits written to the source.
+    Written { photos: usize, changes: usize },
+    /// A queued album or keyword tree change taken back before it was written.
+    Undone { label: String },
+}
+
+impl What {
+    /// The photo this entry is about, if it is about one.
+    pub fn photo(&self) -> Option<&PhotoId> {
+        match self {
+            What::Change(change) => Some(&change.photo),
+            What::Added { photo, .. } | What::Removed { photo, .. } => Some(photo),
+            _ => None,
+        }
+    }
 }
 
 pub fn pending_key(photo: &PhotoId, field: &str) -> String {
@@ -91,9 +133,22 @@ impl Edits {
         let db = Database::create(path).with_context(|| format!("opening edits {}", path.display()))?;
         let tx = db.begin_write()?;
         tx.open_table(PENDING)?;
-        tx.open_table(EVENTS)?;
         tx.open_table(REMAPS)?;
         tx.open_table(COLLECTIONS)?;
+        {
+            // The per-photo lookup came after the log: fill it once from what is there.
+            let events = tx.open_table(EVENTS)?;
+            let mut by_photo = tx.open_multimap_table(BY_PHOTO)?;
+            if by_photo.is_empty()? && !events.is_empty()? {
+                for entry in events.iter()? {
+                    let (seq, bytes) = entry?;
+                    let event: Event = serde_json::from_slice(bytes.value())?;
+                    if let Some(photo) = event.what.photo() {
+                        by_photo.insert(photo.key().as_str(), seq.value())?;
+                    }
+                }
+            }
+        }
         tx.commit()?;
         Ok(Self { db })
     }
@@ -142,6 +197,19 @@ impl Edits {
         for entry in tx.open_table(EVENTS)?.iter()?.rev().take(limit) {
             let (_, bytes) = entry?;
             out.push(serde_json::from_slice(bytes.value())?);
+        }
+        Ok(out)
+    }
+
+    /// Every event about one photo (by its key), newest first.
+    pub fn photo_events(&self, key: &str) -> anyhow::Result<Vec<Event>> {
+        let tx = self.db.begin_read()?;
+        let events = tx.open_table(EVENTS)?;
+        let mut out = Vec::new();
+        for seq in tx.open_multimap_table(BY_PHOTO)?.get(key)?.rev() {
+            if let Some(bytes) = events.get(seq?.value())? {
+                out.push(serde_json::from_slice(bytes.value())?);
+            }
         }
         Ok(out)
     }
@@ -222,6 +290,9 @@ impl EditsBatch {
         let next = table.last()?.map_or(0, |(k, _)| k.value() + 1);
         let bytes = serde_json::to_vec(event)?;
         table.insert(next, bytes.as_slice())?;
+        if let Some(photo) = event.what.photo() {
+            self.tx.open_multimap_table(BY_PHOTO)?.insert(photo.key().as_str(), next)?;
+        }
         Ok(())
     }
 
@@ -233,4 +304,19 @@ impl EditsBatch {
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn events_written_before_kinds_still_read() {
+        let old = r#"{"at":5,"origin":"Source","change":{"photo":{"source":"c1","ext":"7"},"op":{"SetRating":{"base":null,"value":3}}}}"#;
+        let event: Event = serde_json::from_str(old).unwrap();
+        let What::Change(change) = &event.what else { panic!("{event:?}") };
+        assert_eq!(change.op, Op::SetRating { base: None, value: Some(3) });
+        // And they are still written that way.
+        assert_eq!(serde_json::to_string(&event).unwrap(), old);
+    }
 }
