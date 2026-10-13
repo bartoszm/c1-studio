@@ -122,17 +122,17 @@ fn main() -> anyhow::Result<()> {
         let filter = Filter { filename: Some(format!("{stem}.*")), ..Filter::default() };
         let rows = library.query(&filter, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
         let export = load(&path)?;
-        let mut best: Option<(f64, Window, ImageRef, RgbImage)> = None;
+        let mut best: Option<(f64, Window, ImageRef, RgbImage, String)> = None;
         for &row in &rows {
             let id = library.photo_id(row).unwrap();
             let Some(r) = source.image(&id, ImageTier::Preview)? else { continue };
             let Some(thumb) = r.look.as_deref().and_then(|p| load(p).ok()) else { continue };
             let (window, score) = locate(&export, &thumb);
             if best.as_ref().is_none_or(|(s, ..)| score < *s) {
-                best = Some((score, window, r, thumb));
+                best = Some((score, window, r, thumb, id.to_string()));
             }
         }
-        let Some((closeness, window, r, thumb)) = best else {
+        let Some((closeness, window, r, thumb, id)) = best else {
             println!("{name:22} none of {} photos named {stem}.* has a thumbnail", rows.len());
             continue;
         };
@@ -153,7 +153,7 @@ fn main() -> anyhow::Result<()> {
         let s = [compare(&thumb), compare(&shown(Matching::Tones)?), compare(&shown(Matching::Colours)?)];
         // A poor best match means the export is of no photo found, or was edited since.
         println!(
-            "{name:22} {:9.1} {:7.1} {:7.1}   window {:.0}% at ({:.2}, {:.2}), best of {} by {closeness:.1}",
+            "{name:22} {:9.1} {:7.1} {:7.1}   window {:.0}% at ({:.2}, {:.2}), best of {} by {closeness:.1}, {id}",
             s[0],
             s[1],
             s[2],
