@@ -591,7 +591,7 @@
           {#each history as e}
             <li>
               <span class="when">{date(e.at)}</span>
-              <span class="origin {e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
+              <span class="origin from-{e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
               <span class="what">{eventText(e, loggedAlbumName)}</span>
             </li>
           {/each}
