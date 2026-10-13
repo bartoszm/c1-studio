@@ -50,6 +50,27 @@ impl MemorySource {
         }
     }
 
+    /// Simulates a photo imported outside the app.
+    pub fn add_externally(&self, photo: Photo) {
+        let mut state = self.state.lock().unwrap();
+        state.photos.insert(photo.id.clone(), photo);
+        state.version += 1;
+    }
+
+    /// Simulates a photo deleted outside the app.
+    pub fn remove_externally(&self, id: &PhotoId) {
+        let mut state = self.state.lock().unwrap();
+        state.photos.remove(id);
+        state.version += 1;
+    }
+
+    /// Simulates albums changed outside the app.
+    pub fn edit_collections_externally(&self, edit: impl FnOnce(&mut Vec<Collection>)) {
+        let mut state = self.state.lock().unwrap();
+        edit(&mut state.collections);
+        state.version += 1;
+    }
+
     pub fn photo(&self, id: &PhotoId) -> Option<Photo> {
         self.state.lock().unwrap().photos.get(id).cloned()
     }

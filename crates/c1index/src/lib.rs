@@ -13,7 +13,7 @@ pub mod schema;
 mod store;
 pub mod thumbs;
 
-pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap};
+pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
 pub use filter::{BBox, Filter, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
 pub use geo::{Cluster, MapResult, MapView};
