@@ -7,7 +7,7 @@ use c1model::source::Result;
 use c1model::{PhotoSource, Pick, Provider};
 
 use crate::CaptureOne;
-use crate::config::{catalog_id, find_catalog};
+use crate::config::catalog_id;
 
 pub struct CaptureOneProvider;
 
@@ -32,11 +32,6 @@ impl Provider for CaptureOneProvider {
     /// path is spelled (`C:/x/a.cocatalogdb` and `c:\x\A.cocatalogdb` are one catalog).
     fn data_key(&self, location: &str) -> String {
         catalog_id(&absolute(Path::new(location)))
-    }
-
-    /// `$C1_CATALOG`, the config file, or the only catalog under `C:\c1_catalogs`.
-    fn find_default(&self) -> Option<String> {
-        find_catalog(None).ok().map(|p| p.display().to_string())
     }
 
     fn open(&self, location: &str, work_dir: &Path) -> Result<Box<dyn PhotoSource>> {

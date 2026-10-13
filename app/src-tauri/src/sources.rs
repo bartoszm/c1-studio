@@ -32,8 +32,9 @@ pub fn spec_for(given: &str, provider_id: Option<&str>) -> Result<SourceSpec, St
 /// What to open at start, and whether to put it on the recent list:
 /// 1. the command line, `c1studio <path> [--provider <id>]`;
 /// 2. `$C1_CATALOG` (scripts and test instances: not remembered);
-/// 3. the source opened last;
-/// 4. a provider's usual place (the only catalog under `C:\c1_catalogs`).
+/// 3. the source opened last.
+///
+/// Nothing is looked for beyond these: a first start opens nothing and asks.
 pub fn startup(args: &[String]) -> Result<(SourceSpec, bool), String> {
     let mut provider_id = None;
     let mut given = None;
@@ -53,11 +54,6 @@ pub fn startup(args: &[String]) -> Result<(SourceSpec, bool), String> {
     }
     if let Some(last) = Recent::load().list.into_iter().next() {
         return Ok((last, false));
-    }
-    for p in providers() {
-        if let Some(location) = p.find_default() {
-            return Ok((SourceSpec { provider: p.id().to_owned(), location }, true));
-        }
     }
     Err("no catalog open yet: choose one".into())
 }

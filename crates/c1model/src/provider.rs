@@ -51,11 +51,6 @@ pub trait Provider: Send + Sync {
     /// library, settings and backups live under [`data_root`]`/<key>`).
     fn data_key(&self, location: &str) -> String;
 
-    /// Where to look when nothing was asked for, if this provider has a usual place.
-    fn find_default(&self) -> Option<String> {
-        None
-    }
-
     /// Opens a source. `work_dir` is the provider's to use for temporary files.
     fn open(&self, location: &str, work_dir: &Path) -> Result<Box<dyn PhotoSource>>;
 }
