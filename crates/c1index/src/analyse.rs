@@ -5,11 +5,12 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Instant, UNIX_EPOCH};
 
-use c1model::{ImageRef, ImageTier, PhotoSource};
+use c1model::{ImageRef, PhotoSource};
 use serde::Serialize;
 
 use crate::filter::{Filter, Trashed};
 use crate::library::{Library, QueryOptions, Sort};
+use crate::thumbs::Thumbs;
 
 /// Photos measured between commits to the library.
 const BATCH: usize = 1000;
@@ -36,6 +37,7 @@ fn stamp(path: &std::path::Path) -> Option<(u64, u64)> {
 pub fn run(
     library: &Library,
     source: &dyn PhotoSource,
+    thumbs: &Thumbs,
     threads: usize,
     stop: &AtomicBool,
     mut report: impl FnMut(Progress),
@@ -50,7 +52,8 @@ pub fn run(
         if id.source != source.info().id {
             continue;
         }
-        let Ok(Some(image)) = source.image(&id, ImageTier::Thumb) else { continue };
+        // The source's thumbnail, or one made for a photo without.
+        let Ok(Some(image)) = thumbs.get(source, &id) else { continue };
         let Some(stamp) = stamp(&image.path) else { continue };
         let key = id.key();
         if analysed.get(&key) != Some(&stamp) {

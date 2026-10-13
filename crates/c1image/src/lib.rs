@@ -94,6 +94,15 @@ pub fn fit(image: RgbImage, long_edge: u32) -> RgbImage {
     image::imageops::resize(&image, size(w), size(h), FilterType::CatmullRom)
 }
 
+/// `image` as a JPEG file's bytes.
+pub fn encode_jpeg(image: &RgbImage, quality: u8) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality)
+        .encode_image(image)
+        .expect("encoding into memory does not fail");
+    out
+}
+
 pub(crate) fn load_jpeg(path: &Path) -> Result<RgbImage> {
     jpeg(&std::fs::read(path).map_err(io_err(path))?, path)
 }

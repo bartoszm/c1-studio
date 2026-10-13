@@ -357,6 +357,11 @@ footer .queue {
   border-radius: 3px;
   font-weight: 600;
 }
+footer .thumbs { padding: 0 8px; color: #e8b03a; border: 1px solid currentColor; border-radius: 3px; }
+footer .thumbs:hover { color: #fff; }
+/* A thumbnail that failed to load leaves its tile empty, not a broken-image icon; it is
+   tried again once thumbnails are made. */
+img[data-broken] { visibility: hidden; }
 footer .autosave { display: flex; align-items: center; gap: 10px; }
 footer .autosave.alone { margin-left: auto; }
 footer .autosave label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
