@@ -164,7 +164,7 @@
       el.title = single
         ? "Drag to move; the dot is where it goes"
         : moves.length
-          ? `${c.count.toLocaleString()} photos at one spot · drag to move them together`
+          ? `${c.count.toLocaleString()} photos at one spot · drag to move them together, or pick some of them below to move just those`
           : `${c.count.toLocaleString()} photos`;
       el.dataset.row = String(c.best);
       el.dataset.count = String(c.count);
@@ -202,7 +202,10 @@
           // The click that ends a drag comes after this; it is not a click on the tile.
           setTimeout(() => (dragged = false));
           const at = marker.getLngLat();
-          onsetgeo(moves, at.lat, ((at.lng + 540) % 360) - 180, c.bounds);
+          // Some of the stack picked in the grid: they go, the rest stay (and so does
+          // the picked tile).
+          const some = movingOf(moves);
+          onsetgeo(some, at.lat, ((at.lng + 540) % 360) - 180, some === moves ? c.bounds : undefined);
         });
       }
       markers.set(id, { marker, el });
@@ -214,6 +217,14 @@
       }
     }
     mark();
+  }
+
+  /** What dragging a stack moves: the photos of it picked in the grid, two or more of
+   *  them; else all of it. */
+  function movingOf(moves: number[]): number[] {
+    const picked = new Set(pickedRows);
+    const some = moves.filter((r) => picked.has(r));
+    return some.length >= 2 && some.length < moves.length ? some : moves;
   }
 
   function sameBox(a: BBox, b: BBox): boolean {
@@ -425,7 +436,7 @@
   <div class="note">
     {#if failed}{failed}
     {:else if aim}They go where the cross is; zoom in to place them closer.
-    {:else if tile}The grid shows the picked tile's photos · click it again, the map or Esc to show the area
+    {:else if tile}The grid shows the picked tile's photos · pick some and drag the pin (or them) to move just those · click it again, the map or Esc to show the area
     {:else if located === 0}No photos here have a position yet. Drag some from below onto the map.
     {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin; the dot is where it is · Shift+drag picks an area{/if}
   </div>
