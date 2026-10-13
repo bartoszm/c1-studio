@@ -1,6 +1,6 @@
 <script lang="ts">
   import { looseKey } from "./lib/countries";
-  import { nearbyPlaces, placeAt } from "./lib/placeHints";
+  import { catalogPlaces, nearbyPlaces, placeAt } from "./lib/placeHints";
   import { fillFor, suggest, type Level, type Place, type PlaceFields, type PlacePath, type Suggestion } from "./lib/places";
 
   // One level of a place (country, state, city or location) with suggestions as it is
@@ -8,7 +8,7 @@
   // catalog's, those inside the photo's own country and state first. Picking one sets
   // the levels above it too; Enter or leaving the field sets what was typed.
   let {
-    id, level, shown, placeholder, title, context, catalog, selection, picked, geo, version, onfields, ontext,
+    id, level, shown, placeholder, title, context, selection, picked, geo, version, onfields, ontext,
   }: {
     id: string;
     level: Level;
@@ -18,7 +18,6 @@
     title?: string;
     /** The levels already filled: the photo's, or those the selection shares. */
     context: Partial<Place>;
-    catalog: [string, number][];
     /** With several photos selected: their places, counted among them. */
     selection?: [string, number][];
     picked: number;
@@ -37,6 +36,9 @@
   let active = $state(-1);
   let nearby = $state<[string, number][]>([]);
   let here = $state<PlacePath | null>(null);
+  let catalog = $state<[string, number][]>([]);
+  /** Bumped on entering: replies asked for before (another photo's) are dropped. */
+  let entered = 0;
   /** Picked or put back: leaving the field then sets nothing. */
   let settled = false;
 
@@ -49,15 +51,19 @@
     settled = false;
     nearby = [];
     here = null;
+    const mine = ++entered;
+    const now = () => open && mine === entered;
+    catalogPlaces(version).then((c) => { if (now()) catalog = c; });
     if (geo) {
       const { lat, lon } = geo;
-      nearbyPlaces(lat, lon, version).then((n) => { if (open) nearby = n; });
-      placeAt(lat, lon).then((h) => { if (open) here = h; });
+      nearbyPlaces(lat, lon, version).then((n) => { if (now()) nearby = n; });
+      placeAt(lat, lon).then((h) => { if (now()) here = h; });
     }
   }
 
   function leave() {
     open = false;
+    entered++;
     if (!settled && input.value.trim() !== shown.trim()) ontext(input.value);
   }
 

@@ -64,6 +64,18 @@ impl Store {
         Ok(Some(postcard::from_bytes(bytes.value())?))
     }
 
+    /// The photos at `rows` that exist, read together.
+    pub fn photos(&self, rows: &[u64], mut f: impl FnMut(u64, Photo)) -> anyhow::Result<()> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(PHOTOS)?;
+        for &row in rows {
+            if let Some(bytes) = table.get(row)? {
+                f(row, postcard::from_bytes(bytes.value())?);
+            }
+        }
+        Ok(())
+    }
+
     /// Every stored photo, in row order.
     pub fn for_each_photo(&self, mut f: impl FnMut(u64, Photo) -> anyhow::Result<()>) -> anyhow::Result<()> {
         let tx = self.db.begin_read()?;

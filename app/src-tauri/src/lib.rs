@@ -1,7 +1,7 @@
 //! The desktop app: the library behind Tauri commands, and pixels behind the `c1img:`
 //! protocol (`c1img://localhost/thumb/<row>`, `c1img://localhost/preview/<row>`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -905,7 +905,7 @@ async fn missing_country_codes(app: State<'_, App>, filter: Filter) -> Result<Ve
 #[tauri::command]
 async fn set_country_codes(app: State<'_, App>, items: Vec<(Vec<u64>, String)>) -> Result<Vec<(u64, Op)>, String> {
     let s = app.session()?;
-    let mut codes = HashMap::new();
+    let mut codes = BTreeMap::new();
     for (rows, code) in items {
         let code = clean_text("country_code", &code).ok_or("an empty country code")?;
         codes.extend(rows.into_iter().map(|row| (row, code.clone())));
@@ -1067,24 +1067,23 @@ async fn keyword_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(Stri
 async fn place_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(Place, Vec<u64>)>, String> {
     let s = app.session()?;
     let mut places = Vec::with_capacity(rows.len());
-    for row in rows {
-        if let Some(photo) = s.library.photo(row).map_err(text)? {
-            places.push((row, photo.place));
-        }
-    }
+    s.library.photos(&rows, |row, photo| places.push((row, photo.place))).map_err(text)?;
     Ok(group_places(places))
 }
 
+/// Groups photos by place, a field of only spaces counting as empty: such a photo has
+/// no location, as the index sees it.
 fn group_places(places: Vec<(u64, Place)>) -> Vec<(Place, Vec<u64>)> {
-    type Key = [Option<String>; 5];
-    let key = |p: &Place| -> Key {
-        [p.country.clone(), p.country_code.clone(), p.state.clone(), p.city.clone(), p.location.clone()]
-    };
-    let mut groups = BTreeMap::<Key, (Place, Vec<u64>)>::new();
-    for (row, place) in places {
-        groups.entry(key(&place)).or_insert_with(|| (place, vec![])).1.push(row);
+    let clean = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let mut groups = BTreeMap::<[Option<String>; 5], Vec<u64>>::new();
+    for (row, p) in places {
+        let key = [clean(p.country), clean(p.country_code), clean(p.state), clean(p.city), clean(p.location)];
+        groups.entry(key).or_default().push(row);
     }
-    let mut out: Vec<_> = groups.into_values().collect();
+    let groups = groups.into_iter().map(|([country, country_code, state, city, location], rows)| {
+        (Place { country, country_code, state, city, location }, rows)
+    });
+    let mut out: Vec<_> = groups.collect();
     out.sort_by_key(|(_, rows)| std::cmp::Reverse(rows.len()));
     out
 }
@@ -1793,12 +1792,15 @@ mod tests {
             (2, Place::default()),
             (3, city(Some("Kraków"))),
             (4, city(None)),
+            // Only spaces: no location, as the index has it.
+            (5, Place { city: Some("  ".into()), ..Place::default() }),
+            (6, city(Some("Kraków"))),
         ]);
         let shape: Vec<_> =
             groups.iter().map(|(p, rows)| (p.city.as_deref(), p.country.as_deref(), rows.clone())).collect();
-        assert_eq!(shape[0], (Some("Kraków"), Some("Poland"), vec![1, 3]));
+        assert_eq!(shape[0], (Some("Kraków"), Some("Poland"), vec![1, 3, 6]));
         assert_eq!(groups.len(), 3);
-        assert!(groups.iter().any(|(p, rows)| *p == Place::default() && rows == &[2]));
+        assert!(groups.iter().any(|(p, rows)| *p == Place::default() && rows == &[2, 5]));
     }
 
     #[test]

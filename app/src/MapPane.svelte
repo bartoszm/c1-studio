@@ -6,6 +6,7 @@
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import type { BBox, Cluster, Filter } from "./lib/api";
+  import { movingOf } from "./lib/pins";
 
   let {
     filter, version, focus, dragRows, pickedRows, tile, onbox, onview, ontile, onpick, onsetgeo, onerror,
@@ -204,7 +205,7 @@
           const at = marker.getLngLat();
           // Some of the stack picked in the grid: they go, the rest stay (and so does
           // the picked tile).
-          const some = movingOf(moves);
+          const some = movingOf(moves, pickedRows);
           onsetgeo(some, at.lat, ((at.lng + 540) % 360) - 180, some === moves ? c.bounds : undefined);
         });
       }
@@ -217,14 +218,6 @@
       }
     }
     mark();
-  }
-
-  /** What dragging a stack moves: the photos of it picked in the grid, two or more of
-   *  them; else all of it. */
-  function movingOf(moves: number[]): number[] {
-    const picked = new Set(pickedRows);
-    const some = moves.filter((r) => picked.has(r));
-    return some.length >= 2 && some.length < moves.length ? some : moves;
   }
 
   function sameBox(a: BBox, b: BBox): boolean {
