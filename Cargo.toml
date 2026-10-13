@@ -40,3 +40,7 @@ opt-level = 2
 # Pixel loops: unoptimised they are ten times slower, even in a debug build.
 [profile.dev.package.c1analysis]
 opt-level = 3
+
+# Previews and thumbnails: decoding, colour table, straightening (seconds each unoptimised).
+[profile.dev.package.c1image]
+opt-level = 3

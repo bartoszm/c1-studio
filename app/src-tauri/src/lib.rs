@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use c1index::thumbs::Thumbs;
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
@@ -43,6 +44,24 @@ struct Session {
     analysing: AtomicBool,
     analysis_stop: AtomicBool,
     analysis: Mutex<AnalysisState>,
+    /// Thumbnails made here for photos Capture One has none for, and the run that makes
+    /// them all (one at a time, stopped when another source opens).
+    thumbs: Thumbs,
+    filling: AtomicBool,
+    fill_stop: AtomicBool,
+    fill: Mutex<FillState>,
+}
+
+/// Photos without a thumbnail, and how far making theirs has got, for the footer.
+#[derive(Clone, Debug, Default, Serialize)]
+struct FillState {
+    running: bool,
+    done: usize,
+    total: usize,
+    made: usize,
+    failed: usize,
+    /// Photos that show no thumbnail now, once counted.
+    missing: Option<usize>,
 }
 
 /// How far the background analysis has got, for the footer.
@@ -105,7 +124,79 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         analysing: AtomicBool::new(false),
         analysis_stop: AtomicBool::new(false),
         analysis: Mutex::new(AnalysisState::default()),
+        thumbs: Thumbs::new(dir.join("thumbs")),
+        filling: AtomicBool::new(false),
+        fill_stop: AtomicBool::new(false),
+        fill: Mutex::new(FillState::default()),
     })
+}
+
+fn report_fill(app: &AppHandle, s: &Session, state: FillState) {
+    *s.fill.lock().unwrap() = state.clone();
+    let _ = app.emit("thumbs", state);
+}
+
+/// Counts the photos without a thumbnail, in the background, unless thumbnails are
+/// being made (which counts as it goes).
+fn count_missing(app: &AppHandle) {
+    let Ok(s) = app.state::<App>().session() else { return };
+    if s.filling.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if let Ok(missing) = s.thumbs.missing(&s.library, s.source.as_ref()) {
+            let last = s.fill.lock().unwrap().clone();
+            report_fill(&handle, &s, FillState { missing: Some(missing.len()), ..last });
+        }
+        s.filling.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Makes a thumbnail for every photo without one, from its preview or else its original,
+/// then measures the new ones.
+#[tauri::command]
+async fn fill_thumbnails(app: AppHandle) -> Result<(), String> {
+    let s = app.state::<App>().session()?;
+    if s.filling.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    std::thread::spawn(move || {
+        let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1));
+        let missing = s.thumbs.missing(&s.library, s.source.as_ref()).unwrap_or_default();
+        let done = s.thumbs.fill(s.source.as_ref(), &missing, threads, &s.fill_stop, |p| {
+            report_fill(
+                &app,
+                &s,
+                FillState {
+                    running: true,
+                    done: p.done,
+                    total: p.total,
+                    made: p.made,
+                    failed: p.failed,
+                    missing: Some(p.total - p.made),
+                },
+            );
+        });
+        let state = FillState {
+            running: false,
+            done: done.done,
+            total: done.total,
+            made: done.made,
+            failed: done.failed,
+            missing: Some(done.total - done.made),
+        };
+        report_fill(&app, &s, state);
+        s.filling.store(false, Ordering::SeqCst);
+        let _ = app.emit("thumbs-done", ());
+        start_analysis(&app);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+async fn thumbs_state(app: State<'_, App>) -> Result<FillState, String> {
+    Ok(app.session()?.fill.lock().unwrap().clone())
 }
 
 /// Measures the photos not measured yet, in the background, unless that is under way.
@@ -122,7 +213,7 @@ fn start_analysis(app: &AppHandle) {
             *s.analysis.lock().unwrap() = state.clone();
             let _ = handle.emit("analysis", state);
         };
-        let result = c1index::analyse::run(&s.library, s.source.as_ref(), threads, &s.analysis_stop, |p| {
+        let result = c1index::analyse::run(&s.library, s.source.as_ref(), &s.thumbs, threads, &s.analysis_stop, |p| {
             report(AnalysisState { running: true, done: p.done, total: p.total, failed: p.failed });
         });
         let last = s.analysis.lock().unwrap().clone();
@@ -356,6 +447,7 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
         let _ = app.emit("library-changed", &report);
     }
     start_analysis(app);
+    count_missing(app);
     Ok(report)
 }
 
@@ -1165,7 +1257,8 @@ async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
     std::fs::write(&s.settings_path, bytes).map_err(text)
 }
 
-/// `/thumb/<row>` serves Capture One's own thumbnail: a JPEG with every edit, cut to the crop.
+/// `/thumb/<row>` serves Capture One's own thumbnail: a JPEG with every edit, cut to the crop;
+/// for a photo without one, one made here (from its preview or original) the first time.
 /// `/preview/<row>` renders the large preview (~300 ms), framed alike, and sends it as JPEG.
 fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let mut parts = path.trim_start_matches('/').split('/');
@@ -1177,7 +1270,11 @@ fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(row) = parts.next().and_then(|r| r.parse::<u64>().ok()) else { return Ok(None) };
     let s = app.state::<App>().session().map_err(anyhow::Error::msg)?;
     let Some(id) = s.library.photo_id(row) else { return Ok(None) };
-    let Some(source) = s.source.image(&id, tier)? else { return Ok(None) };
+    let image = match tier {
+        ImageTier::Thumb => s.thumbs.get_or_make(s.source.as_ref(), &id)?,
+        _ => s.source.image(&id, tier)?,
+    };
+    let Some(source) = image else { return Ok(None) };
     // A thumbnail without a crop is sent as stored; cutting one costs ~5 ms.
     if tier == ImageTier::Thumb && source.crop.is_none() {
         return Ok(Some(std::fs::read(&source.path)?));
@@ -1197,8 +1294,9 @@ fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime)
-        // Rows are stable and pixels change only when Capture One re-renders.
-        .header(header::CACHE_CONTROL, "max-age=600")
+        // Rows are stable and pixels change only when Capture One re-renders. A missing
+        // image is not kept: one may be made for it any moment.
+        .header(header::CACHE_CONTROL, if status == StatusCode::OK { "max-age=600" } else { "no-store" })
         .body(body)
         .expect("a static response always builds")
 }
@@ -1311,6 +1409,7 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
     // stops after the batch it is on.
     if let Ok(old) = &app.state::<App>().0.read().unwrap().session {
         old.analysis_stop.store(true, Ordering::SeqCst);
+        old.fill_stop.store(true, Ordering::SeqCst);
     }
     *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
     Recent::remember(&spec)?;
@@ -1388,6 +1487,8 @@ pub fn run() {
             restore_backup,
             look,
             analysis_state,
+            fill_thumbnails,
+            thumbs_state,
             keyword_counts,
             pending,
             discard,
