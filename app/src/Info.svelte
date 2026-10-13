@@ -1,14 +1,16 @@
 <script lang="ts">
   import * as api from "./lib/api";
-  import { codeFor, nameFor } from "./lib/countries";
   import { COLORS, bytes, camera, date, exposure, folderOf, geoText, parseGeo } from "./lib/format";
+  import { allFields, fieldValues, isEmpty, keyOf, treeKeys, withCode, type Place } from "./lib/places";
+  import { placeText } from "./lib/tree";
+  import PlaceInput from "./PlaceInput.svelte";
 
   const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums,
+    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces, places,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, onlook,
     onplace, ongeo, oniptc, oncopy, onpaste, onpastechoose, onsync,
@@ -42,9 +44,12 @@
     onlook: (f: api.Filter) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
-    /** A location field typed in; "" clears it. */
-    /** Location fields typed in; "" clears one. */
-    onplace: (fields: Partial<Record<api.PlaceField, string>>) => void;
+    /** With several photos selected: their places, each with the photos that have it. */
+    sharedPlaces: [Place, number[]][] | null;
+    /** Every place in the catalog (`place_tree` keys with counts), for suggestions. */
+    places: [string, number][];
+    /** Location fields typed in, "" clearing one: on `rows`, or on every photo edited. */
+    onplace: (fields: Partial<Record<api.PlaceField, string>>, rows?: number[]) => void;
     ongeo: (value: [number, number] | null) => void;
     /** An IPTC text field typed in; "" clears it. */
     oniptc: (field: api.CaptionField, value: string) => void;
@@ -113,6 +118,44 @@
     ["country", "Country"], ["country_code", "Code"], ["state", "State"], ["city", "City"], ["location", "Location"],
   ];
 
+  // Several photos selected: the places they have, set apart as keywords are, and for
+  // each field the value they share or how many values they hold.
+  let placeGroups = $derived(picked > 1 && sharedPlaces ? sharedPlaces : null);
+  let placeCounts = $derived(placeGroups?.map(([p, rows]): [Place, number] => [p, rows.length]) ?? null);
+  let placeKeys = $derived(placeCounts ? treeKeys(placeCounts) : undefined);
+  let placedGroups = $derived((placeGroups ?? []).filter(([p]) => !isEmpty(p)));
+  let unplaced = $derived(placeGroups?.find(([p]) => isEmpty(p))?.[1] ?? []);
+  let fillOpen = $state(false);
+  const NO_PLACE: Place = { country: null, country_code: null, state: null, city: null, location: null };
+  const placeLabel = (place: Place) => placeText(keyOf(place));
+
+  type FieldView = { shown: string; placeholder: string; title?: string };
+  function fieldView(place: Place, field: api.PlaceField): FieldView {
+    if (!placeCounts) return { shown: place[field] ?? "", placeholder: picked > 1 ? `set on ${picked} photos` : "—" };
+    const { values, empty } = fieldValues(placeCounts, field);
+    if (values.length === 1 && !empty) return { shown: values[0][0], placeholder: "" };
+    if (!values.length) return { shown: "", placeholder: `empty on ${picked.toLocaleString()}` };
+    const lines = values.slice(0, 12).map(([v, n]) => `${v}: ${n.toLocaleString()}`);
+    if (values.length > 12) lines.push(`… ${values.length - 12} more`);
+    if (empty) lines.push(`(empty): ${empty.toLocaleString()}`);
+    lines.push(`Type to set it on all ${picked.toLocaleString()}`);
+    const placeholder = values.length === 1
+      ? `${values[0][0]} (${values[0][1].toLocaleString()}/${picked.toLocaleString()})`
+      : `${values.length} values${empty ? ` (${empty.toLocaleString()} empty)` : ""}`;
+    return { shown: "", placeholder, title: lines.join("\n") };
+  }
+
+  /** The levels the selection shares (or the photo has): where suggestions start from. */
+  function sharedPlace(place: Place): Partial<Place> {
+    if (!placeCounts) return place;
+    const out: Partial<Place> = {};
+    for (const [field] of PLACE_FIELDS) {
+      const { values, empty } = fieldValues(placeCounts, field);
+      if (values.length === 1 && !empty) out[field] = values[0][0];
+    }
+    return out;
+  }
+
   // Typed fields commit on Enter or leaving the field; Escape puts the value back.
   function fieldKeys(e: KeyboardEvent, shown: string) {
     const input = e.currentTarget as HTMLInputElement;
@@ -122,23 +165,6 @@
       geoError = null;
       input.blur();
     }
-  }
-
-  // Country and ISO code go together: a country fills its code (and clearing it clears
-  // the code); a code typed where there is no country fills the country.
-  function withCode(field: api.PlaceField, value: string, place: api.Photo["place"]) {
-    const fields: Partial<Record<api.PlaceField, string>> = { [field]: value };
-    if (field === "country") {
-      const code = value.trim() ? codeFor(value) : "";
-      if (code !== null) fields.country_code = code;
-      // A name the app does not know: the old country's code would now be wrong. A code
-      // that never matched the country (set by hand) is left alone.
-      else if (place.country_code && codeFor(place.country ?? "") === place.country_code) fields.country_code = "";
-    } else if (field === "country_code" && value.trim() && !place.country) {
-      const name = nameFor(value);
-      if (name) fields.country = name;
-    }
-    return fields;
   }
 
   // A description has lines: Enter adds one, Ctrl+Enter (or leaving) saves.
@@ -368,22 +394,83 @@
     {/if}
 
     <h3>Location</h3>
+    {#if placeGroups}
+      {#if unplaced.length}
+        <p class="partial-note">
+          <span>{unplaced.length.toLocaleString()} of the {picked.toLocaleString()} have no location</span>
+          {#if placedGroups.length}
+            <button title="Give them one of the places the others have" onclick={() => (fillOpen = !fillOpen)}>Fill…</button>
+          {/if}
+        </p>
+        {#if fillOpen && placedGroups.length}
+          <ul class="links keywords fill-places">
+            {#each placedGroups as [place, rows] (keyOf(place) + place.country_code)}
+              <li>
+                <button
+                  class="link"
+                  title="Put this place on the {unplaced.length.toLocaleString()} without one"
+                  onclick={() => { fillOpen = false; onplace(allFields(place), unplaced); }}>{placeLabel(place)}</button
+                >
+                <span class="count">{rows.length.toLocaleString()}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+      <ul class="links keywords places">
+        {#each placedGroups as [place, rows] (keyOf(place) + place.country_code)}
+          {@const n = rows.length}
+          <li class:partial={n < picked}>
+            <span class="link" title={place.country_code ? `ISO code ${place.country_code}` : "No ISO country code"}>{placeLabel(place)}</span>
+            {#if n < picked}
+              <span class="count" title="On {n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{n.toLocaleString()}/{picked.toLocaleString()}</span>
+              <button class="apply" title="Put this place on all {picked.toLocaleString()} selected photos" aria-label="Put {placeLabel(place)} on all" onclick={() => onplace(allFields(place))}>+</button>
+            {/if}
+            <button
+              class="remove"
+              class:after={n < picked}
+              title="Clear the location of the {n === 1 ? 'photo' : `${n.toLocaleString()} photos`} with this place"
+              aria-label="Clear {placeLabel(place)}"
+              onclick={() => onplace(allFields(NO_PLACE), rows)}>×</button
+            >
+          </li>
+        {/each}
+      </ul>
+    {/if}
     <dl class="fields" class:queued={queued.includes("place")}>
       {#each PLACE_FIELDS as [field, label] (field)}
-        {@const shown = p.place[field] ?? ""}
+        {@const view = fieldView(p.place, field)}
         <dt><label for="place-{field}">{label}</label></dt>
         <dd>
-          <input
-            id="place-{field}"
-            class="field"
-            class:code={field === "country_code"}
-            value={shown}
-            placeholder={picked > 1 ? `set on ${picked} photos` : "—"}
-            maxlength={field === "country_code" ? 3 : undefined}
-            spellcheck="false"
-            onkeydown={(e) => fieldKeys(e, shown)}
-            onchange={(e) => onplace(withCode(field, e.currentTarget.value, p.place))}
-          />
+          {#if field === "country_code"}
+            <input
+              id="place-{field}"
+              class="field code"
+              value={view.shown}
+              placeholder={view.placeholder}
+              title={view.title}
+              maxlength={3}
+              spellcheck="false"
+              onkeydown={(e) => fieldKeys(e, view.shown)}
+              onchange={(e) => onplace(withCode(field, e.currentTarget.value, sharedPlace(p.place)))}
+            />
+          {:else}
+            <PlaceInput
+              id="place-{field}"
+              level={field}
+              shown={view.shown}
+              placeholder={view.placeholder}
+              title={view.title}
+              context={sharedPlace(p.place)}
+              catalog={places}
+              selection={placeKeys}
+              {picked}
+              geo={p.geo}
+              {version}
+              onfields={(fields) => onplace(fields)}
+              ontext={(value) => onplace(withCode(field, value, sharedPlace(p.place)))}
+            />
+          {/if}
         </dd>
       {/each}
     </dl>

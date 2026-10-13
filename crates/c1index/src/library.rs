@@ -546,6 +546,36 @@ impl Library {
     /// their source. The library shows them at once. Returns, per row, the op that puts
     /// back what the photo showed before, for undo.
     pub fn edit(&self, changes: &[(u64, Op)]) -> anyhow::Result<Vec<(u64, Op)>> {
+        self.edit_made(|_| Ok(changes.to_vec()))
+    }
+
+    /// Like [`edit`](Self::edit), with each photo's ops made from the photo as it is when
+    /// the edit runs. Ops made from an earlier read could undo what was edited since: a
+    /// location typed while the city was still being saved would set the city back.
+    pub fn edit_photos(
+        &self,
+        rows: &[u64],
+        ops: impl Fn(u64, &Photo) -> anyhow::Result<Vec<Op>>,
+    ) -> anyhow::Result<Vec<(u64, Op)>> {
+        self.edit_made(|batch| {
+            let mut changes = Vec::new();
+            for &row in rows {
+                if let Some(photo) = batch.photo(row)? {
+                    changes.extend(ops(row, &photo)?.into_iter().map(|op| (row, op)));
+                }
+            }
+            Ok(changes)
+        })
+    }
+
+    fn edit_made(
+        &self,
+        make: impl FnOnce(&crate::store::Batch) -> anyhow::Result<Vec<(u64, Op)>>,
+    ) -> anyhow::Result<Vec<(u64, Op)>> {
+        let _writing = self.writing.lock().unwrap();
+        let mut writer = self.writer()?;
+        let mut batch = self.store.batch()?;
+        let changes = &make(&batch)?;
         // Only albums take photos; a smart album's come from its rule.
         if changes.iter().any(|(_, op)| membership(op).is_some()) {
             let albums = self.collections()?;
@@ -555,9 +585,6 @@ impl Library {
                 }
             }
         }
-        let _writing = self.writing.lock().unwrap();
-        let mut writer = self.writer()?;
-        let mut batch = self.store.batch()?;
         let mut edits = self.edits.batch()?;
         let now = now_ms();
         let mut undo = Vec::new();
@@ -618,7 +645,10 @@ impl Library {
         batch.commit()?;
         edits.commit()?;
         self.reader.reload()?;
-        if undo.iter().any(|(_, op)| matches!(op, Op::AddKeywords { .. } | Op::RemoveKeywords { .. })) {
+        if undo
+            .iter()
+            .any(|(_, op)| matches!(op, Op::AddKeywords { .. } | Op::RemoveKeywords { .. } | Op::SetPlace { .. }))
+        {
             self.refresh_distinct()?;
         }
         Ok(undo)

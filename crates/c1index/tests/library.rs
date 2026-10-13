@@ -742,6 +742,42 @@ fn places_nest_country_state_city_location_with_gaps_kept() {
     assert_eq!(ids(&lib, &Filter { no_country_code: true, ..Filter::default() }), [2, 4]);
 }
 
+#[test]
+fn a_city_typed_here_is_found_at_once() {
+    let (_dir, lib, _source) = setup();
+    let row = row_of(&lib, 3);
+    let base = lib.photo(row).unwrap().unwrap().place;
+    let value = Place { city: Some("Zakopane".into()), ..base.clone() };
+    lib.edit(&[(row, Op::SetPlace { base, value })]).unwrap();
+    assert_eq!(ids(&lib, &Filter { city: Some("zakop".into()), ..Filter::default() }), [3]);
+}
+
+#[test]
+fn field_edits_build_on_each_other() {
+    let (_dir, lib, _source) = setup();
+    let row = row_of(&lib, 3);
+    // Each edit sets one field on the place the photo has when it runs.
+    let set = |field: fn(&mut Place) -> &mut Option<String>, text: &str| {
+        let text = text.to_owned();
+        lib.edit_photos(&[row], move |_, photo| {
+            let mut value = photo.place.clone();
+            *field(&mut value) = Some(text.clone());
+            Ok(vec![Op::SetPlace { base: photo.place.clone(), value }])
+        })
+        .unwrap()
+    };
+    set(|p| &mut p.country, "United States");
+    set(|p| &mut p.state, "New York");
+    set(|p| &mut p.location, "Brooklyn Bridge");
+    let place = lib.photo(row).unwrap().unwrap().place;
+    assert_eq!(
+        (place.country.as_deref(), place.state.as_deref(), place.location.as_deref()),
+        (Some("United States"), Some("New York"), Some("Brooklyn Bridge"))
+    );
+    // Queued as one place edit for the photo.
+    assert_eq!(lib.pending().unwrap().len(), 1);
+}
+
 fn in_album(library: &Library, id: &CollectionId) -> Vec<u32> {
     ids(library, &Filter { collections: vec![id.0.clone()], ..Filter::default() })
 }
