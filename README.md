@@ -1,21 +1,104 @@
-# c1-studio
+# C1 Studio
 
-A fast browser and indexer for Capture One catalogs, written in Rust. The plan is in
+**A fast companion app for Capture One catalogs.** Browse, search and tidy 100,000 photos
+in milliseconds, then send your edits back to Capture One when you choose.
+
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/bartoszm)
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/bartoszmics)
+
+![C1 Studio: search, details, the viewer and the analysis view](docs/media/demo.gif)
+
+C1 Studio reads your Capture One catalog and builds its own index next to it, so finding
+and sorting photos never waits on Capture One. It never changes the catalog behind your
+back: edits queue up in the app and are written only when you press *Write* (or turn
+Autosave on), with a backup of the catalog made first.
+
+Written in Rust (Tauri 2 + Svelte 5, tantivy + redb). Windows, Capture One 16.
+
+## What it does
+
+### Find anything, instantly
+
+Combine albums, dates, folders, keywords, rating, colour tag, camera, lens and place with
+free-text search over keywords, captions, places and file names. Every count in the
+sidebar updates as you narrow down: below, 796 of 100,000 photos found in 12 ms.
+
+![Searching "hong kong street": 796 photos in 12 ms, with counts per album, year and place](docs/media/search.jpg)
+
+### Browse and edit
+
+A resizable grid, a details panel and a full-screen viewer, showing each photo as
+Capture One renders it. Edit ratings, colour tags, keywords and
+the keyword tree (rename, join, group), albums and smart albums, location, GPS and IPTC
+fields, or copy fields from one photo to many.
+
+![The portfolio album in the grid](docs/media/library.jpg)
+
+| Details | Viewer |
+| --- | --- |
+| ![Details panel: rating, colour, exposure, keywords, albums, look](docs/media/details.jpg) | ![Full-screen viewer with the details panel](docs/media/viewer.jpg) |
+
+### See what your photos look like
+
+Every photo is measured once: shape, main colours, light (dark, bright, clipped
+highlights, blocked shadows) and focus. Filter by them, and find duplicates (the same
+moment shot twice) and series (bursts) across the library.
+
+![Analysis of the search results: colour, light, focus, duplicates and series](docs/media/analysis.jpg)
+
+### On the map
+
+Photos with GPS are clustered on a map that works as a filter: pan and zoom to narrow the
+grid, box-select a region, search for a place, or drag photos to set their position.
+Import a GPX track to place a whole trip at once.
+
+### History
+
+<img src="docs/media/history.jpg" alt="The History section of the details panel" align="right" width="300">
+
+Every change to the catalog is recorded from now on, whether it was made here, in
+Capture One, by a GPX import or by restoring a backup. The details panel shows each
+photo's history. This is the groundwork for browsing the catalog as it was on any date.
+
+<br clear="right">
+
+### Also
+
+- **`c1cat`**: the same library from the command line: find, count, facets, edits and
+  rendering previews to JPEG. See [docs/CLI.md](docs/CLI.md).
+- **Backups**: every write is preceded by a backup of the catalog, and any backup can be
+  restored from the app.
+
+## Support the project
+
+If C1 Studio saves you time, you can support its development on
+[GitHub Sponsors](https://github.com/sponsors/bartoszm) or
+[Buy Me a Coffee](https://buymeacoffee.com/bartoszmics). Thank you!
+
+## Status
+
+Developed against a 100,000-photo catalog. Reading is tested on Capture One 16.5 and 16.8
+catalogs; writing on 16.8 only (other versions open read-only). Capture One may change
+its catalog format in any release: keep backups, and expect rough edges.
+
+C1 Studio is not affiliated with or endorsed by Capture One.
+
+The user guide is [docs/GUIDE.md](docs/GUIDE.md); the plan is in
 [docs/PLAN.md](docs/PLAN.md) and the progress log in [docs/PROGRESS.md](docs/PROGRESS.md).
 
-## Layout
+## Build
 
-```
-crates/c1model/    canonical photo model + the PhotoSource contract + conformance checks
-crates/source-c1/  Capture One catalog as a PhotoSource (read-only for now)
-crates/c1index/    the library: redb store + tantivy index, filters, facet counts, sync
-crates/c1image/    display-ready pixels: thumbnails, white-balanced JPEG-XL previews, raw-embedded JPEGs
-crates/c1cat/      CLI over the library
-app/               the desktop app: Tauri 2 (app/src-tauri) + Svelte 5 (app/src)
-legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests
+```powershell
+cd app
+pnpm install
+pnpm tauri dev                          # live-reloading window
+pnpm tauri build --debug --no-bundle    # target\debug\c1studio.exe
 ```
 
-## Use
+The app opens a catalog given on the command line (`c1studio.exe C:\c1_catalogs\mine`),
+then the one opened last. Library data lives in `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+
+### The command line
 
 ```powershell
 cargo build --release -p c1cat
@@ -28,27 +111,26 @@ $c1 = '.\target\release\c1cat.exe'
 & $c1 bench                                    # speed gate on 250k synthetic photos
 ```
 
-Every command, selection flag and edit is described in [docs/CLI.md](docs/CLI.md).
-
 The catalog is located from `--catalog`, then `C1_CATALOG`, then
-`%APPDATA%\c1studio\config.json` (`{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`).
-Library data lives in `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+`%APPDATA%\c1studio\config.json` (`{"catalog": "C:\\c1_catalogs\\mine\\mine.cocatalogdb"}`).
 
-## App
+### Layout
 
-How to use it: [docs/GUIDE.md](docs/GUIDE.md).
-
-```powershell
-cd app
-pnpm install
-pnpm tauri dev                          # live-reloading window
-pnpm tauri build --debug --no-bundle    # target\debug\c1studio.exe
+```
+crates/c1model/    canonical photo model + the PhotoSource contract + conformance checks
+crates/source-c1/  Capture One catalog as a PhotoSource
+crates/c1index/    the library: redb store + tantivy index, filters, facet counts, sync, change log
+crates/c1image/    display-ready pixels: thumbnails, white-balanced JPEG-XL previews, raw-embedded JPEGs
+crates/c1analysis/ what photos look like: colour, light, focus, duplicates, series
+crates/c1cat/      CLI over the library
+app/               the desktop app: Tauri 2 (app/src-tauri) + Svelte 5 (app/src)
+legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests
 ```
 
-## Test
+### Test
 
 ```powershell
 cargo test --workspace
-cargo test -p source-c1 --test live -- --ignored   # against the real catalog, read-only
+cargo test -p source-c1 --test live -- --ignored   # against a real catalog, read-only
 python tools/difftest/difftest.py                   # Rust vs the Python oracle in WSL, same catalog
 ```
