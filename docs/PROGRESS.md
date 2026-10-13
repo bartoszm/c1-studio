@@ -53,7 +53,7 @@ The plan (in Polish) is in [PLAN.md](PLAN.md). Stages are numbered as there.
   `--near` will differ in the differential tests by design.
 - `ZVERSIONINFO` keeps one row per Capture One version that ever opened the catalog.
   The current schema is the newest row (`ORDER BY Z_PK DESC`), not the first.
-- Two catalogs exist under `C:\c1_catalogs` (`fuji`, `masha_piotr`).
+- Two catalogs exist under `C:\c1_catalogs` (`fuji`, `other`).
   `%APPDATA%\c1studio\config.json` points at `fuji`.
 
 ### Tests
@@ -663,7 +663,7 @@ in `<data dir>/settings.json`) writes the queue by itself.
   16.5.5 Pro (Windows), catalog schema 1650 (created with 16.4.5)", re-read on each
   full read since a newer Capture One upgrades a catalog in place.
 - **What is checked:** schema 160800 (16.8) read and written; 1650 (16.5, the
-  masha_piotr catalog) read, writing off. Any other schema is tried for reading and
+  `other` catalog) read, writing off. Any other schema is tried for reading and
   marked untested, writing off. 1650 lacks `ZRETOUCHINGLAYER`: a missing table now
   means no retouching layers.
 - **`Compatibility`** (c1model, in `SourceInfo`): format, read and write support
