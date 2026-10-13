@@ -11,6 +11,7 @@ pub mod library;
 pub mod looks;
 pub mod schema;
 mod store;
+pub mod thumbs;
 
 pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap};
 pub use facets::Counts;

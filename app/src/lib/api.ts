@@ -76,6 +76,17 @@ export type LookView = {
   series: [string, number] | null;
 };
 export type AnalysisState = { running: boolean; done: number; total: number; failed: number };
+/** Photos without a thumbnail (once counted), and how far making theirs has got. */
+export type ThumbsState = {
+  running: boolean;
+  done: number;
+  total: number;
+  made: number;
+  failed: number;
+  missing: number | null;
+  /** Why the last run could not make some, most common first, with how many each. */
+  reasons: [string, number][];
+};
 
 export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
 
@@ -318,6 +329,36 @@ export const changeCollection = (change: CollectionChange) =>
 export const undoCollection = (seq: number) => invoke<void>("undo_collection", { seq });
 export const look = (row: number) => invoke<LookView | null>("look", { row });
 export const analysisState = () => invoke<AnalysisState>("analysis_state");
+export const thumbsState = () => invoke<ThumbsState>("thumbs_state");
+/** Makes a thumbnail for every photo without one, in the background ("thumbs" events). */
+export const fillThumbnails = () => invoke<void>("fill_thumbnails");
+/** Opens the events log (background work and what failed) in the system's text viewer. */
+export const openLog = () => invoke<void>("open_log");
+
+/** Thumbnails that failed to load try again: one may have been made for them since. */
+let retries = 0;
+export function retryBrokenImages() {
+  retries++;
+  for (const img of document.querySelectorAll<HTMLImageElement>("img[data-broken]")) {
+    delete img.dataset.broken;
+    img.src = img.src.replace(/[?#].*$/, "") + `?r=${retries}`;
+  }
+}
+/** Marks images that fail to load, so they hide and can be tried again. */
+export function watchBrokenImages(): () => void {
+  const failed = (e: Event) => {
+    if (e.target instanceof HTMLImageElement && e.target.src.startsWith(base)) e.target.dataset.broken = "";
+  };
+  const loaded = (e: Event) => {
+    if (e.target instanceof HTMLImageElement) delete e.target.dataset.broken;
+  };
+  document.addEventListener("error", failed, true);
+  document.addEventListener("load", loaded, true);
+  return () => {
+    document.removeEventListener("error", failed, true);
+    document.removeEventListener("load", loaded, true);
+  };
+}
 /** A copy of the catalog kept before writing to it. */
 export type BackupInfo = { id: string; path: string; created_ms: number; size: number; note: string | null };
 /** The backups, newest first, and whether the catalog can be written now (a restore needs it). */

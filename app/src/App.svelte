@@ -185,6 +185,8 @@
   }
   /** The background analysis, for the footer. */
   let analysis = $state<api.AnalysisState | null>(null);
+  let thumbs = $state<api.ThumbsState | null>(null);
+  let thumbsRetried = 0;
   let countsAt = 0;
   /** What is being dragged: photos (onto an album) or an album (onto a group). */
   let dragging = $state<{ rows: number[] } | { album: string } | null>(null);
@@ -368,7 +370,19 @@
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
+    api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
+    const unwatch = api.watchBrokenImages();
     const off = [
+      listen<api.ThumbsState>("thumbs", (e) => {
+        thumbs = e.payload;
+        // While a run makes them, tiles that showed nothing pick up their new thumbnails
+        // every few seconds. (Photos that failed are not tried again until "Try again".)
+        if (e.payload.running && Date.now() - thumbsRetried > 3000) {
+          thumbsRetried = Date.now();
+          api.retryBrokenImages();
+        }
+      }),
+      listen("thumbs-done", () => api.retryBrokenImages()),
       listen("library-changed", () => { syncNote = ""; syncFailed = null; refresh(true); }),
       listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
@@ -385,7 +399,7 @@
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
-    return () => { clearTimeout(quiet); off.forEach((p) => p.then((f) => f())); };
+    return () => { clearTimeout(quiet); unwatch(); off.forEach((p) => p.then((f) => f())); };
   });
 
   async function refreshQueued() {
@@ -1443,6 +1457,31 @@
     {/if}
     {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
+    {#if thumbs?.running}
+      <span class="sync" title="From each photo's preview, or its original when there is no preview">
+        making thumbnails {thumbs.done.toLocaleString()} / {thumbs.total.toLocaleString()}
+      </span>
+    {:else if thumbs?.missing}
+      {#if thumbs.failed}
+        <button
+          class="warn"
+          title={[
+            `${thumbs.failed.toLocaleString()} photo${thumbs.failed === 1 ? "" : "s"} could not get a thumbnail:`,
+            ...thumbs.reasons.slice(0, 6).map(([why, n]) => `  ${n.toLocaleString()} — ${why}`),
+            "",
+            "Click to open the events log: each photo, where its original was looked for, and why.",
+          ].join("\n")}
+          onclick={() => api.openLog().catch((e) => (editError = String(e)))}
+        >⚠ {thumbs.failed.toLocaleString()} failed</button>
+      {/if}
+      <button
+        class="thumbs"
+        title={thumbs.total && thumbs.failed
+          ? "Try again, for instance once the drive with the originals is connected."
+          : "Capture One has no thumbnail for these. Make them from each photo's preview, or its original when there is none."}
+        onclick={() => api.fillThumbnails().catch((e) => (editError = String(e)))}
+      >{thumbs.missing.toLocaleString()} photo{thumbs.missing === 1 ? "" : "s"} without a thumbnail · {thumbs.total ? "Try again" : "Make them"}</button>
+    {/if}
     {#if analysis?.running && analysis.total}
       <span class="sync" title="Shape, colours, light, focus and a likeness hash, from each photo's thumbnail">
         measuring photos {analysis.done.toLocaleString()} / {analysis.total.toLocaleString()}
@@ -1466,6 +1505,14 @@
       <button class="queue" onclick={() => (writing = true)}>
         {queuedCount.toLocaleString()} edit{queuedCount === 1 ? "" : "s"} waiting · Write to Capture One…
       </button>
+    {/if}
+    {#if status}
+      <button
+        class="log"
+        title="Events log: what was read from and written to Capture One, thumbnails made, and what failed"
+        aria-label="Open the events log"
+        onclick={() => api.openLog().catch((e) => (editError = String(e)))}
+      >ⓘ Log</button>
     {/if}
   </footer>
 </div>
