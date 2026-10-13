@@ -383,7 +383,8 @@
         }
       }),
       listen("thumbs-done", () => api.retryBrokenImages()),
-      listen("library-changed", () => { syncNote = ""; syncFailed = null; refresh(true); }),
+      // The details panel reads the photo (and its history) again: Capture One may have changed it.
+      listen("library-changed", () => { syncNote = ""; syncFailed = null; version++; refresh(true); }),
       listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
       listen("queue-written", () => { edited(); }),
