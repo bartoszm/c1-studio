@@ -59,6 +59,7 @@ impl Thumbs {
             format: ImageFormat::Jpeg,
             white_balance: None,
             rotation: 0,
+            as_stored: false,
             monochrome: false,
             look: None,
             straighten: 0.0,
