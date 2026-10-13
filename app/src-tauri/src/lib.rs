@@ -1,7 +1,7 @@
 //! The desktop app: the library behind Tauri commands, and pixels behind the `c1img:`
 //! protocol (`c1img://localhost/thumb/<row>`, `c1img://localhost/preview/<row>`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -828,14 +828,10 @@ fn keyword_paths(paths: &[String]) -> Result<Vec<KeywordPath>, String> {
 #[tauri::command]
 async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u64, Op)>, String> {
     let s = app.session()?;
-    let mut changes = Vec::with_capacity(rows.len());
-    for row in rows {
-        if let Some(photo) = s.library.photo(row).map_err(text)? {
-            changes.push((row, op_for(&edit, &photo)?));
-        }
-    }
     s.touched();
-    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+    s.library
+        .edit_photos(&rows, |_, photo| Ok(vec![op_for(&edit, photo).map_err(anyhow::Error::msg)?]))
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// A place path's levels, `Poland|—|Kraków` → country, no state, city: a level the
@@ -879,15 +875,13 @@ async fn move_place(
     let filter = Filter { place_under: Some(from), trashed: c1index::Trashed::Include, ..Filter::default() };
     let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
     let rows = s.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.rows;
-    let mut changes = Vec::with_capacity(rows.len());
-    for row in rows {
-        if let Some(photo) = s.library.photo(row).map_err(text)? {
-            let value = moved_place(&photo.place, &target, code.as_deref());
-            changes.push((row, Op::SetPlace { base: photo.place, value }));
-        }
-    }
     s.touched();
-    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+    s.library
+        .edit_photos(&rows, |_, photo| {
+            let value = moved_place(&photo.place, &target, code.as_deref());
+            Ok(vec![Op::SetPlace { base: photo.place.clone(), value }])
+        })
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// Photos in view with a country but no ISO country code, by country.
@@ -911,18 +905,20 @@ async fn missing_country_codes(app: State<'_, App>, filter: Filter) -> Result<Ve
 #[tauri::command]
 async fn set_country_codes(app: State<'_, App>, items: Vec<(Vec<u64>, String)>) -> Result<Vec<(u64, Op)>, String> {
     let s = app.session()?;
-    let mut changes = Vec::new();
+    let mut codes = HashMap::new();
     for (rows, code) in items {
         let code = clean_text("country_code", &code).ok_or("an empty country code")?;
-        for row in rows {
-            if let Some(photo) = s.library.photo(row).map_err(text)? {
-                let value = Place { country_code: Some(code.clone()), ..photo.place.clone() };
-                changes.push((row, Op::SetPlace { base: photo.place, value }));
-            }
-        }
+        codes.extend(rows.into_iter().map(|row| (row, code.clone())));
     }
+    let rows: Vec<u64> = codes.keys().copied().collect();
     s.touched();
-    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+    s.library
+        .edit_photos(&rows, |row, photo| {
+            let Some(code) = codes.get(&row) else { return Ok(vec![]) };
+            let value = Place { country_code: Some(code.clone()), ..photo.place.clone() };
+            Ok(vec![Op::SetPlace { base: photo.place.clone(), value }])
+        })
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// Pastes fields copied from one photo (as it was when copied) onto others, as one
@@ -936,14 +932,11 @@ async fn paste(
     fill: Option<bool>,
 ) -> Result<Vec<(u64, Op)>, String> {
     let s = app.session()?;
-    let mut changes = Vec::new();
-    for row in rows {
-        if let Some(photo) = s.library.photo(row).map_err(text)? {
-            changes.extend(paste_ops(&from, &fields, &photo, fill.unwrap_or(false))?.into_iter().map(|op| (row, op)));
-        }
-    }
+    let fill = fill.unwrap_or(false);
     s.touched();
-    s.library.edit(&changes).map_err(|e| format!("{e:#}"))
+    s.library
+        .edit_photos(&rows, |_, photo| paste_ops(&from, &fields, photo, fill).map_err(anyhow::Error::msg))
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// Applies ops returned by [`edit`] (undo and redo).
@@ -1066,6 +1059,34 @@ async fn keyword_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(Stri
         }
     }
     Ok(counts.into_iter().collect())
+}
+
+/// The places of the photos at `rows`, each with the photos that have it, the most used
+/// first; photos with no location fields at all share the empty place.
+#[tauri::command]
+async fn place_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(Place, Vec<u64>)>, String> {
+    let s = app.session()?;
+    let mut places = Vec::with_capacity(rows.len());
+    for row in rows {
+        if let Some(photo) = s.library.photo(row).map_err(text)? {
+            places.push((row, photo.place));
+        }
+    }
+    Ok(group_places(places))
+}
+
+fn group_places(places: Vec<(u64, Place)>) -> Vec<(Place, Vec<u64>)> {
+    type Key = [Option<String>; 5];
+    let key = |p: &Place| -> Key {
+        [p.country.clone(), p.country_code.clone(), p.state.clone(), p.city.clone(), p.location.clone()]
+    };
+    let mut groups = BTreeMap::<Key, (Place, Vec<u64>)>::new();
+    for (row, place) in places {
+        groups.entry(key(&place)).or_insert_with(|| (place, vec![])).1.push(row);
+    }
+    let mut out: Vec<_> = groups.into_values().collect();
+    out.sort_by_key(|(_, rows)| std::cmp::Reverse(rows.len()));
+    out
 }
 
 /// The albums the photos at `rows` are in, with how many of them each holds.
@@ -1679,6 +1700,7 @@ pub fn run() {
             remaps,
             keyword_users,
             album_counts,
+            place_counts,
             change_collection,
             undo_collection,
             collection_changes,
@@ -1761,6 +1783,22 @@ mod tests {
         assert!(
             ops.iter().any(|op| matches!(op, Op::SetPlace { value, .. } if value.city.as_deref() == Some("Kraków")))
         );
+    }
+
+    #[test]
+    fn places_group_whole_and_most_used_first() {
+        let city = |c: Option<&str>| photo(1, &[], c).place;
+        let groups = group_places(vec![
+            (1, city(Some("Kraków"))),
+            (2, Place::default()),
+            (3, city(Some("Kraków"))),
+            (4, city(None)),
+        ]);
+        let shape: Vec<_> =
+            groups.iter().map(|(p, rows)| (p.city.as_deref(), p.country.as_deref(), rows.clone())).collect();
+        assert_eq!(shape[0], (Some("Kraków"), Some("Poland"), vec![1, 3]));
+        assert_eq!(groups.len(), 3);
+        assert!(groups.iter().any(|(p, rows)| *p == Place::default() && rows == &[2]));
     }
 
     #[test]

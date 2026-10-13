@@ -520,6 +520,34 @@
     }, 80);
     return () => clearTimeout(wait);
   });
+  /** The places of the picked photos, each with the photos that have it; null for one. */
+  let selectionPlaces = $state<[api.Photo["place"], number[]][] | null>(null);
+  let placesAsked = 0;
+  $effect(() => {
+    const rows = [...picked];
+    void version;
+    if (rows.length < 2 || !showInfo) {
+      selectionPlaces = null;
+      return;
+    }
+    const mine = ++placesAsked;
+    const wait = setTimeout(() => {
+      api.placeCounts(rows).then((c) => { if (mine === placesAsked) selectionPlaces = c; }).catch(() => {});
+    }, 80);
+    return () => clearTimeout(wait);
+  });
+  /** Every place in the catalog, whatever the view shows: what location fields suggest. */
+  let catalogPlaces = $state<[string, number][]>([]);
+  $effect(() => {
+    void version;
+    if (!showInfo) return;
+    const wait = setTimeout(() => {
+      api.query({}, { limit: 0, facets: ["place_tree"] })
+        .then((r) => (catalogPlaces = r.facets.place_tree ?? []))
+        .catch(() => {});
+    }, 300);
+    return () => clearTimeout(wait);
+  });
   /** Sync: the focused photo, whose fields go onto the rest of the selection. */
   let syncing = $state<{ from: api.Photo; row: number } | null>(null);
   /** Paste…: the photos the clipboard goes onto, with a choice of fields and how. */
@@ -1194,7 +1222,9 @@
     onlook={(f) => only(f)}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
-    onplace={(fields) => applyEdit({ Place: fields })}
+    sharedPlaces={selectionPlaces}
+    places={catalogPlaces}
+    onplace={(fields, rows) => applyEdit({ Place: fields }, rows ?? targets())}
     ongeo={(value) => applyEdit({ Geo: value })}
     oniptc={(field, value) => applyEdit({ Iptc: { [field]: value } })}
     clip={clipText}
