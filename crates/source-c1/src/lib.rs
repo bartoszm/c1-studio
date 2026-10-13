@@ -164,11 +164,23 @@ impl PhotoSource for CaptureOne {
 
     fn image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>> {
         let vpk = self.variant_pk(id)?;
-        let path = match tier {
-            ImageTier::Thumb => Some(config::thumbnail_path(self.catalog_dir(), vpk)),
-            ImageTier::Original => {
-                let con = catalog::open_live(&self.catalog)?;
-                catalog::original_path(&con, self.catalog_dir(), vpk)?.map(PathBuf::from)
+        match tier {
+            ImageTier::Thumb => {
+                let path = config::thumbnail_path(self.catalog_dir(), vpk);
+                if !path.is_file() {
+                    return Ok(None);
+                }
+                Ok(Some(ImageRef {
+                    path,
+                    format: ImageFormat::Jpeg,
+                    white_balance: None,
+                    rotation: 0,
+                    as_stored: false,
+                    monochrome: false,
+                    look: None,
+                    straighten: 0.0,
+                    crop: self.thumbnail_crop(vpk)?,
+                }))
             }
             ImageTier::Preview => {
                 let con = catalog::open_live(&self.catalog)?;
@@ -176,35 +188,49 @@ impl PhotoSource for CaptureOne {
                 let path = config::preview_path(self.catalog_dir(), &preview.sidecar);
                 // Capture One's own render of the edits, for the look the preview lacks.
                 let thumb = config::thumbnail_path(self.catalog_dir(), vpk);
-                return Ok(path.map(|path| ImageRef {
+                Ok(path.map(|path| ImageRef {
                     path,
                     format: ImageFormat::JpegXl,
                     white_balance: preview.white_balance,
                     rotation: preview.rotation,
+                    as_stored: false,
                     monochrome: preview.monochrome,
                     look: thumb.is_file().then_some(thumb),
                     straighten: preview.straighten,
                     crop: preview.crop,
-                }));
+                }))
             }
-        };
-        let ext = path.as_ref().and_then(|p| p.extension()).map(|e| e.to_string_lossy().to_ascii_lowercase());
-        let format = match (tier, ext.as_deref()) {
-            (ImageTier::Thumb, _) | (_, Some("jpg" | "jpeg")) => ImageFormat::Jpeg,
-            (_, Some("jxl")) => ImageFormat::JpegXl,
-            _ => ImageFormat::Raw,
-        };
-        let crop = if tier == ImageTier::Thumb { self.thumbnail_crop(vpk)? } else { None };
-        Ok(path.filter(|p| p.is_file()).map(|path| ImageRef {
-            path,
-            format,
-            white_balance: None,
-            rotation: 0,
-            monochrome: false,
-            look: None,
-            straighten: 0.0,
-            crop,
-        }))
+            ImageTier::Original => {
+                let con = catalog::open_live(&self.catalog)?;
+                let Some(path) = catalog::original_path(&con, self.catalog_dir(), vpk)?.map(PathBuf::from) else {
+                    return Ok(None);
+                };
+                if !path.is_file() {
+                    return Ok(None);
+                }
+                let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
+                // Framed as the preview is. Capture One turns the pixels as stored (a portrait
+                // JPEG lies on its side with ZROTATION 270), so EXIF orientation is left out.
+                // The crop is in fractions of the picture, which the camera's embedded JPEG
+                // shows whole, as the sensor image does.
+                let framing = catalog::preview_source(&con, vpk)?;
+                Ok(Some(ImageRef {
+                    path,
+                    format: match ext.as_deref() {
+                        Some("jpg" | "jpeg") => ImageFormat::Jpeg,
+                        Some("jxl") => ImageFormat::JpegXl,
+                        _ => ImageFormat::Raw,
+                    },
+                    white_balance: None,
+                    rotation: framing.as_ref().map_or(0, |f| f.rotation),
+                    as_stored: true,
+                    monochrome: false,
+                    look: None,
+                    straighten: framing.as_ref().map_or(0.0, |f| f.straighten),
+                    crop: framing.and_then(|f| f.crop),
+                }))
+            }
+        }
     }
 
     fn write_status(&self) -> WriteStatus {
@@ -420,6 +446,31 @@ mod tests {
             })
             .unwrap();
         (collections, members)
+    }
+
+    #[test]
+    fn an_original_is_framed_as_capture_one_shows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("fixture.cocatalogdb");
+        let Some(con) = write::tests::fixture(&catalog) else { return };
+        // Imported into the catalog folder, turned to portrait and cropped (variant 1's
+        // combined layer is layer 3).
+        con.execute_batch(
+            "UPDATE ZPATHLOCATION SET ZISRELATIVE = 1, ZRELATIVEPATH = 'Originals';
+             UPDATE ZVARIANTLAYER SET ZROTATION = 270, ZCROP = '3000;2000;2000;3000' WHERE Z_PK = 3;",
+        )
+        .unwrap();
+        drop(con);
+        std::fs::create_dir_all(dir.path().join("Originals")).unwrap();
+        std::fs::write(dir.path().join("Originals").join("DSCF0001.RAF"), b"raw").unwrap();
+        let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
+        let original = |pk: &str| source.image(&PhotoId::new(&source.info().id, pk), ImageTier::Original).unwrap();
+        let framed = original("1").expect("the original is there");
+        assert_eq!((framed.format, framed.rotation, framed.as_stored), (ImageFormat::Raw, 270, true));
+        let crop = framed.crop.expect("cropped");
+        assert!((crop.width - 0.5).abs() < 1e-3 && (crop.height - 0.5).abs() < 1e-3, "{crop:?}");
+        // Variant 2's original is not on disk.
+        assert_eq!(original("2"), None);
     }
 
     #[test]

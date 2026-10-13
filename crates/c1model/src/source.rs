@@ -134,8 +134,13 @@ pub struct ImageRef {
     /// Per-channel multipliers for linear camera-space data (Capture One previews).
     pub white_balance: Option<[f32; 3]>,
     /// Clockwise degrees to turn the decoded pixels, 0, 90, 180 or 270: for files stored
-    /// in sensor orientation (Capture One previews). EXIF orientation is applied anyway.
+    /// in sensor orientation (Capture One previews). EXIF orientation is applied first,
+    /// unless `as_stored` says the turn starts from the pixels as stored.
     pub rotation: u16,
+    /// Read the pixels as stored, ignoring EXIF orientation: `rotation` already holds the
+    /// whole turn (Capture One's for an original, whose own includes the camera's).
+    #[serde(default)]
+    pub as_stored: bool,
     /// Render in black and white (the source's develop settings say so).
     pub monochrome: bool,
     /// A small render of the same picture with the source's edits applied (Capture One's

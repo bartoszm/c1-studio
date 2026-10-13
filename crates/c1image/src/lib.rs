@@ -2,13 +2,13 @@
 //!
 //! Three kinds of input:
 //! - JPEG (Capture One's `.cot` thumbnails, JPEG originals): decoded, EXIF orientation
-//!   applied.
+//!   applied unless the [`ImageRef`] says to read it as stored, then framed as it says.
 //! - JPEG-XL holding linear camera-space RGB before white balance (Capture One's `.cop`
 //!   previews): white balance, highlight scaling and the sRGB curve are applied here,
 //!   then the quarter turn and straightening, the colours of the source's own small
 //!   render, fitted pixel by pixel, and the crop.
-//! - Camera raws: the full-size JPEG the camera embedded. Not a raw conversion, so no
-//!   edits show.
+//! - Camera raws: the full-size JPEG the camera embedded, framed alike. Not a raw
+//!   conversion, so no edits show beyond the turn and crop.
 
 mod geometry;
 mod jxl;
@@ -50,11 +50,12 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 }
 
 pub fn load(r: &ImageRef) -> Result<RgbImage> {
+    let exif = !r.as_stored;
     let image = match r.format {
-        ImageFormat::Jpeg => load_jpeg(&r.path),
+        ImageFormat::Jpeg => jpeg(&std::fs::read(&r.path).map_err(io_err(&r.path))?, &r.path, exif),
         ImageFormat::JpegXl => return Ok(frame(render_preview(r, Matching::Colours)?, r)),
         ImageFormat::Raw => match raw::embedded_jpeg(&r.path)? {
-            Some(bytes) => jpeg(&bytes, &r.path),
+            Some(bytes) => jpeg(&bytes, &r.path, exif),
             None => Err(Error::NoPreview { path: r.path.clone() }),
         },
     }?;
@@ -104,10 +105,11 @@ pub fn encode_jpeg(image: &RgbImage, quality: u8) -> Vec<u8> {
 }
 
 pub(crate) fn load_jpeg(path: &Path) -> Result<RgbImage> {
-    jpeg(&std::fs::read(path).map_err(io_err(path))?, path)
+    jpeg(&std::fs::read(path).map_err(io_err(path))?, path, true)
 }
 
-fn jpeg(bytes: &[u8], path: &Path) -> Result<RgbImage> {
+/// Decodes a JPEG, turned as its EXIF orientation says when `exif`.
+fn jpeg(bytes: &[u8], path: &Path, exif: bool) -> Result<RgbImage> {
     let mut decoder = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(io_err(path))?
@@ -115,6 +117,8 @@ fn jpeg(bytes: &[u8], path: &Path) -> Result<RgbImage> {
         .map_err(|e| decode_err(path, e))?;
     let orientation = decoder.orientation().map_err(|e| decode_err(path, e))?;
     let mut image = DynamicImage::from_decoder(decoder).map_err(|e| decode_err(path, e))?;
-    image.apply_orientation(orientation);
+    if exif {
+        image.apply_orientation(orientation);
+    }
     Ok(image.into_rgb8())
 }
