@@ -42,6 +42,8 @@
   let located = $state(0);
   let inView = $state(0);
   const markers = new Map<string, { marker: maplibregl.Marker; el: HTMLElement }>();
+  /** The diameter of the dot a photo's pin stands on (matches `.pin .dot`). */
+  const DOT = 10;
   let asked = 0;
 
   /** The filter without the area: moving the map must not refetch what it shows by itself. */
@@ -119,16 +121,24 @@
       el.textContent = c.count > 999 ? `${Math.round(c.count / 100) / 10}k` : String(c.count);
       return el;
     }
+    // Near: the photo on a stem, the dot at its foot being exactly where it is.
+    const card = document.createElement("div");
+    card.className = "card";
     const img = document.createElement("img");
     img.src = api.thumbUrl(c.best);
     img.draggable = false;
     img.alt = "";
-    el.append(img);
+    card.append(img);
     if (c.count > 1) {
       const n = document.createElement("span");
       n.textContent = c.count > 999 ? `${Math.round(c.count / 100) / 10}k` : String(c.count);
-      el.append(n);
+      card.append(n);
     }
+    const stem = document.createElement("div");
+    stem.className = "stem";
+    const dot = document.createElement("div");
+    dot.className = "dot";
+    el.append(card, stem, dot);
     return el;
   }
 
@@ -141,19 +151,30 @@
       if (markers.has(id)) continue;
       const el = tile(c, zoom);
       const single = c.count === 1;
-      el.title = single ? "" : `${c.count.toLocaleString()} photos`;
+      el.title = single ? "Drag to move; the dot is where it goes" : `${c.count.toLocaleString()} photos`;
       el.dataset.row = String(c.best);
       el.dataset.count = String(c.count);
-      const marker = new maplibregl.Marker({ element: el, draggable: single }).setLngLat([c.lon, c.lat]).addTo(map!);
+      // A disc sits on its place; a photo stands on it, its dot (DOT px) on the spot.
+      const pinned = !el.classList.contains("disc");
+      const marker = new maplibregl.Marker({
+        element: el,
+        draggable: single,
+        anchor: pinned ? "bottom" : "center",
+        offset: pinned ? [0, DOT / 2] : [0, 0],
+      })
+        .setLngLat([c.lon, c.lat])
+        .addTo(map!);
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         if (single) onpick(c.best);
         else zoomTo(c);
       });
       if (single) {
+        marker.on("dragstart", () => el.classList.add("moving"));
         marker.on("dragend", () => {
+          el.classList.remove("moving");
           const at = marker.getLngLat();
-          onsetgeo([c.best], at.lat, at.lng);
+          onsetgeo([c.best], at.lat, ((at.lng + 540) % 360) - 180);
         });
       }
       markers.set(id, { marker, el });
@@ -292,8 +313,26 @@
   }
 
   let over = $state(false);
+  /** Where photos dragged from the grid would land: the cursor's tip, in the pane. */
+  let aim = $state<{ x: number; y: number } | null>(null);
+  function aiming(e: DragEvent) {
+    if (!dragRows?.length) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    over = true;
+    const r = box.getBoundingClientRect();
+    aim = { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function left(e: DragEvent) {
+    // Moving onto a child of the pane is not leaving it.
+    const to = e.relatedTarget;
+    if (to instanceof Node && e.currentTarget instanceof Node && e.currentTarget.contains(to)) return;
+    over = false;
+    aim = null;
+  }
   function dropped(e: DragEvent) {
     over = false;
+    aim = null;
     if (!dragRows?.length || !map) return;
     e.preventDefault();
     const r = box.getBoundingClientRect();
@@ -307,11 +346,12 @@
   class:over
   role="application"
   aria-label="Map"
-  ondragover={(e) => { if (dragRows?.length) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; over = true; } }}
-  ondragleave={() => (over = false)}
+  ondragover={aiming}
+  ondragleave={left}
   ondrop={dropped}
 >
   <div class="canvas" bind:this={box}></div>
+  {#if aim}<div class="aim" style:left="{aim.x}px" style:top="{aim.y}px"></div>{/if}
   {#if rubber}<div class="rubber" style:left="{rubber.x}px" style:top="{rubber.y}px" style:width="{rubber.w}px" style:height="{rubber.h}px"></div>{/if}
   <form class="find" onsubmit={search}>
     <input
@@ -337,8 +377,9 @@
   </form>
   <div class="note">
     {#if failed}{failed}
+    {:else if aim}They go where the cross is; zoom in to place them closer.
     {:else if located === 0}No photos here have a position yet. Drag some from below onto the map.
-    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Shift+drag picks an area{/if}
+    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Drag a photo by its pin; the dot is where it is · Shift+drag picks an area{/if}
   </div>
 </div>
 
@@ -360,18 +401,46 @@
     position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; font-size: 12px;
     background: rgba(20, 20, 20, 0.8); border-radius: 3px; pointer-events: none;
   }
-  .canvas :global(.pin) {
+  /* A photo stands on a stem; the dot at its foot is the place. */
+  .canvas :global(.pin) { display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+  .canvas :global(.pin .card) {
     position: relative; width: 56px; height: 56px; border: 2px solid #fff; border-radius: 4px;
-    background: #333; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6); cursor: pointer;
+    background: #333; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
   }
   .canvas :global(.pin img) { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: 2px; }
   .canvas :global(.pin span) {
     position: absolute; right: -6px; top: -8px; min-width: 20px; padding: 0 5px; border-radius: 10px;
     background: #e5484d; color: #fff; font-size: 11px; font-weight: 600; line-height: 20px; text-align: center;
   }
+  .canvas :global(.pin .stem) { width: 2px; height: 10px; background: #fff; box-shadow: 0 0 2px rgba(0, 0, 0, 0.8); }
+  .canvas :global(.pin .dot) {
+    width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%;
+    background: #e5484d; border: 2px solid #fff; box-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  }
   .canvas :global(.pin.disc) {
-    display: flex; align-items: center; justify-content: center; border-radius: 50%;
+    justify-content: center; border: 2px solid #fff; border-radius: 50%; box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
     background: rgba(229, 72, 77, 0.85); color: #fff; font-size: 12px; font-weight: 600;
   }
-  .canvas :global(.pin.focus) { border-color: #3b82f6; box-shadow: 0 0 0 3px #3b82f6; z-index: 2; }
+  .canvas :global(.pin.focus) { z-index: 2; }
+  .canvas :global(.pin.focus .card) { border-color: #3b82f6; box-shadow: 0 0 0 3px #3b82f6; }
+  .canvas :global(.pin.focus .dot) { background: #3b82f6; }
+  /* Moving: see through the photo to what is under it; the dot carries a cross. */
+  .canvas :global(.pin.moving) { cursor: grabbing; z-index: 3; }
+  .canvas :global(.pin.moving .card) { opacity: 0.45; }
+  .canvas :global(.pin.moving .dot) { position: relative; background: #fbbf24; }
+  .canvas :global(.pin.moving .dot::before),
+  .canvas :global(.pin.moving .dot::after),
+  .aim::before,
+  .aim::after {
+    content: ""; position: absolute; left: 50%; top: 50%; background: #fbbf24; box-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+  }
+  .canvas :global(.pin.moving .dot::before),
+  .aim::before { width: 44px; height: 1px; transform: translate(-50%, -50%); }
+  .canvas :global(.pin.moving .dot::after),
+  .aim::after { width: 1px; height: 44px; transform: translate(-50%, -50%); }
+  /* Photos dragged from the grid land at the cross. */
+  .aim {
+    position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; box-sizing: border-box;
+    background: #fbbf24; border: 2px solid #fff; pointer-events: none; z-index: 4; box-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  }
 </style>
