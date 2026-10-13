@@ -8,7 +8,7 @@
   import type { BBox, Cluster, Filter } from "./lib/api";
 
   let {
-    filter, version, focus, dragRows, pickedRows, onbox, onview, onpick, onsetgeo, onerror,
+    filter, version, focus, dragRows, pickedRows, tile, onbox, onview, ontile, onpick, onsetgeo, onerror,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
     filter: Filter;
@@ -20,8 +20,12 @@
     dragRows: number[] | null;
     /** The photos picked in the strip: *Put them here* places them at a searched place. */
     pickedRows: number[];
+    /** The tile picked: the grid shows just its photos. */
+    tile: BBox | null;
     /** Shift+drag picked an area: the grid shows just its photos. */
     onbox: (bounds: BBox) => void;
+    /** A tile clicked (its photos' bounds, and the photo when it is one), or let go (null). */
+    ontile: (bounds: BBox | null, row: number | null) => void;
     /** What the map shows now (null: not known yet); the grid can follow it. */
     onview: (bounds: BBox) => void;
     onpick: (row: number) => void;
@@ -110,7 +114,7 @@
     }
   }
 
-  function tile(c: Cluster, zoom: number): HTMLElement {
+  function pinFor(c: Cluster, zoom: number): HTMLElement {
     const el = document.createElement("div");
     el.className = "pin";
     if (zoom < 5 && c.count > 1) {
@@ -149,11 +153,13 @@
       const id = `${bucket}:${c.best}:${c.count}:${c.lat.toFixed(6)}:${c.lon.toFixed(6)}`;
       seen.add(id);
       if (markers.has(id)) continue;
-      const el = tile(c, zoom);
+      const el = pinFor(c, zoom);
       const single = c.count === 1;
       el.title = single ? "Drag to move; the dot is where it goes" : `${c.count.toLocaleString()} photos`;
       el.dataset.row = String(c.best);
       el.dataset.count = String(c.count);
+      el.dataset.lat = String(c.lat);
+      el.dataset.lon = String(c.lon);
       // A disc sits on its place; a photo stands on it, its dot (DOT px) on the spot.
       const pinned = !el.classList.contains("disc");
       const marker = new maplibregl.Marker({
@@ -164,13 +170,25 @@
       })
         .setLngLat([c.lon, c.lat])
         .addTo(map!);
+      // A click picks the tile (or lets it go); a double click also zooms in to it.
+      let dragged = false;
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (single) onpick(c.best);
-        else zoomTo(c);
+        if (dragged) return void (dragged = false);
+        if (e.detail > 1) return;
+        if (tile && el.classList.contains("chosen") && covers(tile, c.bounds)) ontile(null, null);
+        else ontile(c.bounds, single ? c.best : null);
+      });
+      el.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        ontile(c.bounds, single ? c.best : null);
+        if (!single) zoomTo(c);
       });
       if (single) {
-        marker.on("dragstart", () => el.classList.add("moving"));
+        marker.on("dragstart", () => {
+          dragged = true;
+          el.classList.add("moving");
+        });
         marker.on("dragend", () => {
           el.classList.remove("moving");
           const at = marker.getLngLat();
@@ -188,9 +206,17 @@
     mark();
   }
 
+  /** `outer` holds all of `inner`. */
+  function covers(outer: BBox, inner: BBox): boolean {
+    return inner.min_lat >= outer.min_lat && inner.max_lat <= outer.max_lat && inner.min_lon >= outer.min_lon && inner.max_lon <= outer.max_lon;
+  }
+
   function mark() {
     for (const { el } of markers.values()) {
       el.classList.toggle("focus", focus !== null && el.dataset.row === String(focus) && el.dataset.count === "1");
+      // Zoomed in, the picked tile's photos stand in several tiles: all of them show it.
+      const [lat, lon] = [Number(el.dataset.lat), Number(el.dataset.lon)];
+      el.classList.toggle("chosen", !!tile && lat >= tile.min_lat && lat <= tile.max_lat && lon >= tile.min_lon && lon <= tile.max_lon);
     }
   }
 
@@ -217,6 +243,10 @@
     box.addEventListener("mousedown", startBox, true);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
+    // A click on the map itself lets the picked tile go (Shift+drag draws an area instead).
+    map.on("click", (e) => {
+      if (!e.originalEvent.shiftKey && untrack(() => tile)) ontile(null, null);
+    });
     map.on("error", (e: unknown) => {
       // A tile or the style failing is the usual sign of no network.
       const text = String((e as { error?: Error }).error?.message ?? e);
@@ -239,6 +269,7 @@
   });
   $effect(() => {
     void focus;
+    void tile;
     untrack(mark);
   });
   $effect(() => {
@@ -378,8 +409,9 @@
   <div class="note">
     {#if failed}{failed}
     {:else if aim}They go where the cross is; zoom in to place them closer.
+    {:else if tile}The grid shows the picked tile's photos · click it again, the map or Esc to show the area
     {:else if located === 0}No photos here have a position yet. Drag some from below onto the map.
-    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Drag a photo by its pin; the dot is where it is · Shift+drag picks an area{/if}
+    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin; the dot is where it is · Shift+drag picks an area{/if}
   </div>
 </div>
 
@@ -422,6 +454,11 @@
     background: rgba(229, 72, 77, 0.85); color: #fff; font-size: 12px; font-weight: 600;
   }
   .canvas :global(.pin.focus) { z-index: 2; }
+  /* The picked tile. */
+  .canvas :global(.pin.chosen) { z-index: 2; }
+  .canvas :global(.pin.chosen .card) { border-color: #fbbf24; box-shadow: 0 0 0 3px #fbbf24, 0 1px 6px rgba(0, 0, 0, 0.6); }
+  .canvas :global(.pin.chosen .dot) { background: #fbbf24; }
+  .canvas :global(.pin.disc.chosen) { border-color: #fbbf24; box-shadow: 0 0 0 3px #fbbf24; }
   .canvas :global(.pin.focus .card) { border-color: #3b82f6; box-shadow: 0 0 0 3px #3b82f6; }
   .canvas :global(.pin.focus .dot) { background: #3b82f6; }
   /* Moving: see through the photo to what is under it; the dot carries a cross. */
