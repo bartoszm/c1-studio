@@ -514,11 +514,12 @@ footer > span { white-space: nowrap; }
 .info-panel .history summary h3::before { content: "▸ "; }
 .info-panel .history[open] summary h3::before { content: "▾ "; }
 .info-panel .history ol { margin: 0; padding: 0; list-style: none; font-size: 12px; }
-.info-panel .history li { display: grid; grid-template-columns: auto 1fr; gap: 0 6px; padding: 4px 0; border-bottom: 1px solid var(--line); }
-.info-panel .history .when { color: var(--muted); font-variant-numeric: tabular-nums; }
-.info-panel .history .origin { justify-self: end; font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--on); color: var(--muted); }
-.info-panel .history .origin.app { color: var(--queued); }
-.info-panel .history .what { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.info-panel .history li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 6px; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.info-panel .history .when { min-width: 0; color: var(--muted); font-variant-numeric: tabular-nums; }
+.info-panel .history .origin { flex: none; font-size: 10px; padding: 0 5px; border-radius: 3px; background: var(--on); color: var(--muted); }
+/* `from-`: a bare `.app` would pick up the page layout. */
+.info-panel .history .origin.from-app { color: var(--queued); }
+.info-panel .history .what { flex: 1 0 100%; min-width: 0; overflow-wrap: anywhere; }
 
 /* An action under a tree: "Fill in…". */
 .tree-action { display: block; max-width: calc(100% - 34px); margin: 4px 8px 2px 26px; padding: 2px 6px; text-align: left; font-size: 12px; color: #e8b03a; border-radius: 3px; }
