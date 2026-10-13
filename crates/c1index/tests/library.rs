@@ -1018,40 +1018,151 @@ fn albums_changed_in_the_source_are_logged() {
     assert_eq!(labels, ["New album “night”", "Rename “Best / for street” to “street best”"]);
 }
 
+/// Writes everything queued to the source, as the app does: no sync after.
+fn write_all(lib: &Library, source: &MemorySource) {
+    let remaps = lib.remaps().unwrap();
+    let albums = lib.collection_changes().unwrap();
+    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
+    let plan = source
+        .plan_after(
+            &remaps.iter().map(|(_, q)| q.remap.clone()).collect::<Vec<_>>(),
+            &albums.iter().map(|(_, q)| q.change.clone()).collect::<Vec<_>>(),
+            &changes,
+        )
+        .unwrap();
+    source.apply(&plan).unwrap();
+    lib.settle_remaps(&remaps.iter().map(|(s, _)| *s).collect::<Vec<_>>()).unwrap();
+    lib.settle_collections(&albums.iter().map(|(s, _)| *s).collect::<Vec<_>>()).unwrap();
+    lib.settle(&plan.apply.iter().chain(&plan.no_ops).cloned().collect::<Vec<_>>()).unwrap();
+    lib.log_written(&plan.apply, albums.len(), remaps.len()).unwrap();
+}
+
+/// The log, newest first, as kind and origin.
+fn logged(lib: &Library) -> Vec<(&'static str, Origin)> {
+    lib.events(100)
+        .unwrap()
+        .iter()
+        .map(|e| {
+            let kind = match &e.what {
+                What::Change(_) => "change",
+                What::Added { .. } => "added",
+                What::Removed { .. } => "removed",
+                What::Collection { .. } => "collection",
+                What::Remap(_) => "remap",
+                What::Written { .. } => "written",
+                What::Undone { .. } => "undone",
+            };
+            (kind, e.origin)
+        })
+        .collect()
+}
+
+fn new_album(id: &CollectionId, name: &str, kind: CollectionKind, parent: Option<&CollectionId>) -> CollectionChange {
+    CollectionChange::Create { id: id.clone(), name: name.into(), kind, parent: parent.cloned(), rule: None }
+}
+
 #[test]
 fn albums_made_here_are_logged_once() {
     let (_d, lib, source) = setup();
     let japan = CollectionId::new_local("a-1");
-    let create = CollectionChange::Create {
-        id: japan.clone(),
-        name: "japan".into(),
-        kind: CollectionKind::Album,
-        parent: None,
-        rule: None,
-    };
-    lib.change_collection(create).unwrap();
+    lib.change_collection(new_album(&japan, "japan", CollectionKind::Album, None)).unwrap();
     lib.edit(&[(row_of(&lib, 5), add_to(&japan))]).unwrap();
-    let queued = lib.collection_changes().unwrap();
-    let changes: Vec<Change> = lib.pending().unwrap().into_iter().map(|p| p.pending.change).collect();
-    let plan = source.plan_after(&[], &[queued[0].1.change.clone()], &changes).unwrap();
-    source.apply(&plan).unwrap();
-    lib.settle_collections(&[queued[0].0]).unwrap();
-    lib.settle(&plan.apply).unwrap();
+    write_all(&lib, &source);
     lib.sync(&source).unwrap();
-    let kinds: Vec<&str> = lib
-        .events(10)
-        .unwrap()
-        .iter()
-        .map(|e| match &e.what {
-            What::Change(_) => "change",
-            What::Collection { .. } => "collection",
-            What::Written { .. } => "written",
-            other => panic!("{other:?}"),
-        })
-        .collect();
     // Not again when the source sends the album back under its own id, nor the photo
     // moving from the app's id to the source's.
-    assert_eq!(kinds, ["written", "change", "collection"]);
+    use Origin::App;
+    assert_eq!(logged(&lib), [("written", App), ("change", App), ("collection", App)]);
+    let Some(What::Written { photos: 1, changes: 1, albums: 1, keywords: 0 }) =
+        lib.events(1).unwrap().pop().map(|e| e.what)
+    else {
+        panic!("{:?}", lib.events(1))
+    };
+}
+
+#[test]
+fn albums_deleted_here_are_logged_once() {
+    let (_d, lib, source) = setup();
+    lib.change_collection(CollectionChange::Delete { id: CollectionId("10".into()) }).unwrap();
+    write_all(&lib, &source);
+    lib.sync(&source).unwrap();
+    // Its four photos leaving it are part of the delete, not news from the source.
+    assert_eq!(logged(&lib), [("written", Origin::App), ("collection", Origin::App)]);
+}
+
+#[test]
+fn albums_written_are_known_after_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);
+    let japan = CollectionId::new_local("a-1");
+    {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        lib.change_collection(new_album(&japan, "japan", CollectionKind::Album, None)).unwrap();
+        lib.edit(&[(row_of(&lib, 1), add_to(&japan))]).unwrap();
+        // Written, and the app gone before the sync after it.
+        write_all(&lib, &source);
+    }
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&source).unwrap();
+    use Origin::App;
+    assert_eq!(logged(&lib), [("written", App), ("change", App), ("collection", App)]);
+}
+
+#[test]
+fn albums_of_one_name_made_here_are_told_apart() {
+    let (_d, lib, source) = setup();
+    let (rome, oslo) = (CollectionId::new_local("g-1"), CollectionId::new_local("g-2"));
+    let (in_rome, in_oslo) = (CollectionId::new_local("a-1"), CollectionId::new_local("a-2"));
+    lib.change_collection(new_album(&rome, "rome", CollectionKind::Group, None)).unwrap();
+    lib.change_collection(new_album(&oslo, "oslo", CollectionKind::Group, None)).unwrap();
+    lib.change_collection(new_album(&in_rome, "selects", CollectionKind::Album, Some(&rome))).unwrap();
+    lib.change_collection(new_album(&in_oslo, "selects", CollectionKind::Album, Some(&oslo))).unwrap();
+    lib.edit(&[(row_of(&lib, 5), add_to(&in_rome)), (row_of(&lib, 6), add_to(&in_oslo))]).unwrap();
+    write_all(&lib, &source);
+    let before = lib.events(100).unwrap().len();
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.events(100).unwrap().len(), before, "{:?}", logged(&lib));
+    // And each photo is in the album under its own group.
+    let albums = lib.collections().unwrap();
+    let path_of = |n| {
+        let photo = lib.photo(row_of(&lib, n)).unwrap().unwrap();
+        albums.iter().find(|c| photo.collections.contains(&c.id)).unwrap().path.clone()
+    };
+    assert_eq!((path_of(5), path_of(6)), ("rome / selects".to_owned(), "oslo / selects".to_owned()));
+}
+
+#[test]
+fn a_restored_backup_is_logged_as_one() {
+    let (_d, lib, source) = setup();
+    let id = lib.photo_id(row_of(&lib, 7)).unwrap();
+    source.edit_externally(&id, |p| p.rating = Some(1));
+    lib.sync_as(&source, Origin::Restore).unwrap();
+    assert_eq!(logged(&lib), [("change", Origin::Restore)]);
+}
+
+#[test]
+fn a_touched_source_with_nothing_new_is_no_change() {
+    let (_d, lib, source) = setup();
+    source.edit_externally(&lib.photo_id(row_of(&lib, 1)).unwrap(), |_| {});
+    let report = lib.sync(&source).unwrap();
+    assert!(report.full && !report.changed(), "{report:?}");
+    source.edit_collections_externally(|all| all[0].name = "street best".into());
+    assert!(lib.sync(&source).unwrap().changed());
+}
+
+#[test]
+fn captions_and_places_written_come_back_as_written() {
+    let (_d, lib, source) = setup();
+    let row = row_of(&lib, 7);
+    let iptc = Iptc { headline: Some("Rynek".into()), ..Iptc::default() };
+    let place = Place { city: Some("Breslau".into()), country: Some("Poland".into()), ..Place::default() };
+    lib.edit(&[(row, Op::SetIptc { base: Iptc::default(), value: iptc })]).unwrap();
+    lib.edit(&[(row, Op::SetPlace { base: Place::default(), value: place })]).unwrap();
+    write_all(&lib, &source);
+    lib.sync(&source).unwrap();
+    use Origin::App;
+    assert_eq!(logged(&lib), [("written", App), ("change", App), ("change", App)]);
 }
 
 #[test]

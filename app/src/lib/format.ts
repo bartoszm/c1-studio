@@ -94,7 +94,9 @@ export function opText(op: Op, albumName: (id: string) => string = (id) => id): 
   return null;
 }
 
-export const ORIGINS: Record<Origin, string> = { App: "here", Source: "Capture One", Gpx: "GPX" };
+export const ORIGINS: Record<Origin, string> = { App: "here", Source: "Capture One", Gpx: "GPX", Restore: "backup" };
+
+const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 
 /** A change log entry in one line: `rating: ★★ → ★★★★★`, `+ street`, `added`. */
 export function eventText(e: LogEvent, albumName?: (id: string) => string): string {
@@ -108,7 +110,15 @@ export function eventText(e: LogEvent, albumName?: (id: string) => string): stri
   if ("collection" in e) return e.collection.label;
   if ("remap" in e) return e.remap.label;
   if ("undone" in e) return `Undo: ${e.undone.label}`;
-  if ("written" in e) return `${e.written.changes} edit${e.written.changes === 1 ? "" : "s"} written to Capture One`;
+  if ("written" in e) {
+    const { changes, albums, keywords } = e.written;
+    const parts = [
+      changes && count(changes, "edit"),
+      albums && count(albums, "album change"),
+      keywords && count(keywords, "keyword change"),
+    ].filter(Boolean);
+    return `${parts.join(", ") || "Nothing"} written to Capture One`;
+  }
   return "";
 }
 
