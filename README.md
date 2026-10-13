@@ -83,6 +83,8 @@ its catalog format in any release: keep backups, and expect rough edges.
 
 C1 Studio is not affiliated with or endorsed by Capture One.
 
+Licensed under the [MIT License](LICENSE).
+
 The user guide is [docs/GUIDE.md](docs/GUIDE.md); the plan is in
 [docs/PLAN.md](docs/PLAN.md) and the progress log in [docs/PROGRESS.md](docs/PROGRESS.md).
 
