@@ -106,7 +106,9 @@
       mapTile = null;
       filter = { ...filter, within: follow ? (mapView ?? undefined) : beforeTile };
     }
-    run(true);
+    // Other photos altogether: a selection kept by its place in the grid would land on
+    // one nobody chose, so it starts afresh.
+    run();
   }
   function sameBox(a: api.BBox | undefined | null, b: api.BBox | undefined | null): boolean {
     return !!a && !!b && a.min_lat === b.min_lat && a.max_lat === b.max_lat && a.min_lon === b.min_lon && a.max_lon === b.max_lon;
@@ -144,11 +146,18 @@
     selected = null;
     mapRow = row;
   }
-  async function mapSetGeo(rows: number[], lat: number, lon: number) {
+  async function mapSetGeo(rows: number[], lat: number, lon: number, from?: api.BBox) {
     dragging = null;
     const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
     await applyEdit({ Geo: at }, rows);
-    if (!editError) note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    if (editError) return;
+    note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    // The picked tile moved as a whole: the pick goes with it, so the grid keeps its photos.
+    if (from && sameBox(from, mapTile)) {
+      mapTile = { min_lat: at[0], max_lat: at[0], min_lon: at[1], max_lon: at[1] };
+      filter = { ...filter, within: mapTile };
+      run(true);
+    }
   }
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */

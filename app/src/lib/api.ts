@@ -51,7 +51,8 @@ export type Filter = {
 };
 export type BBox = { min_lat: number; max_lat: number; min_lon: number; max_lon: number };
 /** One marker on the map: a photo (count 1) or a cluster; `best` is the photo shown for it. */
-export type Cluster = { lat: number; lon: number; count: number; best: number; bounds: BBox };
+/** `rows`: all its photos, when there are several all at one spot. */
+export type Cluster = { lat: number; lon: number; count: number; best: number; bounds: BBox; rows?: number[] };
 export type MapResult = { located: number; in_view: number; clusters: Cluster[] };
 
 /** What the analysis found for a photo, with its classes and groups (id, size). */

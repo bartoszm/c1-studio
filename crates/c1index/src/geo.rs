@@ -27,6 +27,10 @@ pub struct Cluster {
     pub best: u64,
     /// The area its photos cover, to zoom to or filter by.
     pub bounds: BBox,
+    /// When there are several photos all at one spot (a stack), all of them, so they can be
+    /// moved together; empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -49,6 +53,8 @@ pub struct MapResult {
 pub const CELL_PX: f64 = 72.0;
 /// From here on photos are only grouped when they sit at the same spot.
 pub const SINGLE_ZOOM: f64 = 17.0;
+/// Photos this close in degrees (a metre or so) are at one spot.
+pub const SPOT: f64 = 1e-5;
 
 const TILE: f64 = 512.0;
 
@@ -70,6 +76,8 @@ struct Cell {
     lon: f64,
     best: Located,
     bounds: BBox,
+    /// Its photos while they are all at one spot; `None` once they are not.
+    stack: Option<Vec<u64>>,
 }
 
 /// The clusters of the points inside `view`. Cells are laid on the whole world, so a
@@ -100,6 +108,7 @@ pub fn cluster(points: &[Located], view: &MapView) -> MapResult {
             lon: 0.0,
             best: *p,
             bounds: BBox { min_lat: p.lat, max_lat: p.lat, min_lon: p.lon, max_lon: p.lon },
+            stack: Some(Vec::new()),
         });
         cell.count += 1;
         cell.lat += p.lat;
@@ -111,6 +120,12 @@ pub fn cluster(points: &[Located], view: &MapView) -> MapResult {
         cell.bounds.max_lat = cell.bounds.max_lat.max(p.lat);
         cell.bounds.min_lon = cell.bounds.min_lon.min(p.lon);
         cell.bounds.max_lon = cell.bounds.max_lon.max(p.lon);
+        let b = &cell.bounds;
+        if b.max_lat - b.min_lat > SPOT || b.max_lon - b.min_lon > SPOT {
+            cell.stack = None;
+        } else if let Some(rows) = &mut cell.stack {
+            rows.push(p.row);
+        }
     }
     result.clusters = cells
         .into_values()
@@ -120,6 +135,10 @@ pub fn cluster(points: &[Located], view: &MapView) -> MapResult {
             count: c.count,
             best: c.best.row,
             bounds: c.bounds,
+            rows: match c.stack {
+                Some(rows) if rows.len() > 1 => rows,
+                _ => Vec::new(),
+            },
         })
         .collect();
     // The same order every time, for a steady redraw.
@@ -157,6 +176,20 @@ mod tests {
         let r = cluster(&points, &MapView { bounds: world(), zoom: 19.0 });
         assert_eq!(r.clusters.len(), 2);
         assert_eq!(r.clusters.iter().map(|c| c.count).max(), Some(2));
+    }
+
+    #[test]
+    fn a_stack_lists_its_photos_and_a_spread_cluster_does_not() {
+        let points = [at(1, 50.0, 19.0, 0), at(2, 50.0, 19.0, 0), at(3, 52.0, 21.0, 0)];
+        let near = cluster(&points, &MapView { bounds: world(), zoom: 19.0 });
+        let stack = near.clusters.iter().find(|c| c.count == 2).unwrap();
+        let mut rows = stack.rows.clone();
+        rows.sort();
+        assert_eq!(rows, [1, 2]);
+        assert!(near.clusters.iter().find(|c| c.count == 1).unwrap().rows.is_empty(), "one photo is no stack");
+        let far = cluster(&points, &MapView { bounds: world(), zoom: 0.0 });
+        assert_eq!(far.clusters.len(), 1);
+        assert!(far.clusters[0].rows.is_empty(), "photos apart are not moved as one");
     }
 
     #[test]
