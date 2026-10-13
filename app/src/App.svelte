@@ -366,8 +366,9 @@
     const off = [
       listen<api.ThumbsState>("thumbs", (e) => {
         thumbs = e.payload;
-        // Tiles that showed nothing pick up their new thumbnails every few seconds.
-        if (Date.now() - thumbsRetried > 3000) {
+        // While a run makes them, tiles that showed nothing pick up their new thumbnails
+        // every few seconds. (Photos that failed are not tried again until "Try again".)
+        if (e.payload.running && Date.now() - thumbsRetried > 3000) {
           thumbsRetried = Date.now();
           api.retryBrokenImages();
         }
