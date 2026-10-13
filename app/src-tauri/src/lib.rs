@@ -7,18 +7,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use c1index::thumbs::{Failure, Kind, Progress, Thumbs};
 use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
     ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
 };
+use events::Log;
 use serde::{Deserialize, Serialize};
 use sources::Recent;
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+mod events;
 mod sources;
 
 struct Session {
@@ -43,6 +46,84 @@ struct Session {
     analysing: AtomicBool,
     analysis_stop: AtomicBool,
     analysis: Mutex<AnalysisState>,
+    /// Thumbnails made here for photos Capture One has none for, and the run that makes
+    /// them all (one at a time, stopped when another source opens).
+    thumbs: Thumbs,
+    filling: AtomicBool,
+    fill_stop: AtomicBool,
+    fill: Mutex<FillState>,
+    /// Counting the photos without a thumbnail, apart from making them; `count_again`
+    /// when asked while a count was under way.
+    counting: AtomicBool,
+    count_again: AtomicBool,
+    /// `events.log` beside the library: what happened in the background, and what failed.
+    log: Log,
+}
+
+/// Photos without a thumbnail, and how far making theirs has got, for the footer.
+#[derive(Clone, Debug, Default, Serialize)]
+struct FillState {
+    running: bool,
+    done: usize,
+    total: usize,
+    made: usize,
+    failed: usize,
+    /// Photos that show no thumbnail now, once counted.
+    missing: Option<usize>,
+    /// Why the last run could not make some, most common first, with how many each.
+    reasons: Vec<(String, usize)>,
+}
+
+impl FillState {
+    /// Under way, as far as `p`.
+    fn under_way(p: Progress) -> Self {
+        FillState {
+            running: true,
+            done: p.done,
+            total: p.total,
+            made: p.made,
+            failed: p.failed,
+            missing: Some(p.total - p.made),
+            reasons: Vec::new(),
+        }
+    }
+
+    /// Done (or stopped) at `p`.
+    fn finished(p: Progress, reasons: Vec<(String, usize)>) -> Self {
+        FillState { running: false, reasons, ..FillState::under_way(p) }
+    }
+
+    /// `missing` photos counted without a thumbnail. A run under way counts for itself.
+    /// The last run's failures stand while the photos left are no more than it failed
+    /// on; with new photos to make (just imported), it is "Make them" again.
+    fn counted(self, missing: usize) -> Self {
+        if self.running {
+            return self;
+        }
+        if self.failed == 0 || missing > self.failed {
+            return FillState { missing: Some(missing), ..FillState::default() };
+        }
+        FillState { missing: Some(missing), failed: self.failed.min(missing), ..self }
+    }
+
+    /// One made for a tile that asked: one fewer missing. A run under way counts for
+    /// itself.
+    fn made_one(self) -> Self {
+        if self.running {
+            return self;
+        }
+        let missing = self.missing.map(|n| n.saturating_sub(1));
+        FillState { missing, failed: self.failed.min(missing.unwrap_or(0)), ..self }
+    }
+}
+
+/// Sets a flag back however the work it marks ends, a panic included.
+struct Lowers<'a>(&'a AtomicBool);
+
+impl Drop for Lowers<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// How far the background analysis has got, for the footer.
@@ -92,7 +173,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
     let settings_path = dir.join("settings.json");
     let settings: Settings =
         std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    Ok(Session {
+    let session = Session {
         spec: spec.clone(),
         source,
         library,
@@ -105,7 +186,178 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         analysing: AtomicBool::new(false),
         analysis_stop: AtomicBool::new(false),
         analysis: Mutex::new(AnalysisState::default()),
-    })
+        thumbs: Thumbs::new(dir.join("thumbs")),
+        filling: AtomicBool::new(false),
+        fill_stop: AtomicBool::new(false),
+        fill: Mutex::new(FillState::default()),
+        counting: AtomicBool::new(false),
+        count_again: AtomicBool::new(false),
+        log: Log::new(dir.join("events.log")),
+    };
+    session.log.event(&format!("Opened {}", spec.location), &[]);
+    Ok(session)
+}
+
+/// Whether `s` is still the session open. Work left over from one closed since (its
+/// run stops after the photo it is on) tells the window nothing, nor starts more.
+fn is_current(app: &AppHandle, s: &Arc<Session>) -> bool {
+    app.state::<App>().session().is_ok_and(|now| Arc::ptr_eq(&now, s))
+}
+
+/// Changes the footer's thumbnail state, and tells the window.
+fn report_fill(app: &AppHandle, s: &Arc<Session>, change: impl FnOnce(FillState) -> FillState) {
+    let state = {
+        let mut fill = s.fill.lock().unwrap_or_else(|e| e.into_inner());
+        *fill = change(std::mem::take(&mut *fill));
+        fill.clone()
+    };
+    if is_current(app, s) {
+        let _ = app.emit("thumbs", state);
+    }
+}
+
+/// Counts the photos without a thumbnail, in the background. Asked while counting, it
+/// counts once more after.
+fn count_missing(app: &AppHandle) {
+    let Ok(s) = app.state::<App>().session() else { return };
+    s.count_again.store(true, Ordering::SeqCst);
+    if s.counting.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        loop {
+            while s.count_again.swap(false, Ordering::SeqCst) && is_current(&handle, &s) {
+                let counted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    s.thumbs.missing(&s.library, s.source.as_ref())
+                }));
+                match counted {
+                    Ok(Ok(missing)) => report_fill(&handle, &s, |state| state.counted(missing.len())),
+                    Ok(Err(e)) => s.log.event(&format!("Counting the photos without a thumbnail failed: {e:#}"), &[]),
+                    Err(_) => s.log.event("Counting the photos without a thumbnail crashed", &[]),
+                }
+            }
+            s.counting.store(false, Ordering::SeqCst);
+            // Asked again just as this count ended: count once more, unless another
+            // count has started meanwhile.
+            if !s.count_again.load(Ordering::SeqCst) || s.counting.swap(true, Ordering::SeqCst) {
+                break;
+            }
+        }
+    });
+}
+
+/// Makes a thumbnail for every photo without one, from its preview or else its original,
+/// then measures the new ones. Photos that failed before are tried again.
+#[tauri::command]
+async fn fill_thumbnails(app: AppHandle) -> Result<(), String> {
+    let s = app.state::<App>().session()?;
+    if s.filling.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    std::thread::spawn(move || {
+        let _done = Lowers(&s.filling);
+        s.thumbs.forget();
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_fill(&app, &s)));
+        if run.is_err() {
+            s.log.event("Making thumbnails stopped: it crashed", &[]);
+            report_fill(&app, &s, |state| FillState { running: false, ..state });
+        }
+        if is_current(&app, &s) {
+            let _ = app.emit("thumbs-done", ());
+            start_analysis(&app);
+        }
+    });
+    Ok(())
+}
+
+fn run_fill(app: &AppHandle, s: &Arc<Session>) {
+    let missing = match s.thumbs.missing(&s.library, s.source.as_ref()) {
+        Ok(missing) => missing,
+        Err(e) => {
+            s.log.event(&format!("Making thumbnails failed: {e:#}"), &[]);
+            if is_current(app, s) {
+                let _ = app.emit("sync-failed", format!("thumbnails: {e:#}"));
+            }
+            return;
+        }
+    };
+    s.log.event(&format!("Making thumbnails for {} photos Capture One has none for", missing.len()), &[]);
+    // One place of the few is left for the window's tiles.
+    let threads = (c1index::thumbs::MAKERS - 1).max(1);
+    let (done, failures) = s.thumbs.fill(s.source.as_ref(), &missing, threads, &s.fill_stop, |p| {
+        report_fill(app, s, |_| FillState::under_way(p));
+    });
+    let reasons = log_fill(s, &done, &failures);
+    report_fill(app, s, |_| FillState::finished(done, reasons));
+}
+
+/// Writes how a thumbnail run went to the events log: a summary, why photos failed and
+/// where their originals were looked for, then each photo. Returns the reasons counted.
+fn log_fill(s: &Session, done: &Progress, failures: &[Failure]) -> Vec<(String, usize)> {
+    let stopped = if done.done < done.total { " (stopped early)" } else { "" };
+    let summary =
+        format!("Thumbnails: made {} of {}, {} could not be made{stopped}", done.made, done.total, done.failed);
+    if failures.is_empty() {
+        s.log.event(&summary, &[]);
+        return Vec::new();
+    }
+    let mut reasons = BTreeMap::<Kind, usize>::new();
+    // Folders whose originals were not found: usually one drive not connected.
+    let mut folders = BTreeMap::<String, usize>::new();
+    let mut lines = Vec::new();
+    for f in failures {
+        *reasons.entry(f.why.kind).or_default() += 1;
+        let photo = s.library.photo(f.row).ok().flatten();
+        let name = photo.as_ref().map_or_else(
+            || format!("row {}", f.row),
+            |p| match p.variant_index {
+                0 => p.file.name.clone(),
+                n => format!("{} (variant {})", p.file.name, n + 1),
+            },
+        );
+        let path = photo.as_ref().and_then(|p| p.file.path.clone());
+        if f.why.kind == Kind::Unreachable {
+            let folder = path.as_deref().and_then(|p| std::path::Path::new(p).parent());
+            *folders
+                .entry(folder.map_or("(no path in the catalog)".into(), |d| d.display().to_string()))
+                .or_default() += 1;
+        }
+        lines.push(format!(
+            "{name}  —  {}  —  {}",
+            f.why.detail,
+            path.as_deref().unwrap_or("(no path in the catalog)")
+        ));
+    }
+    let mut reasons: Vec<(String, usize)> = reasons.into_iter().map(|(k, n)| (k.reason().to_string(), n)).collect();
+    reasons.sort_by_key(|r| std::cmp::Reverse(r.1));
+    let mut folders: Vec<_> = folders.into_iter().collect();
+    folders.sort_by_key(|f| std::cmp::Reverse(f.1));
+    let mut details = vec!["Why:".to_string()];
+    details.extend(reasons.iter().map(|(r, n)| format!("  {n:>6}  {r}")));
+    if !folders.is_empty() {
+        details.push("Originals not found, by folder (is the drive connected?):".into());
+        details.extend(folders.iter().take(30).map(|(d, n)| format!("  {n:>6}  {d}")));
+        if folders.len() > 30 {
+            details.push(format!("  … and {} more folders", folders.len() - 30));
+        }
+    }
+    details.push("Photos:".into());
+    details.extend(lines.into_iter().map(|l| format!("  {l}")));
+    s.log.event(&summary, &details);
+    reasons
+}
+
+/// Opens the events log in the system's text viewer.
+#[tauri::command]
+async fn open_log(app: State<'_, App>) -> Result<(), String> {
+    let s = app.session()?;
+    s.log.open().map_err(|e| format!("Could not open {}: {e}", s.log.path().display()))
+}
+
+#[tauri::command]
+async fn thumbs_state(app: State<'_, App>) -> Result<FillState, String> {
+    Ok(app.session()?.fill.lock().unwrap().clone())
 }
 
 /// Measures the photos not measured yet, in the background, unless that is under way.
@@ -117,21 +369,28 @@ fn start_analysis(app: &AppHandle) {
     }
     let handle = app.clone();
     std::thread::spawn(move || {
+        let _done = Lowers(&s.analysing);
         let threads = std::thread::available_parallelism().map_or(2, |n| (n.get() / 2).max(1));
         let report = |state: AnalysisState| {
             *s.analysis.lock().unwrap() = state.clone();
-            let _ = handle.emit("analysis", state);
+            if is_current(&handle, &s) {
+                let _ = handle.emit("analysis", state);
+            }
         };
-        let result = c1index::analyse::run(&s.library, s.source.as_ref(), threads, &s.analysis_stop, |p| {
+        let result = c1index::analyse::run(&s.library, s.source.as_ref(), &s.thumbs, threads, &s.analysis_stop, |p| {
             report(AnalysisState { running: true, done: p.done, total: p.total, failed: p.failed });
         });
         let last = s.analysis.lock().unwrap().clone();
         report(AnalysisState { running: false, ..last });
-        if let Err(e) = result {
-            let _ = handle.emit("sync-failed", format!("analysis: {e:#}"));
+        if let Err(e) = &result {
+            s.log.event(&format!("Measuring photos failed: {e:#}"), &[]);
         }
-        let _ = handle.emit("analysis-done", ());
-        s.analysing.store(false, Ordering::SeqCst);
+        if is_current(&handle, &s) {
+            if let Err(e) = result {
+                let _ = handle.emit("sync-failed", format!("analysis: {e:#}"));
+            }
+            let _ = handle.emit("analysis-done", ());
+        }
     });
 }
 
@@ -350,12 +609,32 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let s = app.state::<App>().session()?;
     let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
     let report = s.library.sync(s.source.as_ref()).map_err(|e| format!("{e:#}"));
-    *s.sync_error.lock().unwrap() = report.as_ref().err().cloned();
+    let failed = report.as_ref().err().cloned();
+    if let Some(e) = &failed
+        && s.sync_error.lock().unwrap().as_ref() != Some(e)
+    {
+        s.log.event(&format!("Reading Capture One failed: {e}"), &[]);
+    }
+    *s.sync_error.lock().unwrap() = failed;
     let report = report?;
     if report.full || report.added + report.updated + report.deleted > 0 {
+        s.log.event(
+            &format!(
+                "Read Capture One{}: {} added, {} updated, {} deleted",
+                if report.full { " in full" } else { "" },
+                report.added,
+                report.updated,
+                report.deleted
+            ),
+            &[],
+        );
         let _ = app.emit("library-changed", &report);
     }
+    // Previews may have been rendered, or crops changed: made thumbnails are checked
+    // against their sources again, and photos that failed may succeed now.
+    s.thumbs.forget();
     start_analysis(app);
+    count_missing(app);
     Ok(report)
 }
 
@@ -992,7 +1271,14 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
         if !summary.conflicts.is_empty() {
             return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
         }
-        let report = s.source.apply(&plan).map_err(text)?;
+        let report = s.source.apply(&plan).map_err(|e| {
+            s.log.event(&format!("Writing to Capture One failed: {e:#}"), &[]);
+            text(e)
+        })?;
+        s.log.event(
+            &format!("Wrote {} edit(s) to Capture One", report.applied),
+            &report.backup.iter().map(|b| format!("backup first: {b}")).collect::<Vec<_>>(),
+        );
         let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
         s.library.settle_remaps(&carried.remaps).map_err(|e| format!("{e:#}"))?;
         s.library.settle_collections(&carried.collections).map_err(|e| format!("{e:#}"))?;
@@ -1165,7 +1451,8 @@ async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
     std::fs::write(&s.settings_path, bytes).map_err(text)
 }
 
-/// `/thumb/<row>` serves Capture One's own thumbnail: a JPEG with every edit, cut to the crop.
+/// `/thumb/<row>` serves Capture One's own thumbnail: a JPEG with every edit, cut to the crop;
+/// for a photo without one, one made here (from its preview or original) the first time.
 /// `/preview/<row>` renders the large preview (~300 ms), framed alike, and sends it as JPEG.
 fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let mut parts = path.trim_start_matches('/').split('/');
@@ -1177,7 +1464,16 @@ fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(row) = parts.next().and_then(|r| r.parse::<u64>().ok()) else { return Ok(None) };
     let s = app.state::<App>().session().map_err(anyhow::Error::msg)?;
     let Some(id) = s.library.photo_id(row) else { return Ok(None) };
-    let Some(source) = s.source.image(&id, tier)? else { return Ok(None) };
+    let image = match tier {
+        ImageTier::Thumb => s.thumbs.get_or_make(s.source.as_ref(), &id)?.map(|made| {
+            if made.new {
+                report_fill(app, &s, FillState::made_one);
+            }
+            made.image
+        }),
+        _ => s.source.image(&id, tier)?,
+    };
+    let Some(source) = image else { return Ok(None) };
     // A thumbnail without a crop is sent as stored; cutting one costs ~5 ms.
     if tier == ImageTier::Thumb && source.crop.is_none() {
         return Ok(Some(std::fs::read(&source.path)?));
@@ -1197,8 +1493,9 @@ fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime)
-        // Rows are stable and pixels change only when Capture One re-renders.
-        .header(header::CACHE_CONTROL, "max-age=600")
+        // Rows are stable and pixels change only when Capture One re-renders. A missing
+        // image is not kept: one may be made for it any moment.
+        .header(header::CACHE_CONTROL, if status == StatusCode::OK { "max-age=600" } else { "no-store" })
         .body(body)
         .expect("a static response always builds")
 }
@@ -1311,6 +1608,7 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
     // stops after the batch it is on.
     if let Ok(old) = &app.state::<App>().0.read().unwrap().session {
         old.analysis_stop.store(true, Ordering::SeqCst);
+        old.fill_stop.store(true, Ordering::SeqCst);
     }
     *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
     Recent::remember(&spec)?;
@@ -1388,6 +1686,9 @@ pub fn run() {
             restore_backup,
             look,
             analysis_state,
+            fill_thumbnails,
+            thumbs_state,
+            open_log,
             keyword_counts,
             pending,
             discard,
@@ -1525,6 +1826,41 @@ mod tests {
         // Into a place with no state: the state goes.
         let into = moved_place(&moved, &place_levels("Poland|—|Kraków"), None);
         assert_eq!(into.state, None);
+    }
+
+    #[test]
+    fn the_thumbnail_footer_follows_runs_counts_and_tiles() {
+        let progress = |done, total, made, failed| Progress { done, total, made, failed };
+        let run = FillState::under_way(progress(10, 40, 8, 2));
+        assert_eq!((run.running, run.missing), (true, Some(32)));
+        // A run under way counts for itself.
+        assert_eq!(run.clone().counted(5).missing, Some(32));
+        assert_eq!(run.made_one().missing, Some(32));
+        let done = FillState::finished(progress(40, 40, 30, 10), vec![("drive".into(), 10)]);
+        assert_eq!((done.running, done.missing, done.failed), (false, Some(10), 10));
+        // Counted again with the same photos left: still "Try again", with the reasons.
+        let same = done.clone().counted(10);
+        assert_eq!((same.total, same.failed, same.reasons.len()), (40, 10, 1));
+        // New photos imported: "Make them" again, the last run forgotten.
+        let more = done.clone().counted(25);
+        assert_eq!((more.missing, more.total, more.failed), (Some(25), 0, 0));
+        assert!(more.reasons.is_empty());
+        // A tile made one of the failed ones (its drive is back).
+        let tile = done.made_one();
+        assert_eq!((tile.missing, tile.failed), (Some(9), 9));
+        // Nothing counted yet: a tile changes nothing.
+        assert_eq!(FillState::default().made_one().missing, None);
+    }
+
+    #[test]
+    fn a_flag_is_lowered_even_when_its_work_panics() {
+        let flag = AtomicBool::new(true);
+        let result = std::panic::catch_unwind(|| {
+            let _done = Lowers(&flag);
+            panic!("work fell over");
+        });
+        assert!(result.is_err());
+        assert!(!flag.load(Ordering::SeqCst));
     }
 
     #[test]

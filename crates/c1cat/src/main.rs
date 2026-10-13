@@ -463,6 +463,8 @@ struct WriteFlags {
 struct Session {
     source: CaptureOne,
     library: Library,
+    /// Thumbnails made for photos Capture One has none for (shared with the app).
+    thumbs: c1index::thumbs::Thumbs,
 }
 
 fn open(catalog: Option<&PathBuf>) -> anyhow::Result<Session> {
@@ -470,7 +472,7 @@ fn open(catalog: Option<&PathBuf>) -> anyhow::Result<Session> {
     let dir = data_dir(&path);
     let source = CaptureOne::open(&path, dir.join("work"))?;
     let library = Library::open(dir.join("library")).context("opening the library")?;
-    Ok(Session { source, library })
+    Ok(Session { source, library, thumbs: c1index::thumbs::Thumbs::new(dir.join("thumbs")) })
 }
 
 fn sync(session: &Session, quiet: bool) -> anyhow::Result<()> {
@@ -1027,15 +1029,16 @@ fn main() -> anyhow::Result<()> {
             }
             let stop = std::sync::atomic::AtomicBool::new(false);
             let threads = threads.unwrap_or_else(c1index::analyse::default_threads);
-            let done = c1index::analyse::run(&session.library, &session.source, threads, &stop, |p| {
-                eprintln!(
-                    "measured {} of {} ({} unreadable) in {:.1} s",
-                    p.done,
-                    p.total,
-                    p.failed,
-                    p.millis as f64 / 1000.0
-                );
-            })?;
+            let done =
+                c1index::analyse::run(&session.library, &session.source, &session.thumbs, threads, &stop, |p| {
+                    eprintln!(
+                        "measured {} of {} ({} unreadable) in {:.1} s",
+                        p.done,
+                        p.total,
+                        p.failed,
+                        p.millis as f64 / 1000.0
+                    );
+                })?;
             let per = if done.done > 0 { done.millis as f64 / done.done as f64 } else { 0.0 };
             println!(
                 "{} measured, {} unreadable, {:.1} s ({per:.2} ms a photo, {threads} threads)",
