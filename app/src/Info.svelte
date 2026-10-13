@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as api from "./lib/api";
   import { codeFor, nameFor } from "./lib/countries";
-  import { COLORS, bytes, camera, date, exposure, folderOf, geoText, parseGeo } from "./lib/format";
+  import { COLORS, ORIGINS, bytes, camera, date, eventText, exposure, folderOf, geoText, parseGeo } from "./lib/format";
 
   const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 
@@ -85,6 +85,40 @@
     if (current !== undefined) api.look(current).then((l) => { if (current === row) look = l; }).catch(() => {});
   });
   const hex = (rgb: number[]) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
+
+  /** What the change log holds about the photo, read only while the section is open. */
+  let historyOpen = $state(false);
+  let history = $state<api.LogEvent[] | null>(null);
+  let historyError = $state<string | null>(null);
+  /** Names the log knows for albums no longer listed (deleted, or since written). */
+  let historyAlbums = $state<Record<string, string>>({});
+  // Not state: which photo `history` is about, and the newest read asked for.
+  let historyOf: number | undefined;
+  let historyAsked = 0;
+  $effect(() => {
+    const current = row;
+    void version;
+    // Another photo starts empty; the same one keeps its list until the new one is in.
+    if (current !== historyOf) {
+      historyOf = current;
+      history = null;
+      historyError = null;
+    }
+    if (current === undefined || !historyOpen) return;
+    const asked = ++historyAsked;
+    api.photoHistory(current).then(
+      (h) => {
+        if (asked !== historyAsked) return;
+        history = h.events;
+        historyAlbums = h.albums;
+        historyError = null;
+      },
+      (e) => {
+        if (asked === historyAsked) historyError = String(e);
+      },
+    );
+  });
+  const loggedAlbumName = (id: string) => `“${collections.get(id)?.path ?? historyAlbums[id] ?? id}”`;
 
   let typed = $state("");
   let typedError = $state<string | null>(null);
@@ -457,5 +491,26 @@
       {/if}
       <dt>Catalog id</dt><dd class="muted">{p.id.ext}</dd>
     </dl>
+
+    <details class="history" bind:open={historyOpen}>
+      <summary><h3>History</h3></summary>
+      {#if historyError}
+        <p class="hint">Could not read the history: {historyError}</p>
+      {:else if history === null}
+        <p class="hint">Reading…</p>
+      {:else if !history.length}
+        <p class="hint">No changes seen since the app started keeping a history.</p>
+      {:else}
+        <ol>
+          {#each history as e}
+            <li>
+              <span class="when">{date(e.at)}</span>
+              <span class="origin {e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
+              <span class="what">{eventText(e, loggedAlbumName)}</span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </details>
   {/if}
 </aside>
