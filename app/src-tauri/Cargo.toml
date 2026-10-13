@@ -19,8 +19,12 @@ c1index.workspace = true
 c1analysis.workspace = true
 c1image.workspace = true
 anyhow.workspace = true
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+
+[dev-dependencies]
+tempfile.workspace = true

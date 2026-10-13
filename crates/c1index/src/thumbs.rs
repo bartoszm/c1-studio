@@ -29,6 +29,13 @@ pub struct Progress {
     pub failed: usize,
 }
 
+/// A photo no thumbnail could be made for, and why.
+#[derive(Clone, Debug)]
+pub struct Failure {
+    pub row: u64,
+    pub why: String,
+}
+
 pub struct Thumbs {
     dir: PathBuf,
 }
@@ -71,23 +78,30 @@ impl Thumbs {
     pub fn get_or_make(&self, source: &dyn PhotoSource, id: &PhotoId) -> anyhow::Result<Option<ImageRef>> {
         match self.get(source, id)? {
             Some(r) => Ok(Some(r)),
-            None => self.make(source, id),
+            None => Ok(self.make(source, id).ok()),
         }
     }
 
-    /// Makes the thumbnail from the preview, else the original. `None` when neither can be
-    /// read.
-    pub fn make(&self, source: &dyn PhotoSource, id: &PhotoId) -> anyhow::Result<Option<ImageRef>> {
+    /// Makes the thumbnail from the preview, else the original. The error says why neither
+    /// served ("no preview; original not found").
+    pub fn make(&self, source: &dyn PhotoSource, id: &PhotoId) -> anyhow::Result<ImageRef> {
         let mut pixels = None;
-        for tier in [ImageTier::Preview, ImageTier::Original] {
-            if let Ok(Some(r)) = source.image(id, tier)
-                && let Ok(p) = c1image::load_fitted(&r, LONG_EDGE)
-            {
-                pixels = Some(p);
-                break;
+        let mut why = Vec::new();
+        for (tier, name) in [(ImageTier::Preview, "preview"), (ImageTier::Original, "original")] {
+            match source.image(id, tier) {
+                Ok(Some(r)) => match c1image::load_fitted(&r, LONG_EDGE) {
+                    Ok(p) => {
+                        pixels = Some(p);
+                        break;
+                    }
+                    Err(e) => why.push(format!("{name} unreadable ({e:#})")),
+                },
+                Ok(None) if tier == ImageTier::Preview => why.push("no preview".into()),
+                Ok(None) => why.push("original not found".into()),
+                Err(e) => why.push(format!("{name}: {e:#}")),
             }
         }
-        let Some(pixels) = pixels else { return Ok(None) };
+        let Some(pixels) = pixels else { anyhow::bail!("{}", why.join("; ")) };
         std::fs::create_dir_all(&self.dir)?;
         let path = self.path(id);
         // Written aside and moved in, so a reader never sees half a file; the batch and a
@@ -97,11 +111,11 @@ impl Thumbs {
             path.with_extension(format!("{}-{}.part", std::process::id(), WRITES.fetch_add(1, Ordering::Relaxed)));
         std::fs::write(&part, c1image::encode_jpeg(&pixels, QUALITY))?;
         std::fs::rename(&part, &path)?;
-        Ok(self.made(id))
+        self.made(id).ok_or_else(|| anyhow::anyhow!("{} vanished once written", path.display()))
     }
 
-    /// The library's photos that show no thumbnail yet.
-    pub fn missing(&self, library: &Library, source: &dyn PhotoSource) -> anyhow::Result<Vec<PhotoId>> {
+    /// The library's photos that show no thumbnail yet, by row.
+    pub fn missing(&self, library: &Library, source: &dyn PhotoSource) -> anyhow::Result<Vec<(u64, PhotoId)>> {
         let all = Filter { trashed: Trashed::Include, ..Filter::default() };
         let rows = library.query(&all, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
         let mine = source.info().id;
@@ -109,32 +123,37 @@ impl Thumbs {
         for row in rows {
             let Some(id) = library.photo_id(row) else { continue };
             if id.source == mine && matches!(self.get(source, &id), Ok(None)) {
-                out.push(id);
+                out.push((row, id));
             }
         }
         Ok(out)
     }
 
     /// Makes the thumbnails `missing` lists, on `threads` threads. `stop` ends it early;
-    /// `report` hears now and then.
+    /// `report` hears now and then. Returns the last progress and the photos that failed.
     pub fn fill(
         &self,
         source: &dyn PhotoSource,
-        missing: &[PhotoId],
+        missing: &[(u64, PhotoId)],
         threads: usize,
         stop: &AtomicBool,
         report: impl Fn(Progress) + Sync,
-    ) -> Progress {
+    ) -> (Progress, Vec<Failure>) {
         let next = AtomicUsize::new(0);
         let progress = Mutex::new(Progress { total: missing.len(), ..Progress::default() });
+        let failures = Mutex::new(Vec::new());
         report(*progress.lock().unwrap());
         std::thread::scope(|scope| {
             for _ in 0..threads.max(1) {
                 scope.spawn(|| {
                     while !stop.load(Ordering::Relaxed) {
                         let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(id) = missing.get(i) else { break };
-                        let made = matches!(self.make(source, id), Ok(Some(_)));
+                        let Some((row, id)) = missing.get(i) else { break };
+                        let made = self.make(source, id);
+                        if let Err(e) = &made {
+                            failures.lock().unwrap().push(Failure { row: *row, why: format!("{e:#}") });
+                        }
+                        let made = made.is_ok();
                         let now = {
                             let mut p = progress.lock().unwrap();
                             p.done += 1;
@@ -152,7 +171,9 @@ impl Thumbs {
                 });
             }
         });
-        progress.into_inner().unwrap()
+        let mut failures = failures.into_inner().unwrap();
+        failures.sort_by_key(|f| f.row);
+        (progress.into_inner().unwrap(), failures)
     }
 }
 

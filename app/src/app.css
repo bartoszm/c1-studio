@@ -359,6 +359,9 @@ footer .queue {
 }
 footer .thumbs { padding: 0 8px; color: #e8b03a; border: 1px solid currentColor; border-radius: 3px; }
 footer .thumbs:hover { color: #fff; }
+footer .warn { padding: 0 6px; color: var(--error); font-weight: 600; }
+footer .warn:hover, footer .log:hover { text-decoration: underline; }
+footer .log { color: var(--muted); }
 /* A thumbnail that failed to load leaves its tile empty, not a broken-image icon; it is
    tried again once thumbnails are made. */
 img[data-broken] { visibility: hidden; }

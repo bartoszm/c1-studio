@@ -1452,10 +1452,22 @@
         making thumbnails {thumbs.done.toLocaleString()} / {thumbs.total.toLocaleString()}
       </span>
     {:else if thumbs?.missing}
+      {#if thumbs.failed}
+        <button
+          class="warn"
+          title={[
+            `${thumbs.failed.toLocaleString()} photo${thumbs.failed === 1 ? "" : "s"} could not get a thumbnail:`,
+            ...thumbs.reasons.slice(0, 6).map(([why, n]) => `  ${n.toLocaleString()} — ${why}`),
+            "",
+            "Click to open the events log: each photo, where its original was looked for, and why.",
+          ].join("\n")}
+          onclick={() => api.openLog().catch((e) => (editError = String(e)))}
+        >⚠ {thumbs.failed.toLocaleString()} failed</button>
+      {/if}
       <button
         class="thumbs"
         title={thumbs.total && thumbs.failed
-          ? `${thumbs.failed.toLocaleString()} have no preview, and their originals are not reachable (is their drive connected?)`
+          ? "Try again, for instance once the drive with the originals is connected."
           : "Capture One has no thumbnail for these. Make them from each photo's preview, or its original when there is none."}
         onclick={() => api.fillThumbnails().catch((e) => (editError = String(e)))}
       >{thumbs.missing.toLocaleString()} photo{thumbs.missing === 1 ? "" : "s"} without a thumbnail · {thumbs.total ? "Try again" : "Make them"}</button>
@@ -1483,6 +1495,14 @@
       <button class="queue" onclick={() => (writing = true)}>
         {queuedCount.toLocaleString()} edit{queuedCount === 1 ? "" : "s"} waiting · Write to Capture One…
       </button>
+    {/if}
+    {#if status}
+      <button
+        class="log"
+        title="Events log: what was read from and written to Capture One, thumbnails made, and what failed"
+        aria-label="Open the events log"
+        onclick={() => api.openLog().catch((e) => (editError = String(e)))}
+      >ⓘ Log</button>
     {/if}
   </footer>
 </div>
