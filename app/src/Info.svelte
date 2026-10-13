@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as api from "./lib/api";
   import { codeFor, nameFor } from "./lib/countries";
-  import { COLORS, bytes, camera, date, exposure, folderOf, geoText, parseGeo } from "./lib/format";
+  import { COLORS, ORIGINS, bytes, camera, date, eventText, exposure, folderOf, geoText, parseGeo } from "./lib/format";
 
   const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 
@@ -85,6 +85,19 @@
     if (current !== undefined) api.look(current).then((l) => { if (current === row) look = l; }).catch(() => {});
   });
   const hex = (rgb: number[]) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
+
+  /** What the change log holds about the photo, read only while the section is open. */
+  let historyOpen = $state(false);
+  let history = $state<api.LogEvent[] | null>(null);
+  $effect(() => {
+    const current = row;
+    void version;
+    history = null;
+    if (current !== undefined && historyOpen) {
+      api.photoHistory(current).then((h) => { if (current === row) history = h; }).catch(() => {});
+    }
+  });
+  const albumName = (id: string) => `“${collections.get(id)?.path ?? id}”`;
 
   let typed = $state("");
   let typedError = $state<string | null>(null);
@@ -457,5 +470,24 @@
       {/if}
       <dt>Catalog id</dt><dd class="muted">{p.id.ext}</dd>
     </dl>
+
+    <details class="history" bind:open={historyOpen}>
+      <summary><h3>History</h3></summary>
+      {#if history === null}
+        <p class="hint">Reading…</p>
+      {:else if !history.length}
+        <p class="hint">No changes seen since the app started keeping a history.</p>
+      {:else}
+        <ol>
+          {#each history as e}
+            <li>
+              <span class="when">{date(e.at)}</span>
+              <span class="origin {e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
+              <span class="what">{eventText(e, albumName)}</span>
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </details>
   {/if}
 </aside>

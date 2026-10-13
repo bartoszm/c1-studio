@@ -31,6 +31,8 @@ struct Session {
     library: Library,
     /// One sync or write to Capture One at a time.
     syncing: Mutex<()>,
+    /// When Capture One was last looked at for changes by [`refresh`].
+    last_refresh: Mutex<Instant>,
     /// Why the last sync failed, until one succeeds: shown however late the window asks.
     sync_error: Mutex<Option<String>>,
     /// `settings.json` beside the library.
@@ -178,6 +180,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         source,
         library,
         syncing: Mutex::new(()),
+        last_refresh: Mutex::new(Instant::now()),
         sync_error: Mutex::new(None),
         settings_path,
         autosave: AtomicBool::new(settings.autosave),
@@ -530,7 +533,7 @@ async fn gpx_apply(app: State<'_, App>, filter: Filter, settings: GpxSettings) -
         })
         .collect();
     s.touched();
-    s.library.edit(&changes).map_err(text_of)
+    s.library.edit_as(&changes, c1index::Origin::Gpx).map_err(text_of)
 }
 
 /// Duplicate groups (or series) among the photos `filter` selects, biggest first.
@@ -606,6 +609,12 @@ async fn sync(app: AppHandle) -> Result<SyncReport, String> {
 
 /// Pulls Capture One's changes in, and tells the window when anything moved.
 fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
+    sync_now(app, true)
+}
+
+/// [`run_sync`]; with `recheck` false, thumbnails and analysis are looked at again only
+/// when the catalog changed.
+fn sync_now(app: &AppHandle, recheck: bool) -> Result<SyncReport, String> {
     let s = app.state::<App>().session()?;
     let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
     let report = s.library.sync(s.source.as_ref()).map_err(|e| format!("{e:#}"));
@@ -617,7 +626,8 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     }
     *s.sync_error.lock().unwrap() = failed;
     let report = report?;
-    if report.full || report.added + report.updated + report.deleted > 0 {
+    let changed = report.full || report.added + report.updated + report.deleted > 0;
+    if changed {
         s.log.event(
             &format!(
                 "Read Capture One{}: {} added, {} updated, {} deleted",
@@ -630,12 +640,61 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
         );
         let _ = app.emit("library-changed", &report);
     }
+    if !recheck && !changed {
+        return Ok(report);
+    }
     // Previews may have been rendered, or crops changed: made thumbnails are checked
     // against their sources again, and photos that failed may succeed now.
     s.thumbs.forget();
     start_analysis(app);
     count_missing(app);
     Ok(report)
+}
+
+/// How often Capture One is looked at while the app runs, besides when its window comes
+/// back to the front: an unchanged catalog costs a file stat.
+const REFRESH_EVERY: Duration = Duration::from_secs(300);
+/// Focus can come and go quickly (dialogs): no more than one look this often.
+const REFRESH_AT_MOST: Duration = Duration::from_secs(10);
+
+/// Reads the source when it changed, so its changes are seen (and logged) near when
+/// they were made. Skipped while another read or a write is under way.
+fn refresh(app: &AppHandle) {
+    let Ok(s) = app.state::<App>().session() else { return };
+    {
+        let mut last = s.last_refresh.lock().unwrap();
+        if last.elapsed() < REFRESH_AT_MOST {
+            return;
+        }
+        *last = Instant::now();
+    }
+    if s.syncing.try_lock().is_err() {
+        return;
+    }
+    if let Err(e) = sync_now(app, false) {
+        let _ = app.emit("sync-failed", e);
+    }
+}
+
+fn refresh_loop(app: AppHandle) {
+    loop {
+        std::thread::sleep(REFRESH_EVERY);
+        refresh(&app);
+    }
+}
+
+/// The change log's entries about one photo, newest first.
+#[tauri::command]
+async fn photo_history(app: State<'_, App>, row: u64) -> Result<Vec<c1index::Event>, String> {
+    let s = app.session()?;
+    let Some(id) = s.library.photo_id(row) else { return Ok(Vec::new()) };
+    s.library.photo_events(&id).map_err(text)
+}
+
+/// The newest `limit` entries of the change log.
+#[tauri::command]
+async fn change_log(app: State<'_, App>, limit: usize) -> Result<Vec<c1index::Event>, String> {
+    app.session()?.library.events(limit).map_err(text)
 }
 
 /// An edit from the UI, applied to every photo it names.
@@ -1644,7 +1703,16 @@ pub fn run() {
             }
             let handle = app.handle().clone();
             std::thread::spawn(move || autosave_loop(handle));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || refresh_loop(handle));
             Ok(())
+        })
+        // Back from Capture One: show what changed there.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                let app = window.app_handle().clone();
+                tauri::async_runtime::spawn_blocking(move || refresh(&app));
+            }
         })
         .register_asynchronous_uri_scheme_protocol("c1img", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -1696,7 +1764,9 @@ pub fn run() {
             write_plan,
             write_apply,
             autosave,
-            set_autosave
+            set_autosave,
+            photo_history,
+            change_log
         ])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");

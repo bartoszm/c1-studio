@@ -148,6 +148,13 @@ impl Batch<'_> {
         Ok(())
     }
 
+    /// The collections last stored for one source.
+    pub fn collections_of(&self, source: &str) -> anyhow::Result<Vec<Collection>> {
+        let table = self.tx.open_table(COLLECTIONS)?;
+        let Some(bytes) = table.get(source)? else { return Ok(Vec::new()) };
+        Ok(postcard::from_bytes(bytes.value())?)
+    }
+
     pub fn put_collections(&mut self, source: &str, collections: &[Collection]) -> anyhow::Result<()> {
         let bytes = postcard::to_stdvec(collections)?;
         self.tx.open_table(COLLECTIONS)?.insert(source, bytes.as_slice())?;

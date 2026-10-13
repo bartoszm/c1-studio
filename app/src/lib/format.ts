@@ -1,6 +1,6 @@
 // How photo facts read in the UI.
 
-import type { Op, Photo } from "./api";
+import type { LogEvent, Op, Origin, Photo } from "./api";
 
 export const COLORS: Record<string, string> = {
   red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
@@ -92,6 +92,24 @@ export function opText(op: Op, albumName: (id: string) => string = (id) => id): 
     return { field: "album", from: "", to: `${add ? "into" : "out of"} ${albumName(collection)}` };
   }
   return null;
+}
+
+export const ORIGINS: Record<Origin, string> = { App: "here", Source: "Capture One", Gpx: "GPX" };
+
+/** A change log entry in one line: `rating: ★★ → ★★★★★`, `+ street`, `added`. */
+export function eventText(e: LogEvent, albumName?: (id: string) => string): string {
+  if ("change" in e) {
+    const t = opText(e.change.op, albumName);
+    if (!t) return "changed";
+    return t.from ? `${t.field}: ${t.from} → ${t.to}` : `${t.field} ${t.to}`;
+  }
+  if ("added" in e) return `${e.added.name} added`;
+  if ("removed" in e) return `${e.removed.name} removed`;
+  if ("collection" in e) return e.collection.label;
+  if ("remap" in e) return e.remap.label;
+  if ("undone" in e) return `Undo: ${e.undone.label}`;
+  if ("written" in e) return `${e.written.changes} edit${e.written.changes === 1 ? "" : "s"} written to Capture One`;
+  return "";
 }
 
 /** The value an op sets, for a field edit. */
