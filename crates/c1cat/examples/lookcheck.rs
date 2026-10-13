@@ -59,7 +59,7 @@ fn main() -> anyhow::Result<()> {
         let thumb = image::ImageReader::open(&look_path)?.with_guessed_format()?.decode()?.into_rgb8();
         let is_grey = c1image::Look::of(&thumb).grey || r.monochrome;
         let plain = c1model::ImageRef { monochrome: false, look: None, ..r.clone() };
-        let shown = |img| c1image::rotate(img, r.rotation);
+        let shown = |img: RgbImage| img;
 
         let base = shown(c1image::render_preview(&plain, Matching::None)?);
         let start = Instant::now();

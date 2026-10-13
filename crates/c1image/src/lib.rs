@@ -5,10 +5,12 @@
 //!   applied.
 //! - JPEG-XL holding linear camera-space RGB before white balance (Capture One's `.cop`
 //!   previews): white balance, highlight scaling and the sRGB curve are applied here,
-//!   then the colours of the source's own small render, fitted pixel by pixel.
+//!   then the quarter turn and straightening, the colours of the source's own small
+//!   render, fitted pixel by pixel, and the crop.
 //! - Camera raws: the full-size JPEG the camera embedded. Not a raw conversion, so no
 //!   edits show.
 
+mod geometry;
 mod jxl;
 mod look;
 mod lut;
@@ -21,8 +23,9 @@ use c1model::{ImageFormat, ImageRef};
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
+pub use geometry::{crop, straighten};
 pub use image::RgbImage;
-pub use jxl::{Matching, decode_linear, render_preview};
+pub use jxl::{Matching, decode_linear, jxl_size, render_preview};
 pub use look::Look;
 pub use lut::Lut;
 
@@ -49,13 +52,21 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 pub fn load(r: &ImageRef) -> Result<RgbImage> {
     let image = match r.format {
         ImageFormat::Jpeg => load_jpeg(&r.path),
-        ImageFormat::JpegXl => render_preview(r, Matching::Colours),
+        ImageFormat::JpegXl => return Ok(frame(render_preview(r, Matching::Colours)?, r)),
         ImageFormat::Raw => match raw::embedded_jpeg(&r.path)? {
             Some(bytes) => jpeg(&bytes, &r.path),
             None => Err(Error::NoPreview { path: r.path.clone() }),
         },
     }?;
-    Ok(rotate(image, r.rotation))
+    Ok(frame(straighten(rotate(image, r.rotation), r.straighten), r))
+}
+
+/// `image`, turned and straightened as `r` says, cut to `r.crop`.
+pub fn frame(image: RgbImage, r: &ImageRef) -> RgbImage {
+    match &r.crop {
+        Some(c) => crop(&image, c, r.straighten),
+        None => image,
+    }
 }
 
 /// Turns clockwise by `degrees`, a multiple of 90; anything else is left as is.
