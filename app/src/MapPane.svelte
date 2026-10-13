@@ -30,7 +30,8 @@
     onview: (bounds: BBox) => void;
     onpick: (row: number) => void;
     /** Photos moved to a place: dragged markers, or photos dropped from the grid. */
-    onsetgeo: (rows: number[], lat: number, lon: number) => void;
+    /** Photos placed; `from` is the tile they were moved from, when a pin was dragged. */
+    onsetgeo: (rows: number[], lat: number, lon: number, from?: BBox) => void;
     onerror: (text: string) => void;
   } = $props();
 
@@ -155,15 +156,22 @@
       if (markers.has(id)) continue;
       const el = pinFor(c, zoom);
       const single = c.count === 1;
-      el.title = single ? "Drag to move; the dot is where it goes" : `${c.count.toLocaleString()} photos`;
+      // A disc sits on its place; a photo stands on it, its dot (DOT px) on the spot.
+      const pinned = !el.classList.contains("disc");
+      // One photo, or a stack of them all at one spot, moves by its pin; photos spread
+      // over a tile do not, as dropping them would heap them on one spot.
+      const moves = single ? [c.best] : pinned ? (c.rows ?? []) : [];
+      el.title = single
+        ? "Drag to move; the dot is where it goes"
+        : moves.length
+          ? `${c.count.toLocaleString()} photos at one spot · drag to move them together`
+          : `${c.count.toLocaleString()} photos`;
       el.dataset.row = String(c.best);
       el.dataset.count = String(c.count);
       el.dataset.bounds = JSON.stringify(c.bounds);
-      // A disc sits on its place; a photo stands on it, its dot (DOT px) on the spot.
-      const pinned = !el.classList.contains("disc");
       const marker = new maplibregl.Marker({
         element: el,
-        draggable: single,
+        draggable: moves.length > 0,
         anchor: pinned ? "bottom" : "center",
         offset: pinned ? [0, DOT / 2] : [0, 0],
       })
@@ -173,7 +181,7 @@
       let dragged = false;
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (dragged) return void (dragged = false);
+        if (dragged) return;
         if (e.detail > 1) return;
         if (tile && el.classList.contains("chosen") && covers(tile, c.bounds)) ontile(null, null);
         else ontile(c.bounds, single ? c.best : null);
@@ -183,15 +191,17 @@
         ontile(c.bounds, single ? c.best : null);
         if (!single) zoomTo(c);
       });
-      if (single) {
+      if (moves.length) {
         marker.on("dragstart", () => {
           dragged = true;
           el.classList.add("moving");
         });
         marker.on("dragend", () => {
           el.classList.remove("moving");
+          // The click that ends a drag comes after this; it is not a click on the tile.
+          setTimeout(() => (dragged = false));
           const at = marker.getLngLat();
-          onsetgeo([c.best], at.lat, ((at.lng + 540) % 360) - 180);
+          onsetgeo(moves, at.lat, ((at.lng + 540) % 360) - 180, c.bounds);
         });
       }
       markers.set(id, { marker, el });
