@@ -4,11 +4,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use c1index::thumbs::{Failure, Kind, Progress, Thumbs};
-use c1index::{Filter, Library, PendingEdit, QueryOptions, QueryResult, SyncReport};
+use c1index::{Filter, Library, Origin, PendingEdit, QueryOptions, QueryResult, SyncReport};
 use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
@@ -533,7 +533,7 @@ async fn gpx_apply(app: State<'_, App>, filter: Filter, settings: GpxSettings) -
         })
         .collect();
     s.touched();
-    s.library.edit_as(&changes, c1index::Origin::Gpx).map_err(text_of)
+    s.library.edit_as(&changes, Origin::Gpx).map_err(text_of)
 }
 
 /// Duplicate groups (or series) among the photos `filter` selects, biggest first.
@@ -609,15 +609,16 @@ async fn sync(app: AppHandle) -> Result<SyncReport, String> {
 
 /// Pulls Capture One's changes in, and tells the window when anything moved.
 fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
-    sync_now(app, true)
-}
-
-/// [`run_sync`]; with `recheck` false, thumbnails and analysis are looked at again only
-/// when the catalog changed.
-fn sync_now(app: &AppHandle, recheck: bool) -> Result<SyncReport, String> {
     let s = app.state::<App>().session()?;
     let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-    let report = s.library.sync(s.source.as_ref()).map_err(|e| format!("{e:#}"));
+    sync_held(app, &s, true, Origin::Source)
+}
+
+/// [`run_sync`] for a caller holding `s.syncing`, with what changed logged as coming from
+/// `origin`. With `recheck` false, thumbnails and analysis are looked at again only when
+/// the catalog changed.
+fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Result<SyncReport, String> {
+    let report = s.library.sync_as(s.source.as_ref(), origin).map_err(|e| format!("{e:#}"));
     let failed = report.as_ref().err().cloned();
     if let Some(e) = &failed
         && s.sync_error.lock().unwrap().as_ref() != Some(e)
@@ -626,7 +627,7 @@ fn sync_now(app: &AppHandle, recheck: bool) -> Result<SyncReport, String> {
     }
     *s.sync_error.lock().unwrap() = failed;
     let report = report?;
-    let changed = report.full || report.added + report.updated + report.deleted > 0;
+    let changed = report.changed();
     if changed {
         s.log.event(
             &format!(
@@ -668,10 +669,12 @@ fn refresh(app: &AppHandle) {
         }
         *last = Instant::now();
     }
-    if s.syncing.try_lock().is_err() {
-        return;
-    }
-    if let Err(e) = sync_now(app, false) {
+    let _one = match s.syncing.try_lock() {
+        Ok(one) => one,
+        Err(TryLockError::WouldBlock) => return,
+        Err(TryLockError::Poisoned(e)) => e.into_inner(),
+    };
+    if let Err(e) = sync_held(app, &s, false, Origin::Source) {
         let _ = app.emit("sync-failed", e);
     }
 }
@@ -683,12 +686,23 @@ fn refresh_loop(app: AppHandle) {
     }
 }
 
-/// The change log's entries about one photo, newest first.
+/// One photo's entries in the change log, newest first, with what the albums they name
+/// were called when last seen (for albums since deleted, or made here and since written).
+#[derive(Serialize)]
+struct PhotoHistory {
+    events: Vec<c1index::Event>,
+    albums: BTreeMap<String, String>,
+}
+
 #[tauri::command]
-async fn photo_history(app: State<'_, App>, row: u64) -> Result<Vec<c1index::Event>, String> {
+async fn photo_history(app: State<'_, App>, row: u64) -> Result<PhotoHistory, String> {
     let s = app.session()?;
-    let Some(id) = s.library.photo_id(row) else { return Ok(Vec::new()) };
-    s.library.photo_events(&id).map_err(text)
+    let Some(id) = s.library.photo_id(row) else {
+        return Ok(PhotoHistory { events: Vec::new(), albums: BTreeMap::new() });
+    };
+    let events = s.library.photo_events(&id).map_err(text)?;
+    let albums = s.library.album_names(&events).map_err(text)?.into_iter().map(|(id, name)| (id.0, name)).collect();
+    Ok(PhotoHistory { events, albums })
 }
 
 /// The newest `limit` entries of the change log.
@@ -1324,8 +1338,9 @@ enum Outcome {
 fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
     run_sync(app)?;
     let s = app.state::<App>().session()?;
+    // Held until the write is read back, so no refresh comes in between.
+    let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
     let report = {
-        let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
         let (summary, plan, carried) = plan_writes(&s)?;
         if !summary.conflicts.is_empty() {
             return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
@@ -1342,13 +1357,16 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
         s.library.settle_remaps(&carried.remaps).map_err(|e| format!("{e:#}"))?;
         s.library.settle_collections(&carried.collections).map_err(|e| format!("{e:#}"))?;
         s.library.settle(&done).map_err(|e| format!("{e:#}"))?;
+        s.library
+            .log_written(&plan.apply, carried.collections.len(), carried.remaps.len())
+            .map_err(|e| format!("{e:#}"))?;
         let blocked = summary.blocked.len() + summary.blocked_remaps.len() + summary.blocked_collections.len();
         if report.applied == 0 && blocked > 0 {
             return Ok(Outcome::Attention { conflicts: 0, blocked });
         }
         WriteReport { written: report.applied, backup: report.backup }
     };
-    run_sync(app)?;
+    sync_held(app, &s, true, Origin::Source)?;
     Ok(Outcome::Written(report))
 }
 
@@ -1385,11 +1403,14 @@ async fn backups(app: State<'_, App>) -> Result<Backups, String> {
 async fn restore_backup(app: AppHandle, id: String) -> Result<BackupInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let s = app.state::<App>().session()?;
-        let before = {
-            let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
-            s.source.restore(&id).map_err(text)?
-        };
-        run_sync(&app)?;
+        // Capture One's own changes read first, and the restored catalog read back before
+        // anything else reads it: what the restore put back is logged as such.
+        let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+        // A catalog that cannot be read is no reason not to restore one: the failure is
+        // logged, and the restore goes ahead.
+        let _ = sync_held(&app, &s, false, Origin::Source);
+        let before = s.source.restore(&id).map_err(text)?;
+        sync_held(&app, &s, true, Origin::Restore)?;
         Ok(before)
     })
     .await

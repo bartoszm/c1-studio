@@ -1072,41 +1072,67 @@ is recorded, so it is recorded before its views. The log is the `events` table i
 `edits.redb`, which a `MODEL_VERSION` bump never wipes. Values are JSON, so entries
 written before the kinds below existed still read.
 
-- **`c1index::Event { at, origin, what }`.** `Origin` is `App`, `Source` or `Gpx`. `What`
-  is one of:
+- **`c1index::Event { at, origin, what }`.** `Origin` is `App`, `Source`, `Gpx` or
+  `Restore` (a backup put back from the app). `What` is one of:
   - `Change(Change)`: one field of one photo;
   - `Added` / `Removed`: the photo id and its file name, so the entry still reads after the
     photo is gone;
   - `Collection { change, label }`: an album made, renamed, moved, given a new rule or
     deleted;
   - `Remap(KeywordRemap)`: a keyword tree change;
-  - `Written { photos, changes }`: queued edits reached the source;
+  - `Written { photos, changes, albums, keywords }`: a write reached the source. Edits the
+    source already held are not counted; nothing written, nothing logged.
   - `Undone { label }`: a queued album or keyword tree change taken back.
-- **Per photo:** the multimap table `events_by_photo` (photo key → sequence numbers), filled
-  once from the existing log when it is first opened. `Library::photo_events` reads it.
+- **Per photo:** the multimap table `events_by_photo` (photo key → sequence numbers).
+  `Library::photo_events` reads it. A `meta` entry says how far the log has been looked
+  up, so entries added by a build from before the lookup are picked up on the next open.
+  An entry this build cannot read (a newer kind) is skipped with a line on stderr; it does
+  not stop the library opening.
+- **Album names:** the table `album_names` keeps each album's path as last seen. The
+  History section uses it for albums deleted since, and for albums made here whose app id
+  the source has replaced.
 - **Sync logs Capture One's side:**
   - `c1model::diff` now covers IPTC, place and GPS. A position counts as changed only when
     it moves.
   - Photos added and removed are logged.
   - `collection_diff` compares the albums with the stored list.
   - The first fill of a source logs none of this; `imported_at` dates those photos.
-  - Two cases are not credited to Capture One. Album changes the app just wrote, which come
-    back from the source, are not logged twice; an album the app made is matched by name
-    and kind, and photos in it are not logged as moving from the app's id to the source's.
-    And photos re-read after a keyword tree change was undone (fingerprint 0) are logged as
-    `App`.
+  - What the app did is not credited to Capture One:
+    - album changes the app wrote are kept in the table `written_collections` until a sync
+      that saw the source's albums commits, so a failed sync or a restart in between does
+      not lose them. Each matches once. A new album is matched by name, kind and parent,
+      with app ids read as the source's; albums made inside albums made in the same write
+      are matched once their parent is;
+    - photos are not logged as moving from the app's album id to the source's, nor as
+      leaving an album the app deleted (or anything under it);
+    - photos re-read after a keyword tree change was undone (fingerprint 0) are logged as
+      `App`;
+    - `Library::sync_as(source, origin)`: restoring a backup syncs first as `Source`, then
+      reads the restored catalog back as `Restore`, holding the sync lock throughout.
+  - The source is read before the edit lock is taken (a separate lock keeps syncs one at a
+    time), so a refresh reading a changed catalog does not hold up edits for seconds.
 - **App side:**
   - `Library::edit_as(changes, origin)`; GPX placements pass `Gpx`.
   - Album and keyword tree changes are logged when queued, and again when undone.
-  - `settle` logs `Written`.
+  - `Library::log_written` after a write; the write holds the sync lock until it is read
+    back.
 - **Noticed sooner:** the app reads Capture One again when its window comes back into
   focus (at most every 10 s) and every 5 minutes. An unchanged catalog costs a file stat.
-  Thumbnails and analysis are looked at again only when it changed.
+  A refresh is skipped while another sync or a write holds the lock (a poisoned lock is
+  taken over). `SyncReport::changed` is false for a full read in which nothing differed:
+  Capture One touches its file often. Thumbnails and analysis are looked at again only
+  when something changed.
 - **First view:** a collapsible **History** section at the bottom of the details panel. It
-  shows the date, who made the change (here / Capture One / GPX) and a one-line
-  description (`eventText` in `lib/format.ts`). Commands `photo_history(row)` and
-  `change_log(limit)`. The details panel also reads the photo again after a sync that
-  changed something; before, it kept showing the old values.
+  shows the date, who made the change (here / Capture One / GPX / backup) and a one-line
+  description (`eventText` in `lib/format.ts`). Commands `photo_history(row)` (entries and
+  album names) and `change_log(limit)`. After a sync the open section keeps its list until
+  the new one is in; only the newest read is shown, and a failed read says so. The details
+  panel also reads the photo again after a sync that changed something; before, it kept
+  showing the old values.
+- **Review fixes** (PR #8): each is covered by a test in `crates/c1index/tests/library.rs`:
+  an album deleted here, albums written then a restart, two new albums of one name, a
+  restore, a touched source with nothing new, captions and places written and read back.
+  `edits.rs` tests old-build and unreadable entries.
 - **Tested** with a second instance on a copy of the newest fuji backup:
   - the first fill of 99k photos logged nothing;
   - a rating set here showed as *here*;

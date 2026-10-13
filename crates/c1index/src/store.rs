@@ -161,6 +161,13 @@ impl Batch<'_> {
         Ok(())
     }
 
+    /// The keyword tree last stored for one source.
+    pub fn keywords_of(&self, source: &str) -> anyhow::Result<Vec<KeywordNode>> {
+        let table = self.tx.open_table(KEYWORDS)?;
+        let Some(bytes) = table.get(source)? else { return Ok(Vec::new()) };
+        Ok(postcard::from_bytes(bytes.value())?)
+    }
+
     pub fn put_keywords(&mut self, source: &str, keywords: &[KeywordNode]) -> anyhow::Result<()> {
         let bytes = postcard::to_stdvec(keywords)?;
         self.tx.open_table(KEYWORDS)?.insert(source, bytes.as_slice())?;

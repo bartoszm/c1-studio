@@ -89,15 +89,36 @@
   /** What the change log holds about the photo, read only while the section is open. */
   let historyOpen = $state(false);
   let history = $state<api.LogEvent[] | null>(null);
+  let historyError = $state<string | null>(null);
+  /** Names the log knows for albums no longer listed (deleted, or since written). */
+  let historyAlbums = $state<Record<string, string>>({});
+  // Not state: which photo `history` is about, and the newest read asked for.
+  let historyOf: number | undefined;
+  let historyAsked = 0;
   $effect(() => {
     const current = row;
     void version;
-    history = null;
-    if (current !== undefined && historyOpen) {
-      api.photoHistory(current).then((h) => { if (current === row) history = h; }).catch(() => {});
+    // Another photo starts empty; the same one keeps its list until the new one is in.
+    if (current !== historyOf) {
+      historyOf = current;
+      history = null;
+      historyError = null;
     }
+    if (current === undefined || !historyOpen) return;
+    const asked = ++historyAsked;
+    api.photoHistory(current).then(
+      (h) => {
+        if (asked !== historyAsked) return;
+        history = h.events;
+        historyAlbums = h.albums;
+        historyError = null;
+      },
+      (e) => {
+        if (asked === historyAsked) historyError = String(e);
+      },
+    );
   });
-  const albumName = (id: string) => `“${collections.get(id)?.path ?? id}”`;
+  const loggedAlbumName = (id: string) => `“${collections.get(id)?.path ?? historyAlbums[id] ?? id}”`;
 
   let typed = $state("");
   let typedError = $state<string | null>(null);
@@ -473,7 +494,9 @@
 
     <details class="history" bind:open={historyOpen}>
       <summary><h3>History</h3></summary>
-      {#if history === null}
+      {#if historyError}
+        <p class="hint">Could not read the history: {historyError}</p>
+      {:else if history === null}
         <p class="hint">Reading…</p>
       {:else if !history.length}
         <p class="hint">No changes seen since the app started keeping a history.</p>
@@ -483,7 +506,7 @@
             <li>
               <span class="when">{date(e.at)}</span>
               <span class="origin {e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
-              <span class="what">{eventText(e, albumName)}</span>
+              <span class="what">{eventText(e, loggedAlbumName)}</span>
             </li>
           {/each}
         </ol>

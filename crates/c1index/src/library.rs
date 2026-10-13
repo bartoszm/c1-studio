@@ -9,7 +9,7 @@ use anyhow::{Context, bail};
 use c1model::change::{Check, collection_diff, collection_problem, descendants, diff, membership_problem};
 use c1model::{
     Change, Collection, CollectionChange, CollectionId, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap,
-    MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
+    MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
@@ -117,7 +117,19 @@ pub struct SyncReport {
     pub updated: usize,
     pub unchanged: usize,
     pub deleted: usize,
+    /// The source's albums differ from those stored.
+    pub albums: bool,
+    /// The source's keyword tree differs from the one stored.
+    pub keywords: bool,
     pub millis: u128,
+}
+
+impl SyncReport {
+    /// Whether anything the library shows changed. A full read can change nothing: the
+    /// source's file was touched, its photos were not.
+    pub fn changed(&self) -> bool {
+        self.added + self.updated + self.deleted > 0 || self.albums || self.keywords
+    }
 }
 
 pub struct Library {
@@ -139,13 +151,8 @@ pub struct Library {
     seen: RwLock<HashMap<String, Look>>,
     /// One writer at a time: syncs and edits both rewrite documents.
     writing: Mutex<()>,
-    /// Album changes just written to a source, logged when they were queued: the next
-    /// sync sees them come back and does not log them again.
-    written_collections: Mutex<Vec<CollectionChange>>,
-}
-
-fn source_err(e: anyhow::Error) -> SourceError {
-    SourceError::Other(format!("{e:#}"))
+    /// One sync at a time: a sync reads its source before it takes `writing`.
+    syncing: Mutex<()>,
 }
 
 impl Library {
@@ -204,7 +211,7 @@ impl Library {
             looks,
             seen: RwLock::new(seen),
             writing: Mutex::new(()),
-            written_collections: Mutex::new(Vec::new()),
+            syncing: Mutex::new(()),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -422,10 +429,30 @@ impl Library {
         Ok(())
     }
 
-    /// Pulls a source's current state into the library.
+    /// Pulls a source's current state into the library. What changed there is logged as
+    /// the source's doing.
     pub fn sync(&self, source: &dyn PhotoSource) -> anyhow::Result<SyncReport> {
-        let _writing = self.writing.lock().unwrap();
+        self.sync_as(source, Origin::Source)
+    }
+
+    /// [`Library::sync`], with what changed logged as coming from `origin` (a backup put
+    /// back from the app, say).
+    pub fn sync_as(&self, source: &dyn PhotoSource, origin: Origin) -> anyhow::Result<SyncReport> {
+        let _one = self.syncing.lock().unwrap_or_else(|e| e.into_inner());
         let started = Instant::now();
+        let source_id = source.info().id.0;
+        let cursor_key = format!("cursor:{source_id}");
+        let since = self.store.meta(&cursor_key)?.map(Cursor);
+        // Read before taking the writer: a changed catalog takes seconds to read, and edits
+        // made meanwhile need not wait for it. Only syncs change the cursor and the stored
+        // photos, and they go one at a time.
+        let mut events = Vec::new();
+        source.snapshot(since.as_ref(), &mut |event| {
+            events.push(event);
+            Ok(())
+        })?;
+
+        let _writing = self.writing.lock().unwrap();
         // Queued edits stay on top of whatever the source sends.
         let mut queued: HashMap<String, Vec<(String, Pending)>> = HashMap::new();
         for (key, pending) in self.edits.pending()? {
@@ -434,18 +461,20 @@ impl Library {
         let remaps: Vec<KeywordRemap> = self.edits.remaps()?.into_iter().map(|(_, q)| q.remap).collect();
         let mut edits = self.edits.batch()?;
         let now = now_ms();
-        let source_id = source.info().id.0;
-        let cursor_key = format!("cursor:{source_id}");
-        let since = self.store.meta(&cursor_key)?.map(Cursor);
         let known: Vec<(u64, String)> = self.store.keys()?;
         let prefix = format!("{source_id}\u{1f}");
         // The first fill of a source (or a refill after the store was dropped) is not news:
         // its photos and albums are not logged as added. `imported_at` dates them.
         let first_fill = !known.iter().any(|(_, key)| key.starts_with(&prefix));
-        // Album changes this app just wrote come back from the source: logged already.
-        let written_collections = std::mem::take(&mut *self.written_collections.lock().unwrap());
+        // Album changes this app wrote come back from the source: logged already, when
+        // they were queued. Kept until a sync that saw the source's albums commits.
+        let mut written = edits.written()?;
+        let mut saw_albums = false;
         // Albums the app made come back under the source's own ids: app id → source id.
         let mut renamed: HashMap<CollectionId, CollectionId> = HashMap::new();
+        // Albums the app deleted, and those in them: photos the store still has in them
+        // are not news when they no longer are.
+        let mut deleted: HashSet<CollectionId> = HashSet::new();
 
         let mut batch = self.store.batch()?;
         let mut writer = self.writer()?;
@@ -454,7 +483,9 @@ impl Library {
         let mut end: Option<Cursor> = None;
         let row_field = self.fields.row;
 
-        source.snapshot(since.as_ref(), &mut |event| {
+        // Sources send their albums before their photos, so photos are diffed against
+        // albums already sorted out.
+        for event in events {
             match event {
                 SourceEvent::BeginFull => report.full = true,
                 SourceEvent::BeginIncremental => {}
@@ -462,31 +493,31 @@ impl Library {
                     let key = photo.id.key();
                     // The source's own state; queued edits laid over it below do not count.
                     let fingerprint = photo.fingerprint();
-                    // Fingerprint 0 marks a photo the app asked to read again (a keyword
-                    // tree change undone): what changed there is the app's doing.
-                    let mut origin = Origin::Source;
-                    let (row, old) = match batch.row_of(&key).map_err(source_err)? {
+                    let mut by = origin;
+                    let (row, old) = match batch.row_of(&key)? {
                         Some(row) => {
-                            let stored = batch.fingerprint(row).map_err(source_err)?;
+                            let stored = batch.fingerprint(row)?;
                             if stored == Some(fingerprint) {
                                 report.unchanged += 1;
                                 seen.insert(row);
-                                return Ok(());
+                                continue;
                             }
-                            if stored == Some(0) {
-                                origin = Origin::App;
+                            // Fingerprint 0 marks a photo the app asked to read again (a
+                            // keyword tree change undone): what changed there is the app's doing.
+                            if stored == Some(0) && origin == Origin::Source {
+                                by = Origin::App;
                             }
                             writer.delete_term(Term::from_field_u64(row_field, row));
                             report.updated += 1;
-                            (row, batch.photo(row).map_err(source_err)?)
+                            (row, batch.photo(row)?)
                         }
                         None => {
                             report.added += 1;
                             if !first_fill {
                                 let what = What::Added { photo: photo.id.clone(), name: photo.file.name.clone() };
-                                edits.log(&Event { at: now, origin, what }).map_err(source_err)?;
+                                edits.log(&Event { at: now, origin: by, what })?;
                             }
-                            (batch.next_row().map_err(source_err)?, None)
+                            (batch.next_row()?, None)
                         }
                     };
                     for remap in &remaps {
@@ -495,10 +526,10 @@ impl Library {
                     for (pending_key, mut pending) in queued.remove(&key).unwrap_or_default() {
                         match pending.change.op.check(&photo) {
                             // The source holds what the user wants: nothing left to write.
-                            Check::NoOp => edits.remove(&pending_key).map_err(source_err)?,
+                            Check::NoOp => edits.remove(&pending_key)?,
                             Check::Apply => {
                                 if pending.theirs.take().is_some() {
-                                    edits.put(&pending_key, &pending).map_err(source_err)?;
+                                    edits.put(&pending_key, &pending)?;
                                 }
                                 pending.change.op.apply_to(&mut photo);
                             }
@@ -507,13 +538,14 @@ impl Library {
                                 let theirs = pending.change.op.valued_from(&photo);
                                 if pending.theirs.as_ref() != Some(&theirs) {
                                     pending.theirs = Some(theirs);
-                                    edits.put(&pending_key, &pending).map_err(source_err)?;
+                                    edits.put(&pending_key, &pending)?;
                                 }
                                 pending.change.op.apply_to(&mut photo);
                             }
                         }
                     }
                     if let Some(mut old) = old {
+                        old.collections.retain(|id| !deleted.contains(id));
                         for id in &mut old.collections {
                             if let Some(real) = renamed.get(id) {
                                 *id = real.clone();
@@ -521,49 +553,54 @@ impl Library {
                         }
                         for op in diff(&old, &photo) {
                             let what = What::Change(Change { photo: photo.id.clone(), op });
-                            edits.log(&Event { at: now, origin, what }).map_err(source_err)?;
+                            edits.log(&Event { at: now, origin: by, what })?;
                         }
                     }
                     seen.insert(row);
-                    batch.put_photo(row, &photo, fingerprint).map_err(source_err)?;
-                    writer.add_document(self.doc(row, &photo)).map_err(|e| SourceError::Other(e.to_string()))?;
+                    batch.put_photo(row, &photo, fingerprint)?;
+                    writer.add_document(self.doc(row, &photo))?;
                 }
                 SourceEvent::Delete(id) => {
                     let key = id.key();
-                    if let Some(row) = batch.row_of(&key).map_err(source_err)? {
-                        let name = batch.photo(row).map_err(source_err)?.map(|p| p.file.name).unwrap_or_default();
-                        let what = What::Removed { photo: id, name };
-                        edits.log(&Event { at: now, origin: Origin::Source, what }).map_err(source_err)?;
+                    if let Some(row) = batch.row_of(&key)? {
+                        let name = batch.photo(row)?.map(|p| p.file.name).unwrap_or_default();
+                        edits.log(&Event { at: now, origin, what: What::Removed { photo: id, name } })?;
                         writer.delete_term(Term::from_field_u64(row_field, row));
-                        batch.delete_photo(row, &key).map_err(source_err)?;
+                        batch.delete_photo(row, &key)?;
                         report.deleted += 1;
                     }
                 }
                 SourceEvent::Collections(collections) => {
-                    let old = batch.collections_of(&source_id).map_err(source_err)?;
+                    saw_albums = true;
+                    let old = batch.collections_of(&source_id)?;
+                    report.albums = old != collections;
                     if !first_fill {
-                        for change in collection_diff(&old, &collections) {
-                            if let Some(w) = written_collections.iter().find(|w| same_collection_change(w, &change)) {
-                                renamed.insert(w.id().clone(), change.id().clone());
-                                continue;
+                        let (news, known) =
+                            sort_out_written(&mut written, collection_diff(&old, &collections), &mut renamed);
+                        for change in &known {
+                            if let CollectionChange::Delete { id } = change {
+                                deleted.extend(descendants(&old, id));
                             }
+                        }
+                        for change in news {
                             let label = match &change {
                                 CollectionChange::Create { .. } => change.label(&collections),
                                 _ => change.label(&old),
                             };
                             let what = What::Collection { change, label };
-                            edits.log(&Event { at: now, origin: Origin::Source, what }).map_err(source_err)?;
+                            edits.log(&Event { at: now, origin, what })?;
                         }
                     }
-                    batch.put_collections(&source_id, &collections).map_err(source_err)?;
+                    edits.name_albums(&collections)?;
+                    batch.put_collections(&source_id, &collections)?;
                 }
                 SourceEvent::Keywords(keywords) => {
-                    batch.put_keywords(&source_id, &keywords).map_err(source_err)?;
+                    report.keywords = batch.keywords_of(&source_id)? != keywords;
+                    batch.put_keywords(&source_id, &keywords)?;
                 }
                 SourceEvent::End(cursor) => end = Some(cursor),
             }
-            Ok(())
-        })?;
+        }
 
         let Some(end) = end else { bail!("source {source_id} ended its snapshot without a cursor") };
         if report.full {
@@ -571,12 +608,16 @@ impl Library {
             for (row, key) in known.iter().filter(|(row, key)| key.starts_with(&prefix) && !seen.contains(row)) {
                 if let Some(photo) = batch.photo(*row)? {
                     let what = What::Removed { photo: photo.id, name: photo.file.name };
-                    edits.log(&Event { at: now, origin: Origin::Source, what })?;
+                    edits.log(&Event { at: now, origin, what })?;
                 }
                 writer.delete_term(Term::from_field_u64(row_field, *row));
                 batch.delete_photo(*row, key)?;
                 report.deleted += 1;
             }
+        }
+        if saw_albums {
+            // The source's albums after the write are in: what did not come back never will.
+            edits.clear_written()?;
         }
         batch.set_meta(&cursor_key, &end.0)?;
         batch.set_meta("index_schema", &index_version())?;
@@ -700,6 +741,13 @@ impl Library {
         self.edits.photo_events(&id.key())
     }
 
+    /// What the albums these events name were called when last seen: also those deleted
+    /// since, and those made here under an id the source has replaced.
+    pub fn album_names(&self, events: &[Event]) -> anyhow::Result<Vec<(CollectionId, String)>> {
+        let ids: HashSet<&CollectionId> = events.iter().filter_map(|e| e.what.album()).collect();
+        self.edits.album_names(ids)
+    }
+
     /// Drops queued edits and shows the source's value again: the one it held when the
     /// field was first edited, or its newer one if it changed meanwhile.
     pub fn discard(&self, keys: &[String]) -> anyhow::Result<()> {
@@ -739,11 +787,19 @@ impl Library {
                 }
             }
         }
-        if !written.is_empty() {
-            let photos = written.iter().map(|c| &c.photo).collect::<HashSet<_>>().len();
-            let what = What::Written { photos, changes: written.len() };
-            edits.log(&Event { at: now_ms(), origin: Origin::App, what })?;
+        edits.commit()
+    }
+
+    /// Logs that a write reached its source: `applied`, the photo edits the source did not
+    /// hold already, and so many album and keyword tree changes. Nothing written, nothing logged.
+    pub fn log_written(&self, applied: &[Change], albums: usize, keywords: usize) -> anyhow::Result<()> {
+        if applied.is_empty() && albums == 0 && keywords == 0 {
+            return Ok(());
         }
+        let photos = applied.iter().map(|c| &c.photo).collect::<HashSet<_>>().len();
+        let what = What::Written { photos, changes: applied.len(), albums, keywords };
+        let mut edits = self.edits.batch()?;
+        edits.log(&Event { at: now_ms(), origin: Origin::App, what })?;
         edits.commit()
     }
 
@@ -967,6 +1023,10 @@ impl Library {
             let at = now_ms();
             let what = What::Collection { change: change.clone(), label: label.clone() };
             edits.log(&Event { at, origin: Origin::App, what })?;
+            // The log names albums by id; one made here is known by the app's until written.
+            let mut after = current.clone();
+            change.apply_to(&mut after);
+            edits.name_albums(&after)?;
             let seq = edits.add_collection(&QueuedCollection { change, label, at, dropped })?;
             edits.commit()?;
             seq
@@ -1032,12 +1092,13 @@ impl Library {
         let _writing = self.writing.lock().unwrap();
         let mut edits = self.edits.batch()?;
         let queued = edits.collections()?;
-        let mut written = self.written_collections.lock().unwrap();
         for seq in seqs {
-            written.extend(queued.iter().filter(|(s, _)| s == seq).map(|(_, q)| q.change.clone()));
+            // Logged when queued: the sync that sees it come back knows it by this.
+            for (_, q) in queued.iter().filter(|(s, _)| s == seq) {
+                edits.add_written(&q.change)?;
+            }
             edits.remove_collection(*seq)?;
         }
-        drop(written);
         edits.commit()?;
         drop(_writing);
         self.refresh_smart()
@@ -1208,19 +1269,56 @@ fn index_version() -> String {
     format!("{SCHEMA_VERSION}.{}", c1analysis::CLASSES)
 }
 
-/// The album an op puts a photo into or takes it out of.
-/// Whether `seen`, found by comparing a source's albums, is `written` coming back. An
-/// album the app made gets the source's own id, so a new one is matched by name and kind.
-fn same_collection_change(written: &CollectionChange, seen: &CollectionChange) -> bool {
-    match (written, seen) {
-        (CollectionChange::Create { name: a, kind: k, .. }, CollectionChange::Create { name: b, kind: l, .. }) => {
-            a == b && k == l
+/// Splits album changes `seen` in a source into news and those this app wrote, which are
+/// taken out of `written` (each matches once). Albums the app made get the source's own
+/// ids, recorded in `renamed`. Returns (news, known), each in the order seen.
+fn sort_out_written(
+    written: &mut Vec<CollectionChange>,
+    seen: Vec<CollectionChange>,
+    renamed: &mut HashMap<CollectionId, CollectionId>,
+) -> (Vec<CollectionChange>, Vec<CollectionChange>) {
+    let mut seen: Vec<Option<CollectionChange>> = seen.into_iter().map(Some).collect();
+    let mut known = Vec::new();
+    // An album made inside one made in the same write is known once its parent is: go
+    // round until no more are.
+    loop {
+        let mut more = false;
+        for slot in &mut seen {
+            let Some(change) = slot.as_ref() else { continue };
+            let Some(i) = written.iter().position(|w| same_collection_change(w, change, renamed)) else { continue };
+            let mine = written.remove(i);
+            if matches!(mine, CollectionChange::Create { .. }) {
+                renamed.insert(mine.id().clone(), change.id().clone());
+            }
+            known.extend(slot.take());
+            more = true;
         }
+        if !more {
+            break;
+        }
+    }
+    (seen.into_iter().flatten().collect(), known)
+}
+
+/// Whether `seen`, found by comparing a source's albums, is `written` coming back. A new
+/// album is matched by name, kind and parent, ids the app made up read as the source's.
+fn same_collection_change(
+    written: &CollectionChange,
+    seen: &CollectionChange,
+    renamed: &HashMap<CollectionId, CollectionId>,
+) -> bool {
+    let real = |id: &CollectionId| renamed.get(id).unwrap_or(id).clone();
+    match (written, seen) {
+        (
+            CollectionChange::Create { name: a, kind: k, parent: p, .. },
+            CollectionChange::Create { name: b, kind: l, parent: q, .. },
+        ) => a == b && k == l && p.as_ref().map(real) == *q,
         (CollectionChange::Create { .. }, _) | (_, CollectionChange::Create { .. }) => false,
-        (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b) && a.id() == b.id(),
+        (a, b) => std::mem::discriminant(a) == std::mem::discriminant(b) && real(a.id()) == *b.id(),
     }
 }
 
+/// The album an op puts a photo into or takes it out of.
 fn membership(op: &Op) -> Option<&CollectionId> {
     match op {
         Op::AddToCollection { collection } | Op::RemoveFromCollection { collection } => Some(collection),
