@@ -158,8 +158,7 @@
       el.title = single ? "Drag to move; the dot is where it goes" : `${c.count.toLocaleString()} photos`;
       el.dataset.row = String(c.best);
       el.dataset.count = String(c.count);
-      el.dataset.lat = String(c.lat);
-      el.dataset.lon = String(c.lon);
+      el.dataset.bounds = JSON.stringify(c.bounds);
       // A disc sits on its place; a photo stands on it, its dot (DOT px) on the spot.
       const pinned = !el.classList.contains("disc");
       const marker = new maplibregl.Marker({
@@ -214,9 +213,11 @@
   function mark() {
     for (const { el } of markers.values()) {
       el.classList.toggle("focus", focus !== null && el.dataset.row === String(focus) && el.dataset.count === "1");
-      // Zoomed in, the picked tile's photos stand in several tiles: all of them show it.
-      const [lat, lon] = [Number(el.dataset.lat), Number(el.dataset.lon)];
-      el.classList.toggle("chosen", !!tile && lat >= tile.min_lat && lat <= tile.max_lat && lon >= tile.min_lon && lon <= tile.max_lon);
+      // Zoomed in, the picked tile's photos stand in several tiles, zoomed out in a bigger
+      // one: all of them show it. (Not by their average place, which rounding can put a
+      // hair outside the bounds of photos all at one spot.)
+      const b = JSON.parse(el.dataset.bounds ?? "null") as BBox | null;
+      el.classList.toggle("chosen", !!tile && !!b && (covers(tile, b) || covers(b, tile)));
     }
   }
 
