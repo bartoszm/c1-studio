@@ -1,5 +1,6 @@
 //! Borrowing the look of a small finished render (Capture One's thumbnail) for a large
-//! unedited one: black and white if the render is grey, and its tone curve, by matching
+//! unedited one: black and white if the render is grey, and either its colours (see
+//! [`crate::lut`]) or, when the two frames do not line up, its tone curve, by matching
 //! the distribution of brightness.
 
 use std::path::Path;
@@ -14,6 +15,8 @@ pub struct Look {
     pub grey: bool,
     /// Cumulative share of pixels at or below each luma level.
     cdf: [f64; 256],
+    /// The render itself, as shown (after quarter turns).
+    pub render: RgbImage,
 }
 
 impl Look {
@@ -28,7 +31,14 @@ impl Look {
             chroma += u64::from(r.abs_diff(g)) + u64::from(b.abs_diff(g));
         }
         let n = (image.width() as usize * image.height() as usize).max(1);
-        Self { grey: chroma as f64 / n as f64 <= GREY_CHROMA, cdf: cdf(&histogram(image)) }
+        Self { grey: chroma as f64 / n as f64 <= GREY_CHROMA, cdf: cdf(&histogram(image)), render: image.clone() }
+    }
+
+    /// Sets every pixel to its brightness.
+    pub fn make_grey(image: &mut RgbImage) {
+        for p in image.pixels_mut() {
+            p.0 = [luma(p.0); 3];
+        }
     }
 
     /// Remaps brightness so that its distribution matches this look's, keeping each
