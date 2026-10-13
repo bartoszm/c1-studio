@@ -76,8 +76,15 @@
     }
   });
   let followTimer: ReturnType<typeof setTimeout>;
+  /** What the map shows now, for when a picked tile is let go. */
+  let mapView: api.BBox | null = null;
+  /** A tile picked on the map: the grid shows just its photos until it is let go. */
+  let mapTile = $state.raw<api.BBox | null>(null);
+  /** The area the grid kept to before the tile was picked (a drawn one, or none). */
+  let beforeTile: api.BBox | undefined;
   function mapMoved(bounds: api.BBox) {
-    if (!follow) return;
+    mapView = bounds;
+    if (!follow || mapTile) return;
     clearTimeout(followTimer);
     followTimer = setTimeout(() => {
       if (!mapOn || !follow) return;
@@ -85,6 +92,31 @@
       run(true);
     }, 250);
   }
+  /** Picking a tile (its photos' bounds: tiles never overlap, so exactly its photos), or
+   *  letting go of it (null): the grid goes back to the map's area. */
+  function mapTilePick(bounds: api.BBox | null, row: number | null) {
+    clearTimeout(followTimer);
+    if (bounds) {
+      if (!mapTile) beforeTile = filter.within;
+      mapTile = bounds;
+      filter = { ...filter, within: bounds };
+      if (row !== null) mapPick(row);
+    } else {
+      if (!mapTile) return;
+      mapTile = null;
+      filter = { ...filter, within: follow ? (mapView ?? undefined) : beforeTile };
+    }
+    // Other photos altogether: a selection kept by its place in the grid would land on
+    // one nobody chose, so it starts afresh.
+    run();
+  }
+  function sameBox(a: api.BBox | undefined | null, b: api.BBox | undefined | null): boolean {
+    return !!a && !!b && a.min_lat === b.min_lat && a.max_lat === b.max_lat && a.min_lon === b.min_lon && a.max_lon === b.max_lon;
+  }
+  // Anything else that changes the area (a drawn one, the chip, Clear filters) lets go.
+  $effect(() => {
+    if (mapTile && !sameBox(filter.within, mapTile)) mapTile = null;
+  });
   /** Letting go of the map's area. */
   function mapReleased() {
     clearTimeout(followTimer);
@@ -114,11 +146,18 @@
     selected = null;
     mapRow = row;
   }
-  async function mapSetGeo(rows: number[], lat: number, lon: number) {
+  async function mapSetGeo(rows: number[], lat: number, lon: number, from?: api.BBox) {
     dragging = null;
     const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
     await applyEdit({ Geo: at }, rows);
-    if (!editError) note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    if (editError) return;
+    note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    // The picked tile moved as a whole: the pick goes with it, so the grid keeps its photos.
+    if (from && sameBox(from, mapTile)) {
+      mapTile = { min_lat: at[0], max_lat: at[0], min_lon: at[1], max_lon: at[1] };
+      filter = { ...filter, within: mapTile };
+      run(true);
+    }
   }
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
@@ -920,6 +959,7 @@
       });
     }
     else if (viewing) return; // the viewer has its own keys
+    else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
       const row = selected === null ? undefined : rowAt(selected);
@@ -1040,7 +1080,7 @@
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
-    within: () => [{ what: "Map", text: "area" }],
+    within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
   };
   function monthText(key: string) {
     const [y, m] = key.split("-").map(Number);
@@ -1332,8 +1372,10 @@
       focus={selected === null ? mapRow : (rowAt(selected) ?? null)}
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
       pickedRows={[...picked]}
+      tile={mapTile}
       onbox={mapBox}
       onview={mapMoved}
+      ontile={mapTilePick}
       onpick={mapPick}
       onsetgeo={mapSetGeo}
       onerror={(text) => (editError = text)}
