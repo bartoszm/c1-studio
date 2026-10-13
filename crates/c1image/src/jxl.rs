@@ -9,6 +9,7 @@ use jxl_oxide::JxlImage;
 use jxl_oxide::color::{EnumColourEncoding, RenderingIntent, TransferFunction};
 
 use crate::look::Look;
+use crate::lut::Lut;
 use crate::{Error, Result, RgbImage, decode_err};
 
 /// The preview has no film curve, so its own maximum is not white. Scale so that this
@@ -18,13 +19,36 @@ const HIGHLIGHT_PERCENTILE: f64 = 99.5;
 /// Every n-th value is enough to place the percentile; 7 is coprime with 3 channels.
 const PERCENTILE_STRIDE: usize = 7;
 
-/// A linear preview made displayable, before rotation. `tones` borrows the tone curve of
-/// `r.look`; without it the result is as flat as the preview itself.
-pub fn render_preview(r: &ImageRef, tones: bool) -> Result<RgbImage> {
+/// Rendered and the look differ in shape by more than this share: they are not the same
+/// frame (a perspective fix only the look shows) and say nothing pixel by pixel.
+const SHAPE_TOLERANCE: f64 = 0.02;
+
+/// A table whose fitted pairs sit further from it than this (median, out of 255) was fitted
+/// to frames that do not line up, such as a perspective fix only the look shows; it would
+/// spread wrong colours. Typical fits sit at 4–13.
+const MAX_RESIDUAL: f32 = 25.0;
+
+/// How much of `ImageRef::look` a preview takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Matching {
+    /// Black and white only.
+    None,
+    /// Black and white and the tone curve.
+    Tones,
+    /// Colours, through a table fitted to the look pixel by pixel; the tone curve when
+    /// that cannot be fitted.
+    Colours,
+}
+
+/// A linear preview made displayable, taking `matching` of `r.look`: turned and
+/// straightened, which frames it like the look, but not cropped (see [`crate::frame`]).
+pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     let path = r.path.as_path();
     // A missing or broken thumbnail only costs the look, not the preview.
     let look = r.look.as_deref().and_then(|p| Look::load(p).ok());
     let monochrome = r.monochrome || look.as_ref().is_some_and(|l| l.grey);
+    // A fitted table learns the black-and-white mix as well, so it starts from colour.
+    let fitting = matching == Matching::Colours && look.is_some();
 
     let (width, height, mut rgb) = decode_linear(path)?;
     let px = rgb.as_chunks_mut::<3>().0;
@@ -35,7 +59,7 @@ pub fn render_preview(r: &ImageRef, tones: bool) -> Result<RgbImage> {
             p[2] *= wb[2];
         }
     }
-    if monochrome {
+    if monochrome && !fitting {
         for p in px.iter_mut() {
             *p = [0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2]; 3];
         }
@@ -45,12 +69,67 @@ pub fn render_preview(r: &ImageRef, tones: bool) -> Result<RgbImage> {
     let lut = srgb_lut();
     let last = (lut.len() - 1) as f32;
     let bytes = rgb.iter().map(|&v| lut[((v * scale).clamp(0.0, 1.0) * last + 0.5) as usize]).collect();
-    let mut image =
+    let image =
         RgbImage::from_raw(width, height, bytes).ok_or_else(|| decode_err(path, "pixel buffer has the wrong size"))?;
-    if tones && let Some(look) = &look {
-        look.apply_tones(&mut image);
+    let mut image = crate::geometry::straighten(crate::rotate(image, r.rotation), r.straighten);
+    let Some(look) = &look else { return Ok(image) };
+    match matching {
+        Matching::None => {}
+        Matching::Tones => look.apply_tones(&mut image),
+        Matching::Colours => {
+            match fit_colours(&image, look) {
+                Some(table) => table.apply(&mut image),
+                None => look.apply_tones(&mut image),
+            }
+            if monochrome {
+                Look::make_grey(&mut image);
+            }
+        }
     }
     Ok(image)
+}
+
+/// The table that turns `image` into `look`, fitted at the look's size; `None` when the
+/// two are not the same frame.
+fn fit_colours(image: &RgbImage, look: &Look) -> Option<Lut> {
+    let target = &look.render;
+    let (w, h) = target.dimensions();
+    let (iw, ih) = image.dimensions();
+    let (a, b) = (f64::from(iw) * f64::from(h), f64::from(w) * f64::from(ih));
+    if (a - b).abs() > SHAPE_TOLERANCE * a.max(b) {
+        return None;
+    }
+    Lut::fit(&shrink(image, w, h), target).filter(|table| table.residual <= MAX_RESIDUAL)
+}
+
+/// The mean of the pixels whose centres fall in each output pixel: a box filter, which is
+/// all that fitting needs and several times faster than a resampling filter.
+fn shrink(image: &RgbImage, width: u32, height: u32) -> RgbImage {
+    let (iw, ih) = image.dimensions();
+    let (w, h) = (width.min(iw).max(1) as usize, height.min(ih).max(1) as usize);
+    let column: Vec<usize> = (0..iw as usize).map(|x| x * w / iw as usize).collect();
+    let mut sums = vec![[0u32; 4]; w * h];
+    for (y, row) in image.as_raw().chunks_exact(iw as usize * 3).enumerate() {
+        let out = &mut sums[y * h / ih as usize * w..][..w];
+        for (px, &x) in row.as_chunks::<3>().0.iter().zip(&column) {
+            let s = &mut out[x];
+            s[0] += u32::from(px[0]);
+            s[1] += u32::from(px[1]);
+            s[2] += u32::from(px[2]);
+            s[3] += 1;
+        }
+    }
+    let bytes = sums
+        .iter()
+        .flat_map(|s| std::array::from_fn::<u8, 3, _>(|c| ((s[c] + s[3] / 2) / s[3].max(1)) as u8))
+        .collect();
+    RgbImage::from_raw(w as u32, h as u32, bytes).expect("the buffer is sized from the dimensions")
+}
+
+/// Width and height of a JPEG-XL file, from its header alone.
+pub fn jxl_size(path: &Path) -> Result<(u32, u32)> {
+    let image = JxlImage::builder().open(path).map_err(|e| decode_err(path, e))?;
+    Ok((image.width(), image.height()))
 }
 
 /// Width, height and interleaved linear RGB, where 1.0 is the file's intensity target —

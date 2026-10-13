@@ -972,6 +972,99 @@ in `<data dir>/settings.json`) writes the queue by itself.
   generated track on the fuji copy: offset +2 placed 78 photos, offset 0 none, origin
   Gpx, undo restored the queue.
 
+### Previews take Capture One's colours, fitted per photo
+
+The tone curve match above left saturation, film simulations and colour edits behind.
+The `.cop` is already cropped and straightened, so once rotated back it frames the same
+scene as the `.cot`; shrunk to 450 px, every pixel pairs an unedited colour with
+Capture One's finished one. `c1image::Lut` fits a 17³ table over 8-bit sRGB to those
+pairs (`lut.rs`):
+
+- least squares on the trilinear weights, plus smoothness that asks neighbouring nodes
+  to differ as the best single colour matrix would, so colours the photo lacks follow
+  that matrix instead of staying flat; solved by conjugate gradients, one thread per
+  channel;
+- then fitted again with each pixel weighted by 1 / (1 + (residual / 12)²), so edges and
+  stale-thumbnail areas count less; thumbnail black where the preview has a picture is
+  left out altogether.
+
+The table learns the black-and-white channel mix too, so it starts from the colour
+render and greys the result. When the two shapes differ by more than 2% (a thumbnail
+from before a crop) or too few pixels pair, the tone curve match is used as before.
+`render_preview` takes `Matching::{None, Tones, Colours}`; `load` uses `Colours`.
+
+`lookcheck` now fits on half of each thumbnail (a checkerboard of 16 px blocks) and
+scores every method on the other half (120 random photos, median, out of 255):
+
+| | plain | + b&w | + b&w + tones | colour table |
+|---|---|---|---|---|
+| black-and-white (53) | 34.3 | 32.6 | 9.2 | 5.6 |
+| colour (67) | 29.0 | 29.0 | 7.9 | 5.1 |
+
+Smoothness 0.005–0.1 moves these by 0.1 at most. Render time is unchanged (~320 ms for
+both): the fit takes 30–50 ms, the 450 px box shrink ~5 ms and the table ~10 ms over
+2560 px.
+
+**Against Capture One's own exports** (`exportcheck <folder>`: 22 edited photos the user
+exported as 2560 px sRGB JPEGs; median absolute difference per channel at 2560 px):
+
+| | thumbnail, upscaled | tones | colour table |
+|---|---|---|---|
+| all 22 | 11.2 | 12.6 | 10.1 |
+| 15, without the 7 whose geometry differs (every render 20+ off) | 5.5 | 8.2 | 4.4 |
+
+`exportcheck` finds each export's photo among those sharing its file name (up to 14) by
+the closest thumbnail, and finds the export inside each render by scale and offset.
+
+- **Framing.** 12 of the 22 exports cover only 82–98% of the cached renders (both
+  `.cot` and `.cop` are framed alike there), so a crop made in Capture One does not
+  always reach its cache. Some photos also have a perspective (keystone) fix that the
+  thumbnail shows, with black wedges, and the `.cop` lacks. The viewer shows these
+  photos uncropped and uncorrected; no colour work changes that.
+- **Fits on frames that do not line up** taught the table wrong colours (one export got
+  worse, 29 → 36). `Lut::residual` is the median distance of the fitted pairs; over 120
+  random photos it is 5.7 at the median and 13 at the 98th percentile, and the two bad
+  fits sat at 45 and 51. Above 25 the tone curve match is used instead (~1% of photos).
+- Local adjustments (masks, gradients, vignetting) and detail finer than the thumbnail
+  are still not carried over.
+
+### Framing: straightening and crop
+
+The exports showed the viewer framing photos unlike Capture One. Over 600 sampled
+variants (400 cropped):
+
+- **`.cop` previews are the whole sensor image**, with no crop, straightening or
+  perspective fix: every one has the sensor's shape. (The note above that they come
+  cropped and straightened held for one sample only.)
+- **`.cot` thumbnails are straightened and perspective-fixed, on a canvas grown to hold
+  the turn** (a 3:2 frame turned 1.67° gives 450×307), **but not cropped**.
+- **`ZCROP`** is `centreX;centreY;width;height` in sensor pixels: the centre in the
+  sensor's orientation, the size in the displayed one (a portrait crop of a turned
+  photo only fits that way round). It is applied after the turn and straightening.
+- **Straightening without a crop** shows the largest frame of the picture's shape that
+  the turned picture fills: 1 / (long/short · sin θ + cos θ) of it, 96% at 1.43°.
+
+So `render_preview` now turns the preview by the full `ZROTATION` onto a grown canvas
+(`geometry::straighten`, bilinear), which frames it like the thumbnail, fits colours
+there, and `c1image::frame` cuts the crop (`ImageRef::{straighten, crop}`, `c1model::Crop`
+as offsets and sizes in fractions of the picture). Thumbnails get the same crop measured
+on their grown canvas (`config::on_canvas`); `source-c1` reads all of them in one query
+and again when the catalog file changes, and the app cuts and re-encodes only the
+thumbnails that have one.
+
+`exportcheck` gained an *as shown* column: the framed preview against the export with
+no search. On the 22 exports its median is 9.6, as good as the searched-for match
+(9.6, from 10.1 before straightening). Straightening fixed most of the worst: DSCF1893
+34 → 15, DSCF5614 23 → 15, untitled-1506 40 → 20.
+
+Still not done:
+
+- **Perspective (`ZGEOMETRYKEYSTONE*`).** DSCF5376_1 (tilt 21) and untitled-0245-2 (tilt
+  11) stay 28–32 off; the thumbnail has the fix, so the colour fit falls back for them.
+- **Lens distortion correction** (`ZLENSDISTORTION`: `radius,shift;…|amount|…`, on when
+  the amount is 100) zooms the picture a few percent: untitled-0395-3 is 40 off.
+- **Portrait crops** follow the rule above but no export checked them yet.
+
 ### Next
 
 1. Stage 4, rest: reverse geocoding of place fields (offline, GeoNames), photo direction;
