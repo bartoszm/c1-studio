@@ -144,11 +144,18 @@
     selected = null;
     mapRow = row;
   }
-  async function mapSetGeo(rows: number[], lat: number, lon: number) {
+  async function mapSetGeo(rows: number[], lat: number, lon: number, from?: api.BBox) {
     dragging = null;
     const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
     await applyEdit({ Geo: at }, rows);
-    if (!editError) note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    if (editError) return;
+    note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    // The picked tile moved as a whole: the pick goes with it, so the grid keeps its photos.
+    if (from && sameBox(from, mapTile)) {
+      mapTile = { min_lat: at[0], max_lat: at[0], min_lon: at[1], max_lon: at[1] };
+      filter = { ...filter, within: mapTile };
+      run(true);
+    }
   }
 
   /** Rows of the photos picked for editing; a click picks one, Ctrl and Shift add. */
