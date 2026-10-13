@@ -494,12 +494,12 @@
   $effect(() => {
     const rows = [...picked];
     void version;
+    const mine = ++keywordsAsked;
     if (rows.length < 2 || !showInfo) {
       selectionKeywords = null;
       return;
     }
     // A moment's wait: Shift+arrow picks change faster than a big selection reads.
-    const mine = ++keywordsAsked;
     const wait = setTimeout(() => {
       api.keywordCounts(rows).then((c) => { if (mine === keywordsAsked) selectionKeywords = c; }).catch(() => {});
     }, 80);
@@ -511,16 +511,39 @@
   $effect(() => {
     const rows = [...picked];
     void version;
+    const mine = ++albumsAsked;
     if (rows.length < 2 || !showInfo) {
       selectionAlbums = null;
       return;
     }
-    const mine = ++albumsAsked;
     const wait = setTimeout(() => {
       api.albumCounts(rows).then((c) => { if (mine === albumsAsked) selectionAlbums = c; }).catch(() => {});
     }, 80);
     return () => clearTimeout(wait);
   });
+  /** The places of the picked photos, each with the photos that have it; null for one. */
+  let selectionPlaces = $state.raw<{ rows: number[]; groups: [api.Photo["place"], number[]][] } | null>(null);
+  let placesAsked = 0;
+  $effect(() => {
+    const rows = [...picked];
+    void version;
+    const mine = ++placesAsked;
+    if (rows.length < 2 || !showInfo) {
+      selectionPlaces = null;
+      return;
+    }
+    const wait = setTimeout(() => {
+      api.placeCounts(rows).then((groups) => { if (mine === placesAsked) selectionPlaces = { rows, groups }; }).catch(() => {});
+    }, 80);
+    return () => clearTimeout(wait);
+  });
+  /** The places of the selection as it is now: their rows are edited by the places
+   *  list, so a reply for the selection before is not shown. */
+  let placesNow = $derived(
+    selectionPlaces && selectionPlaces.rows.length === picked.size && selectionPlaces.rows.every((r) => picked.has(r))
+      ? selectionPlaces.groups
+      : null,
+  );
   /** Sync: the focused photo, whose fields go onto the rest of the selection. */
   let syncing = $state<{ from: api.Photo; row: number } | null>(null);
   /** Paste…: the photos the clipboard goes onto, with a choice of fields and how. */
@@ -1195,7 +1218,8 @@
     onlook={(f) => only(f)}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
-    onplace={(fields) => applyEdit({ Place: fields })}
+    sharedPlaces={placesNow}
+    onplace={(fields, rows) => applyEdit({ Place: fields }, rows ?? targets())}
     ongeo={(value) => applyEdit({ Geo: value })}
     oniptc={(field, value) => applyEdit({ Iptc: { [field]: value } })}
     clip={clipText}
