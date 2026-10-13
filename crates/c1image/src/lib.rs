@@ -5,12 +5,13 @@
 //!   applied.
 //! - JPEG-XL holding linear camera-space RGB before white balance (Capture One's `.cop`
 //!   previews): white balance, highlight scaling and the sRGB curve are applied here,
-//!   then black and white and the tone curve of the source's own small render.
+//!   then the colours of the source's own small render, fitted pixel by pixel.
 //! - Camera raws: the full-size JPEG the camera embedded. Not a raw conversion, so no
 //!   edits show.
 
 mod jxl;
 mod look;
+mod lut;
 mod raw;
 
 use std::io::Cursor;
@@ -21,8 +22,9 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
 pub use image::RgbImage;
-pub use jxl::{decode_linear, render_preview};
+pub use jxl::{Matching, decode_linear, render_preview};
 pub use look::Look;
+pub use lut::Lut;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -47,7 +49,7 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 pub fn load(r: &ImageRef) -> Result<RgbImage> {
     let image = match r.format {
         ImageFormat::Jpeg => load_jpeg(&r.path),
-        ImageFormat::JpegXl => render_preview(r, true),
+        ImageFormat::JpegXl => render_preview(r, Matching::Colours),
         ImageFormat::Raw => match raw::embedded_jpeg(&r.path)? {
             Some(bytes) => jpeg(&bytes, &r.path),
             None => Err(Error::NoPreview { path: r.path.clone() }),
