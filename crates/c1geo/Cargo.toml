@@ -1,0 +1,12 @@
+[package]
+name = "c1geo"
+description = "Places offline: where a city, state or country is (GeoNames), what is at a position, and typed coordinates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+c1model.workspace = true
+serde.workspace = true
+flate2 = "1"
+unicode-normalization = "0.1"

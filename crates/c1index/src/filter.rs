@@ -8,7 +8,7 @@ use anyhow::{Context, bail};
 use c1model::ColorLabel;
 use serde::{Deserialize, Serialize};
 use tantivy::query::{
-    AllQuery, BooleanQuery, Occur, Query, QueryParser, RangeQuery, RegexQuery, TermQuery, TermSetQuery,
+    AllQuery, BooleanQuery, ExistsQuery, Occur, Query, QueryParser, RangeQuery, RegexQuery, TermQuery, TermSetQuery,
 };
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, Term};
@@ -151,6 +151,8 @@ pub struct Filter {
     /// A place and everything in it: `Poland|Malopolska`, levels as [`Dim::PlaceTree`]
     /// writes them.
     pub place_under: Option<String>,
+    /// Photos with a place (any of country, state, city, location), or without one.
+    pub placed: Option<bool>,
     /// Only photos with a country but no ISO country code.
     pub no_country_code: bool,
     /// Substring, case-insensitive.
@@ -316,6 +318,12 @@ impl Filter {
         }
         if let Some(place) = &self.place_under {
             must.push(term(f.dim(Dim::PlaceTree), place));
+        }
+        match self.placed {
+            // Every place has its top level in the place tree.
+            Some(true) => must.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
+            Some(false) => must_not.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
+            None => {}
         }
         if self.no_country_code {
             must.push(has(flag::NO_COUNTRY_CODE));
