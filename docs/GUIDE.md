@@ -10,6 +10,14 @@ For the command-line tool see [CLI.md](CLI.md).
 
 ## Starting
 
+Install it with `C1.Studio_<version>_x64-setup.exe` from the
+[latest release](https://github.com/bartoszm/c1-studio/releases/latest) and start
+*C1 Studio* from the Start menu. The installer is not code-signed, so Windows may warn
+about an unknown publisher: choose *More info* → *Run anyway*. The first time, nothing
+is open: choose a catalog from the source menu (see below).
+
+To build it from source instead:
+
 ```powershell
 cd app
 pnpm install

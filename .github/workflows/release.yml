@@ -1,0 +1,55 @@
+name: Release
+
+# Push a tag `vX.Y.Z` matching the version in app/src-tauri/tauri.conf.json: this builds
+# the Windows installer and attaches it to a draft GitHub Release to review and publish.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        shell: pwsh
+        run: |
+          $version = (Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "tag ${{ github.ref_name }} does not match tauri.conf.json version $version"
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: UI dependencies
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: app
+          tauriScript: pnpm tauri
+          args: --bundles nsis
+          tagName: ${{ github.ref_name }}
+          releaseName: C1 Studio ${{ github.ref_name }}
+          releaseBody: |
+            Download `C1.Studio_*_x64-setup.exe` below and run it. Windows may warn that the
+            installer is from an unknown publisher (it is not code-signed): choose
+            *More info* → *Run anyway*. See the [user guide](https://github.com/bartoszm/c1-studio/blob/main/docs/GUIDE.md).
+          releaseDraft: true
