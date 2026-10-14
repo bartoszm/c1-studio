@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "c1analysis"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "image",
  "serde",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "c1cat"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "c1image",
@@ -380,7 +380,7 @@ dependencies = [
 
 [[package]]
 name = "c1image"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "c1model",
  "image",
@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "c1index"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "c1analysis",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "c1model"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "postcard",
  "serde",
@@ -421,7 +421,7 @@ dependencies = [
 
 [[package]]
 name = "c1studio"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "c1analysis",
@@ -3830,7 +3830,7 @@ dependencies = [
 
 [[package]]
 name = "source-c1"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "c1model",
  "chrono",
