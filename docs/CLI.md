@@ -69,6 +69,24 @@ when nothing changed. Pass `--no-sync` to skip it.
   under the exact ones.
 - `--top N`: values shown per dimension (default 15).
 
+**trips**
+
+Trips found from when and where photos were taken, one line each: id, kind (`found`,
+`suggested`, `kept`, `dismissed`), first and last day, how many of its photos the
+selection flags match of all it spans, and its name. Trips are found only once home is
+set (the app's Trips section and this command share the setting).
+
+- `--home 'Country|City'` sets home first (`--home Country`: the whole country, so only
+  trips abroad; `--home none` clears it). With no home set, the command names the city
+  photographed on the most days.
+- `--gap-hours H`: a longer gap without photos starts a new trip (default 36).
+- `--json`: the list with each trip's photo counts, cover photo and the settings.
+
+```powershell
+& $c1 trips --home 'Poland|Kraków'
+& $c1 trips --year 2025 --rating '>=4'
+```
+
 **image**
 
 - `--tier`: `thumb`, `preview` (default; Capture One's preview, white-balanced here) or

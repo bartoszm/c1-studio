@@ -592,6 +592,35 @@ async fn smart_counts(app: State<'_, App>, filter: Filter) -> Result<Vec<(String
     app.session()?.library.smart_counts(&filter).map_err(|e| format!("{e:#}"))
 }
 
+/// The trips, each counted under `filter` (its own trip aside), and the trip settings.
+#[tauri::command]
+async fn trips(app: State<'_, App>, filter: Filter) -> Result<c1index::TripList, String> {
+    app.session()?.library.trips(&filter).map_err(|e| format!("{e:#}"))
+}
+
+/// Photos per day under `filter`: (local midnight in ms, count), in date order.
+#[tauri::command]
+async fn timeline(app: State<'_, App>, filter: Filter) -> Result<Vec<(i64, usize)>, String> {
+    app.session()?.library.timeline(&filter).map_err(|e| format!("{e:#}"))
+}
+
+/// The photos `filter` selects that have a position, in the order they were taken.
+#[tauri::command]
+async fn route(app: State<'_, App>, filter: Filter) -> Result<Vec<c1index::RoutePoint>, String> {
+    app.session()?.library.route(&filter).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn set_trip_settings(app: State<'_, App>, settings: c1index::trips::TripSettings) -> Result<(), String> {
+    app.session()?.library.set_trip_settings(&settings).map_err(|e| format!("{e:#}"))
+}
+
+/// Renames, keeps, merges, splits, dismisses or makes a trip; returns the trip to select.
+#[tauri::command]
+async fn edit_trips(app: State<'_, App>, edit: c1index::trips::TripEdit) -> Result<Option<u64>, String> {
+    app.session()?.library.edit_trips(edit).map_err(|e| format!("{e:#}"))
+}
+
 #[tauri::command]
 async fn photo(app: State<'_, App>, row: u64) -> Result<Option<Photo>, String> {
     app.session()?.library.photo(row).map_err(text)
@@ -1768,6 +1797,11 @@ pub fn run() {
             status,
             query,
             smart_counts,
+            trips,
+            timeline,
+            route,
+            set_trip_settings,
+            edit_trips,
             map,
             pick_gpx,
             gpx_plan,

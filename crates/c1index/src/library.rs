@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, MutexGuard, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -13,6 +13,7 @@ use c1model::{
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
+use tantivy::columnar::StrColumn;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
 use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
@@ -24,6 +25,7 @@ use crate::geo::{self, Located, MapResult, MapView};
 use crate::looks::{Look, Looks, Record};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
+use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
 
 /// Dimensions whose values substring filters match against.
 const SUBSTRING_DIMS: [Dim; 7] =
@@ -153,6 +155,60 @@ pub struct Library {
     writing: Mutex<()>,
     /// One sync at a time: a sync reads its source before it takes `writing`.
     syncing: Mutex<()>,
+    /// Trips the user kept, named or dismissed, and the trip settings.
+    trip_book: TripBook,
+    /// Trips as last worked out, for the index generation they were worked out on.
+    trip_cache: Mutex<Option<TripCache>>,
+}
+
+/// Trips worked out over the photos of one index generation.
+struct TripCache {
+    generation: u64,
+    settings: TripSettings,
+    /// Each trip with its name from its places and how many photos it spans.
+    trips: Vec<(Trip, String, usize)>,
+    /// The city photographed on most days, while no home is set.
+    guess: Option<Home>,
+}
+
+/// A trip as shown: stored, named, and counted over a filter.
+#[derive(Clone, Debug, Serialize)]
+pub struct TripRow {
+    #[serde(flatten)]
+    pub trip: Trip,
+    /// The places it is named after when the user has not named it.
+    pub label: String,
+    /// Photos in its span.
+    pub photos: usize,
+    /// Of them, the ones the filter selects (its own trip set aside).
+    pub count: usize,
+    /// The photo shown for it among those: highest rating, then sharpest.
+    pub cover: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TripList {
+    pub settings: TripSettings,
+    /// A home to offer while none is set.
+    pub home_guess: Option<Home>,
+    pub trips: Vec<TripRow>,
+}
+
+/// A photo on a trip's route: where and when it was taken.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RoutePoint {
+    pub at: i64,
+    pub lat: f64,
+    pub lon: f64,
+    pub row: u64,
+}
+
+/// A photo the filter selects, as trips and the timeline count it.
+struct Taken {
+    at: i64,
+    row: u64,
+    rating: u64,
+    sharpness: f64,
 }
 
 impl Library {
@@ -192,6 +248,7 @@ impl Library {
         let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
         let edits = Edits::open(&dir.join("edits.redb"))?;
         let looks = Looks::open(&dir.join("analysis.redb"))?;
+        let trip_book = TripBook::open(&dir.join("trips.redb"))?;
         let seen = looks
             .all()?
             .into_iter()
@@ -212,6 +269,8 @@ impl Library {
             seen: RwLock::new(seen),
             writing: Mutex::new(()),
             syncing: Mutex::new(()),
+            trip_book,
+            trip_cache: Mutex::new(None),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -972,6 +1031,208 @@ impl Library {
             })
             .collect();
         Ok(geo::cluster(&points, view))
+    }
+
+    /// The trips, each counted over the photos `filter` selects (its trip set aside, so the
+    /// other trips stay visible), with the trip settings.
+    pub fn trips(&self, filter: &Filter) -> anyhow::Result<TripList> {
+        // Copied out, so counting under the filter does not hold up other calls.
+        let (settings, guess, trips) = {
+            let cache = self.trip_cache()?;
+            let cache = cache.as_ref().expect("trip_cache fills it");
+            (cache.settings.clone(), cache.guess.clone(), cache.trips.clone())
+        };
+        let mut taken = self.taken(&Filter { trip: None, ..filter.clone() })?;
+        taken.sort_by_key(|t| t.at);
+        let mut rows = Vec::with_capacity(trips.len());
+        for (trip, label, photos) in trips {
+            let from = taken.partition_point(|t| t.at < trip.start);
+            let to = taken.partition_point(|t| t.at <= trip.end);
+            let cover = taken[from..to]
+                .iter()
+                .max_by(|a, b| {
+                    (a.rating, a.sharpness, std::cmp::Reverse(a.row))
+                        .partial_cmp(&(b.rating, b.sharpness, std::cmp::Reverse(b.row)))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|t| t.row);
+            rows.push(TripRow { trip, label, photos, count: to - from, cover });
+        }
+        Ok(TripList { settings, home_guess: guess, trips: rows })
+    }
+
+    /// How many photos `filter` selects on each day, by the local midnight starting it,
+    /// in date order. Days with none are left out.
+    pub fn timeline(&self, filter: &Filter) -> anyhow::Result<Vec<(i64, usize)>> {
+        let mut days: HashMap<i64, usize> = HashMap::new();
+        let mut local = schema::LocalDays::default();
+        for t in self.taken(filter)? {
+            if let Some(midnight) = local.midnight(t.at) {
+                *days.entry(midnight).or_default() += 1;
+            }
+        }
+        let mut out: Vec<(i64, usize)> = days.into_iter().collect();
+        out.sort_unstable();
+        Ok(out)
+    }
+
+    /// The photos `filter` selects that have a position and a capture time, in the order
+    /// they were taken: a route to draw. A filter's own `within` is set aside, as for the map.
+    pub fn route(&self, filter: &Filter) -> anyhow::Result<Vec<RoutePoint>> {
+        let query = self.compile(&Filter { within: None, gps: Some(true), ..filter.clone() })?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((fast.i64("captured_sort")?, fast.u64("row")?, fast.f64("lat")?, fast.f64("lon")?));
+        }
+        let mut points: Vec<RoutePoint> = docs
+            .iter()
+            .filter_map(|a| {
+                let (captured, row, lat, lon) = &columns[a.segment_ord as usize];
+                Some(RoutePoint {
+                    at: captured.first(a.doc_id).and_then(schema::captured_of_sort_key)?,
+                    lat: lat.first(a.doc_id)?,
+                    lon: lon.first(a.doc_id)?,
+                    row: row.first(a.doc_id)?,
+                })
+            })
+            .collect();
+        points.sort_by_key(|p| (p.at, p.row));
+        Ok(points)
+    }
+
+    pub fn trip_settings(&self) -> anyhow::Result<TripSettings> {
+        self.trip_book.settings()
+    }
+
+    /// Stores the trip settings; trips are worked out again with them.
+    pub fn set_trip_settings(&self, settings: &TripSettings) -> anyhow::Result<()> {
+        self.trip_book.set_settings(settings)?;
+        *self.trip_cache.lock().unwrap() = None;
+        Ok(())
+    }
+
+    /// Does what the user asked to trips; returns the trip to leave selected.
+    pub fn edit_trips(&self, edit: TripEdit) -> anyhow::Result<Option<u64>> {
+        // Brought up to date first, so the edit applies to the trips as shown.
+        let mut cache = self.trip_cache()?;
+        let (mut stored, mut next) = self.trip_book.load()?;
+        let selected = trips::apply(&mut stored, edit, &mut next)?;
+        self.trip_book.save(&stored, next)?;
+        *cache = None;
+        Ok(selected)
+    }
+
+    /// The trips for the current photos: worked out again when the index changed since.
+    fn trip_cache(&self) -> anyhow::Result<MutexGuard<'_, Option<TripCache>>> {
+        let searcher = self.reader.searcher();
+        let generation = searcher.generation().generation_id();
+        let mut cache = self.trip_cache.lock().unwrap();
+        if cache.as_ref().is_some_and(|c| c.generation == generation) {
+            return Ok(cache);
+        }
+        let shots = self.shots(&searcher)?;
+        let settings = self.trip_book.settings()?;
+        let (stored, mut next) = self.trip_book.load()?;
+        let mut dismissed: Vec<(i64, i64)> =
+            stored.iter().filter(|t| t.kind == trips::Kind::Dismissed).map(|t| (t.start, t.end)).collect();
+        dismissed.sort_unstable();
+        let found = trips::detect(&shots, &settings, &dismissed);
+        let current = trips::reconcile(&stored, &found, &mut next);
+        if current != stored {
+            self.trip_book.save(&current, next)?;
+        }
+        let home = settings.home.as_ref().and_then(Home::normalised);
+        let home = home.as_ref();
+        let trips = current
+            .into_iter()
+            .map(|t| {
+                let label = trips::label(&shots, t.start, t.end, home);
+                let photos = shots.partition_point(|s| s.at <= t.end) - shots.partition_point(|s| s.at < t.start);
+                (t, label, photos)
+            })
+            .collect();
+        let guess = if home.is_none() { trips::guess_home(&shots) } else { None };
+        *cache = Some(TripCache { generation, settings, trips, guess });
+        Ok(cache)
+    }
+
+    /// Every photo with a capture time (trashed ones aside), sorted by it, as trip
+    /// detection reads them: straight from the index's columns.
+    fn shots(&self, searcher: &Searcher) -> anyhow::Result<Vec<Shot>> {
+        let query = self.compile(&Filter::default())?;
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut by_segment: Vec<Vec<u32>> = vec![Vec::new(); searcher.segment_readers().len()];
+        for a in docs {
+            by_segment[a.segment_ord as usize].push(a.doc_id);
+        }
+        let mut shots = Vec::new();
+        let mut local = schema::LocalDays::default();
+        for (segment, docs) in searcher.segment_readers().iter().zip(by_segment) {
+            let fast = segment.fast_fields();
+            let captured = fast.i64("captured_sort")?;
+            let (lat, lon) = (fast.f64("lat")?, fast.f64("lon")?);
+            let country = fast.str(Dim::Country.field_name())?;
+            let city = fast.str(Dim::City.field_name())?;
+            // Each value once per segment: most photos share a handful of places.
+            let mut names: HashMap<(bool, u64), String> = HashMap::new();
+            let mut name = |column: &Option<StrColumn>, is_city: bool, doc: u32| {
+                let column = column.as_ref()?;
+                let ord = column.term_ords(doc).next()?;
+                if let Some(n) = names.get(&(is_city, ord)) {
+                    return Some(n.clone());
+                }
+                let mut text = String::new();
+                column.ord_to_str(ord, &mut text).ok()?;
+                names.insert((is_city, ord), text.clone());
+                Some(text)
+            };
+            for doc in docs {
+                let Some(at) = captured.first(doc).and_then(schema::captured_of_sort_key) else { continue };
+                let Some(day) = local.day(at) else { continue };
+                let geo = lat.first(doc).zip(lon.first(doc));
+                shots.push(Shot { at, day, country: name(&country, false, doc), city: name(&city, true, doc), geo });
+            }
+        }
+        shots.sort_by_key(|s| s.at);
+        Ok(shots)
+    }
+
+    /// The photos `filter` selects that have a capture time.
+    fn taken(&self, filter: &Filter) -> anyhow::Result<Vec<Taken>> {
+        let query = self.compile(filter)?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((
+                fast.i64("captured_sort")?,
+                fast.u64("row")?,
+                fast.u64("rating_sort")?,
+                fast.f64("sharpness")?,
+            ));
+        }
+        Ok(docs
+            .iter()
+            .filter_map(|a| {
+                let (captured, row, rating, sharp) = &columns[a.segment_ord as usize];
+                Some(Taken {
+                    at: captured.first(a.doc_id).and_then(schema::captured_of_sort_key)?,
+                    row: row.first(a.doc_id)?,
+                    rating: rating.first(a.doc_id).unwrap_or(0) >> 32,
+                    sharpness: sharp.first(a.doc_id).unwrap_or(0.0),
+                })
+            })
+            .collect())
+    }
+
+    fn compile(&self, filter: &Filter) -> anyhow::Result<Box<dyn Query>> {
+        let distinct = self.distinct.read().unwrap();
+        let smart = self.smart.read().unwrap();
+        expand(filter, &smart)?.to_query(&self.index, &self.fields, &distinct)
     }
 
     /// How many photos each smart album holds among those `filter` selects, setting

@@ -28,9 +28,9 @@ test("the stored order and hidden sections are kept; unknown keys and repeats dr
 });
 
 test("a section added since goes in after the one it follows by default", () => {
-  // Saved before "hue" existed, with "color" moved to the top.
+  // Saved before "hue" and "trips" existed, with "color" moved to the top.
   const stored = ["color", "albums", "date", "places", "folders", "keywords", "rating", "camera"].map((key) => ({ key, hidden: false }));
-  assert.deepEqual(keys(mergeSections(stored)), ["color", "hue", "albums", "date", "places", "folders", "keywords", "rating", "camera"]);
+  assert.deepEqual(keys(mergeSections(stored)), ["color", "hue", "albums", "date", "trips", "places", "folders", "keywords", "rating", "camera"]);
   // Nothing before it known: first.
   assert.deepEqual(keys(mergeSections([{ key: "camera", hidden: false }])).slice(0, 2), ["albums", "date"]);
 });

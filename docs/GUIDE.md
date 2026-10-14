@@ -279,6 +279,52 @@ network; everything else works without one).
   other: queued, undoable, written with *Write to Capture One*. A position belongs to
   the image, so every variant of the photo moves.
 
+## Trips and the timeline
+
+**Trips** (left panel, under Date) are found from when and where photos were taken.
+
+- **Home first.** The section asks where home is and offers the city photographed on the
+  most days. Photos taken at home are never part of a trip. With only a country as home,
+  only trips abroad are found. *Home: …* at the bottom of the section changes it, and
+  sets how long a gap without photos starts a new trip (36 hours by default).
+- **How a trip is found.** Each day is home, away or unknown, by the places (country,
+  city) of its photos, or by their positions (near home or far from it) when they have no
+  place. Days follow one another into one trip while the gap between photos stays under
+  the limit, or up to 4 days when both sides are in the same country. A day at home ends
+  it. A stretch with a day away is a trip, named after its main places (*Tokyo, Hong
+  Kong*). A trip with places named in none of its photos is *Unnamed trip*.
+- **Suggested** (in grey, *No place*): a busy stretch (2 days or more, 100 photos or more)
+  where no photo has a place. Trips nobody tagged look like that, and so do some weekends
+  at home. Hover a suggestion: ✓ keeps it as a trip, × dismisses it. *N suggested* at the
+  bottom hides or shows them; *N dismissed* shows the dismissed ones, ↺ brings one back.
+- **Click a trip** to show its photos (the chip *Trip: …*). Each trip counts its photos
+  under the other filters, and shows the best one.
+- **Right-click a trip:** *Rename…* (or double-click it), *Keep as a trip*, *Merge with*
+  the trip before or after it, *Split before the focused photo* (focus the first photo of
+  the second part in the grid first), *Make an album of it* (a new album at the top level
+  holding its photos, written with *Write to Capture One* like any album), *Not a trip*,
+  and *Forget my changes*.
+- **What stays:** trips are found again whenever the catalog changes, but a trip you
+  renamed, kept, merged, split or dismissed stays as you left it; a kept trip only grows
+  over new photos taken right after (or before) it. Trips live in C1 Studio
+  (`library\trips.redb`), not in Capture One.
+
+**The timeline** (header button *Timeline*) is a strip above the grid and the map: photos
+per day, week or month, as room allows, with the trips as bands under the bars.
+
+- It counts the photos the other filters select, whatever dates or trip are picked, so the
+  rest of the time stays in view.
+- **Drag** across it to pick those days; **click** a bar to pick its day, week or month.
+  The chip *Dates: …* drops the pick, as does the Date section.
+- **Click a band** to pick that trip. With a trip picked the strip shows just its days
+  (and a little either side); *⤢ all* goes back to every day.
+
+**Route** (Map tab, with a trip picked): the trip's photos that have a position, joined in
+the order they were taken. ▶ plays it photo by photo, about twenty seconds for the whole
+way (no faster than three photos a second): the way travelled is drawn in amber and the
+photo of the moment rides at its head. The slider moves along it by hand; ⤢ shows the
+whole route. A trip needs two photos with a position for a route.
+
 ## Look
 
 The app measures every photo from Capture One's thumbnail (which carries your edits and
@@ -378,7 +424,8 @@ Keys do not act while you type in a field.
 
 ## Where things are kept
 
-- The library, the edit queue, the analysis (`library\analysis.redb`), the autosave
-  setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+- The library, the edit queue, the analysis (`library\analysis.redb`), trips and
+  their settings (`library\trips.redb`), the autosave setting and backups:
+  `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The sidebar layout, tile size and the copy clipboard: the app's own browser storage.

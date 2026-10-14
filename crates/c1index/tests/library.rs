@@ -1234,3 +1234,88 @@ fn photo_history_outlives_reopening() {
     let lib = Library::open(dir.path()).unwrap();
     assert_eq!(lib.photo_events(&id).unwrap().len(), 1);
 }
+
+/// When photo `n` of [`trip_photos`] was taken: three a day around midday UTC (the same
+/// local day wherever the tests run), from 2026-01-01.
+fn trip_time(n: u32, hour: i64) -> i64 {
+    1_767_225_600_000 + i64::from((n - 1) / 3) * 86_400_000 + hour * 3_600_000
+}
+
+/// Photos 1..=30 over ten days: 1-9 in Kraków, 10-21 in Tokyo (one of them rated 5),
+/// 22-30 in Kraków again.
+fn trip_photos() -> Vec<Photo> {
+    (1..=30)
+        .map(|n| {
+            let mut p = photo(n);
+            p.captured_at = Some(trip_time(n, 10 + 2 * i64::from((n - 1) % 3)));
+            p.trashed = false;
+            p.rating = (n == 15).then_some(5);
+            p.place = match n {
+                10..=21 => Place { country: Some("Japan".into()), city: Some("Tokyo".into()), ..Place::default() },
+                _ => Place { country: Some("Poland".into()), city: Some("Kraków".into()), ..Place::default() },
+            };
+            p
+        })
+        .collect()
+}
+
+fn set_home(lib: &Library) {
+    let home = c1index::trips::Home { country: Some("Poland".into()), city: Some("Kraków".into()) };
+    lib.set_trip_settings(&c1index::trips::TripSettings { home: Some(home), ..Default::default() }).unwrap();
+}
+
+#[test]
+fn trips_are_found_counted_and_filter_the_grid() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&MemorySource::new("mem", trip_photos(), vec![])).unwrap();
+    let list = lib.trips(&Filter::default()).unwrap();
+    assert!(list.trips.is_empty(), "no home, no trips");
+    assert_eq!(list.home_guess.and_then(|h| h.city).as_deref(), Some("Kraków"));
+
+    set_home(&lib);
+    let list = lib.trips(&Filter::default()).unwrap();
+    assert_eq!(list.trips.len(), 1);
+    let tokyo = &list.trips[0];
+    assert_eq!((tokyo.label.as_str(), tokyo.photos, tokyo.count), ("Tokyo", 12, 12));
+    assert_eq!(tokyo.cover, Some(row_of(&lib, 15)), "the best rated photo stands for it");
+
+    // Counted over the filter, and the trip's own span set aside.
+    let span = TimeRange { from: Some(tokyo.trip.start), to: Some(tokyo.trip.end) };
+    let rated = Filter { rating: Some(parse_rating(">=1").unwrap()), trip: Some(span), ..Filter::default() };
+    assert_eq!(lib.trips(&rated).unwrap().trips[0].count, 1);
+    let in_trip = Filter { trip: Some(span), ..Filter::default() };
+    assert_eq!(lib.query(&in_trip, &QueryOptions::default()).unwrap().total, 12);
+
+    // Days of the timeline add up to the photos.
+    let days = lib.timeline(&Filter::default()).unwrap();
+    assert_eq!(days.iter().map(|(_, n)| n).sum::<usize>(), 30);
+    assert!(days.windows(2).all(|w| w[0].0 < w[1].0));
+}
+
+#[test]
+fn trip_edits_outlive_reopening_and_new_photos() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", trip_photos(), vec![]);
+    let id = {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        set_home(&lib);
+        let id = lib.trips(&Filter::default()).unwrap().trips[0].trip.id;
+        let edit = c1index::trips::TripEdit::Rename { id, name: Some("Japan 2026".into()) };
+        assert_eq!(lib.edit_trips(edit).unwrap(), Some(id));
+        id
+    };
+    // A photo from Tokyo after the last one: the kept trip stretches over it.
+    let mut late = photo(31);
+    late.place = Place { country: Some("Japan".into()), city: Some("Tokyo".into()), ..Place::default() };
+    late.captured_at = Some(trip_time(21, 15));
+    late.trashed = false;
+    source.add_externally(late);
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&source).unwrap();
+    let list = lib.trips(&Filter::default()).unwrap();
+    assert_eq!(list.trips.len(), 1);
+    let t = &list.trips[0];
+    assert_eq!((t.trip.id, t.trip.name.as_deref(), t.photos), (id, Some("Japan 2026"), 13));
+}

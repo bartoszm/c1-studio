@@ -1165,10 +1165,53 @@ written before the kinds below existed still read.
   Pins, tiles, Shift+drag, dragging photos onto the map and GPX still work. Switching
   changes the map's style in place.
 
+### Trips, the timeline and route replay
+
+- **Detection** (`c1index::trips`): each day with photos is home, away or unknown by its
+  photos' places, or by positions near or far from home (the middle of the photos placed
+  at home that have one) when they have no place. Days join while the gap between photos
+  stays under `gap_hours` (36), or `bridge_days` (4) when the country on both sides is the
+  same; a day at home ends a stretch. A stretch with a day away (and at least `min_photos`)
+  is `Found`; one with no place at all, `suggest_days`/`suggest_photos` (2, 100) or more,
+  is `Suggested`. Time decides membership: a trip is a span from its first photo to its
+  last, and `Filter::trip` picks that span (kept apart from `captured`, so days picked in
+  a trip narrow it).
+- **Home** is set once (`TripSettings::home`, country and optional city). Until then
+  nothing is found and `guess_home` offers the city seen on the most days (Kraków on
+  fuji).
+- **The user's edits stay:** `trips.redb` (beside the store, which a model change wipes)
+  holds every trip. `reconcile` keeps `Kept` and `Dismissed` ones, drops findings over
+  them, stretches a kept trip over a finding that runs past it alone (photos imported
+  later), and replaces untouched trips with the new findings, keeping the id of the one
+  each overlaps. `TripEdit`: rename, keep, dismiss, forget, merge, split, create.
+- **Library:** `trips(filter)` (worked out again only when the index generation changed;
+  counts and covers per trip under the filter), `timeline(filter)` (photos per local day),
+  `route(filter)`. Detection reads the index's columns, not the store; `schema::LocalDays`
+  asks the time zone once or twice per day, not per photo (3 µs each on Windows, a third
+  of a second over the library). On fuji: about 100 ms when the library changed, 40 ms
+  for a filter change.
+- **Tuned on fuji** with a prototype over all 100k photos, folder names used only to check
+  the result: 43 trips and 62 suggestions; every trip folder with places came out as one
+  trip (Tokyo + Hong Kong 2025, Sicily, Istanbul, both Berlins), and untagged ones as
+  suggestions (Iceland 2022, Lofoten 2025 in two halves). Weekends at home without
+  places are suggested too; ✓ and × deal with them. Trips under 10 photos are dropped (a
+  few photos with a wrong clock made one-day "trips" to Tokyo in March 2018).
+- **App:** a Trips section (by year, covers, counts, quick ✓/× on suggestions, a menu for
+  the edits, home and gap settings), a timeline strip above the grid and map (day, week
+  or month bars by room; drag or click picks days; trip bands pick trips; a picked trip
+  zooms it), and route replay on the map (a line layer drawn in colours chosen for the
+  inverted canvas, a moving head with the photo). *Make an album of it* queues a new
+  album with the trip's photos. `c1cat trips` lists them.
+- **Tested** in a second instance on a copy of the newest fuji backup: home from the
+  guess, 101 trips and suggestions, picking Tokyo/Hong Kong (7,423 photos, timeline
+  zoomed to it), a merge, an album from a trip (252 photos queued), and the route of
+  Belgrade 2017 (6 positions). Only 809 photos on fuji have a position, so most trips
+  have no route yet.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare
    two dates, restore a past state as a set of `Change`s.
-2. Trips: detection, editing, a timeline with route replay.
-3. Stage 4, rest: reverse geocoding of place fields (offline, GeoNames), photo direction,
-   lasso.
+2. Reverse geocoding of place fields (offline, GeoNames): names trips found by positions
+   alone, and places photos for trips.
+3. Stage 4, rest: photo direction, lasso.
