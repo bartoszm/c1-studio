@@ -45,7 +45,7 @@
       // Only a place: those given its position too (they are still placed by name alone).
       const shown =
         tab === "place"
-          ? { ...$state.snapshot(filter), within: undefined, placed: true, approx: true }
+          ? { ...$state.snapshot(filter), within: undefined, placed: true, approx: true, gps: undefined }
           : { ...$state.snapshot(filter), within: undefined, placed: false, gps: false };
       const r = await api.query(shown, { sort: "Date", limit: PAGE, offset: more ? rows.length : 0 });
       if (mine !== asked) return;

@@ -30,6 +30,20 @@ test("a spot is asked once, at most one a second; refused, it waits as told and 
   fetch.mock.restore();
 });
 
+test("told to wait, those queued meanwhile go one a second after it, not all at once", async () => {
+  const at: number[] = [];
+  const fetch = mock.method(globalThis, "fetch", async () => {
+    at.push(Date.now());
+    return at.length === 1 ? reply(503, {}, { "Retry-After": "3" }) : reply(200, krakow);
+  });
+  const asked = [placeAt(2, 2), placeAt(3, 3), placeAt(4, 4)];
+  await Promise.all(asked);
+  assert.equal(at.length, 3);
+  assert.ok(at[1] - at[0] >= 2900, `waits out Retry-After, not ${at[1] - at[0]} ms`);
+  assert.ok(at[2] - at[1] >= 1000, `a second apart, not ${at[2] - at[1]} ms`);
+  fetch.mock.restore();
+});
+
 test("with online lookups off, nothing is asked", async () => {
   const fetch = mock.method(globalThis, "fetch", async () => reply(200, krakow));
   allowPlaceLookups(false);

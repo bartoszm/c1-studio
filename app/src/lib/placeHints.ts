@@ -63,13 +63,16 @@ let blockedUntil = 0;
 const sleep = (ms: number) => new Promise((ok) => setTimeout(ok, ms));
 
 /** A Nominatim request, at most one a second (as its policy wants) across all of them;
- *  told to wait, none is sent for that long, those already queued included. One that
- *  hangs gives up after 15 s. */
+ *  told to wait, none is sent for that long, those already queued included: each then
+ *  takes a new turn, so they go one a second again. One that hangs gives up after 15 s. */
 async function nominatim(path: string): Promise<unknown> {
-  const wait = Math.max(0, nextAsk - Date.now());
-  nextAsk = Date.now() + wait + 1100;
-  await sleep(wait);
-  while (blockedUntil > Date.now()) await sleep(blockedUntil - Date.now());
+  for (;;) {
+    const wait = Math.max(0, nextAsk - Date.now());
+    nextAsk = Date.now() + wait + 1100;
+    await sleep(wait);
+    if (blockedUntil <= Date.now()) break;
+    await sleep(blockedUntil - Date.now());
+  }
   const res = await fetch(`https://nominatim.openstreetmap.org/${path}`, { signal: AbortSignal.timeout(15_000) });
   if (res.status === 429 || res.status === 503) {
     const after = Number(res.headers.get("Retry-After"));
