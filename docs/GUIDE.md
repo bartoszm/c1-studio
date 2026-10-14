@@ -29,11 +29,12 @@ pnpm tauri dev                          # or a live-reloading window while devel
 
 On start the app opens the first of:
 
-1. a path on the command line: `c1studio.exe C:\c1_catalogs\fuji` (the `.cocatalogdb`
+1. a path on the command line: `c1studio.exe D:\Catalogs\Mine` (the `.cocatalogdb`
    file, or the folder holding exactly one);
 2. `C1_CATALOG` (for scripts and test instances; not remembered);
-3. the catalog opened last;
-4. the only catalog under `C:\c1_catalogs\*\`.
+3. the catalog opened last.
+
+The first time, nothing is open: choose a catalog from the source menu.
 
 **The source menu** (*C1 Studio ▾* at the top left, showing the open catalog's name)
 opens another one: pick one from *Recent* (× takes it off the list), browse with
