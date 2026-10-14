@@ -58,27 +58,57 @@ export function allowPlaceLookups(on: boolean) {
   online = on;
 }
 
+/** A Nominatim request, at most one a second (as its policy wants) across all of them;
+ *  told to wait (429, 503), none is sent for that long. */
+function nominatim(path: string): Promise<unknown> {
+  const wait = Math.max(0, nextAsk - Date.now());
+  nextAsk = Date.now() + wait + 1100;
+  return new Promise((ok) => setTimeout(ok, wait))
+    .then(() => fetch(`https://nominatim.openstreetmap.org/${path}`))
+    .then((res) => {
+      if (res.status === 429 || res.status === 503) {
+        const after = Number(res.headers.get("Retry-After"));
+        nextAsk = Math.max(nextAsk, Date.now() + (after > 0 ? after * 1000 : 60_000));
+      }
+      if (!res.ok) throw new Error(`Nominatim: ${res.status}`);
+      return res.json();
+    });
+}
+
+const LEVELS: api.Level[] = ["Country", "State", "City", "Location"];
+
+/** Where a place is, from Nominatim: tried with all its names, then without the finest
+ *  one, down to the level already known (`have`). `null`: nothing found (worth keeping);
+ *  `undefined`: not asked or the request failed (ask again later). */
+export async function pointFor(place: api.Photo["place"], have: api.Level | null): Promise<api.Approx | null | undefined> {
+  if (!online) return undefined;
+  const levels = [place.country, place.state, place.city, place.location];
+  const code = place.country_code?.trim().toLowerCase();
+  for (let level = 3; level >= 1; level--) {
+    if (!levels[level]?.trim()) continue;
+    if (have && LEVELS.indexOf(have) >= level) break;
+    const q = levels.slice(0, level + 1).filter((v) => v?.trim()).reverse().join(", ");
+    try {
+      const list = (await nominatim(
+        `search?format=jsonv2&limit=1&q=${encodeURIComponent(q)}${code && code.length === 2 ? `&countrycodes=${code}` : ""}`,
+      )) as { lat: string; lon: string }[];
+      if (list.length) return { lat: +list[0].lat, lon: +list[0].lon, level: LEVELS[level] };
+    } catch {
+      return undefined;
+    }
+  }
+  return null;
+}
+
 /** The address at a point, from OpenStreetMap's Nominatim; null offline (or not allowed online) or nowhere.
- *  Asked once per spot, at most one a second, as Nominatim's policy wants; told to
- *  wait (429, 503), it is not asked again for that long. A failure is not kept. */
+ *  Asked once per spot. A failure is not kept. */
 export function placeAt(lat: number, lon: number): Promise<PlacePath | null> {
   if (!online) return Promise.resolve(null);
   const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
   let asked = hereAsked.get(key);
   if (!asked) {
-    const wait = Math.max(0, nextAsk - Date.now());
-    nextAsk = Date.now() + wait + 1100;
-    asked = new Promise((ok) => setTimeout(ok, wait))
-      .then(() => fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lon}`))
-      .then((res) => {
-        if (res.status === 429 || res.status === 503) {
-          const after = Number(res.headers.get("Retry-After"));
-          nextAsk = Math.max(nextAsk, Date.now() + (after > 0 ? after * 1000 : 60_000));
-        }
-        if (!res.ok) throw new Error(`Nominatim: ${res.status}`);
-        return res.json();
-      })
-      .then(fromNominatim)
+    asked = nominatim(`reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lon}`)
+      .then((json) => fromNominatim(json as Parameters<typeof fromNominatim>[0]))
       .catch(() => {
         hereAsked.delete(key);
         return null;

@@ -21,11 +21,14 @@ use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, 
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
-use crate::geo::{self, Located, MapResult, MapView};
 use crate::looks::{Look, Looks, Record};
+use crate::places::PlaceBook;
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
+
+mod placing;
+pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
 
 /// Dimensions whose values substring filters match against.
 const SUBSTRING_DIMS: [Dim; 7] =
@@ -159,6 +162,10 @@ pub struct Library {
     trip_book: TripBook,
     /// Trips as last worked out, for the index generation they were worked out on.
     trip_cache: Mutex<Option<TripCache>>,
+    /// Places looked up online, and photos given only their place's position.
+    place_book: PlaceBook,
+    /// Where places are, as worked out from their names.
+    place_cache: Mutex<placing::PlaceCache>,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -249,6 +256,7 @@ impl Library {
         let edits = Edits::open(&dir.join("edits.redb"))?;
         let looks = Looks::open(&dir.join("analysis.redb"))?;
         let trip_book = TripBook::open(&dir.join("trips.redb"))?;
+        let place_book = PlaceBook::open(&dir.join("places.redb"))?;
         let seen = looks
             .all()?
             .into_iter()
@@ -271,6 +279,8 @@ impl Library {
             syncing: Mutex::new(()),
             trip_book,
             trip_cache: Mutex::new(None),
+            place_book,
+            place_cache: Mutex::default(),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -994,43 +1004,6 @@ impl Library {
         }
         result.micros = started.elapsed().as_micros();
         Ok(result)
-    }
-
-    /// The photos `filter` selects that have a position, clustered for `view`. A filter's
-    /// own `within` is set aside, so the map keeps showing the places around the area it
-    /// picked.
-    pub fn map(&self, filter: &Filter, view: &MapView) -> anyhow::Result<MapResult> {
-        let distinct = self.distinct.read().unwrap();
-        let smart = self.smart.read().unwrap();
-        let filter = Filter { within: None, gps: Some(true), ..filter.clone() };
-        let query = expand(&filter, &smart)?.to_query(&self.index, &self.fields, &distinct)?;
-        let searcher = self.reader.searcher();
-        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
-        let mut columns = Vec::new();
-        for segment in searcher.segment_readers() {
-            let fast = segment.fast_fields();
-            columns.push((
-                fast.u64("row")?,
-                fast.f64("lat")?,
-                fast.f64("lon")?,
-                fast.u64("rating_sort")?,
-                fast.f64("sharpness")?,
-            ));
-        }
-        let points: Vec<Located> = docs
-            .iter()
-            .filter_map(|a| {
-                let (row, lat, lon, rating, sharp) = &columns[a.segment_ord as usize];
-                Some(Located {
-                    row: row.first(a.doc_id)?,
-                    lat: lat.first(a.doc_id)?,
-                    lon: lon.first(a.doc_id)?,
-                    rating: rating.first(a.doc_id).unwrap_or(0),
-                    sharpness: sharp.first(a.doc_id).unwrap_or(0.0),
-                })
-            })
-            .collect();
-        Ok(geo::cluster(&points, view))
     }
 
     /// The trips, each counted over the photos `filter` selects (its trip set aside, so the

@@ -148,7 +148,7 @@ In PowerShell, quote values with `>`, `<`, `|`, `*` or spaces: `--rating '>=4'`,
 | `describe --description/--headline/--title TEXT` | Description (the caption), headline, and title: IPTC's Object Name, a short identifier, not a caption. |
 | `iptc --set-creator/--set-copyright/--set-job-id/--set-instructions/--set-source TEXT` | IPTC contact and status fields. |
 | `iptc --set-city/--set-state/--set-country/--set-country-code/--set-location TEXT` | IPTC location fields. |
-| `geo --lat LAT --lon LON` / `geo --clear` | GPS. Stored per image, so every variant of it moves. |
+| `geo --lat LAT --lon LON` / `geo --at '44°58′N 14°45′E'` / `geo --clear` | GPS. `--at` takes coordinates as written anywhere (decimal, N/S/E/W, degrees and minutes). Stored per image, so every variant of it moves. |
 | `keyword add PATH...` / `keyword remove PATH...` | Keywords on the photos. Alias `kw`. |
 
 Text fields change only when given; an empty value (`--headline ''`) clears the field.

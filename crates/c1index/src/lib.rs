@@ -9,6 +9,7 @@ pub mod geo;
 pub mod gpx;
 pub mod library;
 pub mod looks;
+pub mod places;
 pub mod schema;
 mod store;
 pub mod thumbs;
@@ -17,10 +18,10 @@ pub mod trips;
 pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
 pub use filter::{BBox, Filter, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
-pub use geo::{Cluster, MapResult, MapView};
+pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
 pub use library::{
-    Group, Library, PendingEdit, QueryOptions, QueryResult, RoutePoint, Sort, SyncReport, TripList, TripRow,
-    new_collection_id, smart_filter,
+    FillGroup, Group, Library, NeighbourPlan, NeighbourSettings, PendingEdit, PlaceLookup, QueryOptions, QueryResult,
+    RoutePoint, Sort, SyncReport, TripList, TripRow, Unresolved, new_collection_id, place_of_path, smart_filter,
 };
 pub use looks::Look;
 pub use schema::{Dim, NO_PLACE};

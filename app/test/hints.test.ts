@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { allowPlaceLookups, placeAt } from "../src/lib/placeHints";
+import { allowPlaceLookups, placeAt, pointFor } from "../src/lib/placeHints";
 import { movingOf } from "../src/lib/pins";
 
 const reply = (status: number, body: unknown = {}, headers: Record<string, string> = {}) =>
@@ -36,6 +36,26 @@ test("with online lookups off, nothing is asked", async () => {
   assert.equal(await placeAt(10, 10), null);
   assert.equal(fetch.mock.callCount(), 0);
   allowPlaceLookups(true);
+  fetch.mock.restore();
+});
+
+test("a place is looked up with all its names, then fewer, down to what is known", async () => {
+  const urls: string[] = [];
+  const fetch = mock.method(globalThis, "fetch", async (url: string) => {
+    urls.push(decodeURIComponent(url));
+    return reply(200, urls.length === 1 ? [] : [{ lat: "50.05", lon: "19.93" }]);
+  });
+  const place = { country: "Poland", country_code: "PL", state: "Malopolska", city: "Kraków", location: "Podwawelskie" };
+  assert.deepEqual(await pointFor(place, "City"), null, "the location alone is new; not found, it says so");
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /q=Podwawelskie, Kraków, Malopolska, Poland&countrycodes=pl/);
+  assert.deepEqual(await pointFor({ ...place, location: null }, "Country"), { lat: 50.05, lon: 19.93, level: "City" });
+  assert.match(urls[1], /q=Kraków, Malopolska, Poland/);
+  // Offline: not asked, and not to be kept as nothing found.
+  allowPlaceLookups(false);
+  assert.equal(await pointFor(place, null), undefined);
+  allowPlaceLookups(true);
+  assert.equal(urls.length, 2);
   fetch.mock.restore();
 });
 

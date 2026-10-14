@@ -586,6 +586,83 @@ async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Res
     app.session()?.library.map(&filter, &view).map_err(|e| format!("{e:#}"))
 }
 
+/// The places `filter`'s photos name that the gazetteer does not know at that level and
+/// that were not looked up online yet.
+#[tauri::command]
+async fn unresolved_places(app: State<'_, App>, filter: Filter) -> Result<Vec<c1index::Unresolved>, String> {
+    app.session()?.library.unresolved_places(&filter).map_err(|e| format!("{e:#}"))
+}
+
+/// What online lookups found for places (or that they found nothing).
+#[tauri::command]
+async fn set_place_points(app: State<'_, App>, items: Vec<c1index::PlaceLookup>) -> Result<(), String> {
+    app.session()?.library.set_place_points(&items).map_err(|e| format!("{e:#}"))
+}
+
+/// Gives the photos at each place (of those `filter` selects, with no position) the
+/// place's position. Returns the ops that undo it.
+#[tauri::command]
+async fn promote_places(app: State<'_, App>, filter: Filter, paths: Vec<String>) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    s.touched();
+    s.library.promote(&filter, &paths).map_err(|e| format!("{e:#}"))
+}
+
+/// Gives the photos among `rows` with no position their place's position.
+#[tauri::command]
+async fn promote_rows(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    s.touched();
+    s.library.promote_rows(&rows).map_err(|e| format!("{e:#}"))
+}
+
+/// The photos at a place, of those `filter` selects that have no position.
+#[tauri::command]
+async fn place_rows(app: State<'_, App>, filter: Filter, path: String) -> Result<Vec<u64>, String> {
+    app.session()?.library.place_rows(&filter, &path).map_err(|e| format!("{e:#}"))
+}
+
+/// The place a position is in, as the catalog writes it.
+#[tauri::command]
+async fn place_at_point(app: State<'_, App>, lat: f64, lon: f64) -> Result<Option<Place>, String> {
+    app.session()?.library.place_at_point(lat, lon).map_err(|e| format!("{e:#}"))
+}
+
+/// For the photos among `rows` with a position, the place fields it would fill.
+#[tauri::command]
+async fn fill_plan(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<c1index::FillGroup>, String> {
+    app.session()?.library.fill_plan(&rows).map_err(|e| format!("{e:#}"))
+}
+
+/// Fills the empty place fields of the photos among `rows` from their positions.
+#[tauri::command]
+async fn fill_places(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    s.touched();
+    s.library.fill_places(&rows).map_err(|e| format!("{e:#}"))
+}
+
+/// What placing `filter`'s photos from the photos taken just before and after would do.
+#[tauri::command]
+async fn neighbour_plan(
+    app: State<'_, App>,
+    filter: Filter,
+    settings: c1index::NeighbourSettings,
+) -> Result<c1index::NeighbourPlan, String> {
+    app.session()?.library.neighbour_plan(&filter, &settings).map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+async fn neighbour_apply(
+    app: State<'_, App>,
+    filter: Filter,
+    settings: c1index::NeighbourSettings,
+) -> Result<Vec<(u64, Op)>, String> {
+    let s = app.session()?;
+    s.touched();
+    s.library.neighbour_apply(&filter, &settings).map_err(|e| format!("{e:#}"))
+}
+
 /// Smart album id → how many photos it holds under `filter` (its album pick aside).
 #[tauri::command]
 async fn smart_counts(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, u64)>, String> {
@@ -1800,6 +1877,16 @@ pub fn run() {
             trips,
             timeline,
             route,
+            unresolved_places,
+            set_place_points,
+            promote_places,
+            promote_rows,
+            place_rows,
+            place_at_point,
+            fill_plan,
+            fill_places,
+            neighbour_plan,
+            neighbour_apply,
             set_trip_settings,
             edit_trips,
             map,

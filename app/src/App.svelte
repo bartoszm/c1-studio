@@ -20,6 +20,7 @@
   import MapPane from "./MapPane.svelte";
   import AnalysisPane from "./AnalysisPane.svelte";
   import GpxDialog from "./GpxDialog.svelte";
+  import NeighbourDialog from "./NeighbourDialog.svelte";
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
@@ -92,7 +93,8 @@
   let beforeTile: api.BBox | undefined;
   function mapMoved(bounds: api.BBox) {
     mapView = bounds;
-    if (!follow || mapTile) return;
+    // Photos with no position are in no area: while the grid shows them, it does not follow.
+    if (!follow || mapTile || filter.gps === false) return;
     clearTimeout(followTimer);
     followTimer = setTimeout(() => {
       if (!mapOn || !follow) return;
@@ -142,6 +144,13 @@
     follow = !follow;
     if (!follow) mapReleased();
   }
+  /** Photos the map cannot show by position (no GPS): the grid lets go of the map's area. */
+  function showOffMap(extra: Filter) {
+    clearTimeout(followTimer);
+    mapTile = null;
+    filter = { ...filter, within: undefined, gps: false, ...extra };
+    run();
+  }
   /** An area drawn on the map: the grid keeps to it, whatever the map shows next. */
   function mapBox(bounds: api.BBox) {
     follow = false;
@@ -160,6 +169,7 @@
     await applyEdit({ Geo: at }, rows);
     if (editError) return;
     note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    void offerFill(rows);
     // The picked tile moved as a whole: the pick goes with it, so the grid keeps its photos.
     if (from && sameBox(from, mapTile)) {
       mapTile = { min_lat: at[0], max_lat: at[0], min_lon: at[1], max_lon: at[1] };
@@ -821,6 +831,80 @@
     }
     await edited();
   }
+  /** Photos given positions in bulk (a track, their neighbours): offer their places too. */
+  async function placedMany(undo: [number, api.Op][]) {
+    await codesFilled(undo);
+    const placed = undo.filter(([, op]) => "SetGeo" in op).map(([row]) => row);
+    if (placed.length) void offerFill(placed);
+  }
+  let placingFromNeighbours = $state(false);
+
+  /** Empty place fields that photos just given a position could have filled from it: filled
+   *  at once if Settings say so, else offered. */
+  let fillOffer = $state<{ groups: api.FillGroup[]; rows: number[] } | null>(null);
+  async function offerFill(rows: number[]) {
+    try {
+      const groups = await api.fillPlan(rows);
+      if (!groups.length) return;
+      if (settings.fillPlaces) await fillPlaces(groups.flatMap((g) => g.rows));
+      else fillOffer = { groups, rows: groups.flatMap((g) => g.rows) };
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+  async function fillPlaces(rows: number[]) {
+    fillOffer = null;
+    try {
+      const undo = await api.fillPlaces(rows);
+      if (undo.length) {
+        undoStack.push({ ops: undo });
+        redoStack = [];
+        const n = new Set(undo.map(([r]) => r)).size;
+        note(`Place filled in for ${n.toLocaleString()} photo${n === 1 ? "" : "s"}`);
+      }
+      editError = null;
+    } catch (e) {
+      editError = String(e);
+    }
+    await edited();
+  }
+  function placeLine(p: api.Photo["place"]): string {
+    return [p.city, p.state, p.country].filter(Boolean).join(", ");
+  }
+  /** The photos edited that have no position get their place's (approximate). */
+  async function geoFromPlace() {
+    try {
+      const undo = await api.promoteRows(targets());
+      if (undo.length) {
+        undoStack.push({ ops: undo });
+        redoStack = [];
+        const n = new Set(undo.map(([r]) => r)).size;
+        note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} given the position of ${n === 1 ? "its" : "their"} place (approximate)`);
+      } else {
+        note("No position to give: the photos have one already, or no place known on the map");
+      }
+      editError = null;
+    } catch (e) {
+      editError = String(e);
+    }
+    await edited();
+  }
+  /** The photos at a place on the map (of those with no position) get its position. */
+  async function promotePlace(paths: string[]) {
+    try {
+      const undo = await api.promotePlaces({ ...filter, within: undefined }, paths);
+      if (undo.length) {
+        undoStack.push({ ops: undo });
+        redoStack = [];
+        const n = new Set(undo.map(([r]) => r)).size;
+        note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} given the position of ${placeText(paths[0])}${paths.length > 1 ? ` and ${paths.length - 1} more places` : ""} (approximate)`);
+      }
+      editError = null;
+    } catch (e) {
+      editError = String(e);
+    }
+    await edited();
+  }
   function pickKeyword(n: Node) {
     filter = { ...filter, keywords_under: filter.keywords_under?.[0] === n.value ? undefined : [n.value] };
     run();
@@ -1065,7 +1149,7 @@
       sectionMenu = null;
       return;
     }
-    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -1214,6 +1298,8 @@
       v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
     place_under: (v) => [{ what: "Place", text: placeText(v) }],
+    gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
+    placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
     hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
@@ -1329,7 +1415,13 @@
     oncamera={(camera) => only({ camera })}
     sharedPlaces={placesNow}
     onplace={(fields, rows) => applyEdit({ Place: fields }, rows ?? targets())}
-    ongeo={(value) => applyEdit({ Geo: value })}
+    ongeo={async (value) => {
+      const rows = targets();
+      await applyEdit({ Geo: value }, rows);
+      if (value && !editError) void offerFill(rows);
+    }}
+    onfillplace={() => fillPlaces(targets())}
+    ongeofromplace={geoFromPlace}
     oniptc={(field, value) => applyEdit({ Iptc: { [field]: value } })}
     clip={clipText}
     oncopy={openCopy}
@@ -1392,6 +1484,7 @@
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
       </label>
       <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
+      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
     {/if}
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
@@ -1571,6 +1664,11 @@
       onpick={mapPick}
       onsetgeo={mapSetGeo}
       onerror={(text) => (editError = text)}
+      onplace={(path) => showOffMap({ place_under: path, placed: undefined })}
+      onpromote={promotePlace}
+      ondragrows={(rows) => (dragging = rows && { rows })}
+      onneighbours={() => (placingFromNeighbours = true)}
+      onunplaced={(placed) => showOffMap({ placed, place_under: undefined })}
     />
   {/if}
   {#if tab === "analysis"}
@@ -1632,6 +1730,16 @@
       {/if}
       <span>{status.photos.toLocaleString()} in library</span>
       <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
+    {/if}
+    {#if fillOffer}
+      {@const first = fillOffer.groups[0]}
+      <span class="fill-offer" title={fillOffer.groups.map((g) => `${placeLine(g.place)}: ${g.rows.length}`).join("\n")}>
+        Fill in the place of {fillOffer.rows.length.toLocaleString()} photo{fillOffer.rows.length === 1 ? "" : "s"}:
+        {placeLine(first.place)}{fillOffer.groups.length > 1 ? ` and ${fillOffer.groups.length - 1} more` : ""}?
+        <button onclick={() => fillPlaces(fillOffer!.rows)}>Fill</button>
+        <button title="Fill places from new positions from now on without asking (Settings)" onclick={() => { settings.fillPlaces = true; fillPlaces(fillOffer!.rows); }}>Always</button>
+        <button onclick={() => (fillOffer = null)}>No</button>
+      </span>
     {/if}
     {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
@@ -1807,7 +1915,11 @@
 {/if}
 
 {#if importingGpx}
-  <GpxDialog {filter} onclose={() => (importingGpx = false)} ondone={codesFilled} />
+  <GpxDialog {filter} onclose={() => (importingGpx = false)} ondone={placedMany} />
+{/if}
+
+{#if placingFromNeighbours}
+  <NeighbourDialog {filter} onclose={() => (placingFromNeighbours = false)} ondone={placedMany} />
 {/if}
 
 {#if fillingCodes}

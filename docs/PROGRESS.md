@@ -1208,10 +1208,65 @@ written before the kinds below existed still read.
   Belgrade 2017 (6 positions). Only 809 photos on fuji have a position, so most trips
   have no route yet.
 
+### Places without GPS on the map, and placing photos
+
+Only 809 of fuji's 100k photos have a position; about 31k have a place typed (city, region,
+country) and 68k have neither.
+
+- **Gazetteer** (`crates/c1geo`): GeoNames (CC BY 4.0) countries, first-level divisions
+  and every place of 1000+ people, 165k rows, 3.8 MB gzipped in the binary
+  (`data/gazetteer.tsv.gz`, built by `tools/gazetteer/build.py` from the GeoNames dump;
+  rerun to refresh). Read on first use (~0.3 s). Names are folded (case, diacritics,
+  spacing). `locate(place)`: country by ISO code or any of its names; state by name or a
+  shared start (`Malopolska` ↔ `Małopolskie`, `Lower Silesian` ↔ `Lower Silesia`); city in
+  that country by any name (`Cracow`, `Tokio`), one typo away (`Istambul`), or typed as
+  the location (`Germany|—|—|Berlin`); a whole city before a district (`D` rows: places
+  well inside a city ten times bigger). A country's and a state's point is the
+  population-weighted median of its cities. `reverse(lat, lon)`: the city whose reach
+  (1 + √pop/40 km) covers the point best, else state and country of the nearest within
+  60 km. `parse_point`: coordinates as written (`44°58′N 14°45′E`, `N44°58' E14°45'`,
+  `44 58 N 14 45 E`, decimal, longitude first); `app/src/lib/coords.ts` is the same parser.
+- **Library** (`library/placing.rs`, `places.redb`):
+  - `map` also returns photos with only a place, at its position, clustered apart
+    (`PlaceCluster`), shown only up to the zoom their level reaches (country 5, state 8,
+    city 11, location 14; `geo::max_zoom`), with counts in view, hidden, place-only,
+    unresolved and unplaced. Places at one point (a city and spots in it known no better)
+    carry their paths. 80 ms on fuji at world zoom.
+  - `Filter.placed` (an exists query on `place_tree`, no index change).
+  - Online fallback: `unresolved_places` lists places named more finely than the
+    gazetteer knows them; the app asks Nominatim (`pointFor`, one request a second, all
+    names then fewer) and `set_place_points` keeps the answers, misses included, in
+    `places.redb` (it outlives the store).
+  - `promote` / `promote_rows`: photos get their place's position (`GeoOrigin::Geocoded`),
+    recorded in `places.redb` as coarse, so the map keeps them ≈ and neighbours never take
+    them as fixes. Moved by hand, they count as placed (the stored point no longer holds).
+  - `fill_plan` / `fill_places`: empty place fields from the position, written in the
+    catalog's own spelling (the name the catalog uses most for that gazetteer place:
+    `Malopolska`, not `Lesser Poland`); a photo whose place disagrees is left alone.
+  - `neighbour_plan` / `neighbour_apply`: positions from GPS photos taken before and after
+    (`gpx::locate`, or the nearest within half the gap), places from the place both
+    neighbours share. On fuji with 30 min: 397 positions, 10,923 places, 150 ms.
+- **App:** dashed ≈ markers (cards hang below their point so GPS pins stay visible); a click
+  shows the place's photos in the grid, zooms in, or gives them its position (asked
+  first). A tray under the map lists photos with no position (tabs: no location, only a
+  place) to drag on or type coordinates for. `Neighbours…` dialog. A footer offer to fill
+  places after a placement (Settings: always). Details panel: *Fill place from GPS*,
+  *GPS from place ≈*. The place search takes coordinates, online or not. Chips for
+  `gps` and `placed`. `c1cat geo --at`.
+- **Spelling and speed:** name resolution is remembered per place path; the catalog's
+  spellings are built once per call, not per index generation (the background analysis
+  bumps it all the time: the first version took 120 s to plan 300 photos).
+- **Tested** in a second instance on a copy of the newest fuji backup: world view shows
+  26.5k photos by place in 11 ≈ clusters; Kraków at zoom 13 hides them all (2,910), at
+  zoom 10 shows them below the GPS pins; 30 places looked up online (Hotel Forum,
+  Wasilewskiego found as spots in Kraków); two tray photos placed by typing
+  `44°58′N 14°45′E`, offered *Baska, Primorje-Gorski Kotar, Croatia*, filled; Hotel Forum's
+  113 photos given its position. Written to the copy (117 edits) and read back: GPS and
+  place in `ZIMAGE`/`ZVARIANTMETADATA`, and the 113 still drawn as ≈.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare
    two dates, restore a past state as a set of `Change`s.
-2. Reverse geocoding of place fields (offline, GeoNames): names trips found by positions
-   alone, and places photos for trips.
+2. Trips found by positions alone could be named with `c1geo::reverse`.
 3. Stage 4, rest: photo direction, lasso.

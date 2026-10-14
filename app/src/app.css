@@ -413,6 +413,10 @@ footer .edit-error { color: var(--error); }
 .node.drop { background: var(--queued); }
 .node.drop .name, .node.drop .n, .node.drop .icon { color: #fff; }
 .edit-note { color: var(--muted); }
+.fill-offer { display: inline-flex; align-items: center; gap: 6px; }
+.fill-offer button { padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; }
+.fill-offer button:first-of-type { border-color: var(--queued); background: var(--queued); color: #fff; font-weight: 600; }
+.fill-offer button:hover { background: var(--hover); }
 /* The Look section: subheads in the sidebar, the palette in the details panel. */
 .subhead { padding: 6px 8px 2px 26px; font-size: 11px; color: #777; }
 .info-panel .palette { display: flex; height: 18px; margin: 4px 0 8px; border-radius: 3px; overflow: hidden; }
@@ -464,6 +468,9 @@ footer .edit-error { color: var(--error); }
 .info-panel .clip { display: flex; align-items: center; gap: 6px; margin-top: 10px; min-width: 0; }
 .info-panel .clip button { padding: 2px 8px; border: 1px solid var(--line); border-radius: 3px; white-space: nowrap; }
 .info-panel .clip button:hover { background: var(--hover); }
+.info-panel .geo-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 6px; }
+.info-panel .geo-actions button { padding: 1px 8px; border: 1px solid var(--line); border-radius: 3px; font-size: 12px; }
+.info-panel .geo-actions button:hover { background: var(--hover); }
 .info-panel .clip-what { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); font-size: 12px; }
 
 /* The source menu: what is open, recent sources, and opening another. */

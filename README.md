@@ -49,8 +49,15 @@ moment shot twice) and series (bursts) across the library.
 ### On the map
 
 Photos with GPS are clustered on a map that works as a filter: pan and zoom to narrow the
-grid, box-select a region, search for a place, or drag photos to set their position.
-Import a GPX track to place a whole trip at once.
+grid, box-select a region, search for a place or type coordinates (`44°58′N 14°45′E`), or
+drag photos to set their position. Import a GPX track to place a whole trip at once.
+
+Photos with a city, region or country but no GPS show too, marked ≈, at that place while
+the map is zoomed out about as far as the name reaches. Place names are found offline in
+a built-in [GeoNames](https://www.geonames.org/) gazetteer (CC BY 4.0); the few it lacks
+are looked up online once. Photos with no location wait in a tray under the map to be
+dragged on, or get positions from the photos taken just before and after them. A new
+position can fill in the photo's city, region and country.
 
 ### History
 
@@ -68,6 +75,9 @@ photo's history. This is the groundwork for browsing the catalog as it was on an
   rendering previews to JPEG. See [docs/CLI.md](docs/CLI.md).
 - **Backups**: every write is preceded by a backup of the catalog, and any backup can be
   restored from the app.
+
+Place data from [GeoNames](https://www.geonames.org/), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 ## Support the project
 
@@ -137,6 +147,7 @@ crates/source-c1/  Capture One catalog as a PhotoSource
 crates/c1index/    the library: redb store + tantivy index, filters, facet counts, sync, change log
 crates/c1image/    display-ready pixels: thumbnails, white-balanced JPEG-XL previews, raw-embedded JPEGs
 crates/c1analysis/ what photos look like: colour, light, focus, duplicates, series
+crates/c1geo/      places offline: a GeoNames gazetteer (tools/gazetteer builds it), typed coordinates
 crates/c1cat/      CLI over the library
 app/               the desktop app: Tauri 2 (app/src-tauri) + Svelte 5 (app/src)
 legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests

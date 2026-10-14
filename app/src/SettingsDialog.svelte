@@ -90,6 +90,28 @@
         </small>
       </span>
     </label>
+    <label class="option">
+      <input type="checkbox" bind:checked={settings.approxPlaces} />
+      <span>
+        Show photos that have only a place
+        <small class="muted">
+          Photos with a city, region or country but no GPS show at that place, marked ≈, while the map is zoomed out about as far
+          as the name reaches. Places come from GeoNames (built in); with online services on, the rest are looked up once.
+        </small>
+      </span>
+    </label>
+    <label class="option">
+      <input type="checkbox" bind:checked={settings.fillPlaces} />
+      <span>
+        Fill in the place of photos I put on the map
+        <small class="muted">
+          Empty city, region and country fields are filled from the new position without asking. Off, the app offers to.
+        </small>
+      </span>
+    </label>
+    <p class="muted small">
+      Place names and positions: <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a>, CC BY 4.0.
+    </p>
 
     <div class="buttons">
       <button disabled={isDefault} onclick={() => (settings.sections = defaultSections())}>Reset sidebar</button>

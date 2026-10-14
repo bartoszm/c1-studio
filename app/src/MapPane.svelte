@@ -5,12 +5,16 @@
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
-  import type { BBox, Cluster, Filter } from "./lib/api";
+  import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
+  import { parseGeo } from "./lib/format";
   import { movingOf } from "./lib/pins";
+  import { pointFor } from "./lib/placeHints";
   import { settings } from "./lib/settings.svelte";
+  import UnplacedTray from "./UnplacedTray.svelte";
 
   let {
     filter, version, focus, dragRows, pickedRows, tile, trip, onbox, onview, ontile, onpick, onsetgeo, onerror,
+    onplace, onpromote, ondragrows, onneighbours, onunplaced,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
     filter: Filter;
@@ -37,6 +41,16 @@
     /** Photos placed; `from` is the tile they were moved from, when a pin was dragged. */
     onsetgeo: (rows: number[], lat: number, lon: number, from?: BBox) => void;
     onerror: (text: string) => void;
+    /** Show the photos at a place (a `place_tree` path) in the grid. */
+    onplace: (path: string) => void;
+    /** Give the photos at a place (of those with no position) the place's position. */
+    onpromote: (paths: string[]) => void;
+    /** Photos dragged from the tray of photos not on the map (null: let go). */
+    ondragrows: (rows: number[] | null) => void;
+    /** Open placing from neighbours in time. */
+    onneighbours: () => void;
+    /** Show the photos with no position, with a place (true) or without, in the grid. */
+    onunplaced: (placed: boolean) => void;
   } = $props();
 
   // OpenFreeMap: free vector tiles, no key. Painted light, turned dark by a CSS filter
@@ -65,7 +79,10 @@
   let failed = $state<string | null>(null);
   let located = $state(0);
   let inView = $state(0);
+  /** Photos placed only by their place's name: how many, in view, and hidden by the zoom. */
+  let approx = $state({ located: 0, inView: 0, hidden: 0, placeOnly: 0, unresolved: 0, unplaced: 0 });
   const markers = new Map<string, { marker: maplibregl.Marker; el: HTMLElement }>();
+  const approxMarkers = new Map<string, { marker: maplibregl.Marker; el: HTMLElement }>();
   /** The diameter of the dot a photo's pin stands on (matches `.pin .dot`). */
   const DOT = 10;
   let asked = 0;
@@ -108,10 +125,132 @@
       if (mine !== asked) return;
       located = r.located;
       inView = r.in_view;
+      approx = {
+        located: r.approx_located,
+        inView: r.approx_in_view,
+        hidden: r.approx_hidden,
+        placeOnly: r.place_only,
+        unresolved: r.unresolved,
+        unplaced: r.unplaced,
+      };
       draw(r.clusters, v.zoom);
+      drawApprox(settings.approxPlaces ? r.approx : [], v.zoom);
+      // Places known only coarsely (a city, for a street in it) are worth asking too.
+      if (r.place_only > 0) lookUp();
     } catch (e) {
       if (mine === asked) onerror(String(e));
     }
+  }
+
+  // Places the gazetteer does not know well enough: looked up online, a few at a time
+  // (Nominatim takes one request a second), once per filter.
+  let lookedUp = "";
+  let lookUpRunning = false;
+  /** Places still to look up, for the note. */
+  let lookingUp = $state(0);
+  async function lookUp() {
+    const k = key;
+    if (lookUpRunning || lookedUp === k || !settings.onlineMap || !settings.approxPlaces) return;
+    lookedUp = k;
+    lookUpRunning = true;
+    try {
+      const list = await api.unresolvedPlaces(untrack(() => ({ ...$state.snapshot(filter), within: undefined })));
+      lookingUp = list.length;
+      let batch: { path: string; found: api.Approx | null }[] = [];
+      for (const u of list) {
+        if (k !== key || !settings.onlineMap || !map) break;
+        const found = await pointFor(u.place, u.have);
+        lookingUp--;
+        // A failed request is asked again another time.
+        if (found !== undefined) batch.push({ path: u.path, found });
+        if (batch.length >= 5) {
+          await api.setPlacePoints(batch);
+          batch = [];
+          refresh();
+        }
+      }
+      if (batch.length) {
+        await api.setPlacePoints(batch);
+        refresh();
+      }
+    } catch (e) {
+      onerror(String(e));
+    } finally {
+      lookingUp = 0;
+      lookUpRunning = false;
+    }
+  }
+
+  const LEVEL_WORD: Record<api.Level, string> = { Country: "country", State: "region", City: "city", Location: "place" };
+  /** `Poland|Malopolska|Kraków` → `Kraków, Malopolska, Poland`. */
+  function placeLabel(path: string | null): string {
+    return (path ?? "").split("|").filter((l) => l && l !== "—").reverse().join(", ");
+  }
+  const short = (n: number) => (n > 999 ? `${Math.round(n / 100) / 10}k` : String(n));
+
+  /** Photos placed by name: hollow, dashed and marked ≈, never draggable. */
+  function drawApprox(list: PlaceCluster[], zoom: number) {
+    const bucket = zoom < 5 ? "far" : "near";
+    const seen = new Set<string>();
+    for (const c of list) {
+      const id = `${bucket}:${c.best}:${c.count}:${c.level}:${c.place ?? ""}:${c.lat.toFixed(5)}:${c.lon.toFixed(5)}`;
+      seen.add(id);
+      if (approxMarkers.has(id)) continue;
+      const el = document.createElement("div");
+      el.className = "pin approx";
+      if (bucket === "far") {
+        const px = Math.round(22 + 9 * Math.log10(Math.max(1, c.count)));
+        el.classList.add("disc");
+        el.style.width = el.style.height = `${px}px`;
+        el.textContent = `≈${short(c.count)}`;
+      } else {
+        const card = document.createElement("div");
+        card.className = "card";
+        const img = document.createElement("img");
+        img.src = api.thumbUrl(c.best);
+        img.draggable = false;
+        img.alt = "";
+        const n = document.createElement("span");
+        n.textContent = `≈${short(c.count)}`;
+        card.append(img, n);
+        el.append(card);
+      }
+      const atOne = !!c.place && !!c.paths?.length;
+      el.title = atOne
+        ? `≈ ${placeLabel(c.place)}${c.places > 1 ? ` (${c.places} places)` : ""}: ${c.count.toLocaleString()} photo${c.count === 1 ? "" : "s"} placed by name, shown at their ${LEVEL_WORD[c.level]} · click for more`
+        : `≈ ${c.places} places, ${c.count.toLocaleString()} photos placed by name · click to zoom in`;
+      el.dataset.bounds = JSON.stringify(c.bounds);
+      // A card hangs below its point, so photos with GPS standing on theirs above stay in sight.
+      const marker = new maplibregl.Marker({ element: el, anchor: bucket === "far" ? "center" : "top", offset: [0, bucket === "far" ? 0 : 4] })
+        .setLngLat([c.lon, c.lat])
+        .addTo(map!);
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (atOne) {
+          const p = map!.project([c.lon, c.lat]);
+          popup = { cluster: c, x: p.x, y: p.y, confirm: false };
+        } else {
+          const { min_lat, max_lat, min_lon, max_lon } = c.bounds;
+          map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { padding: 90, maxZoom: 11 });
+        }
+      });
+      el.addEventListener("dblclick", (e) => e.stopPropagation());
+      approxMarkers.set(id, { marker, el });
+    }
+    for (const [id, m] of approxMarkers) {
+      if (!seen.has(id)) {
+        m.marker.remove();
+        approxMarkers.delete(id);
+      }
+    }
+  }
+
+  /** A place's marker clicked: what can be done with its photos. */
+  let popup = $state<{ cluster: PlaceCluster; x: number; y: number; confirm: boolean } | null>(null);
+  function zoomToPlace(c: PlaceCluster) {
+    popup = null;
+    const next = { Country: 5, State: 8, City: 11, Location: 14 }[c.level];
+    map?.easeTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom(), next) });
   }
 
   function moved() {
@@ -281,8 +420,10 @@
     box.addEventListener("mousedown", startBox, true);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
+    map.on("movestart", () => (popup = null));
     // A click on the map itself lets the picked tile go (Shift+drag draws an area instead).
     map.on("click", (e) => {
+      popup = null;
       if (!e.originalEvent.shiftKey && untrack(() => tile)) ontile(null, null);
     });
     map.on("error", (e: unknown) => {
@@ -298,6 +439,7 @@
       map?.remove();
       map = undefined;
       markers.clear();
+      approxMarkers.clear();
     };
   });
 
@@ -315,10 +457,12 @@
     map?.once("idle", drawRoute);
   });
 
-  // The filter or an edit changed: draw again.
+  // The filter or an edit changed, or places by name were turned on or off: draw again.
   $effect(() => {
     void key;
     void version;
+    void settings.approxPlaces;
+    popup = null;
     untrack(refresh);
   });
   $effect(() => {
@@ -514,7 +658,22 @@
   async function search(e: Event) {
     e.preventDefault();
     const q = query.trim();
-    if (!q || !settings.onlineMap) return;
+    if (!q) return;
+    // Coordinates go straight there, online or not.
+    const at = /\d/.test(q) ? parseGeo(q) : null;
+    if (Array.isArray(at)) {
+      const [lat, lon] = at;
+      chosen = { name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon, box: null };
+      hits = [];
+      searched = false;
+      map?.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 13) });
+      return;
+    }
+    if (!settings.onlineMap) {
+      searched = true;
+      hits = [];
+      return;
+    }
     searching = true;
     try {
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`);
@@ -582,29 +741,66 @@
   <div class="canvas" bind:this={box}></div>
   {#if aim}<div class="aim" style:left="{aim.x}px" style:top="{aim.y}px"></div>{/if}
   {#if rubber}<div class="rubber" style:left="{rubber.x}px" style:top="{rubber.y}px" style:width="{rubber.w}px" style:height="{rubber.h}px"></div>{/if}
-  {#if settings.onlineMap}
-    <form class="find" onsubmit={search}>
-      <input
-        type="search"
-        placeholder="Find a place"
-        spellcheck="false"
-        bind:value={query}
-        oninput={() => { searched = false; hits = []; }}
-        onkeydown={(e) => { if (e.key === "Escape") { query = ""; hits = []; chosen = null; e.currentTarget.blur(); } }}
-      />
-      {#if searching}<span class="muted">searching…</span>{/if}
-      {#if hits.length}
-        <ul>{#each hits as h}<li><button type="button" onclick={() => go(h)}>{h.name}</button></li>{/each}</ul>
-      {:else if searched}<span class="muted">No such place.</span>{/if}
-      {#if chosen && pickedRows.length}
-        <button
-          type="button"
-          class="put"
-          title={chosen.name}
-          onclick={() => { onsetgeo(pickedRows, chosen!.lat, chosen!.lon); chosen = null; }}
-        >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
+  <form class="find" onsubmit={search}>
+    <input
+      type="search"
+      placeholder={settings.onlineMap ? "Find a place, or type 44°58′N 14°45′E" : "Type coordinates: 44°58′N 14°45′E"}
+      title="A place's name (online), or coordinates: 50.0614, 19.9366 · 44°58′N 14°45′E · N44°58′ E14°45′"
+      spellcheck="false"
+      bind:value={query}
+      oninput={() => { searched = false; hits = []; }}
+      onkeydown={(e) => { if (e.key === "Escape") { query = ""; hits = []; chosen = null; e.currentTarget.blur(); } }}
+    />
+    {#if searching}<span class="muted">searching…</span>{/if}
+    {#if hits.length}
+      <ul>{#each hits as h}<li><button type="button" onclick={() => go(h)}>{h.name}</button></li>{/each}</ul>
+    {:else if searched}<span class="muted">{settings.onlineMap ? "No such place." : "Offline, only coordinates can be found (Settings)."}</span>{/if}
+    {#if chosen && pickedRows.length}
+      <button
+        type="button"
+        class="put"
+        title={chosen.name}
+        onclick={() => { onsetgeo(pickedRows, chosen!.lat, chosen!.lon); chosen = null; }}
+      >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
+    {/if}
+  </form>
+  {#if popup}
+    {@const c = popup.cluster}
+    <div class="popup" style:left="{popup.x}px" style:top="{popup.y}px" role="dialog" aria-label="Photos at {placeLabel(c.place)}">
+      <b>≈ {placeLabel(c.place)}</b>
+      <span class="muted">
+        {c.count.toLocaleString()} photo{c.count === 1 ? "" : "s"} placed by name, shown at the middle of their {LEVEL_WORD[c.level]}{#if c.places > 1}{" "}(also {(c.paths ?? []).filter((p) => p !== c.place).map((p) => p.split("|").pop()).join(", ")}, known no closer){/if}
+      </span>
+      {#if popup.confirm}
+        <span>
+          Give {c.count === 1 ? "it" : `all ${c.count.toLocaleString()}`} this position? In Capture One the position belongs to
+          the image, so its variants move too. They keep showing as ≈ here, and can be undone.
+        </span>
+        <div class="buttons">
+          <button class="primary" onclick={() => { onpromote(c.paths ?? []); popup = null; }}>Set GPS</button>
+          <button onclick={() => (popup = popup && { ...popup, confirm: false })}>Cancel</button>
+        </div>
+      {:else}
+        <div class="buttons">
+          <button onclick={() => { onplace(c.place!); popup = null; }}>Show in grid</button>
+          <button title="Zoom in to about how far the {LEVEL_WORD[c.level]} reaches" onclick={() => zoomToPlace(c)}>Zoom in</button>
+          <button title="Set their GPS to this point, marked as approximate" onclick={() => (popup = popup && { ...popup, confirm: true })}>Give them this position…</button>
+        </div>
       {/if}
-    </form>
+    </div>
+  {/if}
+  {#if !trip}
+    <UnplacedTray
+      {filter}
+      {version}
+      counts={{ none: approx.unplaced, place: approx.placeOnly }}
+      {ondragrows}
+      onsetgeo={(rows, lat, lon) => onsetgeo(rows, lat, lon)}
+      {onneighbours}
+      onshow={onunplaced}
+      {onpick}
+      {onerror}
+    />
   {/if}
   {#if trip && route.length > 1}
     <div class="route" role="group" aria-label="Route of {trip.name}">
@@ -629,8 +825,8 @@
     {:else if !settings.onlineMap && !aim && !tile && located > 0}Offline: no map tiles or place search (Settings) · {inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view
     {:else if aim}They go where the cross is; zoom in to place them closer.
     {:else if tile}The grid shows the picked tile's photos · pick some and drag the pin (or them) to move just those · click it again, the map or Esc to show the area
-    {:else if located === 0}No photos here have a position yet. Drag some from below onto the map.
-    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin; the dot is where it is · Shift+drag picks an area{/if}
+    {:else if located === 0 && !approx.located}No photos here have a position yet. Drag some from below onto the map.
+    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view{#if settings.approxPlaces && approx.located}{" "}· ≈ {approx.inView.toLocaleString()} by place name{#if approx.hidden}{" "}({approx.hidden.toLocaleString()} hidden at this zoom){/if}{/if}{#if lookingUp}{" "}· looking up {lookingUp.toLocaleString()} places online…{/if} · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin · Shift+drag picks an area{/if}
   </div>
 </div>
 
@@ -651,7 +847,22 @@
   .note {
     position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; font-size: 12px;
     background: rgba(20, 20, 20, 0.8); border-radius: 3px; pointer-events: none;
+    max-width: calc(100% - 16px); box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
+  .popup {
+    position: absolute; z-index: 6; transform: translate(-50%, calc(-100% - 22px)); width: 260px;
+    display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; font-size: 12px;
+    background: rgba(20, 20, 20, 0.96); border: 1px dashed #fbbf24; border-radius: 4px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+  }
+  .popup .muted { color: var(--muted, #8a8a8a); }
+  .popup .buttons { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .popup button { padding: 2px 8px; border-radius: 3px; border: 1px solid var(--line, #444); }
+  .popup button:hover { background: var(--hover, #333); }
+  .popup .primary { border: 0; background: var(--queued, #3b82f6); color: #fff; font-weight: 600; }
+  /* Photos placed by their place's name: dashed, see-through, never mistaken for a GPS pin. */
+  .canvas :global(.pin.approx .card) { border: 2px dashed #fbbf24; opacity: 0.85; }
+  .canvas :global(.pin.approx span) { background: #b7791f; }
+  .canvas :global(.pin.approx.disc) { background: rgba(251, 191, 36, 0.25); border: 2px dashed #fbbf24; color: #fde68a; }
   .route {
     position: absolute; right: 8px; bottom: 30px; z-index: 4; display: flex; align-items: center; gap: 6px;
     width: min(460px, calc(100% - 16px)); padding: 4px 8px; font-size: 12px;

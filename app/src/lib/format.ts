@@ -1,6 +1,7 @@
 // How photo facts read in the UI.
 
 import type { LogEvent, Op, Origin, Photo } from "./api";
+import { parsePoint } from "./coords";
 
 export const COLORS: Record<string, string> = {
   red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
@@ -156,29 +157,9 @@ export function geoText(geo: { lat: number; lon: number } | null): string {
   return geo ? `${+geo.lat.toFixed(6)}, ${+geo.lon.toFixed(6)}` : "—";
 }
 
-/** One coordinate: decimal (`-33.8688`, `33.8688S`) or degrees, minutes and seconds
- *  (`50°3'41.0"N`). The letter, if any, must fit the axis. */
-function coordinate(text: string, latitude: boolean): number | null {
-  const t = text.trim().toUpperCase().replace(/[′’]/g, "'").replace(/[″”]/g, '"');
-  const m = t.match(/^([+-]?)(\d+(?:\.\d+)?)\s*(?:°\s*(?:(\d+(?:\.\d+)?)\s*'\s*(?:(\d+(?:\.\d+)?)\s*"?)?)?)?\s*([NSEW]?)$/);
-  if (!m) return null;
-  const [, sign, d, min, sec, letter] = m;
-  if (letter && (latitude ? !"NS".includes(letter) : !"EW".includes(letter))) return null;
-  let v = +d + (min ? +min / 60 : 0) + (sec ? +sec / 3600 : 0);
-  if (sign === "-" || letter === "S" || letter === "W") v = -v;
-  return Number.isFinite(v) ? v : null;
-}
-
-/** Typed GPS: `50.0614, 19.9366`, `50.0614 19.9366`, `33.8688S 151.2093E` or
- *  `50°3'41"N 19°56'12"E`. Empty clears (null); a string says what is wrong. */
+/** Typed GPS: `50.0614, 19.9366`, `33.8688S 151.2093E`, `44°58′N 14°45′E`,
+ *  `N44°58' E14°45'`, `44 58 N 14 45 E` (see `parsePoint`). Empty clears (null); a
+ *  string says what is wrong. */
 export function parseGeo(text: string): [number, number] | null | string {
-  const t = text.trim();
-  if (!t) return null;
-  const parts = t.includes(",") ? t.split(",") : t.split(/\s+(?=[+-]?\d)/);
-  if (parts.length !== 2) return "Type latitude and longitude, e.g. 50.0614, 19.9366.";
-  const lat = coordinate(parts[0], true);
-  const lon = coordinate(parts[1], false);
-  if (lat === null || lon === null) return "Type latitude and longitude, e.g. 50.0614, 19.9366.";
-  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return "Latitude is -90 to 90, longitude -180 to 180.";
-  return [lat, lon];
+  return text.trim() ? parsePoint(text) : null;
 }

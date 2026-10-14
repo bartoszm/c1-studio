@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+use c1geo::Level;
 use serde::{Deserialize, Serialize};
 
 use crate::filter::BBox;
@@ -47,6 +48,148 @@ pub struct MapResult {
     /// Of them, the ones inside the view.
     pub in_view: usize,
     pub clusters: Vec<Cluster>,
+    /// Photos placed only by their place's name (city, state, country), or given that
+    /// place's position: shown apart, and only while the map is zoomed out to about as
+    /// far as that name reaches.
+    pub approx: Vec<PlaceCluster>,
+    /// Photos with such a position among those selected, seen or not.
+    pub approx_located: usize,
+    /// Of them, the ones inside the view.
+    pub approx_in_view: usize,
+    /// Of those, the ones not shown: the map is zoomed in closer than their place.
+    pub approx_hidden: usize,
+    /// Photos with a place and no position of their own.
+    pub place_only: usize,
+    /// Of them, those whose place no position could be found for (yet).
+    pub unresolved: usize,
+    /// Photos with neither a position nor a place.
+    pub unplaced: usize,
+}
+
+/// The closest zoom a position from a place's name is shown at: further in, the map
+/// shows streets the photo may not be in.
+pub fn max_zoom(level: Level) -> f64 {
+    match level {
+        Level::Country => 5.0,
+        Level::State => 8.0,
+        Level::City => 11.0,
+        Level::Location => 14.0,
+    }
+}
+
+/// Whether a position this precise is shown at `zoom` (zoom 5.9 still counts as 5).
+pub fn shown(level: Level, zoom: f64) -> bool {
+    zoom < max_zoom(level) + 1.0
+}
+
+/// The photos of one place that have only its position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlacePoint {
+    /// The place, as [`crate::schema::place_tree`] writes it: `Poland|Malopolska|Kraków`.
+    pub path: String,
+    pub lat: f64,
+    pub lon: f64,
+    pub level: Level,
+    pub count: usize,
+    pub best: Located,
+}
+
+/// A marker for photos placed by their place's name: one place or several near.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlaceCluster {
+    pub lat: f64,
+    pub lon: f64,
+    pub count: usize,
+    pub best: u64,
+    pub bounds: BBox,
+    /// The coarsest of its places' levels.
+    pub level: Level,
+    /// When all its places sit at one point (one place, or a city and spots in it known
+    /// no better): what they have in common, `Poland|Malopolska|Kraków`.
+    pub place: Option<String>,
+    /// Those places, then; empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    pub places: usize,
+}
+
+/// The levels two place paths share: `A|B|C` and `A|B|D` → `A|B`.
+fn common_path(a: &str, b: &str) -> String {
+    a.split('|').zip(b.split('|')).take_while(|(x, y)| x == y).map(|(x, _)| x).collect::<Vec<_>>().join("|")
+}
+
+/// The clusters of the places inside `view` that are precise enough for its zoom; also
+/// how many photos are in view, and how many of those are not shown.
+pub fn cluster_places(places: &[PlacePoint], view: &MapView) -> (Vec<PlaceCluster>, usize, usize) {
+    let b = &view.bounds;
+    let (dlat, dlon) = ((b.max_lat - b.min_lat) * 0.1, (b.max_lon - b.min_lon) * 0.1);
+    let mut cells: HashMap<(i64, i64), (PlaceCluster, Located, f64, f64)> = HashMap::new();
+    let (mut in_view, mut hidden) = (0, 0);
+    for p in places {
+        let seen = p.lat >= b.min_lat && p.lat <= b.max_lat && p.lon >= b.min_lon && p.lon <= b.max_lon;
+        if seen {
+            in_view += p.count;
+        }
+        if !shown(p.level, view.zoom) {
+            if seen {
+                hidden += p.count;
+            }
+            continue;
+        }
+        if p.lat < b.min_lat - dlat || p.lat > b.max_lat + dlat || p.lon < b.min_lon - dlon || p.lon > b.max_lon + dlon
+        {
+            continue;
+        }
+        let (x, y) = world_px(p.lat, p.lon, view.zoom);
+        let key = ((x / CELL_PX).floor() as i64, (y / CELL_PX).floor() as i64);
+        let (cell, best, lat, lon) = cells.entry(key).or_insert_with(|| {
+            let bounds = BBox { min_lat: p.lat, max_lat: p.lat, min_lon: p.lon, max_lon: p.lon };
+            let cluster = PlaceCluster {
+                lat: 0.0,
+                lon: 0.0,
+                count: 0,
+                best: p.best.row,
+                bounds,
+                level: p.level,
+                place: Some(p.path.clone()),
+                paths: Vec::new(),
+                places: 0,
+            };
+            (cluster, p.best, 0.0, 0.0)
+        });
+        cell.count += p.count;
+        cell.places += 1;
+        *lat += p.lat * p.count as f64;
+        *lon += p.lon * p.count as f64;
+        cell.level = cell.level.min(p.level);
+        if better(&p.best, best) {
+            *best = p.best;
+        }
+        cell.bounds.min_lat = cell.bounds.min_lat.min(p.lat);
+        cell.bounds.max_lat = cell.bounds.max_lat.max(p.lat);
+        cell.bounds.min_lon = cell.bounds.min_lon.min(p.lon);
+        cell.bounds.max_lon = cell.bounds.max_lon.max(p.lon);
+        let b = &cell.bounds;
+        if b.max_lat - b.min_lat > SPOT || b.max_lon - b.min_lon > SPOT {
+            cell.place = None;
+            cell.paths.clear();
+        } else if let Some(shared) = &cell.place {
+            let shared = common_path(shared, &p.path);
+            cell.place = (!shared.is_empty()).then_some(shared);
+            cell.paths.push(p.path.clone());
+        }
+    }
+    let mut out: Vec<PlaceCluster> = cells
+        .into_values()
+        .map(|(mut c, best, lat, lon)| {
+            c.lat = lat / c.count as f64;
+            c.lon = lon / c.count as f64;
+            c.best = best.row;
+            c
+        })
+        .collect();
+    out.sort_by_key(|c| c.best);
+    (out, in_view, hidden)
 }
 
 /// Cells this many pixels across hold one marker; a marker is a tile about as big.
