@@ -45,22 +45,33 @@ pub fn fold(name: &str) -> String {
 /// Whether two folded names are one typo apart: a letter missing, extra, swapped with
 /// its neighbour or different (`Istambul`, `Istanbul`). Short names must match exactly.
 pub fn one_typo(a: &str, b: &str) -> bool {
+    // Most names differ in length by more than a letter: no need to look closer. (Bytes
+    // first: a letter is at most 4 of them.)
+    if a.len().abs_diff(b.len()) > 4 {
+        return false;
+    }
+    if a.is_ascii() && b.is_ascii() {
+        return one_typo_in(a.as_bytes(), b.as_bytes());
+    }
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    one_typo_in(&a, &b)
+}
+
+fn one_typo_in<T: PartialEq>(a: &[T], b: &[T]) -> bool {
     if a.len().min(b.len()) < 5 || a.len().abs_diff(b.len()) > 1 {
         return false;
     }
-    let start = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let start = a.iter().zip(b).take_while(|(x, y)| x == y).count();
     if start == a.len() && start == b.len() {
         return true;
     }
     let (ra, rb) = (&a[start..], &b[start..]);
-    let tail = |x: &[char], y: &[char]| x == y;
     match ra.len().cmp(&rb.len()) {
         std::cmp::Ordering::Equal => {
-            tail(&ra[1..], &rb[1..]) || (ra.len() >= 2 && ra[0] == rb[1] && ra[1] == rb[0] && tail(&ra[2..], &rb[2..]))
+            ra[1..] == rb[1..] || (ra.len() >= 2 && ra[0] == rb[1] && ra[1] == rb[0] && ra[2..] == rb[2..])
         }
-        std::cmp::Ordering::Greater => tail(&ra[1..], rb),
-        std::cmp::Ordering::Less => tail(ra, &rb[1..]),
+        std::cmp::Ordering::Greater => ra[1..] == *rb,
+        std::cmp::Ordering::Less => *ra == rb[1..],
     }
 }
 

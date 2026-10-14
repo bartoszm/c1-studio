@@ -882,14 +882,14 @@
     await edited();
   }
   /** The photos at a place on the map (of those with no position) get its position. */
-  async function promotePlace(path: string) {
+  async function promotePlace(paths: string[]) {
     try {
-      const undo = await api.promotePlaces({ ...filter, within: undefined }, [path]);
+      const undo = await api.promotePlaces({ ...filter, within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
         const n = new Set(undo.map(([r]) => r)).size;
-        note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} given the position of ${placeText(path)} (approximate)`);
+        note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} given the position of ${placeText(paths[0])}${paths.length > 1 ? ` and ${paths.length - 1} more places` : ""} (approximate)`);
       }
       editError = null;
     } catch (e) {
@@ -1476,7 +1476,7 @@
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
       </label>
       <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
-      <button class="toggle" title="Give photos in view with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
+      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
     {/if}
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>

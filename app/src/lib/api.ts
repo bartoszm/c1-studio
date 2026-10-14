@@ -69,7 +69,10 @@ export type PlaceCluster = {
   best: number;
   bounds: BBox;
   level: Level;
+  /** When all its places sit at one point: what they share (`Poland|Malopolska|Kraków`). */
   place: string | null;
+  /** Those places, then. */
+  paths?: string[];
   places: number;
 };
 export type MapResult = {

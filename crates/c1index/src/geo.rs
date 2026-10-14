@@ -104,9 +104,18 @@ pub struct PlaceCluster {
     pub bounds: BBox,
     /// The coarsest of its places' levels.
     pub level: Level,
-    /// Its place, when it holds one.
+    /// When all its places sit at one point (one place, or a city and spots in it known
+    /// no better): what they have in common, `Poland|Malopolska|Kraków`.
     pub place: Option<String>,
+    /// Those places, then; empty otherwise.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
     pub places: usize,
+}
+
+/// The levels two place paths share: `A|B|C` and `A|B|D` → `A|B`.
+fn common_path(a: &str, b: &str) -> String {
+    a.split('|').zip(b.split('|')).take_while(|(x, y)| x == y).map(|(x, _)| x).collect::<Vec<_>>().join("|")
 }
 
 /// The clusters of the places inside `view` that are precise enough for its zoom; also
@@ -143,6 +152,7 @@ pub fn cluster_places(places: &[PlacePoint], view: &MapView) -> (Vec<PlaceCluste
                 bounds,
                 level: p.level,
                 place: Some(p.path.clone()),
+                paths: Vec::new(),
                 places: 0,
             };
             (cluster, p.best, 0.0, 0.0)
@@ -152,9 +162,6 @@ pub fn cluster_places(places: &[PlacePoint], view: &MapView) -> (Vec<PlaceCluste
         *lat += p.lat * p.count as f64;
         *lon += p.lon * p.count as f64;
         cell.level = cell.level.min(p.level);
-        if cell.places > 1 {
-            cell.place = None;
-        }
         if better(&p.best, best) {
             *best = p.best;
         }
@@ -162,6 +169,15 @@ pub fn cluster_places(places: &[PlacePoint], view: &MapView) -> (Vec<PlaceCluste
         cell.bounds.max_lat = cell.bounds.max_lat.max(p.lat);
         cell.bounds.min_lon = cell.bounds.min_lon.min(p.lon);
         cell.bounds.max_lon = cell.bounds.max_lon.max(p.lon);
+        let b = &cell.bounds;
+        if b.max_lat - b.min_lat > SPOT || b.max_lon - b.min_lon > SPOT {
+            cell.place = None;
+            cell.paths.clear();
+        } else if let Some(shared) = &cell.place {
+            let shared = common_path(shared, &p.path);
+            cell.place = (!shared.is_empty()).then_some(shared);
+            cell.paths.push(p.path.clone());
+        }
     }
     let mut out: Vec<PlaceCluster> = cells
         .into_values()

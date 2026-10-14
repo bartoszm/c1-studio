@@ -166,7 +166,7 @@
 
 <style>
   .tray {
-    position: absolute; left: 8px; right: 8px; bottom: 30px; z-index: 4;
+    position: absolute; left: 8px; right: 8px; bottom: 32px; z-index: 4;
     background: rgba(20, 20, 20, 0.92); border: 1px solid var(--line, #444); border-radius: 4px; font-size: 12px;
   }
   .tray:not(.open) { right: auto; }

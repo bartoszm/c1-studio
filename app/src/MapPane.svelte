@@ -44,7 +44,7 @@
     /** Show the photos at a place (a `place_tree` path) in the grid. */
     onplace: (path: string) => void;
     /** Give the photos at a place (of those with no position) the place's position. */
-    onpromote: (path: string) => void;
+    onpromote: (paths: string[]) => void;
     /** Photos dragged from the tray of photos not on the map (null: let go). */
     ondragrows: (rows: number[] | null) => void;
     /** Open placing from neighbours in time. */
@@ -135,7 +135,8 @@
       };
       draw(r.clusters, v.zoom);
       drawApprox(settings.approxPlaces ? r.approx : [], v.zoom);
-      if (r.unresolved > 0) lookUp();
+      // Places known only coarsely (a city, for a street in it) are worth asking too.
+      if (r.place_only > 0) lookUp();
     } catch (e) {
       if (mine === asked) onerror(String(e));
     }
@@ -214,14 +215,18 @@
         card.append(img, n);
         el.append(card);
       }
-      el.title = c.place
-        ? `≈ ${placeLabel(c.place)}: ${c.count.toLocaleString()} photo${c.count === 1 ? "" : "s"} with no GPS, shown at their ${LEVEL_WORD[c.level]} · click for more`
-        : `≈ ${c.places} places, ${c.count.toLocaleString()} photos with no GPS · click to zoom in`;
+      const atOne = !!c.place && !!c.paths?.length;
+      el.title = atOne
+        ? `≈ ${placeLabel(c.place)}${c.places > 1 ? ` (${c.places} places)` : ""}: ${c.count.toLocaleString()} photo${c.count === 1 ? "" : "s"} placed by name, shown at their ${LEVEL_WORD[c.level]} · click for more`
+        : `≈ ${c.places} places, ${c.count.toLocaleString()} photos placed by name · click to zoom in`;
       el.dataset.bounds = JSON.stringify(c.bounds);
-      const marker = new maplibregl.Marker({ element: el, anchor: "center" }).setLngLat([c.lon, c.lat]).addTo(map!);
+      // A card hangs below its point, so photos with GPS standing on theirs above stay in sight.
+      const marker = new maplibregl.Marker({ element: el, anchor: bucket === "far" ? "center" : "top", offset: [0, bucket === "far" ? 0 : 4] })
+        .setLngLat([c.lon, c.lat])
+        .addTo(map!);
       el.addEventListener("click", (e) => {
         e.stopPropagation();
-        if (c.place) {
+        if (atOne) {
           const p = map!.project([c.lon, c.lat]);
           popup = { cluster: c, x: p.x, y: p.y, confirm: false };
         } else {
@@ -764,7 +769,7 @@
     <div class="popup" style:left="{popup.x}px" style:top="{popup.y}px" role="dialog" aria-label="Photos at {placeLabel(c.place)}">
       <b>≈ {placeLabel(c.place)}</b>
       <span class="muted">
-        {c.count.toLocaleString()} photo{c.count === 1 ? "" : "s"} with no GPS, shown at the middle of their {LEVEL_WORD[c.level]}
+        {c.count.toLocaleString()} photo{c.count === 1 ? "" : "s"} placed by name, shown at the middle of their {LEVEL_WORD[c.level]}{#if c.places > 1}{" "}(also {(c.paths ?? []).filter((p) => p !== c.place).map((p) => p.split("|").pop()).join(", ")}, known no closer){/if}
       </span>
       {#if popup.confirm}
         <span>
@@ -772,7 +777,7 @@
           the image, so its variants move too. They keep showing as ≈ here, and can be undone.
         </span>
         <div class="buttons">
-          <button class="primary" onclick={() => { onpromote(c.place!); popup = null; }}>Set GPS</button>
+          <button class="primary" onclick={() => { onpromote(c.paths ?? []); popup = null; }}>Set GPS</button>
           <button onclick={() => (popup = popup && { ...popup, confirm: false })}>Cancel</button>
         </div>
       {:else}
@@ -842,6 +847,7 @@
   .note {
     position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; font-size: 12px;
     background: rgba(20, 20, 20, 0.8); border-radius: 3px; pointer-events: none;
+    max-width: calc(100% - 16px); box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   }
   .popup {
     position: absolute; z-index: 6; transform: translate(-50%, calc(-100% - 22px)); width: 260px;

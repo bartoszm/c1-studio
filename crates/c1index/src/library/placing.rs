@@ -25,8 +25,8 @@ pub(super) struct PlaceCache {
     by_path: HashMap<String, Option<Approx>>,
     /// Online lookups, loaded once.
     online: Option<HashMap<String, Looked>>,
-    /// The names the catalog uses for gazetteer places, for one index generation.
-    spellings: Option<(u64, Spellings)>,
+    /// What place paths' names were found as in the gazetteer (`path#code`).
+    resolved: HashMap<String, Resolved>,
 }
 
 /// For each country, state and city of the gazetteer the catalog names, the name it uses
@@ -306,8 +306,17 @@ impl Library {
                 continue;
             }
             let place = self.place_at(&path, row);
-            let Some(want) = Level::named(&place) else { continue };
+            let Some(mut want) = Level::named(&place) else { continue };
             let have = gazetteer().locate(&place).map(|a| a.level);
+            // A location that only names the city again (`Enna|Enna`), or a city typed as
+            // the location (`Germany|—|—|Berlin`), is no finer than the city.
+            let named = |v: &Option<String>| v.as_deref().map(c1geo::fold).filter(|s| !s.is_empty());
+            if want == Level::Location
+                && have == Some(Level::City)
+                && (named(&place.city).is_none() || named(&place.city) == named(&place.location))
+            {
+                want = Level::City;
+            }
             if have.is_none_or(|h| h < want) {
                 out.push(Unresolved { path, place, photos, have, want });
             }
@@ -375,57 +384,72 @@ impl Library {
         Ok(undo)
     }
 
-    /// The gazetteer's names in the catalog's own spelling, worked out again when the
-    /// index changed.
-    fn spell(&self, found: c1geo::Found) -> anyhow::Result<Place> {
-        let generation = self.reader.searcher().generation().generation_id();
-        let mut cache = self.place_cache.lock().unwrap();
-        if cache.spellings.as_ref().is_none_or(|(g, _)| *g != generation) {
-            let options = QueryOptions { limit: Some(0), facets: vec![Dim::PlaceTree], ..QueryOptions::default() };
-            let counts = self.query(&Filter::default(), &options)?.facets.remove(&Dim::PlaceTree).unwrap_or_default();
-            let mut votes: [HashMap<u32, HashMap<String, u64>>; 3] = Default::default();
-            for (path, n) in counts {
-                let levels: Vec<&str> = path.split('|').collect();
-                let Some(name) = levels.last().filter(|l| **l != NO_PLACE) else { continue };
-                let r: Resolved = gazetteer().resolve(&place_of_path(&path));
-                let id = match levels.len() {
-                    1 => r.country.map(|id| (0, id)),
-                    2 => r.state.map(|id| (1, id)),
-                    3 if place_of_path(&path).city.is_some() => r.city.map(|id| (2, id)),
-                    _ => None,
-                };
-                if let Some((kind, id)) = id {
-                    *votes[kind].entry(id).or_default().entry((*name).to_owned()).or_default() += n;
-                }
-            }
-            let pick = |v: HashMap<u32, HashMap<String, u64>>| -> HashMap<u32, String> {
-                v.into_iter()
-                    .filter_map(|(id, names)| {
-                        Some((id, names.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))?.0))
-                    })
-                    .collect()
-            };
-            let [countries, states, cities] = votes;
-            let s = Spellings { countries: pick(countries), states: pick(states), cities: pick(cities) };
-            cache.spellings = Some((generation, s));
+    /// What a place's names are in the gazetteer, remembered by path and code: a name not
+    /// found is looked for with typos, which takes a while.
+    fn resolve_place(&self, place: &Place) -> Resolved {
+        let key = format!(
+            "{}#{}",
+            schema::place_tree(place).pop().unwrap_or_default(),
+            place.country_code.as_deref().unwrap_or("")
+        );
+        if let Some(r) = self.place_cache.lock().unwrap().resolved.get(&key) {
+            return *r;
         }
-        let s = &cache.spellings.as_ref().expect("filled").1;
+        let r = gazetteer().resolve(place);
+        self.place_cache.lock().unwrap().resolved.insert(key, r);
+        r
+    }
+
+    /// For each gazetteer place the catalog names, the name it uses most.
+    fn spellings(&self) -> anyhow::Result<Spellings> {
+        let options = QueryOptions { limit: Some(0), facets: vec![Dim::PlaceTree], ..QueryOptions::default() };
+        let counts = self.query(&Filter::default(), &options)?.facets.remove(&Dim::PlaceTree).unwrap_or_default();
+        let mut votes: [HashMap<u32, HashMap<String, u64>>; 3] = Default::default();
+        for (path, n) in counts {
+            let levels: Vec<&str> = path.split('|').collect();
+            let Some(name) = levels.last().filter(|l| **l != NO_PLACE) else { continue };
+            let place = place_of_path(&path);
+            let r = self.resolve_place(&place);
+            let id = match levels.len() {
+                1 => r.country.map(|id| (0, id)),
+                2 => r.state.map(|id| (1, id)),
+                3 if place.city.is_some() => r.city.map(|id| (2, id)),
+                _ => None,
+            };
+            if let Some((kind, id)) = id {
+                *votes[kind].entry(id).or_default().entry((*name).to_owned()).or_default() += n;
+            }
+        }
+        let pick = |v: HashMap<u32, HashMap<String, u64>>| -> HashMap<u32, String> {
+            v.into_iter()
+                .filter_map(|(id, names)| {
+                    Some((id, names.into_iter().max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))?.0))
+                })
+                .collect()
+        };
+        let [countries, states, cities] = votes;
+        Ok(Spellings { countries: pick(countries), states: pick(states), cities: pick(cities) })
+    }
+
+    /// The gazetteer's names in the catalog's own spelling.
+    fn spell(s: &Spellings, found: c1geo::Found) -> Place {
         let ids = found.ids;
         let name = |map: &HashMap<u32, String>, id: Option<u32>, own: Option<String>| {
             id.and_then(|id| map.get(&id).cloned()).or(own)
         };
-        Ok(Place {
+        Place {
             country: name(&s.countries, ids.country, Some(found.country)),
             country_code: Some(found.country_code),
             state: name(&s.states, ids.state, found.state),
             city: name(&s.cities, ids.city, found.city),
             location: None,
-        })
+        }
     }
 
     /// The place at a position, written as the catalog writes it.
     pub fn place_at_point(&self, lat: f64, lon: f64) -> anyhow::Result<Option<Place>> {
-        gazetteer().reverse(lat, lon).map(|f| self.spell(f)).transpose()
+        let Some(found) = gazetteer().reverse(lat, lon) else { return Ok(None) };
+        Ok(Some(Self::spell(&self.spellings()?, found)))
     }
 
     /// For the photos among `rows` that have a position, the place it is in, for the
@@ -433,9 +457,10 @@ impl Library {
     /// country, say) is left alone.
     pub fn fill_plan(&self, rows: &[u64]) -> anyhow::Result<Vec<FillGroup>> {
         let mut groups: Vec<FillGroup> = Vec::new();
+        let spellings = self.spellings()?;
         for &row in rows {
             let Some(photo) = self.photo(row)? else { continue };
-            let Some(filled) = self.filled(&photo)? else { continue };
+            let Some(filled) = self.filled(&photo, &spellings) else { continue };
             match groups.iter_mut().find(|g| g.place == filled) {
                 Some(g) => g.rows.push(row),
                 None => groups.push(FillGroup { place: filled, rows: vec![row] }),
@@ -447,24 +472,24 @@ impl Library {
 
     /// A photo's place with what its position says filled in where it is empty; `None`
     /// when there is nothing to fill or the two disagree.
-    fn filled(&self, photo: &c1model::Photo) -> anyhow::Result<Option<Place>> {
-        let Some(geo) = photo.geo else { return Ok(None) };
-        let Some(found) = gazetteer().reverse(geo.lat, geo.lon) else { return Ok(None) };
-        let own = gazetteer().resolve(&photo.place);
+    fn filled(&self, photo: &c1model::Photo, spellings: &Spellings) -> Option<Place> {
+        let geo = photo.geo?;
+        let found = gazetteer().reverse(geo.lat, geo.lon)?;
+        let own = self.resolve_place(&photo.place);
         let agrees = |mine: Option<u32>, theirs: Option<u32>| mine.is_none() || mine == theirs;
         if !(agrees(own.country, found.ids.country)
             && agrees(own.state, found.ids.state)
             && agrees(own.city, found.ids.city))
         {
-            return Ok(None);
+            return None;
         }
         let named = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
         // A country or state typed but not found: it is not the gazetteer's to judge.
         if (named(&photo.place.country) && own.country.is_none()) || (named(&photo.place.state) && own.state.is_none())
         {
-            return Ok(None);
+            return None;
         }
-        let spelled = self.spell(found)?;
+        let spelled = Self::spell(spellings, found);
         let mut place = photo.place.clone();
         for (slot, value) in [
             (&mut place.country, spelled.country),
@@ -476,16 +501,17 @@ impl Library {
                 *slot = value;
             }
         }
-        Ok((place != photo.place).then_some(place))
+        (place != photo.place).then_some(place)
     }
 
     /// Fills the empty place fields of the photos among `rows` from their positions.
     /// Returns the ops that undo it.
     pub fn fill_places(&self, rows: &[u64]) -> anyhow::Result<Vec<(u64, Op)>> {
         let mut changes = Vec::new();
+        let spellings = self.spellings()?;
         for &row in rows {
             let Some(photo) = self.photo(row)? else { continue };
-            if let Some(value) = self.filled(&photo)? {
+            if let Some(value) = self.filled(&photo, &spellings) {
                 changes.push((row, Op::SetPlace { base: photo.place, value }));
             }
         }

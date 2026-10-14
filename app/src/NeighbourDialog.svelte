@@ -57,7 +57,7 @@
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="neighbours-title">
     <h2 id="neighbours-title">Place photos from their neighbours</h2>
     <p class="muted small">
-      For the photos in view with no position: the photos taken just before and after, by any camera in the catalog, say where
+      For the photos the filter selects (the map's area aside) that have no position: the photos taken just before and after, by any camera in the catalog, say where
       they were.
     </p>
     <label class="row">
@@ -68,12 +68,12 @@
       <input type="checkbox" bind:checked={positions} /> A position between theirs (or the nearest, within half that)
     </label>
     <label class="row check">
-      <input type="checkbox" bind:checked={places} /> For photos with no place: the place both neighbours have
+      <input type="checkbox" bind:checked={places} /> For photos with no place: their neighbours' place, when they agree
     </label>
     {#if error}<p class="error">{error}</p>{/if}
     {#if plan}
       <p class="result">
-        Of {plan.candidates.toLocaleString()} photos in view with no position,
+        Of {plan.candidates.toLocaleString()} photos with no position,
         {#if positions}<b>{plan.positions.toLocaleString()}</b> get a position{/if}{#if positions && places}{" "}and{/if}
         {#if places}<b>{plan.places.toLocaleString()}</b> get a place{/if}.
       </p>
