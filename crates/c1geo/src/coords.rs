@@ -11,6 +11,9 @@ enum Unit {
     Bare,
 }
 
+/// A number, what it was marked as, and whether it had a minus.
+type Num = (f64, Unit, bool);
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Token {
     Number(f64, Unit, bool),
@@ -66,7 +69,7 @@ fn tokens(text: &str) -> Option<Vec<Token>> {
 }
 
 /// One coordinate from its numbers: degrees, then minutes and seconds if given.
-fn value(numbers: &[(f64, Unit, bool)]) -> Option<f64> {
+fn value(numbers: &[Num]) -> Option<f64> {
     let (degrees, minutes, seconds) = match numbers {
         [(d, _, _)] => (*d, 0.0, 0.0),
         [(d, _, _), (m, u, _)] if *u != Unit::Seconds => (*d, *m, 0.0),
@@ -92,13 +95,13 @@ pub fn parse_point(text: &str) -> Result<(f64, f64), &'static str> {
         .enumerate()
         .filter_map(|(i, t)| if let Token::Letter(c) = t { Some((i, *c)) } else { None })
         .collect();
-    let numbers = |range: &[Token]| -> Vec<(f64, Unit, bool)> {
+    let numbers = |range: &[Token]| -> Vec<Num> {
         range.iter().filter_map(|t| if let Token::Number(v, u, n) = t { Some((*v, *u, *n)) } else { None }).collect()
     };
     // Each coordinate's numbers, and its letter if it has one.
-    let groups: Vec<(Vec<(f64, Unit, bool)>, Option<char>)> = match letters.as_slice() {
+    let groups: Vec<(Vec<Num>, Option<char>)> = match letters.as_slice() {
         [] => {
-            let mut groups: Vec<Vec<(f64, Unit, bool)>> = vec![Vec::new()];
+            let mut groups: Vec<Vec<Num>> = vec![Vec::new()];
             for t in &tokens {
                 match t {
                     Token::Separator => groups.push(Vec::new()),
@@ -116,7 +119,7 @@ pub fn parse_point(text: &str) -> Result<(f64, f64), &'static str> {
                 }
             }
             groups.retain(|g| !g.is_empty());
-            if groups.len() == 1 && groups[0].iter().all(|n| n.1 == Unit::Bare) && groups[0].len() % 2 == 0 {
+            if groups.len() == 1 && groups[0].iter().all(|n| n.1 == Unit::Bare) && groups[0].len().is_multiple_of(2) {
                 // `44 58 14 45`: halves.
                 let all = groups.remove(0);
                 let half = all.len() / 2;

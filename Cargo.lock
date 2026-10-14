@@ -366,6 +366,7 @@ name = "c1cat"
 version = "0.1.1"
 dependencies = [
  "anyhow",
+ "c1geo",
  "c1image",
  "c1index",
  "c1model",

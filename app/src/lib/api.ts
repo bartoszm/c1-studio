@@ -27,6 +27,10 @@ export type Filter = {
   place_under?: string;
   /** Only photos with a country but no ISO country code. */
   no_country_code?: boolean;
+  /** Photos with a position (GPS), or without one. */
+  gps?: boolean;
+  /** Photos with a place (any of country, state, city, location), or without one. */
+  placed?: boolean;
   /** Capture time. */
   captured?: TimeRange;
   /** A trip's span: kept apart from `captured`, so days picked inside a trip narrow it. */
@@ -55,7 +59,36 @@ export type BBox = { min_lat: number; max_lat: number; min_lon: number; max_lon:
 /** One marker on the map: a photo (count 1) or a cluster; `best` is the photo shown for it. */
 /** `rows`: all its photos, when there are several all at one spot. */
 export type Cluster = { lat: number; lon: number; count: number; best: number; bounds: BBox; rows?: number[] };
-export type MapResult = { located: number; in_view: number; clusters: Cluster[] };
+/** How precisely a position from a place's name stands for the photo. */
+export type Level = "Country" | "State" | "City" | "Location";
+/** A marker for photos placed only by their place's name: one place (`place`) or several. */
+export type PlaceCluster = {
+  lat: number;
+  lon: number;
+  count: number;
+  best: number;
+  bounds: BBox;
+  level: Level;
+  place: string | null;
+  places: number;
+};
+export type MapResult = {
+  located: number;
+  in_view: number;
+  clusters: Cluster[];
+  /** Photos placed by their place's name, shown while zoomed out about as far as it reaches. */
+  approx: PlaceCluster[];
+  approx_located: number;
+  approx_in_view: number;
+  /** In view but not shown: the map is zoomed in closer than their place. */
+  approx_hidden: number;
+  /** Photos with a place and no position of their own. */
+  place_only: number;
+  /** Of them, those whose place no position is known for (yet). */
+  unresolved: number;
+  /** Photos with neither a position nor a place. */
+  unplaced: number;
+};
 
 /** What the analysis found for a photo, with its classes and groups (id, size). */
 export type LookView = {
@@ -292,6 +325,43 @@ export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", 
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
+export type Approx = { lat: number; lon: number; level: Level };
+/** A place no position is known for at the level it names. */
+export type Unresolved = { path: string; place: Photo["place"]; photos: number; have: Level | null; want: Level };
+/** Places the gazetteer lacks, to look up online. */
+export const unresolvedPlaces = (filter: Filter) => invoke<Unresolved[]>("unresolved_places", { filter });
+/** What online lookups found for places (null: nothing; not asked again). */
+export const setPlacePoints = (items: { path: string; found: Approx | null }[]) =>
+  invoke<void>("set_place_points", { items });
+/** Gives the photos at each place (of those `filter` selects, with no position) the
+ *  place's position, kept marked as approximate. Returns the ops that undo it. */
+export const promotePlaces = (filter: Filter, paths: string[]) =>
+  invoke<[number, Op][]>("promote_places", { filter, paths });
+/** Gives the photos at `rows` with no position their place's, kept marked as approximate. */
+export const promoteRows = (rows: number[]) => invoke<[number, Op][]>("promote_rows", { rows });
+/** The photos at a place, of those `filter` selects that have no position. */
+export const placeRows = (filter: Filter, path: string) => invoke<number[]>("place_rows", { filter, path });
+/** The place a position is in (offline), written as the catalog writes it. */
+export const placeAtPoint = (lat: number, lon: number) =>
+  invoke<Photo["place"] | null>("place_at_point", { lat, lon });
+export type FillGroup = { place: Photo["place"]; rows: number[] };
+/** For the photos at `rows` with a position, the place to fill their empty fields with. */
+export const fillPlan = (rows: number[]) => invoke<FillGroup[]>("fill_plan", { rows });
+/** Fills the empty place fields of the photos at `rows` from their positions. */
+export const fillPlaces = (rows: number[]) => invoke<[number, Op][]>("fill_places", { rows });
+export type NeighbourSettings = { max_gap_minutes: number; positions: boolean; places: boolean };
+export type NeighbourPlan = {
+  candidates: number;
+  positions: number;
+  places: number;
+  sample: [number, number, number][];
+  place_counts: [string, number][];
+};
+export const neighbourPlan = (filter: Filter, settings: NeighbourSettings) =>
+  invoke<NeighbourPlan>("neighbour_plan", { filter, settings });
+/** Places the photos as the plan showed; returns the ops that undo it. */
+export const neighbourApply = (filter: Filter, settings: NeighbourSettings) =>
+  invoke<[number, Op][]>("neighbour_apply", { filter, settings });
 export type GpxSettings = { path: string; offset_minutes: number; max_gap_minutes: number; overwrite: boolean };
 export type GpxPlan = {
   fixes: number;

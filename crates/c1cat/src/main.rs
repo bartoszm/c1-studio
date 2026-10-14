@@ -206,6 +206,9 @@ enum Command {
         lat: Option<f64>,
         #[arg(long, allow_hyphen_values = true)]
         lon: Option<f64>,
+        /// Both at once, as written anywhere: "50.0614, 19.9366", "44°58′N 14°45′E".
+        #[arg(long, allow_hyphen_values = true, conflicts_with_all = ["lat", "lon"])]
+        at: Option<String>,
         #[arg(long)]
         clear: bool,
         #[command(flatten)]
@@ -898,7 +901,14 @@ fn main() -> anyhow::Result<()> {
                 ops
             })?;
         }
-        Command::Geo { select, lat, lon, clear, write } => {
+        Command::Geo { select, lat, lon, at, clear, write } => {
+            let (lat, lon) = match at {
+                Some(text) => {
+                    let (lat, lon) = c1geo::parse_point(&text).map_err(|e| anyhow::anyhow!("--at {text:?}: {e}"))?;
+                    (Some(lat), Some(lon))
+                }
+                None => (lat, lon),
+            };
             let value = match (lat, lon, clear) {
                 (Some(lat), Some(lon), false) => {
                     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
@@ -907,7 +917,7 @@ fn main() -> anyhow::Result<()> {
                     Some(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual })
                 }
                 (None, None, true) => None,
-                _ => anyhow::bail!("pass --lat and --lon, or --clear"),
+                _ => anyhow::bail!("pass --lat and --lon (or --at), or --clear"),
             };
             edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetGeo { base: p.geo, value })?;
         }

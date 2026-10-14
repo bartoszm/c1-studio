@@ -13,7 +13,7 @@
     row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, onlook,
-    onplace, ongeo, oniptc, oncopy, onpaste, onpastechoose, onsync,
+    onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -49,6 +49,10 @@
     /** Location fields typed in, "" clearing one: on `rows`, or on every photo edited. */
     onplace: (fields: Partial<Record<api.PlaceField, string>>, rows?: number[]) => void;
     ongeo: (value: [number, number] | null) => void;
+    /** Fills the empty place fields of the photos edited from their positions. */
+    onfillplace: () => void;
+    /** Gives the photos edited that have no position their place's (approximate). */
+    ongeofromplace: () => void;
     /** An IPTC text field typed in; "" clears it. */
     oniptc: (field: api.CaptionField, value: string) => void;
     /** What the clipboard holds, for showing; null when empty. */
@@ -517,7 +521,7 @@
             class="field"
             value={shown}
             placeholder="latitude, longitude"
-            title="Decimal (50.0614, 19.9366), with N/S/E/W, or degrees, minutes and seconds. Empty clears it."
+            title="Decimal (50.0614, 19.9366), with N/S/E/W, or degrees and minutes (44°58′N 14°45′E). Empty clears it."
             spellcheck="false"
             onkeydown={(e) => fieldKeys(e, shown)}
             onchange={commitGeo}
@@ -526,6 +530,23 @@
       {/key}
     </dl>
     {#if geoError}<p class="error">{geoError}</p>{/if}
+    {@const named = !!(p.place.city || p.place.state || p.place.country || p.place.location)}
+    {#if (p.geo && !(p.place.city && p.place.country)) || (!p.geo && named) || picked > 1}
+      <div class="geo-actions">
+        {#if p.geo || picked > 1}
+          <button
+            title="Fill the empty city, region and country fields from the position (built-in GeoNames; offline). Fields already filled stay."
+            onclick={onfillplace}
+          >Fill place from GPS</button>
+        {/if}
+        {#if (!p.geo && named) || picked > 1}
+          <button
+            title="Photos with no GPS get the middle of their city, region or country. Shown as approximate (≈) on the map; can be undone."
+            onclick={ongeofromplace}
+          >GPS from place ≈</button>
+        {/if}
+      </div>
+    {/if}
 
     {#each IPTC_GROUPS as [title, fields] (title)}
       <h3>{title}</h3>

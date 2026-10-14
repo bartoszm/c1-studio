@@ -270,6 +270,7 @@ impl Library {
             let mut cache = self.place_cache.lock().unwrap();
             for s in self.seen(&searcher, &Filter { gps: Some(false), placed: Some(true), ..base.clone() }, true)? {
                 let Some(path) = s.path.clone() else { continue };
+                result.place_only += 1;
                 match self.approx_at(&mut cache, &path, s.row)? {
                     Some(a) => add(path, a, &s),
                     None => unresolved += 1,
@@ -346,19 +347,28 @@ impl Library {
     /// place's position, marked as only that: they keep showing as approximate. Returns
     /// the ops that undo it.
     pub fn promote(&self, filter: &Filter, paths: &[String]) -> anyhow::Result<Vec<(u64, Op)>> {
+        let mut rows = Vec::new();
+        for path in paths {
+            rows.extend(self.place_rows(filter, path)?);
+        }
+        self.promote_rows(&rows)
+    }
+
+    /// Gives each photo among `rows` that has no position its place's, marked as only that.
+    /// Returns the ops that undo it.
+    pub fn promote_rows(&self, rows: &[u64]) -> anyhow::Result<Vec<(u64, Op)>> {
         let mut changes = Vec::new();
         let mut marks = Vec::new();
-        for path in paths {
-            let rows = self.place_rows(filter, path)?;
-            let Some(&first) = rows.first() else { continue };
-            let Some(a) = self.approx_at(&mut self.place_cache.lock().unwrap(), path, first)? else { continue };
-            let value = GeoPoint { lat: a.lat, lon: a.lon, alt: None, origin: GeoOrigin::Geocoded };
-            for row in rows {
-                changes.push((row, Op::SetGeo { base: None, value: Some(value) }));
-                if let Some(id) = self.photo_id(row) {
-                    marks.push((id.key(), Some(Coarse { lat: a.lat, lon: a.lon, level: a.level })));
-                }
+        for &row in rows {
+            let Some(photo) = self.photo(row)? else { continue };
+            let Some(path) = schema::place_tree(&photo.place).pop() else { continue };
+            if photo.geo.is_some() {
+                continue;
             }
+            let Some(a) = self.approx_at(&mut self.place_cache.lock().unwrap(), &path, row)? else { continue };
+            let value = GeoPoint { lat: a.lat, lon: a.lon, alt: None, origin: GeoOrigin::Geocoded };
+            changes.push((row, Op::SetGeo { base: None, value: Some(value) }));
+            marks.push((photo.id.key(), Some(Coarse { lat: a.lat, lon: a.lon, level: a.level })));
         }
         let undo = self.edit(&changes)?;
         self.place_book.set_coarse(&marks)?;
@@ -431,7 +441,7 @@ impl Library {
                 None => groups.push(FillGroup { place: filled, rows: vec![row] }),
             }
         }
-        groups.sort_by(|a, b| b.rows.len().cmp(&a.rows.len()));
+        groups.sort_by_key(|g| std::cmp::Reverse(g.rows.len()));
         Ok(groups)
     }
 

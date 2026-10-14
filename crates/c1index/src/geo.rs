@@ -58,7 +58,9 @@ pub struct MapResult {
     pub approx_in_view: usize,
     /// Of those, the ones not shown: the map is zoomed in closer than their place.
     pub approx_hidden: usize,
-    /// Photos with a place no position could be found for (yet).
+    /// Photos with a place and no position of their own.
+    pub place_only: usize,
+    /// Of them, those whose place no position could be found for (yet).
     pub unresolved: usize,
     /// Photos with neither a position nor a place.
     pub unplaced: usize,
