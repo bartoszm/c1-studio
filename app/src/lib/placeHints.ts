@@ -51,11 +51,18 @@ export function nearbyPlaces(lat: number, lon: number, version: number, km = 3):
 
 const hereAsked = new Map<string, Promise<PlacePath | null>>();
 let nextAsk = 0;
+let online = true;
 
-/** The address at a point, from OpenStreetMap's Nominatim; null offline or nowhere.
+/** Whether `placeAt` may ask Nominatim; off, it answers null without a request. */
+export function allowPlaceLookups(on: boolean) {
+  online = on;
+}
+
+/** The address at a point, from OpenStreetMap's Nominatim; null offline (or not allowed online) or nowhere.
  *  Asked once per spot, at most one a second, as Nominatim's policy wants; told to
  *  wait (429, 503), it is not asked again for that long. A failure is not kept. */
 export function placeAt(lat: number, lon: number): Promise<PlacePath | null> {
+  if (!online) return Promise.resolve(null);
   const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
   let asked = hereAsked.get(key);
   if (!asked) {

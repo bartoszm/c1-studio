@@ -4,9 +4,12 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS, FIELD_NAMES, stars } from "./lib/format";
+  import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
+  import { allowPlaceLookups } from "./lib/placeHints";
+  import { SECTION_DIMS, type SectionKey } from "./lib/sections";
+  import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
   import BackupsDialog from "./BackupsDialog.svelte";
@@ -23,16 +26,18 @@
   import Timeline from "./Timeline.svelte";
   import TripsSection from "./TripsSection.svelte";
   import { tripDates, tripName } from "./lib/trips";
+  import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
 
   const PAGE = 500;
-  const DIMS: Dim[] = [
-    "rating", "color", "year", "month", "week", "camera", "country", "keyword_tree", "collection", "folder", "place_tree", "flag",
-    "shape", "hue", "light", "focus",
-  ];
-  /** Groups listed as plain values; the rest are trees. */
-  const FLAT: Dim[] = ["rating", "color", "camera"];
+  /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
+  const ALWAYS: Dim[] = ["country", "flag", "shape", "hue", "light", "focus"];
+  /** The sidebar's sections as set in Settings, the hidden ones left out. */
+  let shownSections = $derived(settings.sections.filter((s) => !s.hidden).map((s) => s.key));
+  /** The groups each query counts: only those something shows. */
+  let dims = $derived([...new Set([...shownSections.flatMap((k) => SECTION_DIMS[k]), ...ALWAYS])]);
+  let albumsShown = $derived(shownSections.includes("albums"));
 
   let status = $state<api.Status | null>(null);
   /** The source menu in the header; open by itself when nothing could be opened. */
@@ -272,6 +277,23 @@
     }
   });
 
+  /** The groups the result on screen was counted with. */
+  let counted: Dim[] = [];
+  // A section shown again needs counts that result doesn't have. (Before the first result,
+  // or after a failed query, the next query counts it anyway.)
+  $effect(() => {
+    const now = dims;
+    untrack(() => { if (result && now.some((d) => !counted.includes(d))) run(true); });
+  });
+  $effect(() => allowPlaceLookups(settings.onlineMap));
+  let showSettings = $state(false);
+  /** A section header's right-click menu. */
+  let sectionMenu = $state<{ x: number; y: number; key: SectionKey } | null>(null);
+  function hideSection(key: SectionKey) {
+    const s = settings.sections.find((s) => s.key === key);
+    if (s) s.hidden = true;
+  }
+
   // Each query gets a number; answers to older ones are dropped.
   let generation = 0;
   // The result's photos, fetched a page at a time as the grid reaches them. A new result
@@ -284,14 +306,16 @@
   async function run(keep = false) {
     const mine = ++generation;
     const asked = $state.snapshot(filter);
+    const groups = dims;
     // Smart albums are counted apart: one query each, so they never hold up the grid.
-    api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
+    if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
       const r = await api.query(asked, {
-        sort: "DateDesc", limit: PAGE, offset: 0, facets: DIMS, facets_ignore_own: true,
+        sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
       if (mine !== generation) return;
       result = r;
+      counted = groups;
       pages = new SvelteMap([[0, r.rows]]);
       loading = new Map();
       error = null;
@@ -746,12 +770,15 @@
   }
 
   function isActive(dim: Dim, value: string) {
+    if (dim === "hue") return !!filter.hues?.includes(value);
     const want = filterFor(dim, value);
     const key = Object.keys(want)[0] as keyof Filter;
     return JSON.stringify(filter[key]) === JSON.stringify(want[key]);
   }
 
   function toggle(dim: Dim, value: string) {
+    // Main colours add up, as in the analysis tab: any of those picked.
+    if (dim === "hue") return toggleList("hues", value);
     const want = filterFor(dim, value);
     const key = Object.keys(want)[0] as keyof Filter;
     filter = isActive(dim, value) ? { ...filter, [key]: undefined } : { ...filter, ...want };
@@ -961,6 +988,7 @@
   function values(dim: Dim): [string, number][] {
     const all = result?.facets[dim] ?? [];
     if (dim === "year" || dim === "rating") return [...all].sort((a, b) => b[0].localeCompare(a[0]));
+    if (dim === "hue") return all;
     return all.slice(0, 10);
   }
 
@@ -970,7 +998,7 @@
   }
 
   const TITLES: Record<string, string> = {
-    rating: "Rating", color: "Colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
+    rating: "Rating", color: "Colour", hue: "Main colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
     albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look", trips: "Trips",
   };
 
@@ -1030,13 +1058,14 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu)) {
+    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu || sectionMenu)) {
       keywordMenu = null;
       placeMenu = null;
       albumMenu = null;
+      sectionMenu = null;
       return;
     }
-    if (writing || showBackups || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -1224,8 +1253,12 @@
   }
 </script>
 
-{#snippet head(key: string)}
-  <button class="head" onclick={() => fold(key)}>
+{#snippet head(key: SectionKey)}
+  <button
+    class="head"
+    onclick={() => fold(key)}
+    oncontextmenu={(e) => { e.preventDefault(); sectionMenu = { x: e.clientX, y: e.clientY, key }; }}
+  >
     <span class="chev" class:open={!folded.has(key)}>›</span>{TITLES[key]}
   </button>
 {/snippet}
@@ -1362,116 +1395,133 @@
     {/if}
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
+    <button class="toggle settings" title="Settings: the sidebar's sections, online map services" aria-label="Settings" onclick={() => (showSettings = true)}>
+      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
+        <circle cx="8" cy="8" r="2.2" />
+        <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round" />
+        <circle cx="8" cy="8" r="4.6" />
+      </svg>
+    </button>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
     </span>
   </header>
 
   <aside>
-    <section
-      class="albums-section"
-      role="group"
-      aria-label="Albums"
-      class:drop={dragging && "album" in dragging && canDrop(undefined)}
-      ondragover={(e) => { if (canDrop(undefined)) e.preventDefault(); }}
-      ondrop={(e) => { if (canDrop(undefined)) { e.preventDefault(); drop(undefined); } }}
-    >
-      {@render head("albums")}
-      {#if !folded.has("albums")}
-        <div class="album-actions">
-          <button title="A new album, at the top level" onclick={() => (albumDialog = { mode: "create", kind: "Album" })}>+ Album</button>
-          <button title="A new smart album: a rule, not photos" onclick={() => (albumDialog = { mode: "create", kind: "Smart" })}>+ Smart album</button>
-          <button title="A new group, to hold albums" onclick={() => (albumDialog = { mode: "create", kind: "Group" })}>+ Group</button>
-        </div>
-        <Tree
-          nodes={albums}
-          selected={filter.collections && "a:" + filter.collections[0]}
-          {expanded}
-          onpick={pickAlbum}
-          oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
-          drag={dragAlbum}
-          candrop={(n) => canDrop(byId.get(n.value))}
-          ondropnode={(n) => drop(byId.get(n.value))}
-        />
-        <p class="tree-hint">
-          {#if shownAlbum}Delete takes the selected photos out of “{shownAlbum.name}”.{:else}Drag photos onto an album to put them in; drag an album onto a group to move it.{/if}
-        </p>
-      {/if}
-    </section>
-    {@render dates()}
-    <section>
-      {@render head("trips")}
-      {#if !folded.has("trips")}
-        <TripsSection
-          list={tripList}
-          selected={shownTrip?.id ?? null}
-          focusRow={selected === null ? undefined : rowAt(selected)}
-          onpick={pickTrip}
-          onchanged={refreshTrips}
-          onexport={exportTrip}
-          onerror={(text) => (editError = text)}
-        />
-      {/if}
-    </section>
-    <section>
-      {@render head("places")}
-      {#if !folded.has("places")}
-        <Tree
-          nodes={places}
-          selected={filter.place_under && "p:" + filter.place_under}
-          {expanded}
-          onpick={pickPlace}
-          oncontext={(node, e) => (placeMenu = { x: e.clientX, y: e.clientY, node })}
-        />
-        {#if missingCodes}
-          <button class="tree-action" onclick={() => (fillingCodes = true)} title="Fill in the ISO codes of these photos' countries">
-            {missingCodes.toLocaleString()} without an ISO country code · Fill in…
-          </button>
-        {/if}
-      {/if}
-    </section>
-    <section>
-      {@render head("folders")}
-      {#if !folded.has("folders")}
-        <Tree nodes={folders} selected={filter.folder && "f:" + filter.folder} {expanded} onpick={pickFolder} />
-      {/if}
-    </section>
-    <section>
-      {@render head("keywords")}
-      {#if !folded.has("keywords")}
-        <input
-          class="tree-search"
-          type="search"
-          placeholder="Find a keyword"
-          spellcheck="false"
-          bind:value={keywordSearch}
-          onkeydown={(e) => { if (e.key === "Escape") { keywordSearch = ""; e.currentTarget.blur(); } }}
-        />
-        <Tree
-          nodes={keywordView.nodes}
-          selected={filter.keywords_under && "k:" + filter.keywords_under[0]}
-          expanded={keywordSearch.trim() ? searchOpen : expanded}
-          onpick={pickKeyword}
-          oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
-        />
-        {#if keywordSearch.trim() && !keywordView.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
-      {/if}
-    </section>
-    {#each FLAT as dim}
-      {@const list = values(dim)}
-      {#if list.length}
-        <section>
-          {@render head(dim)}
-          {#if !folded.has(dim)}
-            {#each list as [value, n]}
-              <button class="facet" class:on={isActive(dim, value)} onclick={() => toggle(dim, value)}>
-                {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
-                <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
-                <span class="n">{n.toLocaleString()}</span>
-              </button>
-            {/each}
+    {#each shownSections as key (key)}
+      {#if key === "albums"}
+        <section
+          class="albums-section"
+          role="group"
+          aria-label="Albums"
+          class:drop={dragging && "album" in dragging && canDrop(undefined)}
+          ondragover={(e) => { if (canDrop(undefined)) e.preventDefault(); }}
+          ondrop={(e) => { if (canDrop(undefined)) { e.preventDefault(); drop(undefined); } }}
+        >
+          {@render head("albums")}
+          {#if !folded.has("albums")}
+            <div class="album-actions">
+              <button title="A new album, at the top level" onclick={() => (albumDialog = { mode: "create", kind: "Album" })}>+ Album</button>
+              <button title="A new smart album: a rule, not photos" onclick={() => (albumDialog = { mode: "create", kind: "Smart" })}>+ Smart album</button>
+              <button title="A new group, to hold albums" onclick={() => (albumDialog = { mode: "create", kind: "Group" })}>+ Group</button>
+            </div>
+            <Tree
+              nodes={albums}
+              selected={filter.collections && "a:" + filter.collections[0]}
+              {expanded}
+              onpick={pickAlbum}
+              oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
+              drag={dragAlbum}
+              candrop={(n) => canDrop(byId.get(n.value))}
+              ondropnode={(n) => drop(byId.get(n.value))}
+            />
+            <p class="tree-hint">
+              {#if shownAlbum}Delete takes the selected photos out of “{shownAlbum.name}”.{:else}Drag photos onto an album to put them in; drag an album onto a group to move it.{/if}
+            </p>
           {/if}
         </section>
+      {:else if key === "date"}
+        {@render dates()}
+      {:else if key === "trips"}
+        <section>
+          {@render head("trips")}
+          {#if !folded.has("trips")}
+            <TripsSection
+              list={tripList}
+              selected={shownTrip?.id ?? null}
+              focusRow={selected === null ? undefined : rowAt(selected)}
+              onpick={pickTrip}
+              onchanged={refreshTrips}
+              onexport={exportTrip}
+              onerror={(text) => (editError = text)}
+            />
+          {/if}
+        </section>
+      {:else if key === "places"}
+        <section>
+          {@render head("places")}
+          {#if !folded.has("places")}
+            <Tree
+              nodes={places}
+              selected={filter.place_under && "p:" + filter.place_under}
+              {expanded}
+              onpick={pickPlace}
+              oncontext={(node, e) => (placeMenu = { x: e.clientX, y: e.clientY, node })}
+            />
+            {#if missingCodes}
+              <button class="tree-action" onclick={() => (fillingCodes = true)} title="Fill in the ISO codes of these photos' countries">
+                {missingCodes.toLocaleString()} without an ISO country code · Fill in…
+              </button>
+            {/if}
+          {/if}
+        </section>
+      {:else if key === "folders"}
+        <section>
+          {@render head("folders")}
+          {#if !folded.has("folders")}
+            <Tree nodes={folders} selected={filter.folder && "f:" + filter.folder} {expanded} onpick={pickFolder} />
+          {/if}
+        </section>
+      {:else if key === "keywords"}
+        <section>
+          {@render head("keywords")}
+          {#if !folded.has("keywords")}
+            <input
+              class="tree-search"
+              type="search"
+              placeholder="Find a keyword"
+              spellcheck="false"
+              bind:value={keywordSearch}
+              onkeydown={(e) => { if (e.key === "Escape") { keywordSearch = ""; e.currentTarget.blur(); } }}
+            />
+            <Tree
+              nodes={keywordView.nodes}
+              selected={filter.keywords_under && "k:" + filter.keywords_under[0]}
+              expanded={keywordSearch.trim() ? searchOpen : expanded}
+              onpick={pickKeyword}
+              oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
+            />
+            {#if keywordSearch.trim() && !keywordView.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
+          {/if}
+        </section>
+      {:else}
+        {@const dim = key}
+        {@const list = values(dim)}
+        {#if list.length}
+          <section>
+            {@render head(dim)}
+            {#if !folded.has(dim)}
+              {#each list as [value, n]}
+                <button class="facet" class:on={isActive(dim, value)} onclick={() => toggle(dim, value)}>
+                  {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
+                  {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? HUES.muted}></i>{/if}
+                  <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
+                  <span class="n">{n.toLocaleString()}</span>
+                </button>
+              {/each}
+            {/if}
+          </section>
+        {/if}
       {/if}
     {/each}
   </aside>
@@ -1645,6 +1695,16 @@
   </footer>
 </div>
 
+{#if sectionMenu}
+  {@const key = sectionMenu.key}
+  <div class="menu-shield" role="presentation" onclick={() => (sectionMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sectionMenu = null; }}></div>
+  <div class="menu" role="menu" style:left="{sectionMenu.x}px" style:top="{sectionMenu.y}px">
+    <div class="menu-title">{TITLES[key]}</div>
+    <button role="menuitem" onclick={() => { hideSection(key); sectionMenu = null; }}>Hide this section</button>
+    <button role="menuitem" onclick={() => { showSettings = true; sectionMenu = null; }}>Sidebar settings…</button>
+  </div>
+{/if}
+
 {#if keywordMenu}
   {@const node = keywordMenu.node}
   <div class="menu-shield" role="presentation" onclick={() => (keywordMenu = null)} oncontextmenu={(e) => { e.preventDefault(); keywordMenu = null; }}></div>
@@ -1782,6 +1842,10 @@
     oncopy={(fields, fill) => { pasteFields = fields; if (clipboard) pasteRows(rows, clipboard.from, fields, fill); }}
     onclose={() => (pasting = null)}
   />
+{/if}
+
+{#if showSettings}
+  <SettingsDialog titles={TITLES} onclose={() => (showSettings = false)} />
 {/if}
 
 {#if showBackups}
