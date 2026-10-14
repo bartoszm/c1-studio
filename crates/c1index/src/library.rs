@@ -1036,12 +1036,16 @@ impl Library {
     /// The trips, each counted over the photos `filter` selects (its trip set aside, so the
     /// other trips stay visible), with the trip settings.
     pub fn trips(&self, filter: &Filter) -> anyhow::Result<TripList> {
-        let cache = self.trip_cache()?;
-        let cache = cache.as_ref().expect("trip_cache fills it");
+        // Copied out, so counting under the filter does not hold up other calls.
+        let (settings, guess, trips) = {
+            let cache = self.trip_cache()?;
+            let cache = cache.as_ref().expect("trip_cache fills it");
+            (cache.settings.clone(), cache.guess.clone(), cache.trips.clone())
+        };
         let mut taken = self.taken(&Filter { trip: None, ..filter.clone() })?;
         taken.sort_by_key(|t| t.at);
-        let mut rows = Vec::with_capacity(cache.trips.len());
-        for (trip, label, photos) in &cache.trips {
+        let mut rows = Vec::with_capacity(trips.len());
+        for (trip, label, photos) in trips {
             let from = taken.partition_point(|t| t.at < trip.start);
             let to = taken.partition_point(|t| t.at <= trip.end);
             let cover = taken[from..to]
@@ -1052,9 +1056,9 @@ impl Library {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .map(|t| t.row);
-            rows.push(TripRow { trip: trip.clone(), label: label.clone(), photos: *photos, count: to - from, cover });
+            rows.push(TripRow { trip, label, photos, count: to - from, cover });
         }
-        Ok(TripList { settings: cache.settings.clone(), home_guess: cache.guess.clone(), trips: rows })
+        Ok(TripList { settings, home_guess: guess, trips: rows })
     }
 
     /// How many photos `filter` selects on each day, by the local midnight starting it,
@@ -1132,12 +1136,16 @@ impl Library {
         let shots = self.shots(&searcher)?;
         let settings = self.trip_book.settings()?;
         let (stored, mut next) = self.trip_book.load()?;
-        let found = trips::detect(&shots, &settings);
+        let mut dismissed: Vec<(i64, i64)> =
+            stored.iter().filter(|t| t.kind == trips::Kind::Dismissed).map(|t| (t.start, t.end)).collect();
+        dismissed.sort_unstable();
+        let found = trips::detect(&shots, &settings, &dismissed);
         let current = trips::reconcile(&stored, &found, &mut next);
         if current != stored {
             self.trip_book.save(&current, next)?;
         }
-        let home = settings.home.as_ref();
+        let home = settings.home.as_ref().and_then(Home::normalised);
+        let home = home.as_ref();
         let trips = current
             .into_iter()
             .map(|t| {

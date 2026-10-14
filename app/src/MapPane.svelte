@@ -358,15 +358,31 @@
     return { type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: points } };
   }
 
+  /** Whether the route's layers are there; until the style can take them, it draws
+   *  again when the map next settles. (`isStyleLoaded` is false while tiles load too.) */
+  let waiting = false;
   function ensureLayers(): boolean {
-    if (!map?.isStyleLoaded()) return false;
-    if (!map.getSource("route")) {
+    if (!map) return false;
+    if (map.getSource("route")) return true;
+    try {
       map.addSource("route", { type: "geojson", data: line([]) });
       map.addSource("route-done", { type: "geojson", data: line([]) });
       map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": ROUTE_ALL, "line-width": 2, "line-dasharray": [2, 2] } });
       map.addLayer({ id: "route-done", type: "line", source: "route-done", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ROUTE_DONE, "line-width": 4 } });
+      return true;
+    } catch {
+      // The style is not in yet (adding throws only then): undo what got added.
+      for (const id of ["route-done", "route"]) if (map.getLayer(id)) map.removeLayer(id);
+      for (const id of ["route-done", "route"]) if (map.getSource(id)) map.removeSource(id);
+      if (!waiting) {
+        waiting = true;
+        map.once("idle", () => {
+          waiting = false;
+          drawRoute();
+        });
+      }
+      return false;
     }
-    return true;
   }
 
   function drawRoute() {

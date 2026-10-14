@@ -47,13 +47,17 @@
 
   async function edit(change: api.TripEdit) {
     menu = null;
+    const shown = selected;
+    const touched = change.op === "merge" ? change.ids : change.op === "create" ? [] : [change.id];
     try {
       const keep = await api.editTrips(change);
       const now = await onchanged();
-      const kept = now?.trips.find((t) => t.id === keep);
-      // A merged or split trip has a new span: the grid follows it if it showed the old one.
-      if (selected !== null && kept) onpick(kept);
-      else if (selected !== null && !now?.trips.some((t) => t.id === selected)) onpick(null);
+      // Only an edit to the trip the grid shows moves the grid. A renamed, kept or split
+      // one keeps its id (App follows its new span); a merged one is a new trip; a
+      // dismissed or forgotten one is shown no more.
+      if (shown === null || !touched.includes(shown)) return;
+      if (change.op === "dismiss" || change.op === "forget") onpick(null);
+      else if (change.op === "merge") onpick(now?.trips.find((t) => t.id === keep) ?? null);
     } catch (e) {
       onerror(String(e));
     }

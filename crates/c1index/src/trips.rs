@@ -40,6 +40,16 @@ pub struct Home {
     pub city: Option<String>,
 }
 
+impl Home {
+    /// Trimmed, with blank parts left out (`Poland|` is the country alone); None when
+    /// nothing is left.
+    pub fn normalised(&self) -> Option<Home> {
+        let part = |v: &Option<String>| v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        let home = Home { country: part(&self.country), city: part(&self.city) };
+        (home.country.is_some() || home.city.is_some()).then_some(home)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TripSettings {
@@ -205,10 +215,30 @@ struct Day {
     country: Option<String>,
 }
 
-/// The stretches of `shots` (sorted by time) that are trips, or might be.
-pub fn detect(shots: &[Shot], settings: &TripSettings) -> Vec<Found> {
-    let Some(home) = &settings.home else { return Vec::new() };
-    let point = home_point(shots, home);
+/// The stretches of `shots` (sorted by time) that are trips, or might be. Photos inside
+/// `dismissed` spans (sorted, inclusive) are left out, and each such span breaks the
+/// photos either side apart: what lies next to a dismissed trip is still found, on its own.
+pub fn detect(shots: &[Shot], settings: &TripSettings, dismissed: &[(i64, i64)]) -> Vec<Found> {
+    let Some(home) = settings.home.as_ref().and_then(Home::normalised) else { return Vec::new() };
+    let point = home_point(shots, &home);
+    let mut out = Vec::new();
+    let mut run_start = 0;
+    let mut span = 0;
+    for (i, shot) in shots.iter().enumerate() {
+        while span < dismissed.len() && dismissed[span].1 < shot.at {
+            span += 1;
+        }
+        if span < dismissed.len() && dismissed[span].0 <= shot.at {
+            out.extend(detect_run(&shots[run_start..i], settings, &home, point));
+            run_start = i + 1;
+        }
+    }
+    out.extend(detect_run(&shots[run_start..], settings, &home, point));
+    out
+}
+
+/// [`detect`] over photos with nothing dismissed among them.
+fn detect_run(shots: &[Shot], settings: &TripSettings, home: &Home, point: Option<(f64, f64)>) -> Vec<Found> {
     let mut days: Vec<Day> = Vec::new();
     let mut tally: (usize, usize, HashMap<String, usize>) = (0, 0, HashMap::new());
     let close = |day: &mut Day, (home, away, countries): &mut (usize, usize, HashMap<String, usize>)| {
@@ -351,7 +381,9 @@ pub fn label(shots: &[Shot], start: i64, end: i64, home: Option<&Home>) -> Strin
 /// Detection's new findings merged into the stored trips: trips the user touched stay
 /// (a kept one stretched over a finding that runs past it), findings over them are
 /// dropped, and the rest replace the untouched trips, keeping the id of the one they
-/// overlap so a selected trip stays selected.
+/// overlap so a selected trip stays selected. Findings never cover a dismissed trip:
+/// [`detect`] is given their spans. One over two kept trips (a trip split in two) is
+/// dropped, so the split stays.
 pub fn reconcile(stored: &[Trip], found: &[Found], next_id: &mut u64) -> Vec<Trip> {
     let mut fixed: Vec<Trip> = stored.iter().filter(|t| t.kind.fixed()).cloned().collect();
     let mut old: Vec<&Trip> = stored.iter().filter(|t| !t.kind.fixed()).collect();
@@ -570,7 +602,7 @@ mod tests {
     #[test]
     fn nothing_is_found_until_home_is_set() {
         let shots = days(0..3, 2, Some("Japan"), Some("Tokyo"));
-        assert!(detect(&shots, &TripSettings::default()).is_empty());
+        assert!(detect(&shots, &TripSettings::default(), &[]).is_empty());
     }
 
     #[test]
@@ -578,7 +610,7 @@ mod tests {
         let mut shots = days(0..2, 2, Some("Poland"), Some("Kraków"));
         shots.extend(days(2..5, 2, Some("Japan"), Some("Tokyo")));
         shots.extend(days(5..7, 2, Some("Poland"), Some("Kraków")));
-        assert_eq!(spans(&detect(&shots, &krakow())), [(2, 4, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &krakow(), &[])), [(2, 4, Kind::Found)]);
     }
 
     #[test]
@@ -586,7 +618,7 @@ mod tests {
         let mut shots = days(0..1, 2, Some("Japan"), Some("Tokyo"));
         shots.extend(days(1..3, 2, None, None));
         shots.extend(days(3..4, 2, Some("China"), Some("Hong Kong")));
-        assert_eq!(spans(&detect(&shots, &krakow())), [(0, 3, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &krakow(), &[])), [(0, 3, Kind::Found)]);
     }
 
     #[test]
@@ -596,7 +628,7 @@ mod tests {
         shots.extend(days(5..7, 2, Some("Italy"), Some("Trapani")));
         // Five days more, then Germany: another.
         shots.extend(days(12..14, 2, Some("Germany"), Some("Berlin")));
-        assert_eq!(spans(&detect(&shots, &krakow())), [(0, 6, Kind::Found), (12, 13, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &krakow(), &[])), [(0, 6, Kind::Found), (12, 13, Kind::Found)]);
     }
 
     #[test]
@@ -604,7 +636,7 @@ mod tests {
         let mut shots = days(0..3, 3, Some("Japan"), Some("Tokyo"));
         // One photo of day 1 says Kraków; the day is still away.
         shots[3] = shot(1, 8, Some("Poland"), Some("Kraków"));
-        assert_eq!(spans(&detect(&shots, &krakow())), [(0, 2, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &krakow(), &[])), [(0, 2, Kind::Found)]);
     }
 
     #[test]
@@ -612,7 +644,7 @@ mod tests {
         let mut shots = days(0..3, 2, None, None);
         // One day alone is too short to suggest.
         shots.extend(days(10..11, 5, None, None));
-        assert_eq!(spans(&detect(&shots, &krakow())), [(0, 2, Kind::Suggested)]);
+        assert_eq!(spans(&detect(&shots, &krakow(), &[])), [(0, 2, Kind::Suggested)]);
     }
 
     #[test]
@@ -620,7 +652,7 @@ mod tests {
         let mut shots = days(0..2, 2, Some("Poland"), Some("Grabarka"));
         shots.extend(days(10..12, 2, Some("Poland"), None));
         let s = TripSettings { suggest_photos: 1000, ..krakow() };
-        assert_eq!(spans(&detect(&shots, &s)), [(0, 1, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &s, &[])), [(0, 1, Kind::Found)]);
     }
 
     #[test]
@@ -628,7 +660,7 @@ mod tests {
         let mut shots = days(0..2, 2, Some("Poland"), Some("Grabarka"));
         shots.extend(days(5..7, 2, Some("Germany"), Some("Berlin")));
         let s = TripSettings { home: Some(Home { country: Some("Poland".into()), city: None }), ..krakow() };
-        assert_eq!(spans(&detect(&shots, &s)), [(5, 6, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &s, &[])), [(5, 6, Kind::Found)]);
     }
 
     #[test]
@@ -639,7 +671,29 @@ mod tests {
         shots.push(Shot { geo: Some((48.21, 16.37)), ..shot(3, 8, None, None) });
         shots.push(Shot { geo: Some((48.21, 16.37)), ..shot(4, 8, None, None) });
         shots.push(Shot { geo: Some((50.0614, 19.9366)), ..shot(5, 8, None, None) });
-        assert_eq!(spans(&detect(&shots, &krakow())), [(3, 4, Kind::Found)]);
+        assert_eq!(spans(&detect(&shots, &krakow(), &[])), [(3, 4, Kind::Found)]);
+    }
+
+    #[test]
+    fn what_lies_next_to_a_dismissed_trip_is_still_found() {
+        // An untagged weekend (dismissed), then straight into Japan without a gap.
+        let mut shots = days(0..2, 3, None, None);
+        shots.extend(days(2..5, 3, Some("Japan"), Some("Tokyo")));
+        let s = krakow();
+        assert_eq!(spans(&detect(&shots, &s, &[])), [(0, 4, Kind::Found)]);
+        let weekend = (shots[0].at, shots[5].at);
+        assert_eq!(spans(&detect(&shots, &s, &[weekend])), [(2, 4, Kind::Found)]);
+    }
+
+    #[test]
+    fn blank_parts_of_home_count_as_unset() {
+        let mut shots = days(0..2, 2, Some("Poland"), Some("Grabarka"));
+        shots.extend(days(5..7, 2, Some("Germany"), Some("Berlin")));
+        // `Poland|` from the command line: the country alone, not a city named "".
+        let home = Home { country: Some(" Poland ".into()), city: Some(" ".into()) };
+        let s = TripSettings { home: Some(home), ..krakow() };
+        assert_eq!(spans(&detect(&shots, &s, &[])), [(5, 6, Kind::Found)]);
+        assert_eq!(Home { country: Some("".into()), city: None }.normalised(), None);
     }
 
     #[test]

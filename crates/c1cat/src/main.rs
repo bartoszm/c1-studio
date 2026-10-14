@@ -1167,10 +1167,10 @@ fn main() -> anyhow::Result<()> {
                         "none" | "" => None,
                         text => {
                             let (country, city) = match text.split_once('|') {
-                                Some((country, city)) => (country, Some(city.trim().to_owned())),
+                                Some((country, city)) => (country, Some(city.to_owned())),
                                 None => (text, None),
                             };
-                            Some(c1index::trips::Home { country: Some(country.trim().to_owned()), city })
+                            c1index::trips::Home { country: Some(country.to_owned()), city }.normalised()
                         }
                     };
                 }

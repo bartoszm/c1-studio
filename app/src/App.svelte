@@ -894,18 +894,38 @@
     }
     return tripList;
   }
-  let tripKey = $derived(JSON.stringify(filter));
+  // The counts set the picked trip aside (see Library::trips): picking one asks nothing.
+  let tripKey = $derived(JSON.stringify({ ...filter, trip: undefined }));
   $effect(() => {
     void tripKey;
     void version;
     if (status) untrack(refreshTrips);
   });
-  /** The trip the filter picks, if it is one of the list's. */
-  let shownTrip = $derived(
-    (filter.trip && tripList?.trips.find((t) => t.start === filter.trip?.from && t.end === filter.trip?.to)) || null,
-  );
+  /** The trip picked last, by id: its span may change when trips are found again. */
+  let pickedTrip: number | null = null;
+  /** The trip the filter picks: the one picked, else one with just that span. */
+  let shownTrip = $derived.by(() => {
+    const span = filter.trip;
+    if (!span || !tripList) return null;
+    return (
+      tripList.trips.find((t) => t.id === pickedTrip) ??
+      tripList.trips.find((t) => t.start === span.from && t.end === span.to) ??
+      null
+    );
+  });
+  // Found again with another span (photos added, a split): the grid follows the trip.
+  $effect(() => {
+    const t = shownTrip;
+    if (t && filter.trip && (t.start !== filter.trip.from || t.end !== filter.trip.to)) {
+      untrack(() => {
+        filter = { ...filter, trip: { from: t.start, to: t.end } };
+        run(true);
+      });
+    }
+  });
   /** Picking a trip lets go of picked days, which may lie outside it. */
   function pickTrip(t: api.Trip | null) {
+    pickedTrip = t?.id ?? null;
     filter = t
       ? { ...filter, trip: { from: t.start, to: t.end }, captured: undefined, year: undefined, month: undefined, week: undefined }
       : { ...filter, trip: undefined };
