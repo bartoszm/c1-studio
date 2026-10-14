@@ -1144,6 +1144,27 @@ written before the kinds below existed still read.
 - **Known limit:** what Capture One changed between the last sync and a store wipe shows
   up as a fresh state, not as changes.
 
+### Settings: sidebar sections, main colour, offline map
+
+- **Settings dialog** (⚙ in the header, or right-click a sidebar section's title):
+  - the sidebar's sections can be hidden and put in any order (drag, or ↑↓); *Reset
+    sidebar* brings back the default. Right-click a title for *Hide this section*;
+  - *Use online map services* (on by default).
+  - Kept in the webview's storage under `settings` (`lib/settings.svelte.ts`), the same for
+    every catalog. `lib/sections.ts` merges a stored list with sections added since: a new
+    one goes after the section it follows by default.
+- **Hidden sections cost nothing:** a query counts only the groups something shows
+  (`SECTION_DIMS`, plus those the analysis tab and the Location fill-in need). Smart albums
+  are not counted while Albums is hidden. Showing a section again re-runs the query. A
+  filter set from a section that is then hidden keeps its chip.
+- **Main colour** section: the analysis' colour names (`hue`), with swatches. Picks add up
+  (any of them), as in the analysis tab. It shows once photos are measured.
+- **Offline map:** with online services off, the map draws a plain ground with a 10° grid
+  (made locally) instead of OpenFreeMap's tiles; the place search is hidden; place hints
+  in the details panel don't ask Nominatim (`allowPlaceLookups` in `lib/placeHints.ts`).
+  Pins, tiles, Shift+drag, dragging photos onto the map and GPX still work. Switching
+  changes the map's style in place.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare
