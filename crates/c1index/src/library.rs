@@ -22,7 +22,7 @@ use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, Queued
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::looks::{Look, Looks, Record};
-use crate::places::PlaceBook;
+use crate::places::{Coarse, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
@@ -166,6 +166,9 @@ pub struct Library {
     place_book: PlaceBook,
     /// Where places are, as worked out from their names.
     place_cache: Mutex<placing::PlaceCache>,
+    /// Photos given only their place's position, by photo key (also in `place_book`):
+    /// read when their documents are made, so the index knows them.
+    coarse: RwLock<HashMap<String, Coarse>>,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -257,6 +260,22 @@ impl Library {
         let looks = Looks::open(&dir.join("analysis.redb"))?;
         let trip_book = TripBook::open(&dir.join("trips.redb"))?;
         let place_book = PlaceBook::open(&dir.join("places.redb"))?;
+        // A photo moved since it was given its place's position is placed for real: its
+        // mark goes. (One with no position keeps it: an undo can be redone.)
+        let mut marks = place_book.coarse()?;
+        let mut moved = Vec::new();
+        for (key, c) in &marks {
+            let geo = match store.row_of(key)? {
+                Some(row) => store.photo(row)?.and_then(|p| p.geo),
+                None => None,
+            };
+            if geo.is_some_and(|g| !c.holds(g.lat, g.lon)) {
+                moved.push((key.clone(), None));
+            }
+        }
+        place_book.set_coarse(&moved)?;
+        marks.retain(|k, _| !moved.iter().any(|(m, _)| m == k));
+        let coarse = RwLock::new(marks);
         let seen = looks
             .all()?
             .into_iter()
@@ -281,11 +300,20 @@ impl Library {
             trip_cache: Mutex::new(None),
             place_book,
             place_cache: Mutex::default(),
+            coarse,
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
         if !rebuild {
             library.reindex_keys(&regrouped)?;
+            // Photos given their place's position by a build that did not flag them yet.
+            let coarse: Vec<String> = library.coarse.read().unwrap().keys().cloned().collect();
+            let flagged = Filter { gps: Some(true), approx: Some(true), ..Filter::default() };
+            if !coarse.is_empty()
+                && library.query(&flagged, &QueryOptions { limit: Some(0), ..Default::default() })?.total == 0
+            {
+                library.reindex_keys(&coarse)?;
+            }
         }
         if rebuild {
             library.reindex()?;
@@ -301,7 +329,10 @@ impl Library {
     /// A photo's search document, with what its analysis found.
     fn doc(&self, row: u64, photo: &Photo) -> tantivy::TantivyDocument {
         let seen = self.seen.read().unwrap();
-        schema::document(&self.fields, row, photo, seen.get(&photo.id.key()))
+        let key = photo.id.key();
+        let coarse =
+            photo.geo.is_some_and(|g| self.coarse.read().unwrap().get(&key).is_some_and(|c| c.holds(g.lat, g.lon)));
+        schema::document(&self.fields, row, photo, seen.get(&key), coarse)
     }
 
     /// Every measured photo's analysis and groups.

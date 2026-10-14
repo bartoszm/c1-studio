@@ -23,7 +23,8 @@
 
   let settings = $derived.by(() => {
     const g = gap.trim() === "" || Number.isNaN(+gap) ? null : Math.round(+gap);
-    return g !== null && g > 0 ? { max_gap_minutes: g, positions, places } : null;
+    // Up to two days: further apart, photos say nothing about each other's place.
+    return g !== null && g > 0 && g <= 2880 ? { max_gap_minutes: g, positions, places } : null;
   });
   const shown = () => ({ ...$state.snapshot(filter), within: undefined });
 

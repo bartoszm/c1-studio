@@ -135,6 +135,8 @@ pub mod flag {
     pub const COLORED: &str = "colored";
     pub const KEYWORDED: &str = "keyworded";
     pub const GPS: &str = "gps";
+    /// The position was given from the photo's place's name, not taken where it was.
+    pub const COARSE_GPS: &str = "coarse_gps";
     pub const EDITED: &str = "edited";
     pub const LOCAL_LAYERS: &str = "local_layers";
     pub const TRASHED: &str = "trashed";
@@ -331,7 +333,8 @@ fn sort_key(ms: Option<i64>, row: u64) -> i64 {
     }
 }
 
-pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>) -> TantivyDocument {
+/// `coarse`: its position was given from its place's name (see [`flag::COARSE_GPS`]).
+pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse: bool) -> TantivyDocument {
     let mut doc = TantivyDocument::default();
     let mut dim = |d: Dim, value: &str| doc_add_str(&mut doc, f.dim(d), value);
     dim(Dim::Source, &photo.id.source.0);
@@ -377,6 +380,7 @@ pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>) -> Tan
         (flag::COLORED, photo.color.is_some()),
         (flag::KEYWORDED, !photo.keywords.is_empty()),
         (flag::GPS, photo.geo.is_some()),
+        (flag::COARSE_GPS, coarse && photo.geo.is_some()),
         (flag::EDITED, photo.edit.edited),
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),

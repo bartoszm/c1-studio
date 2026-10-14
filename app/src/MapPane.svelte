@@ -143,26 +143,40 @@
   }
 
   // Places the gazetteer does not know well enough: looked up online, a few at a time
-  // (Nominatim takes one request a second), once per filter.
+  // (Nominatim takes one request a second), once per filter. Requests failing one after
+  // another (offline, blocked) stop the round; the next is tried after a pause.
   let lookedUp = "";
   let lookUpRunning = false;
+  let retryAt = 0;
+  const FAILS_IN_A_ROW = 3;
+  const RETRY_MS = 5 * 60_000;
   /** Places still to look up, for the note. */
   let lookingUp = $state(0);
   async function lookUp() {
     const k = key;
-    if (lookUpRunning || lookedUp === k || !settings.onlineMap || !settings.approxPlaces) return;
+    if (lookUpRunning || lookedUp === k || Date.now() < retryAt || !settings.onlineMap || !settings.approxPlaces) return;
     lookedUp = k;
     lookUpRunning = true;
+    let done = false;
     try {
       const list = await api.unresolvedPlaces(untrack(() => ({ ...$state.snapshot(filter), within: undefined })));
       lookingUp = list.length;
       let batch: { path: string; found: api.Approx | null }[] = [];
+      let fails = 0;
       for (const u of list) {
         if (k !== key || !settings.onlineMap || !map) break;
         const found = await pointFor(u.place, u.have);
         lookingUp--;
         // A failed request is asked again another time.
-        if (found !== undefined) batch.push({ path: u.path, found });
+        if (found === undefined) {
+          if (++fails >= FAILS_IN_A_ROW) {
+            retryAt = Date.now() + RETRY_MS;
+            break;
+          }
+          continue;
+        }
+        fails = 0;
+        batch.push({ path: u.path, found });
         if (batch.length >= 5) {
           await api.setPlacePoints(batch);
           batch = [];
@@ -173,11 +187,17 @@
         await api.setPlacePoints(batch);
         refresh();
       }
+      done = k === key && retryAt <= Date.now();
     } catch (e) {
+      retryAt = Date.now() + RETRY_MS;
       onerror(String(e));
     } finally {
       lookingUp = 0;
       lookUpRunning = false;
+      // Not finished for this filter (failed, or the filter changed meanwhile): the next
+      // refresh asks again; a changed filter is asked at once.
+      if (!done) lookedUp = "";
+      if (k !== key) lookUp();
     }
   }
 
@@ -219,7 +239,6 @@
       el.title = atOne
         ? `≈ ${placeLabel(c.place)}${c.places > 1 ? ` (${c.places} places)` : ""}: ${c.count.toLocaleString()} photo${c.count === 1 ? "" : "s"} placed by name, shown at their ${LEVEL_WORD[c.level]} · click for more`
         : `≈ ${c.places} places, ${c.count.toLocaleString()} photos placed by name · click to zoom in`;
-      el.dataset.bounds = JSON.stringify(c.bounds);
       // A card hangs below its point, so photos with GPS standing on theirs above stay in sight.
       const marker = new maplibregl.Marker({ element: el, anchor: bucket === "far" ? "center" : "top", offset: [0, bucket === "far" ? 0 : 4] })
         .setLngLat([c.lon, c.lat])

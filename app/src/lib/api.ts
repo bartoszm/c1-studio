@@ -31,6 +31,8 @@ export type Filter = {
   gps?: boolean;
   /** Photos with a place (any of country, state, city, location), or without one. */
   placed?: boolean;
+  /** Photos without a position of their own (none, or one given from their place's name). */
+  approx?: boolean;
   /** Capture time. */
   captured?: TimeRange;
   /** A trip's span: kept apart from `captured`, so days picked inside a trip narrow it. */
@@ -342,11 +344,6 @@ export const promotePlaces = (filter: Filter, paths: string[]) =>
   invoke<[number, Op][]>("promote_places", { filter, paths });
 /** Gives the photos at `rows` with no position their place's, kept marked as approximate. */
 export const promoteRows = (rows: number[]) => invoke<[number, Op][]>("promote_rows", { rows });
-/** The photos at a place, of those `filter` selects that have no position. */
-export const placeRows = (filter: Filter, path: string) => invoke<number[]>("place_rows", { filter, path });
-/** The place a position is in (offline), written as the catalog writes it. */
-export const placeAtPoint = (lat: number, lon: number) =>
-  invoke<Photo["place"] | null>("place_at_point", { lat, lon });
 export type FillGroup = { place: Photo["place"]; rows: number[] };
 /** For the photos at `rows` with a position, the place to fill their empty fields with. */
 export const fillPlan = (rows: number[]) => invoke<FillGroup[]>("fill_plan", { rows });

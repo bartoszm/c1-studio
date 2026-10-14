@@ -21,8 +21,9 @@ Kraków, not in Grzegórzki, a district GeoNames lists as a place of its own.
 
 Names are the place's own name first, then the other names it goes by, in the Latin
 script only (the catalog is typed on a Latin keyboard), each once after folding case and
-diacritics. A country's and a state's point is the population-weighted median of its
-cities: inland where people live, not the middle of a bounding box.
+diacritics. A country's and a state's point is one of its own cities: the one nearest,
+by population, to all the others (its weighted medoid). So it is where people live, never
+in the sea between two islands or the empty middle of a country in two parts.
 """
 
 import gzip
@@ -76,7 +77,9 @@ def radius_km(pop: int) -> float:
 
 def km(a: dict, b: dict) -> float:
     dlat = math.radians(b["lat"] - a["lat"])
-    dlon = math.radians(b["lon"] - a["lon"]) * math.cos(math.radians((a["lat"] + b["lat"]) / 2))
+    # The short way round: Fiji and Chukotka straddle the date line.
+    wrapped = (b["lon"] - a["lon"] + 540) % 360 - 180
+    dlon = math.radians(wrapped) * math.cos(math.radians((a["lat"] + b["lat"]) / 2))
     return 6371 * math.hypot(dlat, dlon)
 
 
@@ -93,18 +96,20 @@ def mark_parts(cities: list[dict]) -> None:
             )
 
 
-def weighted_median(points: list[tuple[float, float, int]]) -> tuple[float, float]:
-    def median(values: list[tuple[float, int]]) -> float:
-        values.sort()
-        half = sum(w for _, w in values) / 2
-        acc = 0
-        for v, w in values:
-            acc += w
-            if acc >= half:
-                return v
-        return values[-1][0]
+# The biggest cities a region's point is chosen among and weighed by: enough to stand
+# for its people, few enough to compare each with each.
+MEDOID_CITIES = 300
 
-    return median([(lat, max(pop, 1)) for lat, _, pop in points]), median([(lon, max(pop, 1)) for _, lon, pop in points])
+
+def medoid(points: list[tuple[float, float, int]]) -> tuple[float, float]:
+    """The city whose population-weighted distance to the others is least."""
+    big = sorted(points, key=lambda p: -p[2])[:MEDOID_CITIES]
+
+    def cost(c: tuple[float, float, int]) -> float:
+        return sum(max(p[2], 1) * km({"lat": c[0], "lon": c[1]}, {"lat": p[0], "lon": p[1]}) for p in big)
+
+    lat, lon, _ = min(big, key=cost)
+    return lat, lon
 
 
 def main(src: Path, out: Path) -> None:
@@ -160,12 +165,12 @@ def main(src: Path, out: Path) -> None:
     for code, (gid, name, _) in sorted(countries.items()):
         if not by_country[code]:
             continue
-        lat, lon = weighted_median(by_country[code])
+        lat, lon = medoid(by_country[code])
         lines.append("\t".join(["C", code, f"{lat:.4f}", f"{lon:.4f}", *names([name], alternate[gid])]))
     for key, (gid, name, ascii_name) in sorted(admins.items()):
         if not by_admin[key]:
             continue
-        lat, lon = weighted_median(by_admin[key])
+        lat, lon = medoid(by_admin[key])
         lines.append("\t".join(["A", key, f"{lat:.4f}", f"{lon:.4f}", *names([name, ascii_name], alternate[gid])]))
     for c in sorted(cities, key=lambda c: (c["code"], c["admin1"], -c["pop"], c["name"])):
         # Other names only for bigger places: those are the ones known abroad by another

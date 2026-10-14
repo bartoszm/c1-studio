@@ -168,4 +168,48 @@ fn neighbours_in_time_give_a_position_or_a_place() {
     assert_eq!(lib.photo(row(&lib, 8)).unwrap().unwrap().place, krakow());
     let only_close = NeighbourSettings { max_gap_minutes: 1, ..settings };
     assert_eq!(lib.neighbour_plan(&Filter::default(), &only_close).unwrap().positions, 0);
+    // A huge gap is two days, not an overflow.
+    let huge = NeighbourSettings { max_gap_minutes: i64::MAX, ..settings };
+    assert!(lib.neighbour_plan(&Filter::default(), &huge).is_ok());
+}
+
+#[test]
+fn guesses_from_neighbours_place_no_more_photos() {
+    let (_d, lib) = setup();
+    // Photo 2 gets a position between 1 and 3; it must not then place photo 7 by itself.
+    lib.neighbour_apply(&Filter::default(), &NeighbourSettings { places: false, ..NeighbourSettings::default() })
+        .unwrap();
+    lib.edit(&[
+        (row(&lib, 1), Op::SetGeo { base: None, value: None }),
+        (row(&lib, 3), Op::SetGeo { base: None, value: None }),
+    ])
+    .unwrap();
+    let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
+    assert!(!plan.sample.iter().any(|(r, ..)| *r == row(&lib, 1) || *r == row(&lib, 3)), "{plan:?}");
+}
+
+#[test]
+fn photos_without_a_position_of_their_own_include_those_given_their_place() {
+    let (_d, lib) = setup();
+    let approx = Filter { approx: Some(true), ..Filter::default() };
+    assert_eq!(numbers(&lib, &approx), [2, 4, 5, 6, 7, 8]);
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    assert_eq!(numbers(&lib, &approx), [2, 4, 5, 6, 7, 8], "4 has a position now, not its own");
+    assert_eq!(numbers(&lib, &Filter { approx: Some(false), ..Filter::default() }), [1, 3, 9]);
+    // Still flagged after the library is opened again.
+    let dir = _d.path().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    assert_eq!(numbers(&lib, &approx), [2, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn lookups_that_are_no_position_are_not_kept() {
+    let (_d, lib) = setup();
+    let path = "Atlantis|—|Xyzzyville".to_owned();
+    let bad = c1geo::Approx { lat: 95.0, lon: 10.0, level: c1geo::Level::City };
+    lib.set_place_points(&[PlaceLookup { path: path.clone(), found: Some(bad) }]).unwrap();
+    assert_eq!(lib.unresolved_places(&Filter::default()).unwrap().len(), 1, "asked again");
+    lib.set_place_points(&[PlaceLookup { path, found: None }]).unwrap();
+    assert!(lib.unresolved_places(&Filter::default()).unwrap().is_empty(), "nothing found is kept");
 }

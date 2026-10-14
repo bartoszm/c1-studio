@@ -59,6 +59,20 @@ test("a place is looked up with all its names, then fewer, down to what is known
   fetch.mock.restore();
 });
 
+test("an answer that is no position is asked again later; a code cannot add to the query", async () => {
+  const urls: string[] = [];
+  let body: unknown = [{ lat: "not a number", lon: "19.9" }];
+  const fetch = mock.method(globalThis, "fetch", async (url: string) => (urls.push(url), reply(200, body)));
+  const place = { country: "Poland", country_code: "pl&x=1", state: null, city: "Kraków", location: null };
+  assert.equal(await pointFor(place, null), undefined);
+  assert.ok(!urls[0].includes("countrycodes"), urls[0]);
+  body = { error: "html page" };
+  assert.equal(await pointFor(place, null), undefined);
+  body = [{ lat: "95", lon: "19.9" }];
+  assert.equal(await pointFor(place, null), undefined);
+  fetch.mock.restore();
+});
+
 test("dragging a pin moves the photos of it picked, two or more; else all", () => {
   const stack = [1, 2, 3, 4];
   assert.deepEqual(movingOf(stack, [2, 3, 9]), [2, 3]);
