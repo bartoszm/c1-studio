@@ -134,6 +134,9 @@ pub struct Filter {
     pub aperture: Option<Range>,
     pub focal: Option<Range>,
     pub captured: Option<TimeRange>,
+    /// The span of a trip (see [`crate::trips`]): set apart from `captured`, so a trip and
+    /// a range of days picked inside it narrow together.
+    pub trip: Option<TimeRange>,
     pub year: Option<i32>,
     /// `YYYY-MM`.
     pub month: Option<String>,
@@ -399,6 +402,9 @@ impl Filter {
             must.push(range_f64(f.focal, r));
         }
         if let Some(t) = &self.captured {
+            must.push(range_i64(f.captured, t.from, t.to));
+        }
+        if let Some(t) = &self.trip {
             must.push(range_i64(f.captured, t.from, t.to));
         }
         if let Some(year) = self.year {

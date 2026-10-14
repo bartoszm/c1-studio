@@ -8,6 +8,8 @@
 use c1model::Photo;
 
 use crate::looks::Look;
+use std::collections::HashMap;
+
 use chrono::{Datelike, Local, TimeZone};
 use tantivy::schema::{FAST, Field, INDEXED, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions};
 use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAnalyzer};
@@ -270,6 +272,55 @@ fn local_date(ms: i64) -> Option<chrono::DateTime<Local>> {
     Local.timestamp_millis_opt(ms).single()
 }
 
+const DAY_MS: i64 = 86_400_000;
+
+/// Local days of many times. The time zone is asked once or twice per day rather than
+/// once per time: on Windows each asking costs microseconds, a second over the library.
+#[derive(Default)]
+pub struct LocalDays {
+    /// UTC day → the local offset (ms) at its start and at its end.
+    offsets: HashMap<i64, (i64, i64)>,
+}
+
+impl LocalDays {
+    fn ask(ms: i64) -> Option<i64> {
+        let utc = chrono::DateTime::from_timestamp_millis(ms)?.naive_utc();
+        Some(i64::from(Local.offset_from_utc_datetime(&utc).local_minus_utc()) * 1000)
+    }
+
+    fn offset(&mut self, ms: i64) -> Option<i64> {
+        let day = ms.div_euclid(DAY_MS);
+        let (start, end) = match self.offsets.get(&day) {
+            Some(known) => *known,
+            None => {
+                let known = (Self::ask(day * DAY_MS)?, Self::ask(day * DAY_MS + DAY_MS - 1)?);
+                self.offsets.insert(day, known);
+                known
+            }
+        };
+        // A day the clocks change on is asked per time.
+        if start == end { Some(start) } else { Self::ask(ms) }
+    }
+
+    /// The local day of a time, as days since 1970-01-01: the same number all day.
+    pub fn day(&mut self, ms: i64) -> Option<i64> {
+        Some((ms + self.offset(ms)?).div_euclid(DAY_MS))
+    }
+
+    /// The local midnight that starts the day of a time.
+    pub fn midnight(&mut self, ms: i64) -> Option<i64> {
+        let day = self.day(ms)?;
+        // The offset at midnight itself, which differs from `ms`'s on a day the clocks change.
+        let guess = day * DAY_MS - self.offset(ms)?;
+        Some(day * DAY_MS - self.offset(guess)?)
+    }
+}
+
+/// The capture time back from a `captured_sort` value; None for a photo without one.
+pub fn captured_of_sort_key(key: i64) -> Option<i64> {
+    (key >= i64::MIN + (1 << 20)).then_some(key >> 20)
+}
+
 /// A time (ms) with the row in its low 20 bits, so equal times sort by row. Photos
 /// without a time sort first, also by row.
 fn sort_key(ms: Option<i64>, row: u64) -> i64 {
@@ -431,6 +482,24 @@ fn doc_add_str(doc: &mut TantivyDocument, field: Field, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_days_agree_with_the_time_zone() {
+        let mut days = LocalDays::default();
+        // Every 7 hours over two years, through clock changes wherever the tests run.
+        for i in 0..2_500 {
+            let ms = 1_700_000_000_000 + i * 7 * 3_600_000;
+            let date = local_date(ms).unwrap();
+            let midnight = Local
+                .from_local_datetime(&date.date_naive().and_hms_opt(0, 0, 0).unwrap())
+                .earliest()
+                .unwrap()
+                .timestamp_millis();
+            assert_eq!(days.midnight(ms), Some(midnight), "at {ms}");
+            assert_eq!(days.day(ms), days.day(midnight), "at {ms}");
+            assert_ne!(days.day(ms), days.day(midnight - 1), "at {ms}");
+        }
+    }
 
     #[test]
     fn folders_above_a_file() {

@@ -100,6 +100,22 @@ enum Command {
         #[arg(long)]
         no_sync: bool,
     },
+    /// Trips found from when and where photos were taken (and what was done to them), each
+    /// with how many of its photos match. Trips are found once home is set.
+    Trips {
+        #[command(flatten)]
+        select: Selector,
+        /// Set home first: `Country` (only trips abroad) or `Country|City`; `none` clears it.
+        #[arg(long)]
+        home: Option<String>,
+        /// Set the hours without photos that start a new trip first.
+        #[arg(long)]
+        gap_hours: Option<f64>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        no_sync: bool,
+    },
     /// Write viewable JPEGs of matching photos, from Capture One's thumbnail, its
     /// preview (white-balanced here) or the original's embedded JPEG.
     Image {
@@ -1137,6 +1153,75 @@ fn main() -> anyhow::Result<()> {
             let filter = select.to_filter(&session.library)?;
             let result = session.library.query(&filter, &QueryOptions { limit: Some(0), ..QueryOptions::default() })?;
             println!("{}", result.total);
+        }
+        Command::Trips { select, home, gap_hours, json, no_sync } => {
+            let session = open(cli.catalog.as_ref())?;
+            if !no_sync {
+                sync(&session, false)?;
+            }
+            let library = &session.library;
+            if home.is_some() || gap_hours.is_some() {
+                let mut settings = library.trip_settings()?;
+                if let Some(home) = home {
+                    settings.home = match home.trim() {
+                        "none" | "" => None,
+                        text => {
+                            let (country, city) = match text.split_once('|') {
+                                Some((country, city)) => (country, Some(city.trim().to_owned())),
+                                None => (text, None),
+                            };
+                            Some(c1index::trips::Home { country: Some(country.trim().to_owned()), city })
+                        }
+                    };
+                }
+                if let Some(hours) = gap_hours {
+                    settings.gap_hours = hours;
+                }
+                library.set_trip_settings(&settings)?;
+            }
+            let filter = select.to_filter(library)?;
+            let started = Instant::now();
+            let list = library.trips(&filter)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&list)?);
+                return Ok(());
+            }
+            let Some(home) = &list.settings.home else {
+                let guess = list.home_guess.as_ref().map_or(String::new(), |h| {
+                    format!(
+                        " (photographed on most days: --home '{}|{}')",
+                        h.country.as_deref().unwrap_or(""),
+                        h.city.as_deref().unwrap_or("")
+                    )
+                });
+                println!("No home set, so no trips are found{guess}.");
+                return Ok(());
+            };
+            let day = |ms: i64| {
+                chrono::DateTime::from_timestamp_millis(ms)
+                    .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+                    .unwrap_or_default()
+            };
+            for row in &list.trips {
+                let t = &row.trip;
+                let kind = format!("{:?}", t.kind).to_lowercase();
+                let name = t.name.as_deref().unwrap_or(if row.label.is_empty() { "(no place)" } else { &row.label });
+                println!(
+                    "{:>4}  {:<9}  {} .. {}  {:>5} of {:>5}  {name}",
+                    t.id,
+                    kind,
+                    day(t.start),
+                    day(t.end),
+                    row.count,
+                    row.photos
+                );
+            }
+            println!(
+                "{} trips, home {} ({:.1} ms)",
+                list.trips.len(),
+                [home.city.as_deref(), home.country.as_deref()].into_iter().flatten().collect::<Vec<_>>().join(", "),
+                started.elapsed().as_secs_f64() * 1000.0
+            );
         }
         Command::Facets { select, dims, top, no_sync } => {
             let session = open(cli.catalog.as_ref())?;
