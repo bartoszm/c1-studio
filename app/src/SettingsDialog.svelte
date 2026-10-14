@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
 
@@ -20,12 +21,31 @@
   let isDefault = $derived(
     JSON.stringify(settings.sections) === JSON.stringify(defaultSections()),
   );
+  const title = (key: string) => titles[key] ?? key;
+
+  // Focus goes into the dialog, stays in it, and goes back where it was on closing.
+  let dialog: HTMLDivElement;
+  onMount(() => {
+    const before = document.activeElement;
+    dialog.querySelector<HTMLElement>("input, button:not(:disabled)")?.focus();
+    return () => { if (before instanceof HTMLElement) before.focus(); };
+  });
+  function onkey(e: KeyboardEvent) {
+    if (e.key === "Escape") return onclose();
+    if (e.key !== "Tab") return;
+    const all = [...dialog.querySelectorAll<HTMLElement>("input, button:not(:disabled)")];
+    if (!all.length) return;
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const next = e.shiftKey ? (at <= 0 ? all.length - 1 : at - 1) : (at < 0 || at === all.length - 1 ? 0 : at + 1);
+    all[next].focus();
+    e.preventDefault();
+  }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
+<svelte:window onkeydown={onkey} />
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
-  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" bind:this={dialog}>
     <h2 id="settings-title">Settings</h2>
 
     <h3>Sidebar sections</h3>
@@ -44,10 +64,10 @@
           <span class="grip" aria-hidden="true">⋮⋮</span>
           <label>
             <input type="checkbox" checked={!s.hidden} onchange={(e) => (s.hidden = !e.currentTarget.checked)} />
-            <span class:hidden={s.hidden}>{titles[s.key] ?? s.key}</span>
+            <span class:hidden={s.hidden}>{title(s.key)}</span>
           </label>
-          <button aria-label="Move {titles[s.key]} up" disabled={i === 0} onclick={() => moveTo(i, i - 1)}>↑</button>
-          <button aria-label="Move {titles[s.key]} down" disabled={i === settings.sections.length - 1} onclick={() => moveTo(i, i + 1)}>↓</button>
+          <button aria-label="Move {title(s.key)} up" disabled={i === 0} onclick={() => moveTo(i, i - 1)}>↑</button>
+          <button aria-label="Move {title(s.key)} down" disabled={i === settings.sections.length - 1} onclick={() => moveTo(i, i + 1)}>↓</button>
         </li>
       {/each}
       <li

@@ -272,12 +272,13 @@
     }
   });
 
-  // A section shown again needs counts the last query didn't make.
+  /** The groups the result on screen was counted with. */
   let counted: Dim[] = [];
+  // A section shown again needs counts that result doesn't have. (Before the first result,
+  // or after a failed query, the next query counts it anyway.)
   $effect(() => {
     const now = dims;
-    if (now.some((d) => !counted.includes(d))) untrack(() => { if (result) run(true); });
-    counted = now;
+    untrack(() => { if (result && now.some((d) => !counted.includes(d))) run(true); });
   });
   $effect(() => allowPlaceLookups(settings.onlineMap));
   let showSettings = $state(false);
@@ -300,14 +301,16 @@
   async function run(keep = false) {
     const mine = ++generation;
     const asked = $state.snapshot(filter);
+    const groups = dims;
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
       const r = await api.query(asked, {
-        sort: "DateDesc", limit: PAGE, offset: 0, facets: dims, facets_ignore_own: true,
+        sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
       if (mine !== generation) return;
       result = r;
+      counted = groups;
       pages = new SvelteMap([[0, r.rows]]);
       loading = new Map();
       error = null;
@@ -980,13 +983,14 @@
   }
 
   function onkey(e: KeyboardEvent) {
-    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu)) {
+    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu || sectionMenu)) {
       keywordMenu = null;
       placeMenu = null;
       albumMenu = null;
+      sectionMenu = null;
       return;
     }
-    if (writing || showBackups || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
