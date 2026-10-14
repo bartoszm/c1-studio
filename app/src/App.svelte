@@ -93,7 +93,8 @@
   let beforeTile: api.BBox | undefined;
   function mapMoved(bounds: api.BBox) {
     mapView = bounds;
-    if (!follow || mapTile) return;
+    // Photos with no position are in no area: while the grid shows them, it does not follow.
+    if (!follow || mapTile || filter.gps === false) return;
     clearTimeout(followTimer);
     followTimer = setTimeout(() => {
       if (!mapOn || !follow) return;
@@ -142,6 +143,13 @@
   function toggleFollow() {
     follow = !follow;
     if (!follow) mapReleased();
+  }
+  /** Photos the map cannot show by position (no GPS): the grid lets go of the map's area. */
+  function showOffMap(extra: Filter) {
+    clearTimeout(followTimer);
+    mapTile = null;
+    filter = { ...filter, within: undefined, gps: false, ...extra };
+    run();
   }
   /** An area drawn on the map: the grid keeps to it, whatever the map shows next. */
   function mapBox(bounds: api.BBox) {
@@ -1656,11 +1664,11 @@
       onpick={mapPick}
       onsetgeo={mapSetGeo}
       onerror={(text) => (editError = text)}
-      onplace={(path) => { filter = { ...filter, place_under: path, gps: false }; run(); }}
+      onplace={(path) => showOffMap({ place_under: path, placed: undefined })}
       onpromote={promotePlace}
       ondragrows={(rows) => (dragging = rows && { rows })}
       onneighbours={() => (placingFromNeighbours = true)}
-      onunplaced={(placed) => { filter = { ...filter, gps: false, placed }; run(); }}
+      onunplaced={(placed) => showOffMap({ placed, place_under: undefined })}
     />
   {/if}
   {#if tab === "analysis"}
