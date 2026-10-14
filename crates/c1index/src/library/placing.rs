@@ -32,7 +32,9 @@ pub(super) struct PlaceCache {
     online: Option<HashMap<String, Looked>>,
     /// What place paths' names were found as in the gazetteer (`path#code`).
     resolved: HashMap<String, Resolved>,
-    /// The catalog's spellings, for one index generation.
+    /// Bumped when photos' places may have changed (a place edited, a sync).
+    places: u64,
+    /// The catalog's spellings, as of a count of `places`.
     spellings: Option<(u64, Arc<Spellings>)>,
 }
 
@@ -236,6 +238,11 @@ impl Library {
         self.keys.read().unwrap().get(row as usize)?.clone()
     }
 
+    /// Photos' places may have changed: the catalog's spellings are worked out again.
+    pub(super) fn places_changed(&self) {
+        self.place_cache.lock().unwrap().places += 1;
+    }
+
     /// The whole place of a photo at `path` (its country code too), or the path's levels.
     fn place_at(&self, path: &str, row: u64) -> Place {
         match self.store.photo(row) {
@@ -311,27 +318,30 @@ impl Library {
             }
         };
         let mut result = MapResult::default();
-        {
-            let coarse = self.coarse.read().unwrap();
-            for s in self.seen(&searcher, &Filter { gps: Some(true), ..base.clone() }, false)? {
+        // The filter may want only positions of their own, or only those that are not.
+        let wants = |approx: bool| base.approx.is_none_or(|a| a == approx);
+        if wants(false) {
+            for s in self.seen(&searcher, &Filter { gps: Some(true), approx: Some(false), ..base.clone() }, false)? {
                 let Some((lat, lon)) = s.geo else { continue };
-                let given = if coarse.is_empty() { None } else { self.key_of(s.row).and_then(|k| coarse.get(&k)) };
-                match given.filter(|c| c.holds(lat, lon)) {
-                    Some(c) => {
-                        // Marks from before paths were kept: read the photo's.
-                        let path: Arc<str> = if c.path.is_empty() {
-                            self.store
-                                .photo(s.row)?
-                                .and_then(|p| schema::place_tree(&p.place).pop())
-                                .unwrap_or_default()
-                                .into()
-                        } else {
-                            c.path.as_str().into()
-                        };
+                points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness });
+            }
+        }
+        if wants(true) {
+            // Given their place's position: shown under the place they have now (it may
+            // have been edited since); their mark says only how precise the position is.
+            let promoted =
+                self.seen(&searcher, &Filter { gps: Some(true), approx: Some(true), ..base.clone() }, true)?;
+            let (coarse, keys) = (self.coarse.read().unwrap(), self.keys.read().unwrap());
+            for s in promoted {
+                let Some((lat, lon)) = s.geo else { continue };
+                let mark = keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| coarse.get(k));
+                match (&s.path, mark.filter(|c| c.holds(lat, lon))) {
+                    (Some(path), Some(c)) => {
                         result.place_only += 1;
-                        add(&path, Approx { lat, lon, level: c.level }, &s);
+                        add(path, Approx { lat, lon, level: c.level }, &s);
                     }
-                    None => points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness }),
+                    // Its place cleared since (or its mark gone): a position like any other.
+                    _ => points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness }),
                 }
             }
         }
@@ -415,8 +425,8 @@ impl Library {
         Ok(())
     }
 
-    /// The photos `filter` selects whose whole place is `path` and that have no position
-    /// of their own.
+    /// The photos `filter` selects whose whole place is `path` and that have no position,
+    /// not even their place's.
     pub fn place_rows(&self, filter: &Filter, path: &str) -> anyhow::Result<Vec<u64>> {
         let searcher = self.reader.searcher();
         let base = Filter { within: None, gps: Some(false), place_under: Some(path.to_owned()), ..filter.clone() };
@@ -478,14 +488,17 @@ impl Library {
     }
 
     /// For each gazetteer place the catalog names, the name it uses most; worked out again
-    /// when the index changed.
+    /// when places changed.
     fn spellings(&self) -> anyhow::Result<Arc<Spellings>> {
-        let generation = self.reader.searcher().generation().generation_id();
-        if let Some((g, s)) = &self.place_cache.lock().unwrap().spellings
-            && *g == generation
-        {
-            return Ok(s.clone());
-        }
+        let generation = {
+            let cache = self.place_cache.lock().unwrap();
+            if let Some((g, s)) = &cache.spellings
+                && *g == cache.places
+            {
+                return Ok(s.clone());
+            }
+            cache.places
+        };
         let options = QueryOptions { limit: Some(0), facets: vec![Dim::PlaceTree], ..QueryOptions::default() };
         let counts = self.query(&Filter::default(), &options)?.facets.remove(&Dim::PlaceTree).unwrap_or_default();
         let mut votes: [HashMap<u32, HashMap<String, u64>>; 3] = Default::default();
@@ -615,12 +628,12 @@ impl Library {
         let mut fixes: Vec<Fix> = Vec::new();
         let mut placed: Vec<(i64, Arc<str>, u64)> = Vec::new();
         if settings.positions {
-            let guessed = self.place_book.guessed()?;
-            for s in self.seen(&searcher, &Filter { approx: Some(false), ..Filter::default() }, false)? {
+            let own = self.seen(&searcher, &Filter { approx: Some(false), ..Filter::default() }, false)?;
+            let (guessed, keys) = (self.guessed.read().unwrap(), self.keys.read().unwrap());
+            for s in own {
                 let (Some(at), Some((lat, lon))) = (s.at, s.geo) else { continue };
-                if guessed.is_empty()
-                    || !self.key_of(s.row).and_then(|k| guessed.get(&k)).is_some_and(|g| g.holds(lat, lon))
-                {
+                let guess = || keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| guessed.get(k));
+                if guessed.is_empty() || !guess().is_some_and(|g| g.holds(lat, lon)) {
                     fixes.push(Fix { at, lat, lon });
                 }
             }
@@ -722,6 +735,7 @@ impl Library {
             changes.push((row, op));
         }
         self.place_book.set_guessed(&guesses)?;
+        self.guessed.write().unwrap().extend(guesses.into_iter().filter_map(|(k, g)| Some((k, g?))));
         self.edit(&changes)
     }
 }

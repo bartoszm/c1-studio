@@ -137,6 +137,45 @@ fn a_place_given_its_position_still_shows_as_approximate() {
 }
 
 #[test]
+fn a_place_given_its_position_shows_under_its_place_as_edited() {
+    let (_d, lib) = setup();
+    let four = row(&lib, 4);
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    let wieliczka = place("Poland", "Malopolska", "Wieliczka");
+    lib.edit(&[(four, Op::SetPlace { base: krakow(), value: wieliczka.clone() })]).unwrap();
+    let map = lib.map(&Filter::default(), &view(9.0)).unwrap();
+    assert_eq!(
+        map.approx.iter().map(|c| c.place.as_deref()).collect::<Vec<_>>(),
+        [Some("Poland|Malopolska|Wieliczka")]
+    );
+    // Its place cleared, it is a position like any other, as the tray shows it.
+    lib.edit(&[(four, Op::SetPlace { base: wieliczka, value: Place::default() })]).unwrap();
+    let map = lib.map(&Filter::default(), &view(9.0)).unwrap();
+    assert_eq!((map.located, map.approx_located, map.place_only), (4, 1, 2));
+    assert_eq!(numbers(&lib, &Filter { placed: Some(true), approx: Some(true), ..Filter::default() }), [5, 6]);
+}
+
+#[test]
+fn a_photo_moved_since_it_was_given_its_place_loses_its_mark_when_opened_again() {
+    let (d, lib) = setup();
+    let (four, five) = (row(&lib, 4), row(&lib, 5));
+    let undo = lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned(), "Poland".to_owned()]).unwrap();
+    let given = |r| lib.photo(r).unwrap().unwrap().geo.unwrap();
+    let (at_four, at_five) = (given(four), given(five));
+    let by_hand =
+        |lat, lon| Op::SetGeo { base: None, value: Some(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual }) };
+    // 4 moved by hand; 5 undone, so it has no position.
+    lib.edit(&[(four, by_hand(50.0, 19.9))]).unwrap();
+    lib.edit(&undo.into_iter().filter(|(r, _)| *r == five).collect::<Vec<_>>()).unwrap();
+    drop(lib);
+    let lib = Library::open(d.path()).unwrap();
+    // Both put back: 4 by hand, a position of its own now; 5 redone, its place's again.
+    lib.edit(&[(four, by_hand(at_four.lat, at_four.lon)), (five, Op::SetGeo { base: None, value: Some(at_five) })])
+        .unwrap();
+    assert_eq!(numbers(&lib, &Filter { gps: Some(true), approx: Some(true), ..Filter::default() }), [5]);
+}
+
+#[test]
 fn places_are_filled_from_positions_as_the_catalog_writes_them() {
     let (_d, lib) = setup();
     let plan = lib.fill_plan(&[row(&lib, 9), row(&lib, 1), row(&lib, 4)]).unwrap();
@@ -176,7 +215,7 @@ fn neighbours_in_time_give_a_position_or_a_place() {
 #[test]
 fn guesses_from_neighbours_place_no_more_photos() {
     let (_d, lib) = setup();
-    // Photo 2 gets a position between 1 and 3; it must not then place photo 7 by itself.
+    // Photo 2 gets a position between 1 and 3; theirs gone, it must not give them one.
     lib.neighbour_apply(&Filter::default(), &NeighbourSettings { places: false, ..NeighbourSettings::default() })
         .unwrap();
     lib.edit(&[

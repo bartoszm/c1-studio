@@ -91,6 +91,19 @@ impl Store {
         Ok(tx.open_table(KEYS)?.get(key)?.map(|v| v.value()))
     }
 
+    /// The rows of those of `keys` the store has, read together.
+    pub fn rows_of<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> anyhow::Result<Vec<(u64, &'a str)>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(KEYS)?;
+        let mut out = Vec::new();
+        for key in keys {
+            if let Some(row) = table.get(key)? {
+                out.push((row.value(), key));
+            }
+        }
+        Ok(out)
+    }
+
     /// Row → photo key, for every row.
     pub fn keys(&self) -> anyhow::Result<Vec<(u64, String)>> {
         let tx = self.db.begin_read()?;
