@@ -194,6 +194,15 @@ pub struct TripList {
     pub trips: Vec<TripRow>,
 }
 
+/// A photo on a trip's route: where and when it was taken.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct RoutePoint {
+    pub at: i64,
+    pub lat: f64,
+    pub lon: f64,
+    pub row: u64,
+}
+
 /// A photo the filter selects, as trips and the timeline count it.
 struct Taken {
     at: i64,
@@ -1061,6 +1070,33 @@ impl Library {
         let mut out: Vec<(i64, usize)> = days.into_iter().collect();
         out.sort_unstable();
         Ok(out)
+    }
+
+    /// The photos `filter` selects that have a position and a capture time, in the order
+    /// they were taken: a route to draw. A filter's own `within` is set aside, as for the map.
+    pub fn route(&self, filter: &Filter) -> anyhow::Result<Vec<RoutePoint>> {
+        let query = self.compile(&Filter { within: None, gps: Some(true), ..filter.clone() })?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((fast.i64("captured_sort")?, fast.u64("row")?, fast.f64("lat")?, fast.f64("lon")?));
+        }
+        let mut points: Vec<RoutePoint> = docs
+            .iter()
+            .filter_map(|a| {
+                let (captured, row, lat, lon) = &columns[a.segment_ord as usize];
+                Some(RoutePoint {
+                    at: captured.first(a.doc_id).and_then(schema::captured_of_sort_key)?,
+                    lat: lat.first(a.doc_id)?,
+                    lon: lon.first(a.doc_id)?,
+                    row: row.first(a.doc_id)?,
+                })
+            })
+            .collect();
+        points.sort_by_key(|p| (p.at, p.row));
+        Ok(points)
     }
 
     pub fn trip_settings(&self) -> anyhow::Result<TripSettings> {

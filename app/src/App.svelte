@@ -1,6 +1,6 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
@@ -20,6 +20,9 @@
   import SourceMenu from "./SourceMenu.svelte";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
+  import Timeline from "./Timeline.svelte";
+  import TripsSection from "./TripsSection.svelte";
+  import { tripDates, tripName } from "./lib/trips";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
 
@@ -228,6 +231,7 @@
   const expanded = new SvelteSet<string>(remembered("expanded"));
   const folded = new SvelteSet<string>(remembered("folded"));
   let showInfo = $state(!remembered("folded").includes("info"));
+  let showTimeline = $state(!remembered("folded").includes("timeline"));
   // Tile size and shape, remembered too.
   function rememberedTiles(): { tiles: Tiles; shape: Shape } {
     try {
@@ -261,7 +265,8 @@
   $effect(() => {
     try {
       localStorage.setItem("expanded", JSON.stringify([...expanded]));
-      localStorage.setItem("folded", JSON.stringify([...folded, ...(showInfo ? [] : ["info"])]));
+      const hidden = [...(showInfo ? [] : ["info"]), ...(showTimeline ? [] : ["timeline"])];
+      localStorage.setItem("folded", JSON.stringify([...folded, ...hidden]));
     } catch {
       // Storage unavailable: the layout just isn't remembered.
     }
@@ -876,6 +881,56 @@
   }
   const isPreset = (days: number) => rangeFrom === presetFrom(days) && rangeTo === "";
 
+  // Trips: loaded here for both the sidebar and the timeline, counted under the filter.
+  let tripList = $state.raw<api.TripList | null>(null);
+  let tripsAsked = 0;
+  async function refreshTrips(): Promise<api.TripList | null> {
+    const mine = ++tripsAsked;
+    try {
+      const got = await api.trips($state.snapshot(filter));
+      if (mine === tripsAsked) tripList = got;
+    } catch (e) {
+      if (mine === tripsAsked) editError = String(e);
+    }
+    return tripList;
+  }
+  let tripKey = $derived(JSON.stringify(filter));
+  $effect(() => {
+    void tripKey;
+    void version;
+    if (status) untrack(refreshTrips);
+  });
+  /** The trip the filter picks, if it is one of the list's. */
+  let shownTrip = $derived(
+    (filter.trip && tripList?.trips.find((t) => t.start === filter.trip?.from && t.end === filter.trip?.to)) || null,
+  );
+  /** Picking a trip lets go of picked days, which may lie outside it. */
+  function pickTrip(t: api.Trip | null) {
+    filter = t
+      ? { ...filter, trip: { from: t.start, to: t.end }, captured: undefined, year: undefined, month: undefined, week: undefined }
+      : { ...filter, trip: undefined };
+    run();
+  }
+  function pickDays(range: api.TimeRange | null) {
+    filter = { ...filter, captured: range ?? undefined, year: undefined, month: undefined, week: undefined };
+    run();
+  }
+  /** A new album at the top level, named after the trip, holding its photos. */
+  async function exportTrip(t: api.Trip) {
+    try {
+      const rows = (await api.query({ trip: { from: t.start, to: t.end } }, { sort: "Date" })).rows;
+      const name = `${tripName(t)} · ${tripDates(t, true)}`;
+      const [seq, change] = await api.changeCollection({ Create: { id: "", name, kind: "Album", parent: null, rule: null } });
+      undoStack.push({ collection: seq, change });
+      redoStack = [];
+      await refreshCollections();
+      if ("Create" in change) await applyEdit({ AddToAlbum: change.Create.id }, rows);
+      if (!editError) note(`Album “${name}” made with ${rows.length.toLocaleString()} photos; Write sends it to Capture One`);
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+
   function clearAll() {
     filter = {};
     search = "";
@@ -896,7 +951,7 @@
 
   const TITLES: Record<string, string> = {
     rating: "Rating", color: "Colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
-    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look",
+    albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look", trips: "Trips",
   };
 
   let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart, queuedAlbums));
@@ -1102,6 +1157,7 @@
     month: (v) => (filter.week ? [] : [{ text: monthText(v) }]),
     week: (v) => [{ text: weekText(v) }],
     captured: (v) => [{ what: "Dates", text: rangeText(v) }],
+    trip: (v) => [{ what: "Trip", text: shownTrip ? tripName(shownTrip) : rangeText(v), title: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
     country: (v) => [{ what: "Country", text: v }],
     keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
@@ -1284,6 +1340,7 @@
       </label>
       <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
     {/if}
+    <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
@@ -1322,6 +1379,20 @@
       {/if}
     </section>
     {@render dates()}
+    <section>
+      {@render head("trips")}
+      {#if !folded.has("trips")}
+        <TripsSection
+          list={tripList}
+          selected={shownTrip?.id ?? null}
+          focusRow={selected === null ? undefined : rowAt(selected)}
+          onpick={pickTrip}
+          onchanged={refreshTrips}
+          onexport={exportTrip}
+          onerror={(text) => (editError = text)}
+        />
+      {/if}
+    </section>
     <section>
       {@render head("places")}
       {#if !folded.has("places")}
@@ -1404,6 +1475,17 @@
   {/if}
 
   <div class="pane" class:strip={mapOn}>
+  {#if showTimeline && tab !== "analysis" && status}
+    <Timeline
+      {filter}
+      {version}
+      trips={tripList?.settings.home ? tripList.trips : []}
+      trip={shownTrip}
+      onrange={pickDays}
+      ontrip={pickTrip}
+      onerror={(text) => (editError = text)}
+    />
+  {/if}
   {#if mapOn}
     <MapPane
       {filter}
@@ -1412,6 +1494,7 @@
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
       pickedRows={[...picked]}
       tile={mapTile}
+      trip={shownTrip && { name: tripName(shownTrip) }}
       onbox={mapBox}
       onview={mapMoved}
       ontile={mapTilePick}

@@ -29,6 +29,8 @@ export type Filter = {
   no_country_code?: boolean;
   /** Capture time. */
   captured?: TimeRange;
+  /** A trip's span: kept apart from `captured`, so days picked inside a trip narrow it. */
+  trip?: TimeRange;
   camera?: string;
   country?: string;
   keywords_under?: string[];
@@ -308,6 +310,55 @@ export type Group = { id: string; size: number; rows: number[] };
 /** Duplicate groups (or series) among the photos the filter selects, biggest first. */
 export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
+
+/** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */
+export type Home = { country: string | null; city: string | null };
+export type TripSettings = {
+  home: Home | null;
+  gap_hours: number;
+  bridge_days: number;
+  min_photos: number;
+  suggest_days: number;
+  suggest_photos: number;
+};
+/** found: photos placed away from home; suggested: a busy stretch with no place; kept:
+ *  touched by the user; dismissed: not a trip. */
+export type TripKind = "found" | "suggested" | "kept" | "dismissed";
+export type Trip = {
+  id: number;
+  /** First and last photo, Unix ms. */
+  start: number;
+  end: number;
+  name: string | null;
+  kind: TripKind;
+  /** Its main places, for when it has no name. */
+  label: string;
+  /** Photos in its span, and of them the ones the filter selects. */
+  photos: number;
+  count: number;
+  /** The photo shown for it. */
+  cover: number | null;
+};
+export type TripList = { settings: TripSettings; home_guess: Home | null; trips: Trip[] };
+export type TripEdit =
+  | { op: "rename"; id: number; name: string | null }
+  | { op: "keep"; id: number }
+  | { op: "dismiss"; id: number }
+  | { op: "forget"; id: number }
+  | { op: "merge"; ids: number[] }
+  | { op: "split"; id: number; at: number }
+  | { op: "create"; start: number; end: number; name: string | null };
+/** Every trip, counted under `filter` (its own trip aside). */
+export const trips = (filter: Filter) => invoke<TripList>("trips", { filter });
+/** Photos per day under `filter`: [local midnight in ms, count], in date order. */
+export const timeline = (filter: Filter) => invoke<[number, number][]>("timeline", { filter });
+/** A photo on a route: when and where it was taken. */
+export type RoutePoint = { at: number; lat: number; lon: number; row: number };
+/** The photos `filter` selects that have a position, in the order they were taken. */
+export const route = (filter: Filter) => invoke<RoutePoint[]>("route", { filter });
+export const setTripSettings = (settings: TripSettings) => invoke<void>("set_trip_settings", { settings });
+/** Returns the trip to select afterwards, if any. */
+export const editTrips = (edit: TripEdit) => invoke<number | null>("edit_trips", { edit });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */

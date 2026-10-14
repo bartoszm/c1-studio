@@ -9,7 +9,7 @@
   import { movingOf } from "./lib/pins";
 
   let {
-    filter, version, focus, dragRows, pickedRows, tile, onbox, onview, ontile, onpick, onsetgeo, onerror,
+    filter, version, focus, dragRows, pickedRows, tile, trip, onbox, onview, ontile, onpick, onsetgeo, onerror,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
     filter: Filter;
@@ -23,6 +23,8 @@
     pickedRows: number[];
     /** The tile picked: the grid shows just its photos. */
     tile: BBox | null;
+    /** The trip the grid shows: its route can be drawn and played. */
+    trip: { name: string } | null;
     /** Shift+drag picked an area: the grid shows just its photos. */
     onbox: (bounds: BBox) => void;
     /** A tile clicked (its photos' bounds, and the photo when it is one), or let go (null). */
@@ -272,9 +274,11 @@
       const text = String((e as { error?: Error }).error?.message ?? e);
       if (/Failed to fetch|NetworkError|style/i.test(text)) failed = "The map's tiles could not be loaded (needs a network).";
     });
-    map.once("load", () => { failed = null; moved(); });
+    map.once("load", () => { failed = null; moved(); drawRoute(); });
     return () => {
       box.removeEventListener("mousedown", startBox, true);
+      stop();
+      head = undefined;
       map?.remove();
       map = undefined;
       markers.clear();
@@ -297,6 +301,134 @@
     const watch = new ResizeObserver(() => map?.resize());
     watch.observe(box);
     return () => watch.disconnect();
+  });
+
+  // A trip's route: its photos with a position joined in the order they were taken. Playing
+  // moves along it photo by photo, drawing the way behind and showing each photo in turn.
+  let route = $state.raw<api.RoutePoint[]>([]);
+  /** How far along, in photos (a fraction is part of the way to the next). */
+  let along = $state(0);
+  let playing = $state(false);
+  let head: maplibregl.Marker | undefined;
+  let headImg: HTMLImageElement | undefined;
+  let routeAsked = 0;
+  // The canvas is painted inverted (see the style below): these read as grey and amber.
+  const ROUTE_ALL = "#8a8a8a";
+  const ROUTE_DONE = "#7a4f00";
+
+  async function loadRoute() {
+    const mine = ++routeAsked;
+    stop();
+    if (!trip) {
+      route = [];
+      drawRoute();
+      return;
+    }
+    try {
+      const got = await api.route(untrack(() => $state.snapshot({ ...filter, within: undefined })));
+      if (mine !== routeAsked) return;
+      route = got;
+      along = got.length ? got.length - 1 : 0;
+      drawRoute();
+      fitRoute();
+    } catch (e) {
+      if (mine === routeAsked) onerror(String(e));
+    }
+  }
+  // By name: the trip object is made afresh whenever the trips are counted again.
+  let tripKey = $derived(trip?.name ?? null);
+  $effect(() => {
+    void tripKey;
+    void key;
+    void version;
+    untrack(loadRoute);
+  });
+
+  /** Where the way has got to: between two photos, part of the way to the next. */
+  function position(): [number, number] | null {
+    if (!route.length) return null;
+    const i = Math.min(Math.floor(along), route.length - 1);
+    const a = route[i];
+    const b = route[Math.min(i + 1, route.length - 1)];
+    const f = along - i;
+    return [a.lon + (b.lon - a.lon) * f, a.lat + (b.lat - a.lat) * f];
+  }
+
+  function line(points: [number, number][]) {
+    return { type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: points } };
+  }
+
+  function ensureLayers(): boolean {
+    if (!map?.isStyleLoaded()) return false;
+    if (!map.getSource("route")) {
+      map.addSource("route", { type: "geojson", data: line([]) });
+      map.addSource("route-done", { type: "geojson", data: line([]) });
+      map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": ROUTE_ALL, "line-width": 2, "line-dasharray": [2, 2] } });
+      map.addLayer({ id: "route-done", type: "line", source: "route-done", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ROUTE_DONE, "line-width": 4 } });
+    }
+    return true;
+  }
+
+  function drawRoute() {
+    if (!ensureLayers() || !map) return;
+    const all = route.map((p) => [p.lon, p.lat] as [number, number]);
+    (map.getSource("route") as maplibregl.GeoJSONSource).setData(line(all.length > 1 ? all : []));
+    const at = position();
+    const done = at ? [...all.slice(0, Math.floor(along) + 1), at] : [];
+    (map.getSource("route-done") as maplibregl.GeoJSONSource).setData(line(done.length > 1 ? done : []));
+    if (!at || route.length < 2) {
+      head?.remove();
+      head = undefined;
+      return;
+    }
+    if (!head) {
+      const el = document.createElement("div");
+      el.className = "route-head";
+      headImg = document.createElement("img");
+      headImg.alt = "";
+      el.append(headImg);
+      head = new maplibregl.Marker({ element: el }).setLngLat(at).addTo(map);
+    }
+    head.setLngLat(at);
+    const row = route[Math.min(Math.round(along), route.length - 1)].row;
+    const src = api.thumbUrl(row);
+    if (headImg && headImg.getAttribute("src") !== src) headImg.src = src;
+  }
+
+  function fitRoute() {
+    if (!map || route.length < 2) return;
+    const lons = route.map((p) => p.lon);
+    const lats = route.map((p) => p.lat);
+    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 80, maxZoom: 15 });
+  }
+
+  let frame = 0;
+  function play() {
+    if (route.length < 2) return;
+    if (along >= route.length - 1) along = 0;
+    playing = true;
+    // About twenty seconds for the whole way, but no faster than three photos a second.
+    const perMs = Math.min(3, (route.length - 1) / 20) / 1000;
+    let last = performance.now();
+    const step = (now: number) => {
+      if (!playing) return;
+      along = Math.min(route.length - 1, along + (now - last) * perMs);
+      last = now;
+      drawRoute();
+      if (along >= route.length - 1) playing = false;
+      else frame = requestAnimationFrame(step);
+    };
+    frame = requestAnimationFrame(step);
+  }
+  function stop() {
+    playing = false;
+    cancelAnimationFrame(frame);
+  }
+  let alongText = $derived.by(() => {
+    const p = route[Math.min(Math.round(along), route.length - 1)];
+    if (!p) return "";
+    const when = new Date(p.at).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+    return `${when} · ${Math.round(along) + 1} of ${route.length}`;
   });
 
   // Shift+drag draws an area; its photos become the grid's filter.
@@ -426,6 +558,24 @@
       >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
     {/if}
   </form>
+  {#if trip && route.length > 1}
+    <div class="route" role="group" aria-label="Route of {trip.name}">
+      <button title={playing ? "Pause" : "Play the route, photo by photo"} onclick={() => (playing ? stop() : play())}>{playing ? "❚❚" : "▶"}</button>
+      <input
+        type="range"
+        min="0"
+        max={route.length - 1}
+        step="0.01"
+        bind:value={along}
+        oninput={() => { stop(); drawRoute(); }}
+        aria-label="How far along the route"
+      />
+      <span class="when">{alongText}</span>
+      <button title="Show the whole route" onclick={fitRoute}>⤢</button>
+    </div>
+  {:else if trip && route.length < 2}
+    <div class="route quiet">Too few photos of “{trip.name}” have a position to draw its route.</div>
+  {/if}
   <div class="note">
     {#if failed}{failed}
     {:else if aim}They go where the cross is; zoom in to place them closer.
@@ -453,6 +603,21 @@
     position: absolute; left: 8px; bottom: 8px; padding: 2px 8px; font-size: 12px;
     background: rgba(20, 20, 20, 0.8); border-radius: 3px; pointer-events: none;
   }
+  .route {
+    position: absolute; right: 8px; bottom: 30px; z-index: 4; display: flex; align-items: center; gap: 6px;
+    width: min(460px, calc(100% - 16px)); padding: 4px 8px; font-size: 12px;
+    background: rgba(20, 20, 20, 0.9); border: 1px solid var(--line, #444); border-radius: 4px;
+  }
+  .route.quiet { width: auto; color: var(--muted, #8a8a8a); }
+  .route button { flex: none; min-width: 26px; padding: 2px 6px; border-radius: 3px; border: 1px solid var(--line, #444); }
+  .route button:hover { background: var(--hover, #333); }
+  .route input { flex: 1; min-width: 60px; accent-color: #fbbf24; }
+  .route .when { flex: none; color: var(--muted, #8a8a8a); font-variant-numeric: tabular-nums; }
+  .canvas :global(.route-head) {
+    width: 44px; height: 44px; border: 2px solid #fbbf24; border-radius: 50%; overflow: hidden;
+    background: #333; box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.35), 0 1px 6px rgba(0, 0, 0, 0.7); pointer-events: none; z-index: 5;
+  }
+  .canvas :global(.route-head img) { width: 100%; height: 100%; object-fit: cover; }
   /* A photo stands on a stem; the dot at its foot is the place. */
   .canvas :global(.pin) { display: flex; flex-direction: column; align-items: center; cursor: pointer; }
   /* Only the photo, stem and dot catch the mouse; the room beside the stem is the map's. */
