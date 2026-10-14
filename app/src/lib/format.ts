@@ -57,6 +57,7 @@ export const HUES: Record<string, string> = {
   black: "#111", white: "#eee", grey: "#888", brown: "#7a4a25", red: "#d33", orange: "#f08a24",
   yellow: "#e6d23a", green: "#3a9a45", teal: "#1fa0a0", blue: "#3060d0", purple: "#8040c0", pink: "#e060a8",
   "black & white": "linear-gradient(90deg, #000 50%, #fff 50%)",
+  muted: "#8a8478",
 };
 
 export function opText(op: Op, albumName: (id: string) => string = (id) => id): { field: string; from: string; to: string } | null {

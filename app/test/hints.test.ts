@@ -1,6 +1,6 @@
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
-import { placeAt } from "../src/lib/placeHints";
+import { allowPlaceLookups, placeAt } from "../src/lib/placeHints";
 import { movingOf } from "../src/lib/pins";
 
 const reply = (status: number, body: unknown = {}, headers: Record<string, string> = {}) =>
@@ -27,6 +27,15 @@ test("a spot is asked once, at most one a second; refused, it waits as told and 
   assert.equal((await placeAt(1, 1))?.city, "Kraków", "asked again");
   assert.equal(at.length, 4);
   assert.ok(at[3] - at[2] >= 1900, `waits out Retry-After, not ${at[3] - at[2]} ms`);
+  fetch.mock.restore();
+});
+
+test("with online lookups off, nothing is asked", async () => {
+  const fetch = mock.method(globalThis, "fetch", async () => reply(200, krakow));
+  allowPlaceLookups(false);
+  assert.equal(await placeAt(10, 10), null);
+  assert.equal(fetch.mock.callCount(), 0);
+  allowPlaceLookups(true);
   fetch.mock.restore();
 });
 

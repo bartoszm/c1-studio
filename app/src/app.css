@@ -89,6 +89,8 @@ header {
 .toggle { padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
 .toggle:hover { background: var(--hover); }
 .toggle.on { color: var(--text); background: var(--on); }
+.toggle.settings { display: inline-grid; place-items: center; padding: 4px 7px; }
+.toggle.settings:hover { color: var(--text); }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 
 aside {

@@ -7,6 +7,7 @@
   import * as api from "./lib/api";
   import type { BBox, Cluster, Filter } from "./lib/api";
   import { movingOf } from "./lib/pins";
+  import { settings } from "./lib/settings.svelte";
 
   let {
     filter, version, focus, dragRows, pickedRows, tile, onbox, onview, ontile, onpick, onsetgeo, onerror,
@@ -39,6 +40,21 @@
   // OpenFreeMap: free vector tiles, no key. Painted light, turned dark by a CSS filter
   // on the canvas (markers are not on it).
   const STYLE = "https://tiles.openfreemap.org/styles/positron";
+  /** Without online services: a plain ground with a line every 10°, made here. */
+  const OFFLINE: maplibregl.StyleSpecification = {
+    version: 8,
+    sources: { graticule: { type: "geojson", data: graticule(10) } },
+    layers: [
+      { id: "ground", type: "background", paint: { "background-color": "#e9e7e1" } },
+      { id: "graticule", type: "line", source: "graticule", paint: { "line-color": "#c9c5bb", "line-width": 1 } },
+    ],
+  };
+  function graticule(step: number): maplibregl.GeoJSONSourceSpecification["data"] {
+    const lines: [number, number][][] = [];
+    for (let lon = -180; lon <= 180; lon += step) lines.push([[lon, -85], [lon, 0], [lon, 85]]);
+    for (let lat = -80; lat <= 80; lat += step) lines.push([[-180, lat], [0, lat], [180, lat]]);
+    return { type: "Feature", properties: {}, geometry: { type: "MultiLineString", coordinates: lines } };
+  }
   const START = "map-view";
   maplibregl.setWorkerUrl(workerUrl);
 
@@ -245,7 +261,7 @@
     try {
       map = new maplibregl.Map({
         container: box,
-        style: STYLE,
+        style: settings.onlineMap ? STYLE : OFFLINE,
         center: start.center,
         zoom: start.zoom,
         maxZoom: 19,
@@ -279,6 +295,18 @@
       map = undefined;
       markers.clear();
     };
+  });
+
+  // Online services turned on or off in Settings: the ground changes, the pins stay.
+  let online = settings.onlineMap;
+  $effect(() => {
+    if (settings.onlineMap === online) return;
+    online = settings.onlineMap;
+    failed = null;
+    hits = [];
+    searched = false;
+    chosen = null;
+    map?.setStyle(online ? STYLE : OFFLINE);
   });
 
   // The filter or an edit changed: draw again.
@@ -336,7 +364,7 @@
   async function search(e: Event) {
     e.preventDefault();
     const q = query.trim();
-    if (!q) return;
+    if (!q || !settings.onlineMap) return;
     searching = true;
     try {
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`);
@@ -404,30 +432,33 @@
   <div class="canvas" bind:this={box}></div>
   {#if aim}<div class="aim" style:left="{aim.x}px" style:top="{aim.y}px"></div>{/if}
   {#if rubber}<div class="rubber" style:left="{rubber.x}px" style:top="{rubber.y}px" style:width="{rubber.w}px" style:height="{rubber.h}px"></div>{/if}
-  <form class="find" onsubmit={search}>
-    <input
-      type="search"
-      placeholder="Find a place"
-      spellcheck="false"
-      bind:value={query}
-      oninput={() => { searched = false; hits = []; }}
-      onkeydown={(e) => { if (e.key === "Escape") { query = ""; hits = []; chosen = null; e.currentTarget.blur(); } }}
-    />
-    {#if searching}<span class="muted">searching…</span>{/if}
-    {#if hits.length}
-      <ul>{#each hits as h}<li><button type="button" onclick={() => go(h)}>{h.name}</button></li>{/each}</ul>
-    {:else if searched}<span class="muted">No such place.</span>{/if}
-    {#if chosen && pickedRows.length}
-      <button
-        type="button"
-        class="put"
-        title={chosen.name}
-        onclick={() => { onsetgeo(pickedRows, chosen!.lat, chosen!.lon); chosen = null; }}
-      >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
-    {/if}
-  </form>
+  {#if settings.onlineMap}
+    <form class="find" onsubmit={search}>
+      <input
+        type="search"
+        placeholder="Find a place"
+        spellcheck="false"
+        bind:value={query}
+        oninput={() => { searched = false; hits = []; }}
+        onkeydown={(e) => { if (e.key === "Escape") { query = ""; hits = []; chosen = null; e.currentTarget.blur(); } }}
+      />
+      {#if searching}<span class="muted">searching…</span>{/if}
+      {#if hits.length}
+        <ul>{#each hits as h}<li><button type="button" onclick={() => go(h)}>{h.name}</button></li>{/each}</ul>
+      {:else if searched}<span class="muted">No such place.</span>{/if}
+      {#if chosen && pickedRows.length}
+        <button
+          type="button"
+          class="put"
+          title={chosen.name}
+          onclick={() => { onsetgeo(pickedRows, chosen!.lat, chosen!.lon); chosen = null; }}
+        >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
+      {/if}
+    </form>
+  {/if}
   <div class="note">
     {#if failed}{failed}
+    {:else if !settings.onlineMap && !aim && !tile && located > 0}Offline: no map tiles or place search (Settings) · {inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view
     {:else if aim}They go where the cross is; zoom in to place them closer.
     {:else if tile}The grid shows the picked tile's photos · pick some and drag the pin (or them) to move just those · click it again, the map or Esc to show the area
     {:else if located === 0}No photos here have a position yet. Drag some from below onto the map.
