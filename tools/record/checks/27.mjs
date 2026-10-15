@@ -5,6 +5,8 @@
 // "N of M" where the filter splits a group, and each total equal to its badge's N.
 // #32: searches for something no photo has and prints what the charts say. Expected:
 // "Nothing matches the filter." and no "0 of 0 photos measured".
+// On a fresh copy, let the analysis finish first (the footer's "measuring photos" gone):
+// before that there are few groups to compare.
 //
 // usage: node tools/record/drive.mjs tools/record/checks/27.mjs --port 9223
 
@@ -19,6 +21,22 @@ const badge = (d, src) =>
     return card?.querySelector(".size").textContent.trim() ?? null;
   })()`);
 const matched = (b) => (b ? +b.split(" of ")[0].replace(/\D/g, "") : null);
+
+/** Clicks the grid's photo of a series (one of `srcs`, on screen), then the panel's link to
+ *  its series, and compares the grid with that series' card. */
+async function panelLink(d, srcs) {
+  await d.sleep(500);
+  const cell = await d.evaluate(`(() => { const img = [...document.querySelectorAll(".cell img")].find((i) => ${JSON.stringify(srcs)}.includes(i.src)); const r = img.closest(".cell").getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, src: img.src }; })()`);
+  await d.clickAt(cell.x, cell.y);
+  await d.waitFor(".info-panel .look-link", /series/);
+  await d.press(".info-panel .look-link", /series/);
+  await d.sleep(2000);
+  const fromPanel = await total(d);
+  await d.press(".tabs button", /^Analysis$/);
+  await d.sleep(2500);
+  const its = await badge(d, cell.src);
+  console.log(JSON.stringify({ step: "from the panel's link", badge: its, grid: fromPanel, ok: its ? fromPanel === matched(its) : "not listed" }));
+}
 
 async function analysisRed(d) {
   await d.reset();
@@ -47,23 +65,30 @@ export default {
       const n = await total(d);
       console.log(JSON.stringify({ step: "from its card", badge: first, grid: n, ok: n === matched(first) }));
 
-      // The panel's link, from a photo of a series picked in the grid.
+      // The panel's link, from a photo of a listed series picked in the grid: the series'
+      // photos only, then the grid scrolled until one of the first card's shows.
       await analysisRed(d);
+      const srcs = await d.evaluate(`[...${series}.querySelector(".group").querySelectorAll("img")].map((i) => i.src)`);
       await d.evaluate(`${series}.querySelector("h3 .link").click()`);
       await d.press(".tabs button", /^Photos$/);
       await d.sleep(2000);
       await d.waitFor(".cell img");
-      const src = await d.evaluate(`document.querySelector(".cell img").src`);
-      const cell = await d.locate(".cell");
-      await d.clickAt(cell.x, cell.y);
-      await d.waitFor(".info-panel .look-link", /series/);
-      await d.press(".info-panel .look-link", /series/);
-      await d.sleep(2000);
-      const fromPanel = await total(d);
-      await d.press(".tabs button", /^Analysis$/);
-      await d.sleep(2500);
-      const its = await badge(d, src);
-      console.log(JSON.stringify({ step: "from the panel's link", badge: its, grid: fromPanel, ok: its ? fromPanel === matched(its) : "not listed: the filter picks too few of it" }));
+      let cell = null;
+      for (let i = 0; i < 200 && !cell; i++) {
+        cell = await d.evaluate(`(() => {
+          const img = [...document.querySelectorAll(".cell img")].find((i) => ${JSON.stringify(srcs)}.includes(i.src));
+          if (!img) return null;
+          img.closest(".cell").scrollIntoView({ block: "center" });
+          const r = img.closest(".cell").getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        })()`);
+        if (cell) break;
+        const moved = await d.evaluate(`(() => { const m = document.querySelector(".cell").closest("main"); const at = m.scrollTop; m.scrollTop += m.clientHeight; return m.scrollTop !== at; })()`);
+        if (!moved) break;
+        await d.sleep(300);
+      }
+      if (!cell) console.log(JSON.stringify({ step: "from the panel's link", note: "none of the first series' photos found in the grid" }));
+      else await panelLink(d, srcs);
     }
 
     await d.reset();
