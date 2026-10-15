@@ -155,11 +155,20 @@ photos with edits not yet written, and the panel lists which fields.
 | Colour tag | `-` red, `+` green, `*` yellow. Or click a dot in the panel; clicking the current one clears it. |
 | Add a keyword | Ctrl+K (with the panel shown), or the *Add a keyword* field in the panel. It completes from the catalog, most used first. Nested keywords are typed with `\|`: `trips \| japan`. A keyword that does not exist yet is created. |
 | Remove a keyword | × next to it in the panel. Keywords under it go too; the × says so. |
-| Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. |
+| Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. Long lists show their first 8 (those on only some first); *+N more* shows the rest. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
 | Albums | Drag the photos onto an album in the sidebar (several picked go together). The panel lists the albums a photo is in; × takes it out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. While the grid shows an album, Delete takes the picked photos out of it. Only albums take photos; see [Albums](#albums). |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
+
+**Several photos picked.** The panel opens with an *Edit N photos* block: rating, colour,
+the keyword field, Country, Code, State, City, Location, GPS and the IPTC fields, always in
+that order and at the same height, so a field you are typing in never moves. A field shows
+the value all of them share; otherwise its placeholder says how they differ (*3 values*,
+*on 4 of 10*, *empty on 10*), with more in its tooltip. Below the block: how many of them
+have edits waiting, the keyword, album and place lists, then the focused photo's details
+(EXIF, Look, File). While a new pick is read, the lists from before stay, dimmed. The
+footer says *Editing 20,559 photos…* while a big edit or an undo runs.
 
 **Title is not a caption.** Capture One follows the strict IPTC meaning: Title is the
 *Object Name*, a short formal identifier of the image (a file or job code), and sits

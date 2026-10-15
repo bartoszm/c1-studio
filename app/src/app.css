@@ -92,6 +92,8 @@ header {
 .toggle.settings { display: inline-grid; place-items: center; padding: 4px 7px; }
 .toggle.settings:hover { color: var(--text); }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; }
+/* A fixed width: the result's size and time change with every query. */
+header .count { min-width: 15em; text-align: right; }
 
 aside {
   grid-area: side;
@@ -340,6 +342,12 @@ footer {
 .info-panel .add-keyword input:focus { outline: none; border-color: var(--queued); }
 .info-panel .error { padding: 4px 0 0; }
 .info-panel .queued-note { margin: 8px 0 0; color: var(--queued); }
+/* Several photos picked: their fields first, at fixed heights; what varies comes below. */
+.info-panel .batch { padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.info-panel .queued-note.badge { height: 1.35em; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12px; }
+.info-panel .lists.stale { opacity: 0.45; pointer-events: none; }
+.info-panel .more { margin: 2px 0 0; font-size: 12px; }
+.info-panel .focused { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .info-panel .tag { padding: 0 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
 .info-panel dl { display: grid; grid-template-columns: 82px 1fr; gap: 4px 8px; margin: 10px 0 0; }
 .info-panel dt { color: var(--muted); }
@@ -413,6 +421,7 @@ footer .edit-error { color: var(--error); }
 .node.drop { background: var(--queued); }
 .node.drop .name, .node.drop .n, .node.drop .icon { color: #fff; }
 .edit-note { color: var(--muted); }
+footer .busy { color: var(--text); }
 .fill-offer { display: inline-flex; align-items: center; gap: 6px; }
 .fill-offer button { padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; }
 .fill-offer button:first-of-type { border-color: var(--queued); background: var(--queued); color: #fff; font-weight: 600; }
@@ -423,7 +432,10 @@ footer .edit-error { color: var(--error); }
 .info-panel .palette i { min-width: 3px; }
 .info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
-.copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; }
+.copy-slot { flex: none; width: 16em; display: flex; justify-content: flex-end; }
+.copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; white-space: nowrap; }
+.copy-to.hidden { visibility: hidden; }
+.app.busy, .app.busy * { cursor: progress; }
 .copy-to:hover { filter: brightness(1.12); }
 
 /* Tile size in the header. */
@@ -461,7 +473,8 @@ footer .edit-error { color: var(--error); }
 .info-panel .field::placeholder { color: #5a5a5a; }
 .info-panel .field:hover { border-color: var(--line); }
 .info-panel .field:focus { outline: none; background: var(--bg); border-color: var(--queued); }
-.info-panel .field.code { width: 4.5em; text-transform: uppercase; }
+.info-panel .field.code { width: 6.5em; text-transform: uppercase; }
+.info-panel .field.code::placeholder { text-transform: none; }
 .info-panel dl.fields.queued .field { color: var(--queued); }
 
 /* Copy and paste between photos. */

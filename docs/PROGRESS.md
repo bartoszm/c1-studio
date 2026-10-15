@@ -1337,6 +1337,28 @@ country) and 68k have neither.
   (`groups_split_by_a_filter_count_whole_and_drop_what_is_no_group`).
   `tools/record/checks/27.mjs` measures it on the recording instance.
 
+### Editing several photos: a fixed block, one read, feedback (#35, #36, #37)
+
+- **One read for the selection:** `Library::selection` (`library/selection.rs`) reads the
+  picked photos in one transaction and returns their keywords, albums and places with
+  counts, and each editable field merged (`Merged { same, values, empty }`: rating, colour,
+  GPS, every IPTC field). The `selection_summary` command replaces `keyword_counts`,
+  `album_counts` and `place_counts`, and the app's three effects with their 80 ms timers.
+  One read runs at a time; picks changing faster are read once it is done, newest only.
+  A reply for the pick before stays, dimmed and inert, until the new one is in; the
+  fields wait (read-only, "…") so nothing typed is overwritten. `Merged.top` lists the
+  most used values with their counts, for the fields' tooltips.
+- **The panel with several picked** opens with an *Edit N photos* block in a fixed order and
+  height (rating, colour, keyword field, Location fields, GPS, IPTC), merged values in
+  placeholders and tooltips (`lib/batch.ts`), never the focused photo's values as the
+  selection's. Below it: a one-line badge for waiting edits, the lists cut to 8 (partial
+  first, *+N more*), then the focused photo's EXIF, Look and File. If the layout above a
+  focused field still changes, the panel scrolls by as much. The Code field is wide enough
+  for its placeholder.
+- **Header:** *⇉ Copy to N selected* has its own slot, shown or hidden; the count has a fixed
+  width. **Footer:** *Editing N photos…* while an edit, undo or redo runs, with a busy cursor.
+- `tools/record/checks/batch-fields.mjs` samples the block's fields and the header every
+  frame through edits, undos and Ctrl+A.
 ### Map: room for the find box, the tray and the pins (#22)
 
 - **Padding:** fits and flights used one padding on all sides (90 px, 80 for a route), so
