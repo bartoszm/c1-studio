@@ -266,10 +266,10 @@
   function moved() {
     // Panned round the world: back to the same place within -180..180, without a move to
     // see. The jump ends in another `moveend`, which does the rest.
+    // (Not `LngLat.wrap()`: it changes the last digits of a longitude already in range.)
     const at = map!.getCenter();
-    const wrapped = at.wrap();
-    if (wrapped.lng !== at.lng) {
-      map!.jumpTo({ center: wrapped });
+    if (at.lng < -180 || at.lng > 180) {
+      map!.jumpTo({ center: [wrapLon(at.lng), at.lat] });
       return;
     }
     try {
@@ -531,6 +531,7 @@
       routeOf = next;
       route = got;
       along = step.along;
+      if (got.length < 2) stop();
       drawRoute();
       if (step.fresh) fitRoute();
     } catch (e) {

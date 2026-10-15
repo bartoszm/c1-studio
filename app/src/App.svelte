@@ -137,6 +137,8 @@
   $effect(() => {
     if (!mapView || !shouldFollow({ follow, mapOn, tile: !!mapTile, filter })) return;
     untrack(() => {
+      // The map's own report of this view, waiting to be followed, would only run it again.
+      clearTimeout(followTimer);
       filter = following(filter);
       run(true);
     });
@@ -150,6 +152,8 @@
     }
   }
   function showTab(next: Tab) {
+    // The map reports its view again when it opens: one kept from before would be followed first.
+    if (next !== "map") mapView = null;
     tab = next;
     mapRow = null;
     viewing = false;
@@ -157,6 +161,11 @@
   function toggleFollow() {
     follow = !follow;
     if (!follow) mapReleased();
+    else if (mapView && !mapTile && filter.within) {
+      // A drawn area gives way to what the map shows.
+      filter = { ...filter, within: undefined };
+      run(true);
+    }
   }
   /** Photos the map cannot show by position (no GPS): the grid lets go of the map's area. */
   function showOffMap(extra: Filter) {
@@ -1080,6 +1089,7 @@
   }
 
   function clearAll() {
+    mapTile = null;
     filter = {};
     search = "";
     run();
@@ -1346,8 +1356,12 @@
   );
 
   function dropChip(key: keyof Filter, rest: unknown) {
-    // The map's area dropped: the grid stops following it, or it would come straight back.
-    if (key === "within" && !mapTile) follow = false;
+    // A picked tile dropped: the grid goes back to the map's view. The map's area dropped:
+    // the grid stops following it, or it would come straight back.
+    if (key === "within") {
+      if (mapTile) mapTile = null;
+      else follow = false;
+    }
     filter = { ...filter, [key]: rest };
     if (key === "text") search = "";
     run();
