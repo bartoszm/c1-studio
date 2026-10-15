@@ -29,6 +29,7 @@
   import { tripDates, tripName } from "./lib/trips";
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
+  import { editingNote, sameRows } from "./lib/batch";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -579,62 +580,24 @@
   }
   let clipboard = $state<Clipboard | null>(rememberedClip());
   let copying = $state<api.Photo | null>(null);
-  /** The keywords across the picked photos, with how many carry each; null for one. */
-  let selectionKeywords = $state<[string, number][] | null>(null);
-  let keywordsAsked = 0;
+  /** What the picked photos have, read together; null for one. A reply for the pick before
+   *  stays while the new one is read, so the panel dims it rather than going blank. */
+  let selection = $state.raw<{ rows: number[]; data: api.Selection } | null>(null);
+  let selectionAsked = 0;
   $effect(() => {
     const rows = [...picked];
     void version;
-    const mine = ++keywordsAsked;
+    const mine = ++selectionAsked;
     if (rows.length < 2 || !showInfo) {
-      selectionKeywords = null;
+      selection = null;
       return;
     }
-    // A moment's wait: Shift+arrow picks change faster than a big selection reads.
-    const wait = setTimeout(() => {
-      api.keywordCounts(rows).then((c) => { if (mine === keywordsAsked) selectionKeywords = c; }).catch(() => {});
-    }, 80);
-    return () => clearTimeout(wait);
+    api.selectionSummary(rows).then((data) => { if (mine === selectionAsked) selection = { rows, data }; }).catch(() => {});
   });
-  /** The albums the picked photos are in, with how many each holds; null for one. */
-  let selectionAlbums = $state<[string, number][] | null>(null);
-  let albumsAsked = 0;
-  $effect(() => {
-    const rows = [...picked];
-    void version;
-    const mine = ++albumsAsked;
-    if (rows.length < 2 || !showInfo) {
-      selectionAlbums = null;
-      return;
-    }
-    const wait = setTimeout(() => {
-      api.albumCounts(rows).then((c) => { if (mine === albumsAsked) selectionAlbums = c; }).catch(() => {});
-    }, 80);
-    return () => clearTimeout(wait);
-  });
-  /** The places of the picked photos, each with the photos that have it; null for one. */
-  let selectionPlaces = $state.raw<{ rows: number[]; groups: [api.Photo["place"], number[]][] } | null>(null);
-  let placesAsked = 0;
-  $effect(() => {
-    const rows = [...picked];
-    void version;
-    const mine = ++placesAsked;
-    if (rows.length < 2 || !showInfo) {
-      selectionPlaces = null;
-      return;
-    }
-    const wait = setTimeout(() => {
-      api.placeCounts(rows).then((groups) => { if (mine === placesAsked) selectionPlaces = { rows, groups }; }).catch(() => {});
-    }, 80);
-    return () => clearTimeout(wait);
-  });
-  /** The places of the selection as it is now: their rows are edited by the places
-   *  list, so a reply for the selection before is not shown. */
-  let placesNow = $derived(
-    selectionPlaces && selectionPlaces.rows.length === picked.size && selectionPlaces.rows.every((r) => picked.has(r))
-      ? selectionPlaces.groups
-      : null,
-  );
+  /** Whether `selection` is about the photos picked now. */
+  let selectionNow = $derived(!!selection && sameRows(selection.rows, picked));
+  /** How many of the picked photos have edits waiting. */
+  let queuedPicked = $derived(picked.size > 1 ? [...picked].filter((r) => queued.has(r)).length : 0);
   /** Sync: the focused photo, whose fields go onto the rest of the selection. */
   let syncing = $state<{ from: api.Photo; row: number } | null>(null);
   /** Paste…: the photos the clipboard goes onto, with a choice of fields and how. */
@@ -712,22 +675,49 @@
     await edited();
   }
 
+  /** What runs now, for the footer: an edit on many photos takes a while. */
+  let busy = $state<string | null>(null);
+  let busyAsked = 0;
+  async function working(note: string, run: () => Promise<void>) {
+    const mine = ++busyAsked;
+    busy = note;
+    try {
+      await run();
+    } finally {
+      if (mine === busyAsked) busy = null;
+    }
+  }
+  /** How many photos an undo or redo of these ops touches. */
+  const opRows = (ops: [number, api.Op][]) => new Set(ops.map(([row]) => row)).size;
+
   async function applyEdit(edit: api.Edit, rows = targets()) {
     if (!rows.length) return;
-    try {
-      const undo = await api.edit(rows, edit);
-      if (undo.length) {
-        undoStack.push({ ops: undo });
-        redoStack = [];
+    await working(editingNote("edit", rows.length), async () => {
+      try {
+        const undo = await api.edit(rows, edit);
+        if (undo.length) {
+          undoStack.push({ ops: undo });
+          redoStack = [];
+        }
+        editError = null;
+      } catch (e) {
+        editError = String(e);
       }
-      editError = null;
-    } catch (e) {
-      editError = String(e);
-    }
-    await edited();
+      await edited();
+    });
   }
 
-  async function undo() {
+  function undo() {
+    const last = undoStack.at(-1);
+    if (last) return working(editingNote("undo", "ops" in last ? opRows(last.ops) : null), undoNow);
+  }
+
+  function redo() {
+    const last = redoStack.at(-1);
+    if (last) return working(editingNote("redo", "ops" in last ? opRows(last.ops) : null), redoNow);
+  }
+
+  async function undoNow() {
     const last = undoStack.pop();
     if (!last) return;
     try {
@@ -754,7 +744,7 @@
     await edited();
   }
 
-  async function redo() {
+  async function redoNow() {
     const last = redoStack.pop();
     if (!last) return;
     try {
@@ -1474,18 +1464,18 @@
       applyEdit({ AddKeywords: [path] });
     }}
     onremovekeyword={(path) => applyEdit({ RemoveKeywords: [path] })}
-    shared={selectionKeywords}
     onaddkeywords={(paths) => applyEdit({ AddKeywords: paths })}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
-    sharedAlbums={selectionAlbums}
     onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
     ongroup={showGroup}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
-    sharedPlaces={placesNow}
+    summary={selection?.data ?? null}
+    stale={!selectionNow}
+    {queuedPicked}
     onplace={(fields, rows) => applyEdit({ Place: fields }, rows ?? targets())}
     ongeo={async (value) => {
       const rows = targets();
@@ -1505,7 +1495,7 @@
 
 <svelte:window onkeydown={onkey} ondragend={() => (dragging = null)} />
 
-<div class="app" class:with-info={showInfo}>
+<div class="app" class:with-info={showInfo} class:busy={!!busy} aria-busy={!!busy}>
   <header>
     <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
@@ -1544,13 +1534,15 @@
         onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
       >{shape}</button>
     </div>
-    {#if picked.size > 1 && selected !== null}
+    <!-- Its own slot, there or not, so the header doesn't move as photos are picked. -->
+    <span class="copy-slot">
       <button
         class="copy-to"
+        class:hidden={!(picked.size > 1 && selected !== null)}
         title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
         onclick={openSync}
-      >⇉ Copy to {(picked.size - 1).toLocaleString()} selected</button>
-    {/if}
+      >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
+    </span>
     {#if mapOn}
       <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
@@ -1818,7 +1810,7 @@
         <button onclick={() => (fillOffer = null)}>No</button>
       </span>
     {/if}
-    {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
+    {#if busy}<span class="busy">{busy}</span>{:else if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     {#if thumbs?.running}
       <span class="sync" title="From each photo's preview, or its original when there is no preview">

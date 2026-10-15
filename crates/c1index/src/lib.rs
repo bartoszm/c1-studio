@@ -20,8 +20,9 @@ pub use facets::Counts;
 pub use filter::{BBox, Filter, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
 pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
 pub use library::{
-    FillGroup, Group, Library, NeighbourPlan, NeighbourSettings, PendingEdit, PlaceLookup, QueryOptions, QueryResult,
-    RoutePoint, Sort, SyncReport, TripList, TripRow, Unresolved, new_collection_id, place_of_path, smart_filter,
+    FillGroup, Group, Library, Merged, NeighbourPlan, NeighbourSettings, PendingEdit, PlaceLookup, QueryOptions,
+    QueryResult, RoutePoint, Selection, Sort, SyncReport, TripList, TripRow, Unresolved, group_places,
+    new_collection_id, place_of_path, smart_filter,
 };
 pub use looks::Look;
 pub use schema::{Dim, NO_PLACE};
