@@ -448,9 +448,10 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
     walked
 }
 
-/// The store has photos under root `id` that are shown.
+/// The store has photos under root `id`, shown or detached (a root taken out and added
+/// back): an empty mount point must not delete either.
 fn known_under(src: &FolderSource, id: &str) -> bool {
-    src.store().read().files.values().any(|r| r.root == id && r.state != FileState::Detached)
+    src.store().read().files.values().any(|r| r.root == id)
 }
 
 /// The excludes as one set. A pattern for everything in a folder (`**/tmp/**`) also
