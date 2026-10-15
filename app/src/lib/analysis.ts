@@ -13,3 +13,11 @@ export function emptyNote(total: number, measured: number): string {
   if (measured === 0) return `Not measured yet (${total.toLocaleString()} photo${total === 1 ? "" : "s"}).`;
   return "Nothing measured here yet.";
 }
+
+/** A list's number of groups, and what "Show more" says of the ones not shown yet. */
+export function groupCount(total: number): string {
+  return `${total.toLocaleString()} group${total === 1 ? "" : "s"}`;
+}
+export function moreLabel(total: number, shown: number): string {
+  return `Show more (${(total - shown).toLocaleString()} left)`;
+}

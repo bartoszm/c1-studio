@@ -536,10 +536,17 @@ async fn gpx_apply(app: State<'_, App>, filter: Filter, settings: GpxSettings) -
     s.library.edit_as(&changes, Origin::Gpx).map_err(text_of)
 }
 
-/// Duplicate groups (or series) among the photos `filter` selects, biggest first.
+/// A page of the duplicate groups (or series) among the photos `filter` selects, biggest
+/// first, with how many there are in all.
 #[tauri::command]
-async fn groups(app: State<'_, App>, filter: Filter, series: bool) -> Result<Vec<c1index::Group>, String> {
-    app.session()?.library.groups(&filter, series, 300).map_err(text)
+async fn groups(
+    app: State<'_, App>,
+    filter: Filter,
+    series: bool,
+    offset: usize,
+    limit: usize,
+) -> Result<c1index::GroupPage, String> {
+    app.session()?.library.groups(&filter, series, offset, limit).map_err(text)
 }
 
 #[tauri::command]

@@ -1380,6 +1380,26 @@ country) and 68k have neither.
 - `tools/record/checks/22.mjs` counts cards under the find box, the tray and the route
   bar, and past the edge, after each zoom and flight.
 
+### Analysis: photos in a strip, every group (#26, #28)
+
+- **Photos on the tab:** the Analysis tab unmounted the grid, so a bar's photos showed
+  only on *Photos*. The grid now stays as a 190 px strip under the charts and groups, as
+  under the map (`.pane.strip`): the same result as the Photos grid, so the counts
+  agree; a click shows the photo in the details panel and the arrow keys move through
+  it. A group's card and the panel's group link stay on the Analysis tab (the card shown
+  is outlined); from another tab the link opens *Photos* as before.
+- **Every group:** the lists stopped at 300 groups (*300+ groups*) and every filter
+  change drew up to 600 cards of six thumbnails. `Library::groups` takes an offset and
+  a limit and returns a `GroupPage` with the exact total (the order ends on the id, so
+  pages follow on). The tab reads 60 of each, the header gives the total, and *Show
+  more (N left)* adds the next 60; another filter starts again from the first page,
+  while an edit or new measurements read as many as are shown, so an opened list stays
+  open. *Show more* waits while the lists are read again. Thumbnails load lazily. On the
+  Analysis tab the page keys scroll the charts; the arrows move in the strip.
+- Tested with three pairs and a three paged two at a time
+  (`groups_page_with_an_exact_total`). `tools/record/checks/26-28.mjs` measures it on
+  the recording instance.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare

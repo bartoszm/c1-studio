@@ -1263,6 +1263,8 @@
       const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
+    // On Analysis the page keys scroll the charts and groups; arrows move in the strip.
+    else if (tab === "analysis" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
@@ -1272,10 +1274,10 @@
     run();
   }
   /** A duplicate group's or a series' photos, from the Analysis tab or the panel: within the
-   *  other filters, which stay. */
+   *  other filters, which stay. The Analysis tab shows them in its strip; elsewhere, the grid. */
   function showGroup(group: string) {
     filter = { ...filter, group };
-    showTab("photos");
+    if (tab !== "analysis") showTab("photos");
     run();
   }
   function showKeyword(path: string) {
@@ -1530,7 +1532,7 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
-    <div class="tiles" class:gone={tab === "analysis"} title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
         type="range"
@@ -1727,7 +1729,7 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn}>
+  <div class="pane" class:strip={mapOn || tab === "analysis"}>
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
       {filter}
@@ -1778,7 +1780,7 @@
       ongroup={showGroup}
       onshow={() => showTab("photos")}
     />
-  {:else}
+  {/if}
   <Grid
     bind:this={grid}
     total={result?.total ?? 0}
@@ -1804,7 +1806,6 @@
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
-  {/if}
   </div>
 
   {#if showInfo && !viewing}{@render details()}{/if}

@@ -1,8 +1,9 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import * as api from "./lib/api";
-  import type { AnalysisState, Dim, Filter, Group } from "./lib/api";
+  import type { AnalysisState, Dim, Filter, GroupPage } from "./lib/api";
   import { HUES } from "./lib/format";
-  import { emptyNote, groupBadge } from "./lib/analysis";
+  import { emptyNote, groupBadge, groupCount, moreLabel } from "./lib/analysis";
 
   type Key = "shape" | "hues" | "light" | "focus";
   let {
@@ -39,22 +40,60 @@
   const flag = (name: string) => facets.flag?.find(([v]) => v === name)?.[1] ?? 0;
   let measured = $derived(flag("analysed"));
 
-  // The groups of alike photos under the current filter, fetched when it changes.
-  let dups = $state<Group[]>([]);
-  let series = $state<Group[]>([]);
+  // The groups of alike photos under the current filter, a page at a time: fetched again
+  // from the first page when it changes, "Show more" adds the next.
+  type Field = "duplicates" | "series";
+  let lists = $state<Record<Field, GroupPage>>({
+    duplicates: { total: 0, groups: [] },
+    series: { total: 0, groups: [] },
+  });
+  let adding = $state<Record<Field, boolean>>({ duplicates: false, series: false });
+  // Not state: the newest read asked for, and what `lists` hold (the filter and the read).
   let loadedFor = "";
+  let listKey = "";
+  let listFilter = "";
+  let loaded: Filter = {};
   $effect(() => {
     // The area, picks of the groups themselves and the alike flags don't change which groups exist
     // enough to refetch for; everything else does.
     const asked = $state.snapshot(filter);
-    const key = JSON.stringify({ ...asked, group: undefined }) + ":" + version + ":" + measured;
+    const all = { ...asked, group: undefined };
+    const filterKey = JSON.stringify(all);
+    const key = filterKey + ":" + version + ":" + measured;
     if (key === loadedFor) return;
     loadedFor = key;
-    const all = { ...asked, group: undefined };
-    Promise.all([api.groups(all, false), api.groups(all, true)])
-      .then(([d, s]) => { if (key === loadedFor) { dups = d; series = s; } })
+    // The same filter read again (an edit, photos measured): as many groups as are shown, so
+    // lists opened further stay open. Another filter starts from the first page.
+    const same = filterKey === listFilter;
+    const count = (f: Field) => (same ? Math.max(api.GROUP_PAGE, untrack(() => lists[f].groups.length)) : api.GROUP_PAGE);
+    Promise.all([api.groups(all, false, 0, count("duplicates")), api.groups(all, true, 0, count("series"))])
+      .then(([duplicates, series]) => {
+        if (key === loadedFor) {
+          lists = { duplicates, series };
+          loaded = all;
+          listKey = key;
+          listFilter = filterKey;
+        }
+      })
       .catch(() => {});
   });
+  async function more(field: Field) {
+    // Not while the lists are being read again: the next page would be the old filter's.
+    if (adding[field] || listKey !== loadedFor) return;
+    const key = listKey;
+    adding[field] = true;
+    try {
+      const page = await api.groups(loaded, field === "series", lists[field].groups.length);
+      // Dropped when the lists were read again meanwhile.
+      if (key !== loadedFor || key !== listKey) return;
+      const shown = new Set(lists[field].groups.map((g) => g.id));
+      lists[field] = { total: page.total, groups: [...lists[field].groups, ...page.groups.filter((g) => !shown.has(g.id))] };
+    } catch {
+      // The button stays for another try.
+    } finally {
+      adding[field] = false;
+    }
+  }
 </script>
 
 <div class="analysis">
@@ -97,9 +136,10 @@
   </div>
 
   {#each [
-    ["Duplicates", "The same frame twice: different images taken at the same instant that look alike.", dups, "duplicates", flag("duplicate")],
-    ["Series", "Bursts: three or more photos from one camera, seconds apart, looking alike.", series, "series", flag("series")],
-  ] as const as [title, hint, groups, field, count] (title)}
+    ["Duplicates", "The same frame twice: different images taken at the same instant that look alike.", "duplicates", flag("duplicate")],
+    ["Series", "Bursts: three or more photos from one camera, seconds apart, looking alike.", "series", flag("series")],
+  ] as const as [title, hint, field, count] (title)}
+    {@const { total: groupTotal, groups } = lists[field]}
     <section class="alike">
       <h3>
         {title}
@@ -108,7 +148,7 @@
           <button class="link" class:on={filter[field]} title="Only these photos in the grid" onclick={() => onflag(field)}>
             {count.toLocaleString()} photo{count === 1 ? "" : "s"}
           </button>
-          · {groups.length >= 300 ? "300+" : groups.length} group{groups.length === 1 ? "" : "s"}
+          · <span class="group-total">{groupCount(groupTotal)}</span>
         </span>
       </h3>
       <p class="hint">{hint}</p>
@@ -116,13 +156,14 @@
         {#each groups as g (g.id)}
           <button
             class="group"
+            class:on={filter.group === g.id}
             title={g.matched < g.size
               ? `Show the ${g.matched} of these ${g.size} photos the filter picks in the grid`
               : `Show these ${g.size} photos in the grid`}
             onclick={() => ongroup(g.id)}
           >
             <span class="thumbs">
-              {#each g.rows as row (row)}<img src={api.thumbUrl(row)} alt="" />{/each}
+              {#each g.rows as row (row)}<img src={api.thumbUrl(row)} alt="" loading="lazy" decoding="async" />{/each}
             </span>
             <span class="size">{groupBadge(g)}</span>
           </button>
@@ -130,6 +171,11 @@
           <p class="none">None{filter.group || total === 0 ? "" : " found"}.</p>
         {/each}
       </div>
+      {#if groupTotal > groups.length}
+        <button class="more" disabled={adding[field]} onclick={() => more(field)}>
+          {moreLabel(groupTotal, groups.length)}
+        </button>
+      {/if}
     </section>
   {/each}
 </div>
@@ -161,6 +207,9 @@
   .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
   .group { display: block; width: 100%; min-width: 0; overflow: hidden; position: relative; padding: 4px; border: 1px solid var(--line, #333); border-radius: 3px; text-align: left; }
   .group:hover { background: var(--hover, #333); }
+  .group.on { border-color: #5b8def; }
+  .more { margin-top: 8px; padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
+  .more:hover { background: var(--hover, #333); }
   .thumbs { display: flex; gap: 3px; height: 72px; width: 100%; }
   .thumbs img { flex: 1 1 0; width: 0; min-width: 0; height: 100%; object-fit: cover; border-radius: 2px; background: #222; }
   .size { position: absolute; right: 2px; top: 2px; min-width: 20px; padding: 0 6px; border-radius: 10px; background: #e5484d; color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }

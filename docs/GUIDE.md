@@ -368,15 +368,23 @@ What the **Analysis** tab offers (the tabs above the grid are *Photos*, *Map* an
   *In a series* are bursts: three or more photos from one camera, seconds apart, each
   looking much like the one before. Each group's badge is its size; under a filter
   that picks only part of it, *2 of 7*. A group the filter leaves too little of (one
-  photo of a pair, two of a burst) is not listed.
+  photo of a pair, two of a burst) is not listed. Each list's header gives the number
+  of groups in all; the first 60 show, and *Show more (N left)* adds the next 60.
 - *N not measured yet*, while the analysis is still going. A chart with nothing to show
   says *Nothing matches the filter* or *Not measured yet*.
+
+Under the charts and groups, a strip shows the photos the filter picks, as the map's does:
+pick a bar and see its photos without leaving the tab. They are the same photos as on the
+*Photos* tab, so the counts agree. Click one to see it in the details panel; the arrow
+keys move through them, while Page Up and Page Down scroll the charts and groups.
 
 The details panel's **Look** shows the photo's main colours as a bar, its classes, and
 for a duplicate or a burst a link to the others (*Looks like 1 other photo: show them*,
 *One of a series of 7: show it*). The link and a group's card on the Analysis tab do the
 same: the grid shows the group's photos within the other filters, which stay (with
 *red* picked, the red ones of the burst); drop a filter's chip to see the whole group.
+On the Analysis tab both stay there and show the photos in its strip (the card shown is
+outlined); from another tab the link opens *Photos*.
 
 ## Writing to Capture One
 

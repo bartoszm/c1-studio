@@ -201,6 +201,7 @@ aside section { padding: 4px 0; }
 .pane > main { flex: 1 1 45%; min-height: 120px; }
 .pane.strip > main { flex: 0 0 190px; min-height: 0; }
 .pane.strip > .map { flex: 1 1 auto; }
+.pane.strip > .analysis { flex: 1 1 auto; min-height: 0; }
 .tabs { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .tabs button { padding: 3px 12px; }
 .tabs button:hover { background: var(--hover); }
