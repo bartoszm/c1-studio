@@ -105,6 +105,13 @@ pub struct Group {
     pub rows: Vec<u64>,
 }
 
+/// A page of [`Group`]s, and how many there are in all.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct GroupPage {
+    pub total: usize,
+    pub groups: Vec<Group>,
+}
+
 /// A queued edit, with the row of its photo if the library still has it.
 #[derive(Clone, Debug, Serialize)]
 pub struct PendingEdit {
@@ -352,8 +359,9 @@ impl Library {
     /// The duplicate groups (or series) among the photos `filter` selects, most matching
     /// first: each with its size, how many of its photos match and a few of those to show.
     /// A group with fewer matching than a group needs (2, [`c1analysis::SERIES_MIN`] for a
-    /// series) is left out: one red frame of a burst is no series.
-    pub fn groups(&self, filter: &Filter, series: bool, limit: usize) -> anyhow::Result<Vec<Group>> {
+    /// series) is left out: one red frame of a burst is no series. `limit` groups from
+    /// `offset` on, with the number of groups in all.
+    pub fn groups(&self, filter: &Filter, series: bool, offset: usize, limit: usize) -> anyhow::Result<GroupPage> {
         let narrowed =
             Filter { duplicates: filter.duplicates || !series, series: filter.series || series, ..filter.clone() };
         let rows = self.query(&narrowed, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
@@ -370,7 +378,7 @@ impl Library {
         let least = if series { c1analysis::SERIES_MIN } else { 2 };
         by.retain(|_, g| g.matched >= least);
         if by.is_empty() {
-            return Ok(Vec::new());
+            return Ok(GroupPage { total: 0, groups: Vec::new() });
         }
         // Each whole group's size, as the details panel counts it: every group in one count.
         let all = Filter { duplicates: !series, series, ..Filter::default() };
@@ -386,8 +394,8 @@ impl Library {
         }
         let mut out: Vec<Group> = by.into_values().collect();
         out.sort_by(|a, b| b.matched.cmp(&a.matched).then_with(|| b.size.cmp(&a.size)).then_with(|| a.id.cmp(&b.id)));
-        out.truncate(limit);
-        Ok(out)
+        let total = out.len();
+        Ok(GroupPage { total, groups: out.into_iter().skip(offset).take(limit).collect() })
     }
 
     /// What the analysis found for a photo, if it has been measured.

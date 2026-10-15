@@ -1337,6 +1337,25 @@ country) and 68k have neither.
   (`groups_split_by_a_filter_count_whole_and_drop_what_is_no_group`).
   `tools/record/checks/27.mjs` measures it on the recording instance.
 
+### Analysis: photos in a strip, every group (#26, #28)
+
+- **Photos on the tab:** the Analysis tab unmounted the grid, so a bar's photos showed
+  only on *Photos*. The grid now stays as a 190 px strip under the charts and groups, as
+  under the map (`.pane.strip`): the same result as the Photos grid, so the counts
+  agree; a click shows the photo in the details panel and the arrow keys move through
+  it. A group's card and the panel's group link stay on the Analysis tab (the card shown
+  is outlined); from another tab the link opens *Photos* as before.
+- **Every group:** the lists stopped at 300 groups (*300+ groups*) and every filter
+  change drew up to 600 cards of six thumbnails. `Library::groups` takes an offset and
+  a limit and returns a `GroupPage` with the exact total (the order ends on the id, so
+  pages follow on). The tab reads 60 of each, the header gives the total, and *Show
+  more (N left)* adds the next 60; a change of filter, an edit or new measurements start
+  again from the first page, and a page asked for before that is dropped. Thumbnails
+  load lazily.
+- Tested with three pairs and a three paged two at a time
+  (`groups_page_with_an_exact_total`). `tools/record/checks/26-28.mjs` measures it on
+  the recording instance.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare

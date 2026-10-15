@@ -378,8 +378,11 @@ export const gpxPlan = (filter: Filter, settings: GpxSettings) => invoke<GpxPlan
 export const gpxApply = (filter: Filter, settings: GpxSettings) => invoke<[number, Op][]>("gpx_apply", { filter, settings });
 /** A duplicate group or series: its size, how many of it the filter picks, the first few of those. */
 export type Group = { id: string; size: number; matched: number; rows: number[] };
-/** Duplicate groups (or series) among the photos the filter selects, biggest first. */
-export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
+export type GroupPage = { total: number; groups: Group[] };
+/** A page of the duplicate groups (or series) among the photos the filter selects, biggest
+ *  first, with how many there are in all. */
+export const groups = (filter: Filter, series: boolean, offset = 0, limit = 60) =>
+  invoke<GroupPage>("groups", { filter, series, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */

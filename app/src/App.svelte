@@ -1257,10 +1257,10 @@
     run();
   }
   /** A duplicate group's or a series' photos, from the Analysis tab or the panel: within the
-   *  other filters, which stay. */
+   *  other filters, which stay. The Analysis tab shows them in its strip; elsewhere, the grid. */
   function showGroup(group: string) {
     filter = { ...filter, group };
-    showTab("photos");
+    if (tab !== "analysis") showTab("photos");
     run();
   }
   function showKeyword(path: string) {
@@ -1709,7 +1709,7 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn}>
+  <div class="pane" class:strip={mapOn || tab === "analysis"}>
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
       {filter}
@@ -1760,7 +1760,7 @@
       ongroup={showGroup}
       onshow={() => showTab("photos")}
     />
-  {:else}
+  {/if}
   <Grid
     bind:this={grid}
     total={result?.total ?? 0}
@@ -1786,7 +1786,6 @@
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
-  {/if}
   </div>
 
   {#if showInfo && !viewing}{@render details()}{/if}

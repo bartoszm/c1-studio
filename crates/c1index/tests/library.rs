@@ -942,10 +942,10 @@ fn analyses_are_searchable_and_grouped() {
     let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
     assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
     assert_eq!(lib.regroup().unwrap(), 0, "nothing changed");
-    let groups = lib.groups(&Filter::default(), false, 10).unwrap();
+    let groups = lib.groups(&Filter::default(), false, 0, 10).unwrap().groups;
     assert_eq!(groups.len(), 1);
     assert_eq!((groups[0].size, groups[0].rows.len()), (2, 2));
-    assert!(lib.groups(&Filter::default(), true, 10).unwrap().is_empty());
+    assert!(lib.groups(&Filter::default(), true, 0, 10).unwrap().groups.is_empty());
     // Counted per value, as the sidebar shows them.
     let r = lib
         .query(&Filter::default(), &QueryOptions { facets: vec![Dim::Shape, Dim::Focus], ..QueryOptions::default() })
@@ -983,28 +983,69 @@ fn groups_split_by_a_filter_count_whole_and_drop_what_is_no_group() {
     let size = |g: &c1index::Group| (g.size, g.matched, g.rows.len());
 
     // Unfiltered: the whole burst and the whole pair.
-    let series = lib.groups(&Filter::default(), true, 10).unwrap();
+    let series = lib.groups(&Filter::default(), true, 0, 10).unwrap().groups;
     assert_eq!(series.iter().map(size).collect::<Vec<_>>(), [(4, 4, 4)]);
-    let pairs = lib.groups(&Filter::default(), false, 10).unwrap();
+    let pairs = lib.groups(&Filter::default(), false, 0, 10).unwrap().groups;
     assert_eq!(pairs.iter().map(size).collect::<Vec<_>>(), [(2, 2, 2)]);
 
     // Red: three of the burst are still a series, of four; one of the pair is no pair.
     let reds = Filter { hues: vec!["red".into()], ..Filter::default() };
-    let series = lib.groups(&reds, true, 10).unwrap();
+    let series = lib.groups(&reds, true, 0, 10).unwrap().groups;
     assert_eq!(series.iter().map(size).collect::<Vec<_>>(), [(4, 3, 3)]);
-    assert!(lib.groups(&reds, false, 10).unwrap().is_empty());
+    assert!(lib.groups(&reds, false, 0, 10).unwrap().groups.is_empty());
     // The size is the one the details panel gives: every photo of the group.
     let whole = Filter { group: Some(series[0].id.clone()), ..Filter::default() };
     assert_eq!(ids(&lib, &whole), [1, 3, 5, 7]);
 
     // Blue: one of each, neither a group.
     let blues = Filter { hues: vec!["blue".into()], ..Filter::default() };
-    assert!(lib.groups(&blues, true, 10).unwrap().is_empty());
-    assert!(lib.groups(&blues, false, 10).unwrap().is_empty());
+    assert!(lib.groups(&blues, true, 0, 10).unwrap().groups.is_empty());
+    assert!(lib.groups(&blues, false, 0, 10).unwrap().groups.is_empty());
     // Portrait: two of the burst (3 and 7) are fewer than a series needs.
     let portraits = Filter { shape: vec!["portrait".into()], ..Filter::default() };
     assert_eq!(ids(&lib, &Filter { series: true, ..portraits.clone() }), [3, 7]);
-    assert!(lib.groups(&portraits, true, 10).unwrap().is_empty());
+    assert!(lib.groups(&portraits, true, 0, 10).unwrap().groups.is_empty());
+}
+
+#[test]
+fn groups_page_with_an_exact_total() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    // Three pairs and a three, each taken at one instant and with its own picture.
+    let sets: [(&[u32], u64); 4] = [
+        (&[1, 2], 0x0f0f_3c3c_5a5a_a5a5),
+        (&[3, 4], 0x3333_cccc_5555_aaaa),
+        (&[5, 6], 0x00ff_00ff_f0f0_0f0f),
+        (&[7, 8, 10], 0x6969_9696_c3c3_3c3c),
+    ];
+    let mut analyses = Vec::new();
+    for (photos, hash) in sets {
+        let at = source.photo(&id(photos[0])).unwrap().captured_at;
+        for (k, &n) in photos.iter().enumerate() {
+            source.edit_externally(&id(n), |p| p.captured_at = at);
+            analyses.push((id(n).key(), (1, 1), look(600, 400, [200, 30, 30], 5000.0, hash ^ k as u64)));
+        }
+    }
+    lib.put_analyses(analyses).unwrap();
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.regroup().unwrap(), 9);
+
+    let all = lib.groups(&Filter::default(), false, 0, 100).unwrap();
+    assert_eq!(all.total, 4);
+    assert_eq!(all.groups.iter().map(|g| g.size).collect::<Vec<_>>(), [3, 2, 2, 2]);
+    // Pages of two follow on from each other: every group once, in the same order.
+    let first = lib.groups(&Filter::default(), false, 0, 2).unwrap();
+    let second = lib.groups(&Filter::default(), false, 2, 2).unwrap();
+    assert_eq!((first.total, second.total), (4, 4));
+    assert_eq!([first.groups, second.groups].concat(), all.groups);
+    let unique: std::collections::HashSet<&str> = all.groups.iter().map(|g| g.id.as_str()).collect();
+    assert_eq!(unique.len(), 4);
+    let last = lib.groups(&Filter::default(), false, 3, 2).unwrap();
+    assert_eq!(last.groups, all.groups[3..]);
+    // Past the end: nothing, and still the total.
+    let past = lib.groups(&Filter::default(), false, 4, 2).unwrap();
+    assert_eq!((past.total, past.groups.len()), (4, 0));
+    assert_eq!(lib.groups(&Filter::default(), false, 50, 2).unwrap().total, 4);
 }
 
 #[test]
