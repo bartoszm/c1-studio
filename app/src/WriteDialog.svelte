@@ -1,10 +1,11 @@
 <script lang="ts">
   import * as api from "./lib/api";
   import { opText } from "./lib/format";
+  import { source } from "./lib/source.svelte";
 
-  // The queue of edits, checked against Capture One's latest state, and the one button
-  // that writes it. Capture One must be closed for the write; everything else works
-  // while it runs.
+  // The queue of edits, checked against the source's latest state, and the one button
+  // that writes it. A Capture One catalog is written only while Capture One is closed;
+  // everything else works while it runs.
   let { onclose, onchanged }: {
     onclose: () => void;
     /** The queue or the library changed: the grid and counts should refresh. */
@@ -16,11 +17,11 @@
   let plan = $state<api.WritePlan | null>(null);
   let error = $state<string | null>(null);
   let busy = $state<string | null>(null);
-  let done = $state<{ written: number; backup: string | null } | null>(null);
+  let done = $state<api.WriteReport | null>(null);
   let confirmDiscard = $state(false);
 
   async function load() {
-    busy = "Checking Capture One…";
+    busy = `Checking ${source.word}…`;
     error = null;
     try {
       plan = await api.writePlan();
@@ -32,6 +33,8 @@
   }
   load();
 
+  /** How the source's own side of a conflict reads. */
+  let theirs_ = $derived(source.isCaptureOne ? "Capture One's" : "the source's");
   let locked = $derived(plan && typeof plan.status === "object" ? plan.status.Locked.by : null);
   let writable = $derived(plan?.status === "Ready");
   let toWrite = $derived(plan ? plan.remaps.length + plan.collections.length + plan.apply.length + plan.unchanged.length : 0);
@@ -48,7 +51,7 @@
   );
 
   async function write() {
-    busy = "Backing up the catalog and writing…";
+    busy = source.isCaptureOne ? "Backing up the catalog and writing…" : "Writing…";
     error = null;
     try {
       done = await api.writeApply();
@@ -118,19 +121,27 @@
 
 <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="write-title">
-    <h2 id="write-title">Write to Capture One</h2>
+    <h2 id="write-title">Write to {source.word}</h2>
 
     {#if done}
       <p class="ok">Written: {done.written.toLocaleString()} edit{done.written === 1 ? "" : "s"}.</p>
-      {#if done.backup}<p class="muted">The catalog as it was is backed up in <code>{done.backup}</code>.</p>{/if}
-      <p class="muted">Open Capture One to see the changes there. To have edits written by themselves, turn on Autosave at the bottom right.</p>
+      {#if done.backup}<p class="muted">The {source.isCaptureOne ? "catalog" : "data"} as it was is backed up in <code>{done.backup}</code>.</p>{/if}
+      {#if done.warnings.length}
+        <p class="warn">The edits are written, but:</p>
+        <ul class="labels">
+          {#each done.warnings as w}<li>{w}</li>{/each}
+        </ul>
+      {/if}
+      <p class="muted">
+        {#if source.isCaptureOne}Open Capture One to see the changes there. {/if}To have edits written by themselves, turn on Autosave at the bottom right.
+      </p>
       <div class="buttons"><button class="primary" onclick={onclose}>Done</button></div>
     {:else if plan}
       <p class:warn={!writable}>
         {#if writable}
-          Capture One is closed. The catalog is backed up before anything is written.
+          {#if source.isCaptureOne}Capture One is closed. The catalog is backed up before anything is written.{:else}Your data is backed up before anything is written.{/if}
         {:else if locked}
-          Close Capture One to write: it keeps the catalog in memory and would overwrite these changes.
+          Close {source.word} to write: it keeps the catalog in memory and would overwrite these changes.
           <span class="muted">(Held by {locked}.)</span> Your edits stay queued meanwhile.
         {:else}
           This catalog cannot be written. <span class="muted">{plan.compatibility.format}.</span>
@@ -141,10 +152,10 @@
       {#if plan.conflicts.length}
         <section>
           <h3>
-            Changed in Capture One too ({plan.conflicts.length})
+            Changed in {source.word} too ({plan.conflicts.length})
             <span class="bulk">
               <button onclick={() => resolve(plan!.conflicts.map((p) => p.key), true)}>Keep all mine</button>
-              <button onclick={() => resolve(plan!.conflicts.map((p) => p.key), false)}>Take all from Capture One</button>
+              <button onclick={() => resolve(plan!.conflicts.map((p) => p.key), false)}>Take all from {source.word}</button>
             </span>
           </h3>
           <ul>
@@ -155,12 +166,12 @@
                 {#if p.row !== null}<img src={api.thumbUrl(p.row)} alt="" />{/if}
                 <span class="what">
                   <span class="name">{p.name ?? p.change.photo.ext}</span>
-                  {mine?.field}: yours <b>{mine?.to}</b>, Capture One's <b>{theirs?.to}</b>
+                  {mine?.field}: yours <b>{mine?.to}</b>, {theirs_} <b>{theirs?.to}</b>
                   <span class="note">(both changed from {mine?.from})</span>
                 </span>
                 <span class="choose">
                   <button onclick={() => resolve([p.key], true)}>Keep mine</button>
-                  <button onclick={() => resolve([p.key], false)}>Take Capture One's</button>
+                  <button onclick={() => resolve([p.key], false)}>Take {theirs_}</button>
                 </span>
               </li>
             {/each}
@@ -228,7 +239,7 @@
 
       {#if plan.unchanged.length}
         <p class="muted">
-          {plan.unchanged.length} edit{plan.unchanged.length === 1 ? " matches" : "s match"} Capture One already and
+          {plan.unchanged.length} edit{plan.unchanged.length === 1 ? " matches" : "s match"} {source.word} already and
           will leave the queue.
         </p>
       {/if}

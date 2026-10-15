@@ -470,6 +470,7 @@ dependencies = [
  "image",
  "serde",
  "serde_json",
+ "source-folders",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

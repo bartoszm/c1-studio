@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "./lib/api";
-  import { COLORS, ORIGINS, bytes, camera, date, eventText, exposure, folderOf, geoText, parseGeo } from "./lib/format";
+  import { source } from "./lib/source.svelte";
+  import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText, parseGeo } from "./lib/format";
   import { allFields, fieldValues, isEmpty, keyOf, treeKeys, withCode, type Place } from "./lib/places";
   import { placeText } from "./lib/tree";
   import PlaceInput from "./PlaceInput.svelte";
@@ -20,7 +21,7 @@
     version: number;
     /** How many photos an edit here applies to. */
     picked: number;
-    /** Fields of this photo edited here and not yet written to Capture One. */
+    /** Fields of this photo edited here and not yet written to the source. */
     queued: string[];
     collections: Map<string, api.Collection>;
     /** Every keyword path in the catalog, most used first, for completion. */
@@ -285,6 +286,7 @@
       </span>
       {#if p.trashed}<span class="tag">in trash</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
+      {#if p.file.offline}<span class="tag" style:color="#e8b03a" title="The original is not reachable now: its folder or drive is not connected. Everything known about the photo stays.">offline</span>{/if}
     </div>
     <div class="colors" role="group" aria-label="Colour tag">
       {#each COLOR_TAGS as c}
@@ -319,7 +321,7 @@
     {/if}
     {#if picked > 1}<p class="hint">Edits apply to the {picked.toLocaleString()} selected photos.</p>{/if}
     {#if queued.length}
-      <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to Capture One.</p>
+      <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to {source.word}.</p>
     {/if}
 
     <dl>
@@ -596,7 +598,7 @@
       {#if p.edit.local_layers || p.edit.retouch_layers}
         <dt>Layers</dt><dd>{p.edit.local_layers} local · {p.edit.retouch_layers} retouch</dd>
       {/if}
-      <dt>Catalog id</dt><dd class="muted">{p.id.ext}</dd>
+      <dt>{source.isCaptureOne ? "Catalog id" : "Photo id"}</dt><dd class="muted">{p.id.ext}</dd>
     </dl>
 
     <details class="history" bind:open={historyOpen}>
@@ -612,8 +614,8 @@
           {#each history as e}
             <li>
               <span class="when">{date(e.at)}</span>
-              <span class="origin from-{e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
-              <span class="what">{eventText(e, loggedAlbumName)}</span>
+              <span class="origin from-{e.origin.toLowerCase()}">{originLabel(e.origin, source.provider)}</span>
+              <span class="what">{eventText(e, loggedAlbumName, source.provider)}</span>
             </li>
           {/each}
         </ol>

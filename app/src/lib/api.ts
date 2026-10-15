@@ -54,6 +54,8 @@ export type Filter = {
   series?: boolean;
   /** Measured by the analysis, or not yet. */
   analysed?: boolean;
+  /** Only photos whose original cannot be reached now, or only those that can. */
+  offline?: boolean;
   /** Only photos with a position inside this area (the map's view). */
   within?: BBox;
 };
@@ -153,7 +155,18 @@ export type Status = {
   writes: string;
   sync_error: string | null;
   compatibility: Compatibility;
+  /** The provider's id: `capture-one`, `folders`. */
+  provider: string;
+  /** The source can be asked to look at its files again. */
+  can_rescan: boolean;
+  /** Roots of a folder source that could not be reached at the last scan. */
+  offline_roots: string[];
+  /** How far a scan has got, while one runs. */
+  progress: SourceProgress | null;
 };
+
+/** How far a long piece of work in the source has got (`source-progress` events). */
+export type SourceProgress = { phase: string; done: number; total: number | null; note: string | null };
 
 /** How far the app is checked against a source's format, each way. */
 export type Support = "Tested" | "Untested" | "Off";
@@ -182,7 +195,7 @@ export type Photo = {
   id: { source: string; ext: string };
   asset: string;
   variant_index: number;
-  file: { name: string; ext: string; path: string | null; size: number | null };
+  file: { name: string; ext: string; path: string | null; size: number | null; offline?: boolean };
   captured_at: number | null;
   imported_at: number | null;
   exif: {
@@ -326,6 +339,41 @@ export const sources = () => invoke<SourcesView>("sources");
 export const pickSource = (provider: string) => invoke<string | null>("pick_source", { provider });
 /** Opens another source; the window should reload after. */
 export const openSource = (spec: SourceSpec) => invoke<void>("open_source", { spec });
+/** The system dialog for a folder; null if cancelled. */
+export const pickFolder = () => invoke<string | null>("pick_folder");
+/** Asks the source to look at its files again, and reads it in the background. */
+export const rescan = () => invoke<void>("rescan");
+
+/** How a folder source keeps its generated images (`source_folders::Preset`). */
+export type Preset = "Central" | "PerRoot" | "Beside" | "Custom";
+export type ImageStore = { preset: Preset; thumb: string; preview: string; central_limit_mb: number | null };
+export type RootDef = { id: string; path: string; label: string | null };
+/** `Stem`: `DSCF0001.xmp`; `Name`: `DSCF0001.RAF.xmp`. */
+export type SidecarNaming = "Stem" | "Name";
+/** A folder source's definition file (`source_folders::Definition`). */
+export type FoldersDefinition = {
+  version: number;
+  id: string;
+  name: string;
+  roots: RootDef[];
+  excludes: string[];
+  images: ImageStore;
+  sidecar: SidecarNaming;
+  write_xmp: boolean;
+  modify_originals: boolean;
+};
+export type FoldersView = { location: string | null; definition: FoldersDefinition; is_open: boolean };
+/** What becomes of the images already made when the image store changes. */
+export type Migrate = "Move" | "Regenerate";
+/** A definition for a new folder source, not saved yet. */
+export const foldersNew = (name: string, roots: string[]) => invoke<FoldersView>("folders_new", { name, roots });
+export const foldersLoad = (location: string) => invoke<FoldersView>("folders_load", { location });
+/** Writes the definition (a new one to the app's folder) and returns where. The open source
+ * reads it again and walks its roots; another is for `openSource`. */
+export const foldersSave = (def: FoldersDefinition, location: string | null, migrate: Migrate | null) =>
+  invoke<string>("folders_save", { def, location, migrate });
+/** Why the image store would not do, or null. */
+export const foldersCheckStore = (store: ImageStore) => invoke<string | null>("folders_check_store", { store });
 export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", { spec });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 /** The photos the filter selects that have a position, clustered for the map's view. */
@@ -525,7 +573,8 @@ export type AutosaveState =
 /** Whether autosave is on, and what it last reported. */
 export const autosave = () => invoke<[boolean, AutosaveState]>("autosave");
 export const setAutosave = (on: boolean) => invoke<void>("set_autosave", { on });
-export const writeApply = () => invoke<{ written: number; backup: string | null }>("write_apply");
+export type WriteReport = { written: number; backup: string | null; warnings: string[] };
+export const writeApply = () => invoke<WriteReport>("write_apply");
 
 // WebView2 on Windows reaches custom protocols as http://<scheme>.localhost.
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";

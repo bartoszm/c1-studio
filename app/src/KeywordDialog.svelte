@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
 
   // Rename, join (replace) or group keywords across the catalog. The change is queued
   // like any edit: it shows at once and is written to Capture One on demand.
@@ -139,7 +140,7 @@
 
     <p class="muted">
       {#if users === null}Counting photos…{:else}{users.toLocaleString()} photo{users === 1 ? "" : "s"} carry {picked.length > 1 ? "these keywords" : "it"}.{/if}
-      Queued until you write to Capture One; Ctrl+Z takes it back.
+      Queued until you write to {source.word}; Ctrl+Z takes it back.
     </p>
     {#if typeof request === "string" && (name || target)}<p class="warn">{request}</p>{/if}
     {#if error}<p class="error">{error}</p>{/if}
