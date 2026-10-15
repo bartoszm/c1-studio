@@ -27,6 +27,7 @@
   import Timeline from "./Timeline.svelte";
   import TripsSection from "./TripsSection.svelte";
   import { tripDates, tripName } from "./lib/trips";
+  import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
@@ -89,7 +90,7 @@
   });
   let followTimer: ReturnType<typeof setTimeout>;
   /** What the map shows now, for when a picked tile is let go. */
-  let mapView: api.BBox | null = null;
+  let mapView = $state.raw<api.BBox | null>(null);
   /** A tile picked on the map: the grid shows just its photos until it is let go. */
   let mapTile = $state.raw<api.BBox | null>(null);
   /** The area the grid kept to before the tile was picked (a drawn one, or none). */
@@ -130,6 +131,21 @@
   $effect(() => {
     if (mapTile && !sameBox(filter.within, mapTile)) mapTile = null;
   });
+  /** The filter with the map's view as its area, when the grid follows the map. */
+  function following(f: Filter): Filter {
+    return mapView && shouldFollow({ follow, mapOn, tile: !!mapTile, filter: f }) ? { ...f, within: mapView } : f;
+  }
+  // Following turned on, or possible again (a tile let go, Clear filters, a chip that kept
+  // the grid off the map dropped): the grid takes what the map shows now, not at its next move.
+  $effect(() => {
+    if (!mapView || !shouldFollow({ follow, mapOn, tile: !!mapTile, filter })) return;
+    untrack(() => {
+      // The map's own report of this view, waiting to be followed, would only run it again.
+      clearTimeout(followTimer);
+      filter = following(filter);
+      run(true);
+    });
+  });
   /** Letting go of the map's area. */
   function mapReleased() {
     clearTimeout(followTimer);
@@ -139,6 +155,8 @@
     }
   }
   function showTab(next: Tab) {
+    // The map reports its view again when it opens: one kept from before would be followed first.
+    if (next !== "map") mapView = null;
     tab = next;
     mapRow = null;
     viewing = false;
@@ -146,6 +164,11 @@
   function toggleFollow() {
     follow = !follow;
     if (!follow) mapReleased();
+    else if (mapView && !mapTile && filter.within) {
+      // A drawn area gives way to what the map shows.
+      filter = { ...filter, within: undefined };
+      run(true);
+    }
   }
   /** Photos the map cannot show by position (no GPS): the grid lets go of the map's area. */
   function showOffMap(extra: Filter) {
@@ -320,6 +343,7 @@
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks. */
   async function run(keep = false) {
     const mine = ++generation;
+    untrack(() => (filter = following(filter)));
     const asked = $state.snapshot(filter);
     const groups = dims;
     // Smart albums are counted apart: one query each, so they never hold up the grid.
@@ -1094,6 +1118,7 @@
   }
 
   function clearAll() {
+    mapTile = null;
     filter = {};
     search = "";
     run();
@@ -1361,6 +1386,12 @@
   );
 
   function dropChip(key: keyof Filter, rest: unknown) {
+    // A picked tile dropped: the grid goes back to the map's view. The map's area dropped:
+    // the grid stops following it, or it would come straight back.
+    if (key === "within") {
+      if (mapTile) mapTile = null;
+      else follow = false;
+    }
     filter = { ...filter, [key]: rest };
     if (key === "text") search = "";
     run();

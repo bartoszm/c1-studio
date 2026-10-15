@@ -261,12 +261,17 @@ network; everything else works without one).
 - Click a cluster to zoom to its photos; click a single photo to show it in the
   details panel.
 - **Grid follows map** (on by default) makes the grid show only the photos in view: pan
-  and zoom to filter. The chip *Map: area* drops it. Off, the grid keeps its
-  own filter.
+  and zoom to filter. It applies at once: when you tick it, after *Clear filters*, and
+  when a filter that kept the grid off the map (photos with no position, or placed only
+  by name) is dropped. Removing the chip *Map: area* turns it off. Off, the grid keeps
+  its own filter. A view across the 180° meridian (the middle of the Pacific) takes in
+  every photo in its latitudes.
 - **Pick an area:** Shift+drag a box on the map. The grid then shows just its photos
   (and stops following the map); the chip *Map: area* drops it.
 - **Find a place:** the box at the map's top left searches OpenStreetMap's Nominatim by
-  name and flies there. With photos picked in the strip, *Put N picked photos here*
+  name and flies there, with the place in the middle: zoomed to its outline when that
+  is around it, else by what it is (a country, a region, a city, a street), so far-off
+  islands (Tokyo's, France's) don't pull the view away. With photos picked in the strip, *Put N picked photos here*
   places them at the place found.
 - **GPX…** (Map tab) gives photos a position from a recorded track by when they were
   taken. Choose the file, then say what the camera's clock showed against UTC (hours
