@@ -1,8 +1,8 @@
 // #21: a place found by name is in the middle of the map, at a zoom that suits it.
 // Prints, per place, the map's centre against Nominatim's point, the zoom, and Nominatim's
-// row (box, rank, kind), to check app/test/mapview.test.ts's approximate rows against.
-// Expected: the centre within a few hundredths of a degree of the point; Tokyo about zoom
-// 7-10, the countries about 5, Fiji not the whole world.
+// row (box, rank, kind), to compare with app/test/mapview.test.ts's rows. Each reading
+// waits for the map to stop. Expected: the centre within a few hundredths of a degree of
+// the point; Tokyo zoom 10, the countries about 5, Fiji not the whole world.
 //
 // usage: node tools/record/drive.mjs tools/record/checks/21.mjs --port 9223
 import { find, openMap, view } from "./map-common.mjs";

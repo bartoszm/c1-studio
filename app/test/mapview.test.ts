@@ -5,14 +5,12 @@ import { hitView, parseHits, placeZoom, routeStep, shouldFollow, viewBox, wrapLo
 // The map in #21: 892×543.
 const SIZE = { width: 892, height: 543 };
 
-// Tokyo's box and point are Nominatim's, as quoted in #21. Its kind and rank are not in the
-// issue: a prefecture-level place (rank 8) is assumed. France's and Fiji's rows are
-// approximate (written down from memory, not fetched: the search couldn't be reached here),
-// with what the issue describes: France's box runs into the Pacific, Fiji's round the
-// world. tools/record/checks/21.mjs prints the live ones.
+// Nominatim's rows. Tokyo's box and point as quoted in #21; the app shows it at zoom 10
+// (measured on Windows with tools/record/checks/21.mjs), so its kind is a city's. France's
+// and Fiji's as that check printed them.
 const TOKYO: NominatimRow = {
   display_name: "Tokyo, Japan", lat: "35.6768601", lon: "139.7638947",
-  boundingbox: ["20.2145811", "35.8984245", "135.8536855", "154.2055410"], place_rank: 8, addresstype: "province",
+  boundingbox: ["20.2145811", "35.8984245", "135.8536855", "154.2055410"], addresstype: "city",
 };
 const FRANCE: NominatimRow = {
   display_name: "France", lat: "46.603354", lon: "1.8883335",
@@ -20,27 +18,28 @@ const FRANCE: NominatimRow = {
 };
 const FIJI: NominatimRow = {
   display_name: "Fiji", lat: "-18.1239696", lon: "179.0122737",
-  boundingbox: ["-21.0429339", "-12.2613866", "-180.0000000", "180.0000000"], place_rank: 4, addresstype: "country",
+  boundingbox: ["-21.9434274", "-12.2613866", "-180.0000000", "180.0000000"], place_rank: 4, addresstype: "country",
 };
-// Approximate too: a city whose point is near the middle of its box.
+// Approximate: a city whose point is near the middle of its box. (The app showed Kraków at
+// zoom 10.34 on Windows.)
 const KRAKOW: NominatimRow = {
   display_name: "Kraków, Lesser Poland Voivodeship, Poland", lat: "50.0619474", lon: "19.9368564",
   boundingbox: ["49.9676668", "50.1261338", "19.7922355", "20.2173455"], place_rank: 16, addresstype: "city",
 };
 
 test("hits carry their box (west, south, east, north), rank and kind", () => {
-  const [tokyo] = parseHits([TOKYO]);
+  const [tokyo, france] = parseHits([TOKYO, FRANCE]);
   assert.deepEqual(tokyo.box, [135.8536855, 20.2145811, 154.205541, 35.8984245]);
   assert.equal(tokyo.lat, 35.6768601);
-  assert.equal(tokyo.rank, 8);
-  assert.equal(tokyo.type, "province");
+  assert.equal(france.rank, 4);
+  assert.equal(france.type, "country");
   assert.equal(parseHits([{ display_name: "x", lat: "1", lon: "2" }])[0].box, null);
 });
 
-test("Tokyo: centred on Tokyo, not on its islands' box, at prefecture zoom", () => {
+test("Tokyo: centred on Tokyo, not on its islands' box, at city zoom", () => {
   const v = hitView(parseHits([TOKYO])[0], SIZE);
   assert.deepEqual(v.center, [139.7638947, 35.6768601]);
-  assert.equal(v.zoom, 7);
+  assert.equal(v.zoom, 10);
 });
 
 test("France: the mainland in the middle, at country zoom", () => {

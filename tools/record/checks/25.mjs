@@ -12,8 +12,7 @@ export default {
   name: "check-25",
   title: "Across 180°",
   async run(d) {
-    await d.evaluate(`localStorage.setItem("map-view", JSON.stringify({ center: [499.77, 35.6], zoom: 4 }))`);
-    await openMap(d);
+    await openMap(d, { center: [499.77, 35.6], zoom: 4 });
     await d.sleep(2000);
     console.log(JSON.stringify({ step: "opened at 499.77", view: await view(d), ...(await state(d)) }));
     const c = await d.evaluate(`(() => { const r = document.querySelector(".map .canvas").getBoundingClientRect(); return { x: r.x, y: r.y + r.height / 2, w: r.width }; })()`);
