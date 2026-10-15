@@ -4,6 +4,8 @@
 //! through `c1model::change::{plan_after_with, apply_with}`; what changed goes back into the
 //! store as each photo's [`crate::layer::UserLayer`]. Before a write the user's part of the
 //! store (layers and albums) is saved as a backup in `<work_dir>/backups`, newest five kept.
+//! After it, the XMP export (if the definition asks for one) writes the files, and their
+//! records are brought up to date with what it wrote.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -11,15 +13,18 @@ use std::path::{Path, PathBuf};
 
 use c1model::change::{apply_with, collection_problem, plan_after_with};
 use c1model::{
-    ApplyPlan, ApplyReport, BackupInfo, Change, Collection, CollectionChange, KeywordPath, KeywordRemap, Photo,
-    PhotoId, Result, SourceError, SourceId,
+    ApplyPlan, ApplyReport, BackupInfo, Change, Collection, CollectionChange, ImageTier, KeywordPath, KeywordRemap,
+    Photo, PhotoId, Result, SourceError, SourceId,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::FolderSource;
 use crate::definition::Definition;
+use crate::export::{Written, export};
+use crate::ids::{self, ContentKey};
 use crate::layer::{UserLayer, compose, compose_file};
-use crate::store::{FileState, State};
+use crate::scan::mtime_ns;
+use crate::store::{FileState, ImageRec, State};
 
 /// How many backups are kept; older ones are deleted.
 const KEEP_BACKUPS: usize = 5;
@@ -121,7 +126,7 @@ pub(crate) fn apply(src: &FolderSource, plan: &ApplyPlan) -> Result<ApplyReport>
             if rec.state == FileState::Present
                 && let Some(root) = def.root(&rec.root)
             {
-                exported.push((photo.clone(), rec.path_under(&root.path), rec.kind));
+                exported.push((ext.to_owned(), (photo.clone(), rec.path_under(&root.path), rec.kind)));
             }
             w.put_user(ext, Some(layer))?;
         }
@@ -130,9 +135,82 @@ pub(crate) fn apply(src: &FolderSource, plan: &ApplyPlan) -> Result<ApplyReport>
         }
         Ok((applied, exported))
     })?;
-    let warnings =
-        if def.write_xmp && !exported.is_empty() { crate::export::export(&def, &exported) } else { Vec::new() };
+    let mut warnings = Vec::new();
+    if def.write_xmp && !exported.is_empty() {
+        let (exts, files): (Vec<String>, Vec<_>) = exported.into_iter().unzip();
+        let done = export(&def, &files);
+        warnings = done.problems;
+        let written: Vec<(&str, &Path, &Written)> =
+            done.written.iter().map(|(i, w)| (exts[*i].as_str(), files[*i].1.as_path(), w)).collect();
+        warnings.extend(refresh(src, &written));
+    }
     Ok(ApplyReport { applied, backup: Some(backup.path), warnings })
+}
+
+/// What the export changed of a photo's files, as its record holds it.
+enum Refresh {
+    Original { size: u64, mtime_ns: i64, content: ContentKey },
+    Sidecar { name: String, mtime_ns: i64 },
+}
+
+/// Brings the records of the files the export wrote, each as (photo id, the photo's file,
+/// what was written), up to date, so the next walk does not take them for changed files
+/// (or, an original moved meanwhile, for new ones that leave the user's edits behind): an
+/// original's size, time and content key, its images kept current (their pixels are the
+/// same); a sidecar's name and time. Returns what could not be brought up to date.
+fn refresh(src: &FolderSource, written: &[(&str, &Path, &Written)]) -> Vec<String> {
+    let mut problems = Vec::new();
+    // Read before the store's lock is taken.
+    let mut updates: Vec<(&str, Refresh)> = Vec::new();
+    for (ext, path, what) in written {
+        let update = match what {
+            Written::Original => fs::metadata(path).and_then(|m| {
+                let content = ids::content_key(path)?;
+                Ok(Refresh::Original { size: m.len(), mtime_ns: mtime_ns(&m), content })
+            }),
+            Written::Sidecar(sidecar) => fs::metadata(sidecar).map(|m| Refresh::Sidecar {
+                name: sidecar.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                mtime_ns: mtime_ns(&m),
+            }),
+        };
+        match update {
+            Ok(update) => updates.push((ext, update)),
+            Err(e) => problems.push(format!("{}: {e}", path.display())),
+        }
+    }
+    if updates.is_empty() {
+        return problems;
+    }
+    let result = src.store().write(|w| {
+        for (ext, update) in &updates {
+            let Some(mut rec) = w.state().files.get(*ext).cloned() else { continue };
+            match update {
+                Refresh::Original { size, mtime_ns, content } => {
+                    for tier in [ImageTier::Thumb, ImageTier::Preview] {
+                        let Some(image) = w.state().images.get(&((*ext).to_owned(), tier)) else { continue };
+                        if (image.src_size, image.src_mtime_ns) == (rec.size, rec.mtime_ns) {
+                            let image = ImageRec { src_size: *size, src_mtime_ns: *mtime_ns, ..image.clone() };
+                            w.put_image(ext, tier, Some(image))?;
+                        }
+                    }
+                    rec.size = *size;
+                    rec.mtime_ns = *mtime_ns;
+                    rec.content = content.clone();
+                    rec.full = None;
+                }
+                Refresh::Sidecar { name, mtime_ns } => {
+                    rec.sidecar = Some(name.clone());
+                    rec.sidecar_mtime_ns = Some(*mtime_ns);
+                }
+            }
+            w.put_file(ext, rec)?;
+        }
+        Ok(())
+    });
+    if let Err(e) = result {
+        problems.push(format!("the files the export wrote could not be recorded: {e}"));
+    }
+    problems
 }
 
 pub(crate) fn backups(src: &FolderSource) -> Result<Vec<BackupInfo>> {
@@ -316,24 +394,86 @@ mod tests {
     }
 
     /// A source with `n` photos in `2024/` of its one root, each record as `edit` leaves it.
+    /// The root is there, with a file for each record left present, so a snapshot's walk
+    /// finds them unchanged (and not offline).
     fn fixture_with(n: usize, edit: impl Fn(usize, &mut FileRec)) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let def = Definition::new("t", &[dir.path().join("photos")]);
+        let photos = dir.path().join("photos");
+        fs::create_dir_all(photos.join("2024")).unwrap();
+        let def = Definition::new("t", std::slice::from_ref(&photos));
         let location = dir.path().join("t.c1folders");
         def.save(&location).unwrap();
         let src = FolderSource::open(&location, &dir.path().join("work")).unwrap();
         let root = def.roots[0].id.clone();
+        let mut recs = Vec::new();
+        for i in 0..n {
+            let mut r = rec(&root, &format!("2024/{i}.jpg"));
+            edit(i, &mut r);
+            if r.state == FileState::Present {
+                let path = r.path_under(&def.roots[0].path);
+                fs::write(&path, format!("photo {i}")).unwrap();
+                let meta = fs::metadata(&path).unwrap();
+                (r.size, r.mtime_ns) = (meta.len(), mtime_ns(&meta));
+            }
+            recs.push(r);
+        }
         src.store()
             .write(|w| {
-                for i in 0..n {
-                    let mut r = rec(&root, &format!("2024/{i}.jpg"));
-                    edit(i, &mut r);
+                for (i, r) in recs.into_iter().enumerate() {
                     w.put_file(&ext(i), r)?;
                 }
                 Ok(())
             })
             .unwrap();
         Fixture { _dir: dir, src, root }
+    }
+
+    /// A source over a root of the files `names` (JPEGs made with `image`; anything else a
+    /// few bytes), after a first snapshot walked it. Gives the root too.
+    fn scanned(names: &[&str], edit: impl FnOnce(&mut Definition)) -> (tempfile::TempDir, FolderSource, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("photos");
+        fs::create_dir_all(&root).unwrap();
+        for (i, name) in names.iter().enumerate() {
+            if name.ends_with(".jpg") {
+                let shade = (i * 40) as u8;
+                image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([(x * 4) as u8, (y * 5) as u8, shade]))
+                    .save(root.join(name))
+                    .unwrap();
+            } else {
+                fs::write(root.join(name), format!("not really a raw {i}")).unwrap();
+            }
+        }
+        let mut def = Definition::new("t", std::slice::from_ref(&root));
+        edit(&mut def);
+        let location = dir.path().join("t.c1folders");
+        def.save(&location).unwrap();
+        let src = FolderSource::open(&location, &dir.path().join("work")).unwrap();
+        let (photos, problems) = c1model::conformance::collect(&src).unwrap();
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(photos.len(), names.len());
+        assert!(photos.iter().all(|p| !p.file.offline));
+        (dir, src, root)
+    }
+
+    /// The id of the photo at `relpath`.
+    fn id_of(src: &FolderSource, relpath: &str) -> PhotoId {
+        let state = src.store().read();
+        let ext = state.files.iter().find(|(_, r)| r.relpath == relpath).map(|(ext, _)| ext.clone()).unwrap();
+        PhotoId::new(&src.definition().source_id(), ext)
+    }
+
+    /// Sets the photo's rating, from none.
+    fn rate(src: &FolderSource, id: &PhotoId, stars: u8) -> ApplyReport {
+        let change = Change { photo: id.clone(), op: rating(None, Some(stars)) };
+        src.apply(&src.plan(&[change]).unwrap()).unwrap()
+    }
+
+    /// Walks the roots again; what the walk found.
+    fn rescan(src: &FolderSource) -> (Vec<Photo>, crate::ScanOutcome) {
+        src.rescan().unwrap();
+        let (photos, _) = c1model::conformance::collect(src).unwrap();
+        (photos, src.last_scan().unwrap())
     }
 
     fn fixture(n: usize) -> Fixture {
@@ -650,6 +790,7 @@ mod tests {
     fn passes_the_write_conformance_check() {
         let f = fixture(3);
         assert_eq!(c1model::conformance::check_write(&f.src, &f.id(1)), Vec::<String>::new());
+        assert!(!f.photo(1).file.offline, "on a source whose photos are there");
     }
 
     #[test]
@@ -657,5 +798,63 @@ mod tests {
         let f = fixture(3);
         assert_eq!(c1model::conformance::check_backup(&f.src, &f.id(1)), Vec::<String>::new());
         assert_eq!(f.photo(1).rating, None, "probe restored");
+        assert!(!f.photo(1).file.offline, "on a source whose photos are there");
+    }
+
+    #[test]
+    fn passes_the_conformance_checks_on_photos_a_walk_found() {
+        let (_dir, src, _) = scanned(&["a.jpg", "b.jpg", "c.jpg"], |_| {});
+        let probe = id_of(&src, "b.jpg");
+        assert_eq!(c1model::conformance::check_write(&src, &probe), Vec::<String>::new());
+        assert_eq!(c1model::conformance::check_incremental(&src, &probe), Vec::<String>::new());
+        assert_eq!(c1model::conformance::check_backup(&src, &probe), Vec::<String>::new());
+    }
+
+    #[test]
+    fn xmp_written_into_an_original_is_recorded_and_its_images_stay() {
+        let (_dir, src, root) = scanned(&["a.jpg", "b.jpg"], |def| {
+            def.write_xmp = true;
+            def.modify_originals = true;
+        });
+        let id = id_of(&src, "a.jpg");
+        let thumb = src.make_image(&id, ImageTier::Thumb).unwrap().unwrap();
+        let before = src.store().read().files[&id.ext].clone();
+        let report = rate(&src, &id, 4);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let path = root.join("a.jpg");
+        let meta = fs::metadata(&path).unwrap();
+        let rec = src.store().read().files[&id.ext].clone();
+        assert_ne!(rec.size, before.size, "the XMP went in");
+        assert_eq!((rec.size, rec.mtime_ns), (meta.len(), mtime_ns(&meta)));
+        assert_eq!(rec.content, ids::content_key(&path).unwrap());
+        assert_eq!(rec.full, None);
+        assert_eq!(src.store().read().user[&id.ext].rating, Some(Some(4)));
+        assert_eq!(src.image(&id, ImageTier::Thumb).unwrap(), Some(thumb.clone()), "its pixels are the same");
+
+        // The next walk finds nothing changed and nothing to make again.
+        let (_, scan) = rescan(&src);
+        assert_eq!((scan.changed, scan.read), (0, 0), "{scan:?}");
+        assert!(thumb.path.is_file());
+
+        // Moved after the export, it is still known by its content: same id, same edits.
+        fs::create_dir_all(root.join("moved")).unwrap();
+        fs::rename(&path, root.join("moved").join("a.jpg")).unwrap();
+        let (photos, scan) = rescan(&src);
+        assert_eq!((scan.moved, scan.added, scan.removed), (1, 0, 0), "{scan:?}");
+        assert_eq!(photos.iter().find(|p| p.id == id).expect("the same id").rating, Some(4));
+    }
+
+    #[test]
+    fn a_sidecar_the_export_wrote_is_recorded() {
+        let (_dir, src, root) = scanned(&["a.jpg", "DSCF0001.RAF"], |def| def.write_xmp = true);
+        let id = id_of(&src, "DSCF0001.RAF");
+        let report = rate(&src, &id, 3);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        let rec = src.store().read().files[&id.ext].clone();
+        let sidecar = fs::metadata(root.join("DSCF0001.xmp")).unwrap();
+        assert_eq!(rec.sidecar.as_deref(), Some("DSCF0001.xmp"));
+        assert_eq!(rec.sidecar_mtime_ns, Some(mtime_ns(&sidecar)));
+        let (_, scan) = rescan(&src);
+        assert_eq!((scan.changed, scan.read), (0, 0), "{scan:?}");
     }
 }

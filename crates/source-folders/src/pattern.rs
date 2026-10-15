@@ -273,6 +273,12 @@ impl Pattern {
         self.components.iter().flatten().any(|p| matches!(p, Part::Token(t) if wanted(*t)))
     }
 
+    /// The path follows where the photo is (its root, folder or name), so it changes when
+    /// the photo moves. `{data}`, `{hash}`, `{tier}` and `{size}` do not.
+    pub fn depends_on_location(&self) -> bool {
+        self.has(|t| matches!(t, Token::Root | Token::Dir | Token::Relpath | Token::Name | Token::Stem | Token::Ext))
+    }
+
     /// Why the pattern cannot give every photo its own file, judged from the pattern alone:
     /// it needs `{hash}`, or `{relpath}` with `{root}`, or `{stem}`/`{name}` with `{dir}`,
     /// and `{tier}` (or `{size}`) so the two tiers differ. `None` when it can.
@@ -479,6 +485,21 @@ mod tests {
             let p = problem(bad).unwrap_or_default();
             assert!(p.contains("{tier} or {size}"), "{bad}: {p}");
         }
+    }
+
+    #[test]
+    fn patterns_that_follow_the_photo() {
+        let depends = |p: &str| Pattern::parse(p).unwrap().depends_on_location();
+        for p in [Preset::PerRoot, Preset::Beside] {
+            assert!(depends(preset(p, true)), "{p:?}");
+        }
+        for p in ["{root}/{hash}.jpg", "{data}/{relpath}.jpg", "{data}/{name}.jpg", "{data}/{stem}-{hash}.jpg"] {
+            assert!(depends(p), "{p}");
+        }
+        assert!(depends("{data}/{ext}/{hash}.jpg"));
+        assert!(!depends(preset(Preset::Central, true)));
+        assert!(!depends("{data}/{size}/{tier}-{hash:4}.jpg"));
+        assert!(!depends("/fixed/{hash}.jpg"));
     }
 
     #[test]
