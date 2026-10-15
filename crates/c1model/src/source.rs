@@ -90,6 +90,10 @@ pub struct Capabilities {
     /// Geo is stored per asset, so editing one variant moves all of them (Capture One).
     pub geo_per_asset: bool,
     pub collections: bool,
+    /// [`PhotoSource::rescan`] looks for changes the source cannot see by itself (files
+    /// added on disk).
+    #[serde(default)]
+    pub rescan: bool,
 }
 
 impl Capabilities {
@@ -124,6 +128,8 @@ pub enum ImageFormat {
     JpegXl,
     /// A camera raw; the reader extracts its embedded preview.
     Raw,
+    Png,
+    Tiff,
 }
 
 /// Where to get the pixels, plus how to turn them into display-ready sRGB.
@@ -167,6 +173,18 @@ pub struct Crop {
     pub height: f32,
 }
 
+/// How far a long piece of work in the source has got (a folder scan), for showing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SourceProgress {
+    /// What it is doing: "Scanning folders", "Reading metadata".
+    pub phase: String,
+    pub done: u64,
+    /// `None` while the amount of work is not known yet.
+    pub total: Option<u64>,
+    /// A detail, such as the folder being read.
+    pub note: Option<String>,
+}
+
 /// One item of a snapshot, delivered in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceEvent {
@@ -195,8 +213,33 @@ pub trait PhotoSource: Send + Sync {
     fn snapshot(&self, since: Option<&Cursor>, sink: &mut dyn FnMut(SourceEvent) -> Result<()>) -> Result<()>;
 
     /// Locates pixels for a photo. `Ok(None)` means this tier does not exist for it
-    /// (not rendered yet, or the original's volume is offline).
+    /// (not rendered yet, or the original's volume is offline). Called for every photo in
+    /// bulk, so it only looks things up: making an image is [`PhotoSource::make_image`].
     fn image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>>;
+
+    /// Makes a tier [`PhotoSource::image`] does not have yet, for a source that renders its
+    /// own (from the original), and returns it. Slow: called off the UI thread, one photo
+    /// at a time. `Ok(None)` when the source does not make images, or cannot for this one.
+    fn make_image(&self, _id: &PhotoId, _tier: ImageTier) -> Result<Option<ImageRef>> {
+        Ok(None)
+    }
+
+    /// Looks again for changes the source cannot notice by itself (files added, changed or
+    /// removed on disk); the next [`PhotoSource::snapshot`] reports them.
+    fn rescan(&self) -> Result<()> {
+        Err(SourceError::Unsupported("rescanning"))
+    }
+
+    /// Where a long-running snapshot or rescan has got, while it runs.
+    fn progress(&self) -> Option<SourceProgress> {
+        None
+    }
+
+    /// The concrete source, for operations only one kind of source has (a folder source's
+    /// image store). `None` for a source that offers none.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 
     fn write_status(&self) -> WriteStatus;
 

@@ -4,11 +4,14 @@
 //! what it holds now; a mismatch means someone else changed the field meanwhile and is
 //! reported as a [`Conflict`] instead of being overwritten.
 
+use std::collections::{BTreeMap, HashMap};
+
 use serde::{Deserialize, Serialize};
 
 use crate::photo::{
     Collection, CollectionId, CollectionKind, ColorLabel, GeoPoint, Iptc, KeywordPath, Photo, PhotoId, Place, SmartRule,
 };
+use crate::source::SourceError;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Op {
@@ -96,6 +99,14 @@ impl Op {
 
     /// Applies the op to an in-memory photo. Sources that store photos differently
     /// translate ops themselves; this is the reference behaviour they must match.
+    /// The album this op puts a photo into or takes it out of.
+    pub fn membership(&self) -> Option<&CollectionId> {
+        match self {
+            Op::AddToCollection { collection } | Op::RemoveFromCollection { collection } => Some(collection),
+            _ => None,
+        }
+    }
+
     pub fn apply_to(&self, photo: &mut Photo) {
         match self {
             Op::SetRating { value, .. } => photo.rating = *value,
@@ -428,6 +439,120 @@ pub fn plan_with<'a>(changes: &[Change], mut lookup: impl FnMut(&PhotoId) -> Opt
         }
     }
     plan
+}
+
+/// [`crate::PhotoSource::plan_after`] for a source whose photos and albums fit in memory:
+/// plans `changes` against `photos` and `albums` as they will be once `remaps` and
+/// `collections` are applied. Photos cannot go into an album that is gone, or into a
+/// smart album or a folder; those changes come back as conflicts.
+pub fn plan_after_with(
+    photos: &BTreeMap<PhotoId, Photo>,
+    albums: &[Collection],
+    remaps: &[KeywordRemap],
+    collections: &[CollectionChange],
+    changes: &[Change],
+) -> ApplyPlan {
+    let mut after = photos.clone();
+    for photo in after.values_mut() {
+        for remap in remaps {
+            remap.apply(&mut photo.keywords);
+        }
+    }
+    let mut albums = albums.to_vec();
+    for change in collections {
+        change.apply_to(&mut albums);
+    }
+    let (refused, rest): (Vec<_>, Vec<_>) = changes
+        .iter()
+        .cloned()
+        .partition(|c| c.op.membership().is_some_and(|id| membership_problem(&albums, id).is_some()));
+    let mut plan = plan_with(&rest, |id| after.get(id));
+    for change in refused {
+        let why = change.op.membership().and_then(|id| membership_problem(&albums, id)).unwrap_or_default();
+        plan.conflicts.push(Conflict { change, current: why });
+    }
+    plan.remaps = remaps.to_vec();
+    plan.collections = collections.to_vec();
+    plan
+}
+
+/// [`crate::PhotoSource::apply`] for a source whose photos and albums fit in memory: applies
+/// `plan` to `photos` and `albums` in place, all or nothing. Keyword remaps first, then album
+/// changes (an album made here gets its id from `mint`), then photo changes. Returns how
+/// many items were applied; on error nothing was changed.
+pub fn apply_with(
+    photos: &mut BTreeMap<PhotoId, Photo>,
+    albums: &mut Vec<Collection>,
+    plan: &ApplyPlan,
+    mut mint: impl FnMut() -> CollectionId,
+) -> Result<usize, SourceError> {
+    // Everything is done on copies, kept only if all of it holds.
+    let mut new_photos = photos.clone();
+    for photo in new_photos.values_mut() {
+        for remap in &plan.remaps {
+            remap.apply(&mut photo.keywords);
+        }
+    }
+    let mut new_albums = albums.clone();
+    let mut made: HashMap<CollectionId, CollectionId> = HashMap::new();
+    let real = |made: &HashMap<CollectionId, CollectionId>, id: &CollectionId| made.get(id).unwrap_or(id).clone();
+    for change in &plan.collections {
+        let mut change = match change.clone() {
+            CollectionChange::Create { id, name, kind, parent, rule } => {
+                CollectionChange::Create { id, name, kind, parent: parent.map(|p| real(&made, &p)), rule }
+            }
+            CollectionChange::Rename { id, name } => CollectionChange::Rename { id: real(&made, &id), name },
+            CollectionChange::SetRule { id, rule } => CollectionChange::SetRule { id: real(&made, &id), rule },
+            CollectionChange::Delete { id } => CollectionChange::Delete { id: real(&made, &id) },
+            CollectionChange::Move { id, parent } => {
+                CollectionChange::Move { id: real(&made, &id), parent: parent.map(|p| real(&made, &p)) }
+            }
+        };
+        if let Some(why) = collection_problem(&new_albums, &change) {
+            return Err(SourceError::Other(format!("{}: {why}", change.label(&new_albums))));
+        }
+        if let CollectionChange::Create { id, .. } = &mut change {
+            let own = mint();
+            made.insert(std::mem::replace(id, own.clone()), own);
+        }
+        if let CollectionChange::Delete { id } = &change {
+            let gone = descendants(&new_albums, id);
+            for photo in new_photos.values_mut() {
+                photo.collections.retain(|c| !gone.contains(c));
+            }
+        }
+        change.apply_to(&mut new_albums);
+    }
+    let changes: Vec<Change> = plan
+        .apply
+        .iter()
+        .map(|c| {
+            let op = match &c.op {
+                Op::AddToCollection { collection } => Op::AddToCollection { collection: real(&made, collection) },
+                Op::RemoveFromCollection { collection } => {
+                    Op::RemoveFromCollection { collection: real(&made, collection) }
+                }
+                op => op.clone(),
+            };
+            Change { photo: c.photo.clone(), op }
+        })
+        .collect();
+    // If anything moved since the plan was made, refuse rather than overwrite.
+    let fresh = plan_with(&changes, |id| new_photos.get(id));
+    if fresh.apply.len() != changes.len() {
+        return Err(SourceError::StalePlan);
+    }
+    for change in &changes {
+        if let Some(why) = change.op.membership().and_then(|id| membership_problem(&new_albums, id)) {
+            return Err(SourceError::Other(why));
+        }
+        if let Some(photo) = new_photos.get_mut(&change.photo) {
+            change.op.apply_to(photo);
+        }
+    }
+    *photos = new_photos;
+    *albums = new_albums;
+    Ok(plan.remaps.len() + plan.collections.len() + plan.apply.len())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -797,4 +922,7 @@ pub struct ApplyReport {
     pub applied: usize,
     /// Where the source saved a backup before writing, if it does that.
     pub backup: Option<String>,
+    /// What went wrong without undoing the write (an XMP export that failed), for showing.
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }

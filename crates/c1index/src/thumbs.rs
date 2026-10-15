@@ -332,6 +332,12 @@ impl Thumbs {
 
     fn make_now(&self, source: &dyn PhotoSource, id: &PhotoId) -> Result<ImageRef, Why> {
         let catalog = |e: c1model::SourceError| Why { kind: Kind::Catalog, detail: format!("{e}") };
+        // A source that renders its own thumbnails (a folder source) makes it itself.
+        match source.make_image(id, ImageTier::Thumb) {
+            Ok(Some(made)) => return Ok(made),
+            Ok(None) => {}
+            Err(e) => return Err(Why { kind: Kind::Unreadable, detail: format!("{e}") }),
+        }
         let mut notes = Vec::new();
         let mut passed_over = None;
         let mut kind = Kind::Unreachable;

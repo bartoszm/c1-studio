@@ -16,6 +16,7 @@ fn photo(n: u32) -> Photo {
             ext: "raf".into(),
             path: Some(format!(r"H:\fotos\{}\DSCF{n:04}.RAF", 2020 + n % 3)),
             size: None,
+            offline: false,
         },
         // 2023-11-14 plus n days.
         captured_at: Some(1_700_000_000_000 + i64::from(n) * 86_400_000),

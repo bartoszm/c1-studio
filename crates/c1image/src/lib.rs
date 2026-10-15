@@ -7,6 +7,7 @@
 //!   previews): white balance, highlight scaling and the sRGB curve are applied here,
 //!   then the quarter turn and straightening, the colours of the source's own small
 //!   render, fitted pixel by pixel, and the crop.
+//! - PNG and TIFF originals: decoded like a JPEG.
 //! - Camera raws: the full-size JPEG the camera embedded, framed alike. Not a raw
 //!   conversion, so no edits show beyond the turn and crop.
 
@@ -52,7 +53,9 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 pub fn load(r: &ImageRef) -> Result<RgbImage> {
     let exif = !r.as_stored;
     let image = match r.format {
-        ImageFormat::Jpeg => jpeg(&std::fs::read(&r.path).map_err(io_err(&r.path))?, &r.path, exif),
+        ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff => {
+            jpeg(&std::fs::read(&r.path).map_err(io_err(&r.path))?, &r.path, exif)
+        }
         ImageFormat::JpegXl => return Ok(frame(render_preview(r, Matching::Colours)?, r)),
         ImageFormat::Raw => match raw::embedded_jpeg(&r.path)? {
             Some(bytes) => jpeg(&bytes, &r.path, exif),
@@ -108,7 +111,14 @@ pub(crate) fn load_jpeg(path: &Path) -> Result<RgbImage> {
     jpeg(&std::fs::read(path).map_err(io_err(path))?, path, true)
 }
 
-/// Decodes a JPEG, turned as its EXIF orientation says when `exif`.
+/// The full-size JPEG a camera raw embeds (Fuji RAF, TIFF-based raws such as DNG, NEF,
+/// CR2, ARW), or `None` if it has none this reader finds.
+pub fn embedded_jpeg(path: &Path) -> Result<Option<Vec<u8>>> {
+    raw::embedded_jpeg(path)
+}
+
+/// Decodes a JPEG (or PNG or TIFF: the format is sniffed), turned as its EXIF orientation
+/// says when `exif`.
 fn jpeg(bytes: &[u8], path: &Path, exif: bool) -> Result<RgbImage> {
     let mut decoder = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
