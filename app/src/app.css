@@ -230,6 +230,8 @@ main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps t
   box-shadow: 0 0 0 2px var(--panel);
 }
 .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
+/* The original is not reachable now (a drive that is not connected). */
+.cell.offline img { opacity: 0.4; filter: grayscale(0.6); }
 /* The preview over a big tile's thumbnail, faded in once it has arrived. */
 .cell img.sharp {
   position: absolute;
@@ -363,6 +365,9 @@ footer .thumbs { padding: 0 8px; color: #e8b03a; border: 1px solid currentColor;
 footer .thumbs:hover { color: #fff; }
 footer .warn { padding: 0 6px; color: var(--error); font-weight: 600; }
 footer .warn:hover, footer .log:hover { text-decoration: underline; }
+footer .offline-roots { color: #e8b03a; }
+footer .rescan { padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; }
+footer .rescan:hover { background: var(--hover); }
 footer .log { color: var(--muted); }
 /* A thumbnail that failed to load leaves its tile empty, not a broken-image icon; it is
    tried again once thumbnails are made. */

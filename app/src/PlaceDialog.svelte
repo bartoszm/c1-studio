@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import { codeFor, looseKey } from "./lib/countries";
   import { placeText } from "./lib/tree";
 
@@ -102,7 +103,7 @@
     <p class="muted">
       <b>{placeText(path)}</b>{#if photos !== null}{" · "}{photos.toLocaleString()} photo{photos === 1 ? "" : "s"}{/if}.
       {mode === "rename" ? "Every photo there gets the new name;" : "Every photo there moves into the place you pick;"}
-      what is below the {level} stays. Queued for Capture One; Ctrl+Z takes it back.
+      what is below the {level} stays. Queued for {source.word}; Ctrl+Z takes it back.
     </p>
 
     {#if mode === "rename"}

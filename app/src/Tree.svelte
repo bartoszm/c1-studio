@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { SvelteSet } from "svelte/reactivity";
   import Icon from "./Icon.svelte";
+  import { source } from "./lib/source.svelte";
   import type { Node } from "./lib/tree";
   import Tree from "./Tree.svelte";
 
@@ -38,7 +39,7 @@
     class:empty={node.count === 0}
     class:queued={node.queued}
     style:padding-left="{6 + depth * 14}px"
-    title={node.disabled ?? (node.queued ? "Changed here; not yet written to Capture One" : undefined)}
+    title={node.disabled ?? (node.queued ? `Changed here; not yet written to ${source.word}` : undefined)}
     role="treeitem"
     aria-selected={selected === node.key}
     tabindex="-1"

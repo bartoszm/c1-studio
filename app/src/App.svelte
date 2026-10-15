@@ -22,6 +22,8 @@
   import GpxDialog from "./GpxDialog.svelte";
   import NeighbourDialog from "./NeighbourDialog.svelte";
   import SourceMenu from "./SourceMenu.svelte";
+  import { source } from "./lib/source.svelte";
+  import { offlineText, progressText } from "./lib/folders";
   import KeywordDialog from "./KeywordDialog.svelte";
   import Tree from "./Tree.svelte";
   import Timeline from "./Timeline.svelte";
@@ -41,6 +43,10 @@
   let albumsShown = $derived(shownSections.includes("albums"));
 
   let status = $state<api.Status | null>(null);
+  /** How far the source's scan has got (`source-progress` events), while one runs. */
+  let progress = $state<api.SourceProgress | null>(null);
+  /** Rows of photos whose originals are out of reach, for dimming their tiles. */
+  let offlineRows = $state.raw(new Set<number>());
   /** The source menu in the header; open by itself when nothing could be opened. */
   let choosingSource = $state(false);
   let error = $state<string | null>(null);
@@ -329,6 +335,7 @@
       pages = new SvelteMap([[0, r.rows]]);
       loading = new Map();
       error = null;
+      showOffline(mine, asked);
       if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
         await followPicks(mine, asked);
@@ -342,6 +349,17 @@
     } catch (e) {
       if (mine === generation) error = String(e);
     }
+  }
+
+  /** Finds which photos of the result are offline; only asked once a root is out of reach. */
+  function showOffline(mine: number, asked: Filter) {
+    if (!status?.offline_roots.length) {
+      if (offlineRows.size) offlineRows = new Set();
+      return;
+    }
+    api.query({ ...asked, offline: true }, { sort: "DateDesc", limit: 50000 })
+      .then((r) => { if (mine === generation) offlineRows = new Set(r.rows); })
+      .catch(() => {});
   }
 
   /**
@@ -391,6 +409,8 @@
   async function refresh(keep = false) {
     try {
       status = await api.status();
+      source.provider = status.provider;
+      progress = status.progress;
       // A sync that failed before the window was listening (at start, or on opening
       // another catalog) still says so.
       syncFailed = status.sync_error;
@@ -424,6 +444,7 @@
       listen("thumbs-done", () => api.retryBrokenImages()),
       // The details panel reads the photo (and its history) again: Capture One may have changed it.
       listen("library-changed", () => { syncNote = ""; syncFailed = null; version++; refresh(true); }),
+      listen<api.SourceProgress | null>("source-progress", (e) => { progress = e.payload; }),
       listen<string>("sync-failed", (e) => { syncNote = "sync failed"; syncFailed = e.payload; }),
       listen<api.AutosaveState>("autosave", (e) => { autosaveState = e.payload; }),
       listen("queue-written", () => { edited(); }),
@@ -1058,7 +1079,7 @@
       redoStack = [];
       await refreshCollections();
       if ("Create" in change) await applyEdit({ AddToAlbum: change.Create.id }, rows);
-      if (!editError) note(`Album “${name}” made with ${rows.length.toLocaleString()} photos; Write sends it to Capture One`);
+      if (!editError) note(`Album “${name}” made with ${rows.length.toLocaleString()} photos; Write sends it to ${source.word}`);
     } catch (e) {
       editError = String(e);
     }
@@ -1127,7 +1148,7 @@
   /** The footer's word on autosave, and whether clicking it should open the list. */
   function autosaveText(s: api.AutosaveState): [string, boolean] {
     switch (s.state) {
-      case "pending": return ["saving to Capture One when you pause…", false];
+      case "pending": return [`saving to ${source.word} when you pause…`, false];
       case "waiting":
         return [/captureone|imgcore/i.test(s.by) ? "autosave waits for Capture One to close" : "autosave waits: the catalog is open in another program", false];
       case "attention": {
@@ -1136,7 +1157,7 @@
       }
       case "saved": {
         const time = new Date(s.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-        return [`saved ${s.written} edit${s.written === 1 ? "" : "s"} to Capture One at ${time}`, false];
+        return [`saved ${s.written} edit${s.written === 1 ? "" : "s"} to ${source.word} at ${time}`, false];
       }
       case "failed": return [`autosave failed: ${s.error}`, true];
       default: return ["", false];
@@ -1312,6 +1333,7 @@
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
+    offline: (v) => [{ text: v ? "offline" : "online" }],
     within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
   };
   function monthText(key: string) {
@@ -1438,7 +1460,7 @@
 
 <div class="app" class:with-info={showInfo}>
   <header>
-    <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} />
+    <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} onchanged={() => refresh(true)} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     <nav class="tabs" aria-label="View">
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
@@ -1700,6 +1722,7 @@
     {selected}
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
+    offline={(i) => offlineRows.has(rowAt(i) ?? -1)}
     onselect={pick}
     ondragcell={dragCell}
     onopen={(i) => { pick(i); viewing = true; }}
@@ -1710,9 +1733,9 @@
   >
     {#if error}
       <p class="error">{error}</p>
-      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button></p>{/if}
+      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog or photo folders…</button></p>{/if}
     {:else if syncFailed && status?.photos === 0}
-      <p class="error">Nothing could be read from this catalog.<br />{syncFailed}</p>
+      <p class="error">Nothing could be read from this source.<br />{syncFailed}</p>
     {:else if result && result.total === 0}
       <p class="empty">Nothing matches.</p>
     {/if}
@@ -1737,7 +1760,19 @@
         </button>
       {/if}
       <span>{status.photos.toLocaleString()} in library</span>
-      <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
+      {#if status.provider === "capture-one"}
+        <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
+      {/if}
+      {#if status.offline_roots.length}
+        <span class="offline-roots" title={`Not reachable at the last scan:\n${status.offline_roots.join("\n")}\nTheir photos stay, dimmed, with their edits.`}>
+          {offlineText(status.offline_roots)}
+        </span>
+      {/if}
+      {#if progress}
+        <span class="sync" title={progress.note ?? ""}>{progressText(progress)}</span>
+      {:else if status.can_rescan}
+        <button class="rescan" title="Look at the folders again for new, moved and removed photos" onclick={() => api.rescan().catch((e) => (editError = String(e)))}>Rescan</button>
+      {/if}
     {/if}
     {#if fillOffer}
       {@const first = fillOffer.groups[0]}
@@ -1772,7 +1807,7 @@
         class="thumbs"
         title={thumbs.total && thumbs.failed
           ? "Try again, for instance once the drive with the originals is connected."
-          : "Capture One has no thumbnail for these. Make them from each photo's preview, or its original when there is none."}
+          : `${source.name} has no thumbnail for these. Make them from each photo's preview, or its original when there is none.`}
         onclick={() => api.fillThumbnails().catch((e) => (editError = String(e)))}
       >{thumbs.missing.toLocaleString()} photo{thumbs.missing === 1 ? "" : "s"} without a thumbnail · {thumbs.total ? "Try again" : "Make them"}</button>
     {/if}
@@ -1790,20 +1825,20 @@
           <span>{note}</span>
         {/if}
       {/if}
-      <label title="Write queued edits to Capture One by itself, a few seconds after you pause, whenever it is closed">
+      <label title={source.isCaptureOne ? "Write queued edits to Capture One by itself, a few seconds after you pause, whenever it is closed" : `Write queued edits to ${source.word} by itself, a few seconds after you pause`}>
         <input type="checkbox" checked={autosaveOn} onchange={(e) => toggleAutosave(e.currentTarget.checked)} />
         Autosave
       </label>
     </span>
     {#if queuedCount}
       <button class="queue" onclick={() => (writing = true)}>
-        {queuedCount.toLocaleString()} edit{queuedCount === 1 ? "" : "s"} waiting · Write to Capture One…
+        {queuedCount.toLocaleString()} edit{queuedCount === 1 ? "" : "s"} waiting · Write to {source.word}…
       </button>
     {/if}
     {#if status}
       <button
         class="log"
-        title="Events log: what was read from and written to Capture One, thumbnails made, and what failed"
+        title="Events log: what was read from and written to {source.word}, thumbnails made, and what failed"
         aria-label="Open the events log"
         onclick={() => api.openLog().catch((e) => (editError = String(e)))}
       >ⓘ Log</button>
@@ -1873,7 +1908,7 @@
         <button role="menuitem" class="danger" onclick={() => { albumDialog = { mode: "delete", collection: c }; albumMenu = null; }}>Delete…</button>
       {/if}
     {:else if c?.system}
-      <div class="menu-note">Capture One's own: changed only there.</div>
+      <div class="menu-note">{source.isCaptureOne ? "Capture One's own: changed only there." : "Made from the folders: changed only on disk."}</div>
     {/if}
   </div>
 {/if}
