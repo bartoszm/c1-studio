@@ -1349,9 +1349,10 @@ country) and 68k have neither.
   change drew up to 600 cards of six thumbnails. `Library::groups` takes an offset and
   a limit and returns a `GroupPage` with the exact total (the order ends on the id, so
   pages follow on). The tab reads 60 of each, the header gives the total, and *Show
-  more (N left)* adds the next 60; a change of filter, an edit or new measurements start
-  again from the first page, and a page asked for before that is dropped. Thumbnails
-  load lazily.
+  more (N left)* adds the next 60; another filter starts again from the first page,
+  while an edit or new measurements read as many as are shown, so an opened list stays
+  open. *Show more* waits while the lists are read again. Thumbnails load lazily. On the
+  Analysis tab the page keys scroll the charts; the arrows move in the strip.
 - Tested with three pairs and a three paged two at a time
   (`groups_page_with_an_exact_total`). `tools/record/checks/26-28.mjs` measures it on
   the recording instance.

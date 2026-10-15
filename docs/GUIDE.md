@@ -364,7 +364,7 @@ What the **Analysis** tab offers (the tabs above the grid are *Photos*, *Map* an
 Under the charts and groups, a strip shows the photos the filter picks, as the map's does:
 pick a bar and see its photos without leaving the tab. They are the same photos as on the
 *Photos* tab, so the counts agree. Click one to see it in the details panel; the arrow
-keys move through them.
+keys move through them, while Page Up and Page Down scroll the charts and groups.
 
 The details panel's **Look** shows the photo's main colours as a bar, its classes, and
 for a duplicate or a burst a link to the others (*Looks like 1 other photo: show them*,

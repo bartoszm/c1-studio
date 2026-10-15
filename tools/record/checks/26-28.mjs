@@ -1,8 +1,9 @@
 // #26 and #28 on the Analysis tab.
 // #26: with *red* picked, prints how many photos the strip under the charts shows and the
 // header's count against the "Show N photos" button, then clicks a photo in the strip and
-// prints the details panel's name. Expected: cells on screen, the two counts equal, the
-// panel naming the clicked photo, and the Analysis tab still open.
+// prints the details panel's name. Expected: cells on screen, the two counts equal (both
+// are the result's size: this shows the strip has the same result), a photo in the panel,
+// and the Analysis tab still open.
 // #28: prints each list's card count and the total in its header, presses "Show more"
 // where there is one and prints them again. Expected: no "300+", the total exact, and
 // each press adding a page (60) or the rest, until the cards reach the total.

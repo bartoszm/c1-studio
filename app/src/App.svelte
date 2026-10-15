@@ -1248,6 +1248,8 @@
       const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
+    // On Analysis the page keys scroll the charts and groups; arrows move in the strip.
+    else if (tab === "analysis" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
@@ -1514,7 +1516,7 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
-    <div class="tiles" class:gone={tab === "analysis"} title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
         type="range"

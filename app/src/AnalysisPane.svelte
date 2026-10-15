@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import * as api from "./lib/api";
   import type { AnalysisState, Dim, Filter, GroupPage } from "./lib/api";
   import { HUES } from "./lib/format";
@@ -47,33 +48,44 @@
     series: { total: 0, groups: [] },
   });
   let adding = $state<Record<Field, boolean>>({ duplicates: false, series: false });
+  // Not state: the newest read asked for, and what `lists` hold (the filter and the read).
   let loadedFor = "";
+  let listKey = "";
+  let listFilter = "";
   let loaded: Filter = {};
   $effect(() => {
     // The area, picks of the groups themselves and the alike flags don't change which groups exist
     // enough to refetch for; everything else does.
     const asked = $state.snapshot(filter);
-    const key = JSON.stringify({ ...asked, group: undefined }) + ":" + version + ":" + measured;
+    const all = { ...asked, group: undefined };
+    const filterKey = JSON.stringify(all);
+    const key = filterKey + ":" + version + ":" + measured;
     if (key === loadedFor) return;
     loadedFor = key;
-    const all = { ...asked, group: undefined };
-    Promise.all([api.groups(all, false), api.groups(all, true)])
+    // The same filter read again (an edit, photos measured): as many groups as are shown, so
+    // lists opened further stay open. Another filter starts from the first page.
+    const same = filterKey === listFilter;
+    const count = (f: Field) => (same ? Math.max(api.GROUP_PAGE, untrack(() => lists[f].groups.length)) : api.GROUP_PAGE);
+    Promise.all([api.groups(all, false, 0, count("duplicates")), api.groups(all, true, 0, count("series"))])
       .then(([duplicates, series]) => {
         if (key === loadedFor) {
           lists = { duplicates, series };
           loaded = all;
+          listKey = key;
+          listFilter = filterKey;
         }
       })
       .catch(() => {});
   });
   async function more(field: Field) {
-    if (adding[field]) return;
-    const key = loadedFor;
+    // Not while the lists are being read again: the next page would be the old filter's.
+    if (adding[field] || listKey !== loadedFor) return;
+    const key = listKey;
     adding[field] = true;
     try {
       const page = await api.groups(loaded, field === "series", lists[field].groups.length);
-      // Dropped when the filter changed meanwhile: the lists start again from the first page.
-      if (key !== loadedFor) return;
+      // Dropped when the lists were read again meanwhile.
+      if (key !== loadedFor || key !== listKey) return;
       const shown = new Set(lists[field].groups.map((g) => g.id));
       lists[field] = { total: page.total, groups: [...lists[field].groups, ...page.groups.filter((g) => !shown.has(g.id))] };
     } catch {

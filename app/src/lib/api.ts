@@ -381,7 +381,9 @@ export type Group = { id: string; size: number; matched: number; rows: number[] 
 export type GroupPage = { total: number; groups: Group[] };
 /** A page of the duplicate groups (or series) among the photos the filter selects, biggest
  *  first, with how many there are in all. */
-export const groups = (filter: Filter, series: boolean, offset = 0, limit = 60) =>
+/** Groups the Analysis tab shows at a time. */
+export const GROUP_PAGE = 60;
+export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE) =>
   invoke<GroupPage>("groups", { filter, series, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
