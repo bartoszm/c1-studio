@@ -199,9 +199,15 @@ impl Definition {
         SourceId(format!("folders:{}", &self.id[..self.id.len().min(8)]))
     }
 
-    /// [`c1model::Provider::data_key`]: the name made file-safe, then the short id.
+    /// [`c1model::Provider::data_key`]: `folders-` and the short id. Never the name: the
+    /// source can be renamed without losing its store, edits and library.
     pub fn data_key(&self) -> String {
-        format!("{}-{}", slug(&self.name), &self.id[..self.id.len().min(8)])
+        format!("folders-{}", &self.id[..self.id.len().min(8)])
+    }
+
+    /// A file name for the definition: the name made file-safe, then the short id.
+    pub fn file_name(&self) -> String {
+        format!("{}-{}.{EXTENSION}", slug(&self.name), &self.id[..self.id.len().min(8)])
     }
 
     /// Where the app keeps definitions it makes: `<config>/sources`.
@@ -211,7 +217,7 @@ impl Definition {
 
     /// A new definition's file in [`Definition::default_dir`].
     pub fn default_path(&self) -> PathBuf {
-        Self::default_dir().join(format!("{}.{EXTENSION}", self.data_key()))
+        Self::default_dir().join(self.file_name())
     }
 
     /// Every exclude, the always-excluded store folders first.
@@ -251,7 +257,10 @@ mod tests {
         let moved = dir.path().join("two.c1folders");
         std::fs::rename(&at, &moved).unwrap();
         assert_eq!(Definition::load(&moved).unwrap().data_key(), def.data_key());
-        assert!(def.data_key().starts_with("family-archive-"));
+        assert!(def.file_name().starts_with("family-archive-"));
+        let mut renamed = def.clone();
+        renamed.name = "Something else".into();
+        assert_eq!(renamed.data_key(), def.data_key(), "renaming keeps the data");
         assert_eq!(def.source_id().0.len(), "folders:".len() + 8);
     }
 

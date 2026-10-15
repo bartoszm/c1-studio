@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
-use c1model::{CollectionKind, Cursor, Photo, PhotoId, PhotoSource, SourceEvent};
+use c1model::{Change, CollectionKind, Cursor, KeywordPath, Op, Photo, PhotoId, PhotoSource, SourceEvent};
 use source_folders::layer::folder_id;
 use source_folders::{Definition, FolderSource};
 
@@ -377,6 +377,87 @@ fn a_root_taken_out_and_picked_again_gets_its_ids_back() {
     assert_eq!(back["x/b.jpg"], before["x/b.jpg"]);
     let scan = fx.src.last_scan().unwrap();
     assert_eq!((scan.moved, scan.added, scan.read), (2, 0, 0));
+}
+
+/// Rates photo `ext` and tags it `trip`, through plan and apply as the app writes.
+fn edit(src: &FolderSource, ext: &str) {
+    let id = PhotoId::new(&src.definition().source_id(), ext);
+    let plan = src
+        .plan(&[
+            Change { photo: id.clone(), op: Op::SetRating { base: None, value: Some(4) } },
+            Change { photo: id, op: Op::AddKeywords { paths: vec![KeywordPath::from_pipe("trip")] } },
+        ])
+        .unwrap();
+    assert_eq!(plan.apply.len(), 2, "{plan:?}");
+    src.apply(&plan).unwrap();
+}
+
+fn edited(p: &Photo) -> bool {
+    p.rating == Some(4) && p.keywords == [KeywordPath::from_pipe("trip")]
+}
+
+#[test]
+fn edits_follow_a_file_moved_and_renamed() {
+    let fx = Fixture::new(&["a.jpg", "b.jpg"]);
+    let first = fx.snap(None);
+    let id = ids(&first, &fx.root())["a.jpg"].clone();
+    edit(&fx.src, &id);
+    let after_edit = fx.snap(Some(&cursor(&first)));
+    std::fs::create_dir_all(fx.root().join("x")).unwrap();
+    std::fs::rename(fx.root().join("a.jpg"), fx.root().join("x/renamed.jpg")).unwrap();
+    let events = fx.rescan(&cursor(&after_edit));
+    assert!(deletes(&events).is_empty(), "{events:?}");
+    let up = upserts(&events);
+    let moved = up.iter().find(|p| p.id.ext == id).expect("the moved photo is sent again");
+    assert!(moved.file.path.as_deref().unwrap().ends_with("renamed.jpg"));
+    assert!(edited(moved), "its edits came along: {moved:?}");
+}
+
+#[test]
+fn edits_come_back_with_a_root_picked_again() {
+    let fx = Fixture::new(&["a.jpg"]);
+    let first = fx.snap(None);
+    let id = ids(&first, &fx.root())["a.jpg"].clone();
+    edit(&fx.src, &id);
+    let photos = fx.root().to_string_lossy().into_owned();
+    fx.edit_def(|def| def.roots.retain(|r| r.path != photos));
+    let gone = fx.snap(None);
+    assert!(upserts(&gone).is_empty());
+    fx.edit_def(|def| {
+        def.add_root(&fx.root());
+    });
+    let back = fx.snap(Some(&cursor(&gone)));
+    let photo = upserts(&back).into_iter().find(|p| p.id.ext == id).expect("same id again");
+    assert!(edited(photo), "its edits came back: {photo:?}");
+}
+
+#[test]
+fn a_reopened_source_reads_nothing_again_and_keeps_its_edits() {
+    let fx = Fixture::new(&["a.jpg", "x/b.jpg", "x/c.png"]);
+    let first = fx.snap(None);
+    let id = ids(&first, &fx.root())["a.jpg"].clone();
+    edit(&fx.src, &id);
+    let after_edit = fx.snap(Some(&cursor(&first)));
+    let Fixture { _dir, base, def_path, src } = fx;
+    drop(src);
+
+    let src = FolderSource::open(&def_path, &base.join("work")).unwrap();
+    let mut events = Vec::new();
+    src.snapshot(Some(&cursor(&after_edit)), &mut |e| {
+        events.push(e);
+        Ok(())
+    })
+    .unwrap();
+    assert!(is_nothing(&events), "nothing changed on disk: {events:?}");
+    let scan = src.last_scan().expect("opening walks the roots");
+    assert_eq!((scan.read, scan.added, scan.removed, scan.changed), (0, 0, 0, 0));
+    let mut full = Vec::new();
+    src.snapshot(None, &mut |e| {
+        full.push(e);
+        Ok(())
+    })
+    .unwrap();
+    assert!(upserts(&full).iter().any(|p| p.id.ext == id && edited(p)));
 }
 
 /// About 200 KB, the same first and last 64 KB, differing in the middle.
