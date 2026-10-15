@@ -1264,6 +1264,63 @@ country) and 68k have neither.
   113 photos given its position. Written to the copy (117 edits) and read back: GPS and
   place in `ZIMAGE`/`ZVARIANTMETADATA`, and the 113 still drawn as ≈.
 
+### Photo folders: a second source (issue #14)
+
+- **Definition** (`source-folders/src/definition.rs`): a `*.c1folders` JSON file with the
+  name, the roots (each with an 8-hex id), the excludes, the image store and the XMP
+  options. Its path is the source's location. The data key is `folders-<id8>`, from the
+  file's `id`, so renaming or moving the file keeps the data.
+- **Scanning** (`scan.rs`, `snapshot.rs`): the roots are walked on open and on `rescan`. A
+  file is unchanged when its path, size and modification time match, and is not read
+  again. A new path is first matched by content against the records whose path is gone,
+  so a moved file keeps its id. A root that cannot be reached, or an empty one that held
+  photos, marks its photos offline and keeps them.
+- **Ids** (`ids.rs`): size plus xxh3 of the first and last 64 KB. The whole file is hashed
+  only where two files share that key.
+- **Metadata** (`meta/`): EXIF (date with its offset, camera, lens, exposure, GPS); XMP,
+  embedded or in a sidecar (`{stem}.xmp` or `{name}.xmp`); IPTC. Hierarchical keywords come
+  from `lr:hierarchicalSubject`. Read once and kept in `folders.redb`.
+- **Edits** (`layer.rs`, `write.rs`): the app's layer in `folders.redb` is the truth.
+  Albums, groups and smart albums are kept there; folders are read-only collections.
+  Originals are not changed unless `modify_originals` is set.
+- **XMP export** (`export.rs`, `meta/embed.rs`): merged sidecars for raw files; JPEG, TIFF
+  and DNG are embedded only with `modify_originals`; PNG is never written. A failed export
+  does not undo the store write.
+- **Images** (`images.rs`, `pattern.rs`): thumbnails of 450 px, made after a scan; previews
+  of 2000 px, made on view. A JPEG up to 3 MB with a long edge up to 2560 px is its own
+  preview. Four stores: central (trimmed to 90% of its limit, least recently used first,
+  previews before thumbnails; 4 GB by default), per root, beside the file, and custom
+  patterns. Custom patterns are checked for shared image files and for writes over a file
+  the source did not make. Changing the store moves or regenerates the images (`Migrate`).
+- **Backups** (`write.rs`): before each write, the source's layers and albums are saved
+  under the work folder's `backups/`, newest five kept. A write with nothing new since the
+  last backup reuses it.
+- **App**: source menu entries *New photo folders…*, *Open photo folders…*, *Edit folders…*
+  and *Rescan*; `FoldersDialog.svelte`; footer progress and offline roots; an offline tag
+  and dimmed tiles.
+- **Shared crate**: `crates/sources` (`c1sources`) opens any source for the app and the
+  CLI. `c1cat` takes `--source PATH` (`--catalog` still works) and `--provider` on every
+  command, and adds `rescan`, `folders init | show | add-root | remove-root | set-store`
+  and `idbench DIR`.
+- **Model and index** (for developers): `FileInfo.offline` (`MODEL_VERSION` 5);
+  `ImageFormat::{Png, Tiff}`; `PhotoSource::{make_image, rescan, progress, as_any}`;
+  `Capabilities.rescan`; `ApplyReport.warnings`; `c1model::change::{plan_after_with,
+  apply_with}`; `KeywordNode::tree`; conformance `check_incremental` and `check_backup`.
+  c1index `SCHEMA_VERSION` 6 → 7 for the offline flag, so the index is rebuilt once on the
+  first start.
+- **Tested**:
+  - the conformance suite (read, write, incremental, backup) on the folders provider;
+  - scan tests: moves, renames, copies, offline roots, an empty mount point, a root removed
+    and added back, a reopen that reads nothing again, excludes;
+  - metadata, embedding and export on synthetic files;
+  - image store tests: moves, the overwrite guard, eviction;
+  - `c1cat` tests.
+- **Not yet**:
+  - the stable-id hash was not tried on a real library of 100k raws; measure it with
+    `c1cat idbench` before relying on the ids;
+  - the UI was not exercised in a running window;
+  - the 10k-photo browse, search and map check was not done by hand.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare
