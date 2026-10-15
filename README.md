@@ -17,6 +17,8 @@ Written in Rust (Tauri 2 + Svelte 5, tantivy + redb). Windows, Capture One 16.
 
 ## What it does
 
+Each feature in motion: [docs/FEATURES.md](docs/FEATURES.md).
+
 ### Find anything, instantly
 
 Combine albums, dates, folders, keywords, rating, colour tag, camera, lens and place with
