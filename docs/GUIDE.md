@@ -145,7 +145,8 @@ The app shows Capture One's thumbnails and previews, never the original files.
 ## Editing
 
 Edits apply to the picked photos, or the focused one if only one is picked. They show
-at once everywhere (grid, counts, panel) and are queued for Capture One; a blue dot marks
+at once everywhere (grid, counts, panel), with the grid, the panel's scroll and the field
+being typed in left where they were, and are queued for Capture One; a blue dot marks
 photos with edits not yet written, and the panel lists which fields.
 
 | Edit | How |

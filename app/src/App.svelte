@@ -28,11 +28,11 @@
   import TripsSection from "./TripsSection.svelte";
   import { tripDates, tripName } from "./lib/trips";
   import { shouldFollow } from "./lib/mapview";
+  import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
 
-  const PAGE = 500;
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
   const ALWAYS: Dim[] = ["country", "flag", "shape", "hue", "light", "focus"];
   /** The sidebar's sections as set in Settings, the hidden ones left out. */
@@ -54,6 +54,9 @@
   let smart = $state<Map<string, number> | null>(null);
   /** Position of the photo picked in the grid; the viewer and the panel show it. */
   let selected = $state<number | null>(null);
+  /** The photo at `selected`. It stays while a refresh reads its page again, so the panel and
+   *  the viewer never lose it in between. */
+  let focusRow = $state<number | undefined>(undefined);
   let viewing = $state(false);
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
@@ -210,6 +213,8 @@
   let queuedCount = $state(0);
   /** Bumped after every edit, so the details panel reads the photo again. */
   let version = $state(0);
+  /** Bumped when the analysis has measured photos again: the panel's Look reads them again. */
+  let analysed = $state(0);
   let writing = $state(false);
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
@@ -344,13 +349,28 @@
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
-      const r = await api.query(asked, {
+      const first = api.query(asked, {
         sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
+      // In place, the pages on screen and the focused photo's (and the next, for the viewer)
+      // are read again alongside the first and swapped in with the result in one go: until
+      // then the grid and the details panel keep the old ones.
+      const shown = grid?.range() ?? [0, 0];
+      const { result: r, pages: fresh } = keep
+        ? await refreshPages(
+            first,
+            (total) => {
+              const at = Math.min(selected ?? 0, total - 1);
+              return [shown, [at, at + 2]];
+            },
+            result?.total ?? 0,
+            (page) => api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+          )
+        : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
       result = r;
       counted = groups;
-      pages = new SvelteMap([[0, r.rows]]);
+      pages = new SvelteMap(fresh);
       loading = new Map();
       error = null;
       if (keep) {
@@ -388,7 +408,15 @@
     }
   }
 
-  const rowAt = (i: number) => pages.get(Math.floor(i / PAGE))?.[i % PAGE];
+  const rowAt = (i: number) => rowIn(pages, i);
+  // The focused photo follows `selected` once its page is in.
+  $effect(() => {
+    if (selected === null) focusRow = undefined;
+    else {
+      const row = rowAt(selected);
+      if (row !== undefined) focusRow = row;
+    }
+  });
 
   function load(page: number): Promise<void> {
     const pending = loading.get(page);
@@ -459,7 +487,7 @@
           run(true);
         }
       }),
-      listen("analysis-done", () => { version++; refresh(true); }),
+      listen("analysis-done", () => { version++; analysed++; refresh(true); }),
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
@@ -528,7 +556,7 @@
   /** The photos an edit applies to: the picked ones, else the focused one. */
   function targets(): number[] {
     if (picked.size) return [...picked];
-    const row = selected === null ? mapRow ?? undefined : rowAt(selected);
+    const row = selected === null ? mapRow ?? undefined : focusRow;
     return row === undefined ? [] : [row];
   }
 
@@ -642,13 +670,13 @@
   );
 
   async function openCopy() {
-    const row = selected === null ? undefined : rowAt(selected);
+    const row = selected === null ? undefined : focusRow;
     if (row === undefined) return;
     copying = await api.photo(row);
   }
 
   async function openSync() {
-    const row = selected === null ? undefined : rowAt(selected);
+    const row = selected === null ? undefined : focusRow;
     if (row === undefined || picked.size < 2) return;
     const from = await api.photo(row);
     if (from) syncing = { from, row };
@@ -758,7 +786,7 @@
         if (r !== undefined) picked.add(r);
       }
     } else if (how?.add && row !== undefined) {
-      if (picked.size === 0 && selected !== null && rowAt(selected) !== undefined) picked.add(rowAt(selected)!);
+      if (picked.size === 0 && selected !== null && focusRow !== undefined) picked.add(focusRow);
       if (picked.has(row)) picked.delete(row);
       else picked.add(row);
       anchor = i;
@@ -768,6 +796,7 @@
       anchor = i;
     }
     selected = i;
+    focusRow = row;
     mapRow = null;
   }
 
@@ -1133,6 +1162,7 @@
     if (to < 0 || to >= result.total) return;
     await need(to, to + 2);
     selected = to;
+    focusRow = rowAt(to);
   }
 
   function close() {
@@ -1215,7 +1245,7 @@
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
-      const row = selected === null ? undefined : rowAt(selected);
+      const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
@@ -1422,10 +1452,11 @@
 {/snippet}
 
 {#snippet details()}
-  {@const row = selected === null ? mapRow ?? undefined : rowAt(selected)}
+  {@const row = selected === null ? mapRow ?? undefined : focusRow}
   <Info
     {row}
     {version}
+    {analysed}
     picked={Math.max(picked.size, row === undefined ? 0 : 1)}
     queued={(row !== undefined && queued.get(row)) || []}
     onrate={(n) => applyEdit({ Rating: n })}
@@ -1576,7 +1607,7 @@
             <TripsSection
               list={tripList}
               selected={shownTrip?.id ?? null}
-              focusRow={selected === null ? undefined : rowAt(selected)}
+              focusRow={selected === null ? undefined : focusRow}
               onpick={pickTrip}
               onchanged={refreshTrips}
               onexport={exportTrip}
@@ -1687,7 +1718,7 @@
     <MapPane
       {filter}
       {version}
-      focus={selected === null ? mapRow : (rowAt(selected) ?? null)}
+      focus={selected === null ? mapRow : (focusRow ?? null)}
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
       pickedRows={[...picked]}
       tile={mapTile}
@@ -2007,8 +2038,8 @@
   <WriteDialog onclose={() => (writing = false)} onchanged={() => { refreshKeywords(); edited(); }} />
 {/if}
 
-{#if viewing && selected !== null && rowAt(selected) !== undefined}
-  <Viewer row={rowAt(selected)!} next={rowAt(selected + 1)} onclose={close} onstep={step}>
+{#if viewing && selected !== null && focusRow !== undefined}
+  <Viewer row={focusRow} next={rowAt(selected + 1)} onclose={close} onstep={step}>
     {#if showInfo}{@render details()}{/if}
   </Viewer>
 {/if}

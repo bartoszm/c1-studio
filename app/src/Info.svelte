@@ -10,7 +10,7 @@
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces,
+    row, version, analysed, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, onlook,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
@@ -18,6 +18,8 @@
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
     version: number;
+    /** Bumped when the analysis has measured photos again, to read Look again. */
+    analysed: number;
     /** How many photos an edit here applies to. */
     picked: number;
     /** Fields of this photo edited here and not yet written to Capture One. */
@@ -85,10 +87,16 @@
 
   /** What the analysis found, once the photo has been measured. */
   let look = $state<api.LookView | null>(null);
+  // Not state: which photo `look` is about. Edits don't change it: only another photo, or
+  // the analysis measuring again, reads it again; the same photo keeps it until then.
+  let lookOf: number | undefined;
   $effect(() => {
     const current = row;
-    void version;
-    look = null;
+    void analysed;
+    if (current !== lookOf) {
+      lookOf = current;
+      look = null;
+    }
     if (current !== undefined) api.look(current).then((l) => { if (current === row) look = l; }).catch(() => {});
   });
   const hex = (rgb: number[]) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");

@@ -1307,6 +1307,22 @@ country) and 68k have neither.
 - `tools/record/checks/21.mjs`, `23.mjs`, `24.mjs`, `25.mjs` measure each on the recording
   instance.
 
+### Edits no longer blank the grid and the panel (#33, #34)
+
+- **Pages kept through a refresh:** after an edit, an undo or a sync, `run(true)` read
+  only the first page again and dropped the rest, so past position 500 the grid's tiles
+  and the details panel went blank for 25-100 ms (65 of 70 thumbnails made again, focus
+  and the panel's scroll lost). Now the pages on screen and the focused photo's are read
+  again into a new map, swapped in with the result in one go (`lib/pages.ts`); the old
+  ones show until then. The focused photo's row is kept in its own state (`focusRow`),
+  so the panel and the viewer never see a gap.
+- **Look stays:** the panel's Look was cleared and read again on every edit (the fields
+  below jumped 139 px and back). It is read again only for another photo, or when the
+  analysis has measured photos again (`analysis-done`).
+- `tools/record/checks/`: scenarios that measure it on the recording instance (33: nodes
+  replaced, focus and scroll through edits past position 500; 34: field positions each
+  frame). CI runs the app's TypeScript tests (`pnpm test`).
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare
