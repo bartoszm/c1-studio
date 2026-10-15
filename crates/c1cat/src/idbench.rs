@@ -1,8 +1,8 @@
 //! `idbench`: how fast photos get their stable ids, and whether two different files ever
 //! share one. A photo folder source tells files apart by [`content_key`] (size plus a hash
-//! of the first and last 64 KB); this reads a real folder with it, one file at a time, so
-//! the speed is what a scan pays, and checks every shared key against a hash of the
-//! whole files.
+//! of the first and last 64 KB); this reads a real folder with it, one file at a time (or on
+//! all cores with `--parallel`, as a scan does), and checks every shared key against a
+//! hash of the whole files.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Context;
+use rayon::prelude::*;
 use serde_json::json;
 use source_folders::ids::{EDGE, content_key, full_hash};
 use source_folders::meta::FileKind;
@@ -18,6 +19,8 @@ use source_folders::meta::FileKind;
 #[derive(Debug, Default)]
 pub struct Report {
     pub dir: PathBuf,
+    /// Whether the files were keyed on all cores at once.
+    pub parallel: bool,
     /// Photo files keyed.
     pub files: u64,
     /// Their sizes together.
@@ -61,6 +64,7 @@ impl Report {
         let collisions = |c: &Collisions| json!({ "keys": c.keys, "files": c.files });
         json!({
             "dir": self.dir,
+            "parallel": self.parallel,
             "files": self.files,
             "total_bytes": self.total_bytes,
             "read_bytes": self.read_bytes,
@@ -93,8 +97,9 @@ impl fmt::Display for Report {
         )?;
         writeln!(
             f,
-            "key time    {:.2} s: {:.0} files/s, {:.1} MB/s read ({:.1} MB of the {:.1} MB)",
+            "key time    {:.2} s{}: {:.0} files/s, {:.1} MB/s read ({:.1} MB of the {:.1} MB)",
             self.seconds,
+            if self.parallel { " on all cores" } else { ", one file at a time" },
             self.files_per_second(),
             self.read_mb_per_second(),
             self.read_bytes as f64 / 1e6,
@@ -148,27 +153,33 @@ fn photos(dir: &Path, limit: Option<usize>) -> Vec<(PathBuf, u64)> {
     found
 }
 
-/// Keys the photos below `dir` and checks the keys that more than one file has.
-pub fn run(dir: &Path, limit: Option<usize>) -> anyhow::Result<Report> {
+/// Keys the photos below `dir`, on all cores if `parallel`, and checks the keys that more
+/// than one file has.
+pub fn run(dir: &Path, limit: Option<usize>, parallel: bool) -> anyhow::Result<Report> {
     if !dir.is_dir() {
         anyhow::bail!("{} is not a folder", dir.display());
     }
     let files = photos(dir, limit);
-    let mut report = Report { dir: dir.to_owned(), ..Report::default() };
+    let mut report = Report { dir: dir.to_owned(), parallel, ..Report::default() };
     let mut by_key: HashMap<_, Vec<&Path>> = HashMap::new();
     let started = Instant::now();
-    for (path, size) in &files {
-        match content_key(path) {
+    let keyed: Vec<_> = if parallel {
+        files.par_iter().map(|(path, size)| (path, *size, content_key(path))).collect()
+    } else {
+        files.iter().map(|(path, size)| (path, *size, content_key(path))).collect()
+    };
+    report.seconds = started.elapsed().as_secs_f64();
+    for (path, size, key) in keyed {
+        match key {
             Ok(key) => {
                 report.files += 1;
                 report.total_bytes += size;
-                report.read_bytes += (*size).min(2 * EDGE);
+                report.read_bytes += size.min(2 * EDGE);
                 by_key.entry(key).or_default().push(path);
             }
             Err(_) => report.unreadable += 1,
         }
     }
-    report.seconds = started.elapsed().as_secs_f64();
 
     let started = Instant::now();
     for (key, paths) in by_key.iter().filter(|(_, paths)| paths.len() > 1) {
@@ -205,7 +216,41 @@ mod tests {
         assert_eq!(names, ["x.JPG", "y.raf"]);
         assert!(all.iter().all(|(_, size)| *size == 5));
         assert_eq!(photos(dir.path(), Some(1)).len(), 1);
-        assert!(run(&dir.path().join("x.JPG"), None).is_err(), "a file is not a folder");
+        assert!(run(&dir.path().join("x.JPG"), None, false).is_err(), "a file is not a folder");
+    }
+
+    #[test]
+    fn copies_and_collisions_are_counted_the_same_one_at_a_time_and_in_parallel() {
+        let dir = tempfile::tempdir().unwrap();
+        let size = 3 * EDGE as usize;
+        let base: Vec<u8> = (0..size).map(|i| (i % 253) as u8).collect();
+        let mut other = base.clone();
+        other[size / 2] ^= 1;
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        };
+        write("x/a.jpg", &base);
+        write("y/a-copy.JPG", &base);
+        write("y/b.raf", &other);
+        write("c.png", b"unique");
+        let third: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        write("z/d1.jpg", &third);
+        write("z/d2.jpg", &third);
+        write("notes.txt", &base);
+        for parallel in [false, true] {
+            let report = run(dir.path(), None, parallel).unwrap();
+            assert_eq!((report.files, report.parallel), (6, parallel), "{report}");
+            assert_eq!(report.total_bytes, 5 * size as u64 + 6);
+            assert_eq!(report.read_bytes, 5 * 2 * EDGE + 6);
+            // a.jpg, a-copy.JPG and b.raf share a key, and b.raf is not a copy; d1 and d2 are.
+            assert_eq!(report.shared_keys, 2);
+            assert_eq!(report.same_content, Collisions { keys: 1, files: 2 });
+            assert_eq!(report.different_content, Collisions { keys: 1, files: 3 });
+            assert_eq!(report.full_hash_bytes, 5 * size as u64);
+        }
+        assert_eq!(run(dir.path(), Some(2), false).unwrap().files, 2);
     }
 
     #[test]

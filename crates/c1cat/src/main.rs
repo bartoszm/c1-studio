@@ -58,6 +58,9 @@ enum Command {
         /// Stop after this many photo files.
         #[arg(long)]
         limit: Option<usize>,
+        /// Key the files on all cores at once, as a scan does, instead of one at a time.
+        #[arg(long)]
+        parallel: bool,
         #[arg(long)]
         json: bool,
     },
@@ -1090,8 +1093,8 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Folders { action } => folders::run(action, &cli.target)?,
-        Command::Idbench { dir, limit, json } => {
-            let report = idbench::run(&dir, limit)?;
+        Command::Idbench { dir, limit, parallel, json } => {
+            let report = idbench::run(&dir, limit, parallel)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&report.to_json())?);
             } else {

@@ -2,18 +2,12 @@
 //! last 64 KB ([`ContentKey`]), and, only where two files share one, a hash of the whole
 //! file.
 
-use std::collections::HashMap;
-use std::fmt;
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::path::Path;
 
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use xxhash_rust::xxh3::Xxh3;
-
-use crate::meta::FileKind;
 
 /// How much of each end of a file [`content_key`] reads.
 pub const EDGE: u64 = 64 * 1024;
@@ -69,83 +63,6 @@ fn hex(value: u128) -> String {
     format!("{value:032x}")
 }
 
-/// How fast content keys are made over a folder of photos, and how often two files share
-/// one.
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
-pub struct BenchReport {
-    /// Photo files hashed (unreadable ones are left out).
-    pub files: usize,
-    /// Their total size.
-    pub bytes: u64,
-    /// Time spent making content keys.
-    pub seconds: f64,
-    pub files_per_sec: f64,
-    /// Files whose key and whole content equal an earlier file's: true duplicates.
-    pub collisions_same_content: usize,
-    /// Files sharing a key with an earlier file whose whole content differs from every one
-    /// before it: what the full hash had to tell apart.
-    pub collisions_different_content: usize,
-    /// Time spent hashing whole files that share a key.
-    pub full_hash_seconds: f64,
-}
-
-impl fmt::Display for BenchReport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mb = self.bytes as f64 / (1024.0 * 1024.0);
-        writeln!(f, "{} photo files, {mb:.1} MB", self.files)?;
-        writeln!(f, "content keys: {:.2} s, {:.0} files/s", self.seconds, self.files_per_sec)?;
-        writeln!(f, "same key, same content (duplicates): {}", self.collisions_same_content)?;
-        writeln!(f, "same key, different content: {}", self.collisions_different_content)?;
-        write!(f, "full hashes of shared keys: {:.2} s", self.full_hash_seconds)
-    }
-}
-
-/// Makes the content key of every photo file under `dir` (the first `limit` of them, if
-/// given), timing it, then hashes whole the files that share a key to count duplicates and
-/// false collisions.
-pub fn bench(dir: &Path, limit: Option<usize>) -> io::Result<BenchReport> {
-    if !dir.is_dir() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("{} is not a folder", dir.display())));
-    }
-    let files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .filter(|e| e.path().extension().and_then(|x| x.to_str()).and_then(FileKind::from_ext).is_some())
-        .map(|e| e.into_path())
-        .take(limit.unwrap_or(usize::MAX))
-        .collect();
-
-    let started = Instant::now();
-    let keys: Vec<(PathBuf, ContentKey)> =
-        files.into_par_iter().filter_map(|path| content_key(&path).ok().map(|key| (path, key))).collect();
-    let seconds = started.elapsed().as_secs_f64();
-
-    let mut report = BenchReport {
-        files: keys.len(),
-        bytes: keys.iter().map(|(_, k)| k.size).sum(),
-        seconds,
-        files_per_sec: if seconds > 0.0 { keys.len() as f64 / seconds } else { 0.0 },
-        ..BenchReport::default()
-    };
-    let mut groups: HashMap<&ContentKey, Vec<&Path>> = HashMap::new();
-    for (path, key) in &keys {
-        groups.entry(key).or_default().push(path);
-    }
-    let started = Instant::now();
-    for paths in groups.values().filter(|p| p.len() > 1) {
-        let fulls: Vec<String> = paths.par_iter().filter_map(|p| full_hash(p).ok()).collect();
-        let mut distinct: Vec<&String> = fulls.iter().collect();
-        distinct.sort();
-        distinct.dedup();
-        report.collisions_same_content += fulls.len() - distinct.len();
-        report.collisions_different_content += distinct.len().saturating_sub(1);
-    }
-    report.full_hash_seconds = started.elapsed().as_secs_f64();
-    Ok(report)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,27 +100,5 @@ mod tests {
         a[1] ^= 0xff;
         write(&pb, &a);
         assert_ne!(content_key(&pb).unwrap(), ka);
-    }
-
-    #[test]
-    fn bench_counts_duplicates_and_collisions() {
-        let dir = tempfile::tempdir().unwrap();
-        let size = 3 * EDGE as usize;
-        let base: Vec<u8> = (0..size).map(|i| (i % 253) as u8).collect();
-        let mut other = base.clone();
-        other[size / 2] ^= 1;
-        write(&dir.path().join("x/a.jpg"), &base);
-        write(&dir.path().join("y/a-copy.JPG"), &base);
-        write(&dir.path().join("y/b.raf"), &other);
-        write(&dir.path().join("c.png"), b"unique");
-        write(&dir.path().join("notes.txt"), &base);
-        let report = bench(dir.path(), None).unwrap();
-        assert_eq!(report.files, 4, "{report}");
-        assert_eq!(report.collisions_same_content, 1);
-        assert_eq!(report.collisions_different_content, 1);
-        assert_eq!(report.bytes, 3 * size as u64 + 6);
-        assert!(report.to_string().contains("4 photo files"));
-        assert_eq!(bench(dir.path(), Some(2)).unwrap().files, 2);
-        assert!(bench(&dir.path().join("nowhere"), None).is_err());
     }
 }

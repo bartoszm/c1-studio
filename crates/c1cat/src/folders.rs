@@ -4,9 +4,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
+use c1model::provider::data_root;
 use clap::{Subcommand, ValueEnum};
 use source_folders::definition::EXTENSION;
-use source_folders::{Definition, ImageStore, Preset};
+use source_folders::pattern::Pattern;
+use source_folders::{Definition, FolderSource, ImageStore, Migrate, Preset, STORE_FILE};
 
 use crate::source::{SourceArgs, definition_file};
 
@@ -55,15 +57,30 @@ pub enum Action {
         #[command(flatten)]
         file: DefinitionArg,
     },
-    /// Choose where thumbnails and previews are kept.
+    /// Choose where thumbnails and previews are kept, and what happens to the ones made.
     SetStore {
         /// central: the app's data folder; per-root: `.c1studio` under each root;
-        /// beside: a `.previews` folder next to each photo.
+        /// beside: a `.previews` folder next to each photo; custom: your own patterns
+        /// (--thumb and --preview).
         #[arg(value_enum)]
         preset: Store,
         /// Size limit of the central store, in megabytes; 0 for no limit.
         #[arg(long, value_name = "MB")]
         limit_mb: Option<u64>,
+        /// The thumbnails' path pattern, such as `{dir}/.previews/{stem}.{tier}.jpg`
+        /// (custom only).
+        #[arg(long, value_name = "PATTERN")]
+        thumb: Option<String>,
+        /// The previews' path pattern (custom only).
+        #[arg(long, value_name = "PATTERN")]
+        preview: Option<String>,
+        /// Move the images already made to the new place. One of --move and --regenerate is
+        /// needed when there are some.
+        #[arg(long = "move", conflicts_with = "regenerate")]
+        move_images: bool,
+        /// Delete the images already made; they are made again in the new place as needed.
+        #[arg(long)]
+        regenerate: bool,
         #[command(flatten)]
         file: DefinitionArg,
     },
@@ -82,6 +99,7 @@ pub enum Store {
     Central,
     PerRoot,
     Beside,
+    Custom,
 }
 
 impl Store {
@@ -90,6 +108,7 @@ impl Store {
             Self::Central => Preset::Central,
             Self::PerRoot => Preset::PerRoot,
             Self::Beside => Preset::Beside,
+            Self::Custom => Preset::Custom,
         }
     }
 }
@@ -134,20 +153,105 @@ pub fn run(action: Action, source: &SourceArgs) -> anyhow::Result<()> {
             println!("its photos are kept, detached, and come back if it is added again");
             Ok(())
         }),
-        Action::SetStore { preset, limit_mb, file } => edit(&file, source, |def, file| {
-            let mut store = ImageStore::preset(preset.preset());
-            match limit_mb {
-                Some(0) => store.central_limit_mb = None,
-                Some(mb) => store.central_limit_mb = Some(mb),
-                // Keeps the limit the definition had.
-                None => store.central_limit_mb = def.images.central_limit_mb,
-            }
-            def.images = store;
-            println!("images of {} go to the {:?} store", file.display(), def.images.preset);
-            println!("images already made stay where they are; they are made again in the new place when needed");
-            Ok(())
-        }),
+        Action::SetStore { preset, limit_mb, thumb, preview, move_images, regenerate, file } => {
+            let file = definition_file(file.path.as_deref(), source)?;
+            let wanted = StoreChange { preset: preset.preset(), limit_mb, thumb, preview };
+            let how = match (move_images, regenerate) {
+                (true, _) => Some(Migrate::Move),
+                (_, true) => Some(Migrate::Regenerate),
+                _ => None,
+            };
+            set_store(&file, &work_dir(&file)?, &wanted, how)
+        }
     }
+}
+
+/// The image store the user asked for.
+struct StoreChange {
+    preset: Preset,
+    limit_mb: Option<u64>,
+    thumb: Option<String>,
+    preview: Option<String>,
+}
+
+impl StoreChange {
+    /// The store this makes of `old`, with its patterns checked on their own.
+    fn build(&self, old: &ImageStore) -> anyhow::Result<ImageStore> {
+        let mut store = ImageStore::preset(self.preset);
+        if self.preset == Preset::Custom {
+            let (Some(thumb), Some(preview)) = (&self.thumb, &self.preview) else {
+                anyhow::bail!("custom needs both --thumb PATTERN and --preview PATTERN");
+            };
+            store.thumb = thumb.clone();
+            store.preview = preview.clone();
+        } else if self.thumb.is_some() || self.preview.is_some() {
+            anyhow::bail!("--thumb and --preview go with the custom store");
+        }
+        match self.limit_mb {
+            Some(0) => store.central_limit_mb = None,
+            Some(mb) => store.central_limit_mb = Some(mb),
+            // Keeps the limit the definition had.
+            None => store.central_limit_mb = old.central_limit_mb,
+        }
+        for (label, text) in [("thumbnail", &store.thumb), ("preview", &store.preview)] {
+            let pattern = Pattern::parse(text).map_err(|e| anyhow::anyhow!("the {label} pattern: {e}"))?;
+            if let Some(problem) = pattern.static_problem() {
+                anyhow::bail!("the {label} pattern {text:?}: {problem}");
+            }
+        }
+        Ok(store)
+    }
+}
+
+/// The folder where the app keeps what the source at `definition` made, and its store.
+fn work_dir(definition: &Path) -> anyhow::Result<PathBuf> {
+    let provider = c1sources::provider("folders").map_err(anyhow::Error::msg)?;
+    Ok(data_root().join(provider.data_key(&definition.to_string_lossy())).join("work"))
+}
+
+/// Changes the image store of the definition at `file`, whose source keeps its data in
+/// `work_dir`. A source that has been read is opened: its photos show whether the new store
+/// would give two of them one file, and the images it made are moved or deleted as `how`
+/// says. Nothing is saved when there are images to deal with and `how` is `None`.
+fn set_store(file: &Path, work_dir: &Path, wanted: &StoreChange, how: Option<Migrate>) -> anyhow::Result<()> {
+    let mut def = load(file)?;
+    let store = wanted.build(&def.images)?;
+    let source = if work_dir.join(STORE_FILE).is_file() {
+        let source = FolderSource::open(file, work_dir)
+            .with_context(|| format!("opening {} (is the app using it?)", file.display()))?;
+        if let Some(problem) = source.check_image_store(&store) {
+            anyhow::bail!("{problem}");
+        }
+        Some(source)
+    } else {
+        None
+    };
+    let elsewhere = def.images.thumb != store.thumb || def.images.preview != store.preview;
+    let made = source.as_ref().map_or(0, FolderSource::image_count);
+    if made > 0 && elsewhere && how.is_none() {
+        anyhow::bail!(
+            "{made} images were made in the old place. Pass --move to move them to the new place, or \
+             --regenerate to delete them and make them again as needed. Nothing was changed."
+        );
+    }
+    def.images = store;
+    def.save(file).with_context(|| format!("writing {}", file.display()))?;
+    println!("images of {} go to the {:?} store", file.display(), def.images.preset);
+    let (Some(source), Some(how)) = (source, how) else {
+        if made == 0 {
+            println!("no images have been made yet; they are made in the new place when needed");
+        }
+        return Ok(());
+    };
+    let Some(report) = source.reload_definition(Some(how)).context("applying the new store")? else {
+        println!("the images made stay where they are: the new store puts them in the same places");
+        return Ok(());
+    };
+    println!("{} images moved, {} deleted, {} failed", report.moved, report.removed, report.failed.len());
+    for failure in &report.failed {
+        println!("  {failure}");
+    }
+    if report.failed.is_empty() { Ok(()) } else { anyhow::bail!("{} images could not be handled", report.failed.len()) }
 }
 
 fn load(file: &Path) -> anyhow::Result<Definition> {
@@ -275,10 +379,143 @@ mod tests {
         assert_eq!(Definition::load(&file).unwrap().roots.len(), 1);
         let missing = run(Action::RemoveRoot { root: "nope".into(), file: arg() }, &nothing());
         assert!(missing.is_err());
-        run(Action::SetStore { preset: Store::Beside, limit_mb: None, file: arg() }, &nothing()).unwrap();
+        let set = |preset, limit_mb| Action::SetStore {
+            preset,
+            limit_mb,
+            thumb: None,
+            preview: None,
+            move_images: false,
+            regenerate: false,
+            file: arg(),
+        };
+        // No source has been read, so there are no images to deal with.
+        run(set(Store::Beside, None), &nothing()).unwrap();
         assert_eq!(Definition::load(&file).unwrap().images.preset, Preset::Beside);
-        run(Action::SetStore { preset: Store::Central, limit_mb: Some(0), file: arg() }, &nothing()).unwrap();
+        run(set(Store::Central, Some(0)), &nothing()).unwrap();
         assert_eq!(Definition::load(&file).unwrap().images.limit_bytes(), None);
+    }
+
+    fn change(preset: Preset, thumb: Option<&str>, preview: Option<&str>) -> StoreChange {
+        StoreChange { preset, limit_mb: None, thumb: thumb.map(str::to_owned), preview: preview.map(str::to_owned) }
+    }
+
+    #[test]
+    fn a_custom_store_needs_both_patterns_and_good_ones() {
+        let old = ImageStore::default();
+        let build = |c: StoreChange| c.build(&old).map_err(|e| e.to_string());
+        let good = "{dir}/.previews/{stem}.{tier}.jpg";
+        let store = build(change(Preset::Custom, Some(good), Some(good))).unwrap();
+        assert_eq!((store.preset, store.thumb.as_str()), (Preset::Custom, good));
+        assert!(build(change(Preset::Custom, Some(good), None)).unwrap_err().contains("both"));
+        assert!(build(change(Preset::Central, Some(good), None)).unwrap_err().contains("custom"));
+        let error = build(change(Preset::Custom, Some(good), Some("{dir}/{stem}.jpg"))).unwrap_err();
+        assert!(error.contains("preview") && error.contains("{tier}"), "{error}");
+        let error = build(change(Preset::Custom, Some("{nope}.jpg"), Some(good))).unwrap_err();
+        assert!(error.contains("thumbnail") && error.contains("{nope}"), "{error}");
+    }
+
+    /// A definition over a folder of `names` (JPEGs or PNGs by extension), read once with a
+    /// thumbnail made for each, as the app would leave it.
+    struct Read {
+        dir: tempfile::TempDir,
+        file: PathBuf,
+        work: PathBuf,
+    }
+
+    fn read_photos(names: &[&str]) -> Read {
+        use c1model::{ImageTier, PhotoSource, SourceEvent};
+        let dir = tempfile::tempdir().unwrap();
+        let photos = dir.path().join("photos");
+        std::fs::create_dir_all(&photos).unwrap();
+        for name in names {
+            image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8, y as u8, 7])).save(photos.join(name)).unwrap();
+        }
+        let file = dir.path().join("p.c1folders");
+        Definition::new("P", &[photos]).save(&file).unwrap();
+        let work = dir.path().join("work");
+        let source = FolderSource::open(&file, &work).unwrap();
+        let mut ids = Vec::new();
+        source
+            .snapshot(None, &mut |event| {
+                if let SourceEvent::Upsert(photo) = event {
+                    ids.push(photo.id.clone());
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(ids.len(), names.len());
+        for id in &ids {
+            source.make_image(id, ImageTier::Thumb).unwrap().unwrap();
+        }
+        assert!(source.image_count() >= names.len());
+        Read { dir, file, work }
+    }
+
+    fn beside() -> StoreChange {
+        change(Preset::Beside, None, None)
+    }
+
+    /// The JPEGs below `dir` that are not photos: the ones in a `.previews` folder or the
+    /// central store.
+    fn made_below(dir: &Path) -> Vec<PathBuf> {
+        let photo = |p: &PathBuf| p.parent().is_some_and(|d| d.ends_with("photos"));
+        walk(dir).into_iter().filter(|p| p.extension().is_some_and(|e| e == "jpg") && !photo(p)).collect()
+    }
+
+    fn walk(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() { found.extend(walk(&path)) } else { found.push(path) }
+        }
+        found
+    }
+
+    #[test]
+    fn images_already_made_must_be_moved_or_dropped_before_the_store_changes() {
+        let read = read_photos(&["a.jpg", "b.jpg"]);
+        let error = set_store(&read.file, &read.work, &beside(), None).unwrap_err().to_string();
+        assert!(error.contains("--move") && error.contains("--regenerate"), "{error}");
+        let def = Definition::load(&read.file).unwrap();
+        assert_eq!(def.images.preset, Preset::Central, "nothing was saved");
+        let central = made_below(&read.work);
+        assert_eq!(central.len(), 2);
+
+        set_store(&read.file, &read.work, &beside(), Some(Migrate::Move)).unwrap();
+        assert_eq!(Definition::load(&read.file).unwrap().images.preset, Preset::Beside);
+        assert!(central.iter().all(|p| !p.exists()), "the old files are gone");
+        let moved = made_below(&read.dir.path().join("photos"));
+        assert_eq!(moved.len(), 2, "{moved:?}");
+        assert!(moved.iter().all(|p| p.parent().unwrap().ends_with(".previews")));
+        // The source reads the moved files back, so they were recorded in the new place.
+        let again = FolderSource::open(&read.file, &read.work).unwrap();
+        assert_eq!(again.image_count(), 2);
+    }
+
+    #[test]
+    fn regenerate_deletes_the_images_made() {
+        let read = read_photos(&["a.jpg"]);
+        set_store(&read.file, &read.work, &beside(), Some(Migrate::Regenerate)).unwrap();
+        assert!(made_below(&read.dir.path().join("photos")).is_empty());
+        assert!(made_below(&read.work).is_empty());
+        assert_eq!(FolderSource::open(&read.file, &read.work).unwrap().image_count(), 0);
+        assert_eq!(Definition::load(&read.file).unwrap().images.preset, Preset::Beside);
+    }
+
+    #[test]
+    fn a_store_that_would_give_two_photos_one_file_is_refused() {
+        // a.jpg and a.png are both `a` to {stem}.
+        let read = read_photos(&["a.jpg", "a.png"]);
+        let stem = "{dir}/.previews/{stem}.{tier}.jpg";
+        let clash =
+            set_store(&read.file, &read.work, &change(Preset::Custom, Some(stem), Some(stem)), Some(Migrate::Move));
+        let error = clash.unwrap_err().to_string();
+        assert!(error.contains("would share"), "{error}");
+        assert_eq!(Definition::load(&read.file).unwrap().images.preset, Preset::Central, "nothing was saved");
+        let name = "{dir}/.previews/{name}.{tier}.jpg";
+        set_store(&read.file, &read.work, &change(Preset::Custom, Some(name), Some(name)), Some(Migrate::Move))
+            .unwrap();
+        assert_eq!(Definition::load(&read.file).unwrap().images.thumb, name);
     }
 
     #[test]
