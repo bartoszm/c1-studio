@@ -60,7 +60,7 @@ pub struct FolderSource {
     /// The next snapshot walks the roots first.
     scan_due: AtomicBool,
     /// One scan or one write at a time.
-    busy: Mutex<()>,
+    pub(crate) busy: Mutex<()>,
     last_scan: Mutex<Option<ScanOutcome>>,
 }
 
