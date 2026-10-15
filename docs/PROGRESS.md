@@ -1264,6 +1264,21 @@ country) and 68k have neither.
   113 photos given its position. Written to the copy (117 edits) and read back: GPS and
   place in `ZIMAGE`/`ZVARIANTMETADATA`, and the 113 still drawn as ≈.
 
+### Feature page and recorded clips
+
+- **`docs/FEATURES.md`:** one section per feature (search, browsing, editing, keyword
+  tree, albums, analysis, map, trips and the timeline, writing with history and backups),
+  each with a GIF and a link to the guide. The README links to it.
+- **`tools/record`:** the clips are recorded by scripts. `start.ps1` runs a second instance
+  on a copy of the newest fuji backup (CDP on 9223, a junction to the live `Cache`);
+  `drive.mjs` drives it over CDP and records screencast frames with their times, with a
+  drawn pointer and captions (`overlay.js`); one scenario per clip in `scenarios/`;
+  `assemble.py` makes the GIF with Pillow, `to_mp4.py` an MP4 with ffmpeg from the same
+  frames. `record.ps1` runs them all. Scenarios undo their edits; `history` writes to the
+  copy.
+- Recording found the map's `getCanvasContainer` error after leaving the Map tab quickly
+  (fixed separately).
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare
