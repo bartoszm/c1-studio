@@ -28,7 +28,7 @@ export default {
       await d.waitFor(null, null, { timeout: 8000, fn: `!!document.querySelector(".map .route")` }).catch(() => {});
       await d.sleep(500);
       if (await d.evaluate(`!!document.querySelector(".map .route input[type=range]")`)) {
-        found = await d.evaluate(`document.querySelectorAll("aside .trip")[${i}].textContent.trim().split("\n")[0]`);
+        found = await d.evaluate(`document.querySelectorAll("aside .trip")[${i}].textContent.trim().split("\\n")[0]`);
       }
     }
     if (!found) {

@@ -3,11 +3,11 @@
   import "maplibre-gl/dist/maplibre-gl.css";
   // Vite bundles the worker with what it imports; maplibre's own lookup can't in dev.
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import * as api from "./lib/api";
   import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
   import { parseGeo } from "./lib/format";
-  import { hitView, parseHits, routeStep, viewBox, wrapLon, type Hit, type NominatimRow } from "./lib/mapview";
+  import { hitView, mapPadding, parseHits, routeStep, viewBox, wrapLon, type Hit, type NominatimRow } from "./lib/mapview";
   import { movingOf } from "./lib/pins";
   import { pointFor } from "./lib/placeHints";
   import { settings } from "./lib/settings.svelte";
@@ -87,6 +87,26 @@
   /** The diameter of the dot a photo's pin stands on (matches `.pin .dot`). */
   const DOT = 10;
   let asked = 0;
+
+  // What covers the map, measured: zooms and flights keep the photos clear of it. Where each
+  // sits is as in the styles below: the find box 8px from the top, the note 8px, the tray
+  // 32px and the route bar 30px from the bottom.
+  let width = $state(0);
+  let height = $state(0);
+  let find: HTMLFormElement;
+  let findHeight = $state(0);
+  let trayHeight = $state(0);
+  let routeHeight = $state(0);
+  let noteHeight = $state(0);
+  let padding = $derived(
+    mapPadding({
+      width,
+      height,
+      findBottom: 8 + findHeight,
+      // The tray shows without a trip, the route bar with one.
+      coverBottom: Math.max(8 + noteHeight, trip ? 30 + routeHeight : 32 + trayHeight),
+    }),
+  );
 
   /** The filter without the area: moving the map must not refetch what it shows by itself. */
   let key = $derived(JSON.stringify({ ...filter, within: undefined }));
@@ -241,7 +261,7 @@
           popup = { cluster: c, x: p.x, y: p.y, confirm: false };
         } else {
           const { min_lat, max_lat, min_lon, max_lon } = c.bounds;
-          map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { padding: 90, maxZoom: 11 });
+          map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { maxZoom: 11, padding, absolutePadding: true });
         }
       });
       el.addEventListener("dblclick", (e) => e.stopPropagation());
@@ -260,10 +280,12 @@
   function zoomToPlace(c: PlaceCluster) {
     popup = null;
     const next = { Country: 5, State: 8, City: 11, Location: 14 }[c.level];
-    map?.easeTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom(), next) });
+    map?.easeTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom(), next), padding });
   }
 
-  function moved() {
+  function moved(e?: maplibregl.MapMovementEvent & { padded?: boolean }) {
+    // Only the padding changed: the map shows what it showed.
+    if (e?.padded) return;
     // Panned round the world: back to the same place within -180..180, without a move to
     // see. The jump ends in another `moveend`, which does the rest.
     // (Not `LngLat.wrap()`: it changes the last digits of a longitude already in range.)
@@ -273,7 +295,9 @@
       return;
     }
     try {
-      const c = map!.getCenter();
+      // The middle of the whole canvas, not of the padded part: what is left free changes
+      // with the tray and the find box, so the view comes back where it was.
+      const c = map!.unproject([box.clientWidth / 2, box.clientHeight / 2]);
       localStorage.setItem(START, JSON.stringify({ center: [c.lng, c.lat], zoom: map!.getZoom() }));
     } catch {
       // Not remembered, that's all.
@@ -285,9 +309,9 @@
   function zoomTo(c: Cluster) {
     const { min_lat, max_lat, min_lon, max_lon } = c.bounds;
     if (min_lat === max_lat && min_lon === max_lon) {
-      map!.easeTo({ center: [c.lon, c.lat], zoom: Math.min(19, map!.getZoom() + 3) });
+      map!.easeTo({ center: [c.lon, c.lat], zoom: Math.min(19, map!.getZoom() + 3), padding });
     } else {
-      map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { padding: 90, maxZoom: 18 });
+      map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { maxZoom: 18, padding, absolutePadding: true });
     }
   }
 
@@ -439,6 +463,8 @@
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
     map.on("movestart", () => (popup = null));
+    // The remembered centre is the canvas's: it stays where it is as the padding is set.
+    pad();
     // A click on the map itself lets the picked tile go (Shift+drag draws an area instead).
     map.on("click", (e) => {
       popup = null;
@@ -491,6 +517,36 @@
     void tile;
     untrack(mark);
   });
+  // The map's padding follows what covers it: easeTo, flyTo and fitBounds centre in what is
+  // left. Setting it stops a move, so while the map moves it waits for the move to end.
+  let padLater = false;
+  function pad() {
+    if (!map) return;
+    if (map.isMoving()) {
+      if (!padLater) {
+        padLater = true;
+        map.once("moveend", () => {
+          padLater = false;
+          pad();
+        });
+      }
+      return;
+    }
+    const p = padding;
+    const was = map.getPadding();
+    if (p.top === was.top && p.bottom === was.bottom && p.left === was.left && p.right === was.right) return;
+    // The map stays where it is on screen: the new centre is what is under it now.
+    const spot: [number, number] = [(p.left + box.clientWidth - p.right) / 2, (p.top + box.clientHeight - p.bottom) / 2];
+    const at = map.unproject(spot);
+    map.jumpTo({ center: at, padding: p }, { padded: true });
+    // At the poles the map holds the centre back, so the view did move: that is reported.
+    const now = map.project(at);
+    if (Math.hypot(now.x - spot[0], now.y - spot[1]) > 0.5 && map.loaded()) moved();
+  }
+  $effect(() => {
+    void padding;
+    untrack(pad);
+  });
   $effect(() => {
     // Moving the pane's box (the grid below grows or shrinks) leaves the canvas stale.
     const watch = new ResizeObserver(() => map?.resize());
@@ -533,7 +589,11 @@
       along = step.along;
       if (got.length < 2) stop();
       drawRoute();
-      if (step.fresh) fitRoute();
+      if (step.fresh) {
+        // Once the route bar is in (and the tray gone): the fit keeps clear of it.
+        await tick();
+        if (mine === routeAsked) fitRoute();
+      }
     } catch (e) {
       if (mine === routeAsked) onerror(String(e));
     }
@@ -618,7 +678,11 @@
     if (!map || route.length < 2) return;
     const lons = route.map((p) => p.lon);
     const lats = route.map((p) => p.lat);
-    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { padding: 80, maxZoom: 15 });
+    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], {
+      maxZoom: 15,
+      padding,
+      absolutePadding: true,
+    });
   }
 
   let frame = 0;
@@ -694,7 +758,8 @@
       chosen = { name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon, box: null };
       hits = [];
       searched = false;
-      map?.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 13) });
+      await findSettled();
+      map?.flyTo({ center: [lon, lat], zoom: Math.max(map.getZoom(), 13), padding });
       return;
     }
     if (!settings.onlineMap) {
@@ -716,11 +781,22 @@
       searching = false;
     }
   }
-  function go(h: Hit) {
+  async function go(h: Hit) {
     chosen = h;
     hits = [];
     searched = false;
-    if (map) map.flyTo(hitView(h, { width: box.clientWidth, height: box.clientHeight }));
+    await findSettled();
+    if (!map) return;
+    // The zoom fits what is left free, and the flight centres in it.
+    const p = padding;
+    map.flyTo({ ...hitView(h, { width: width - p.left - p.right, height: height - p.top - p.bottom }, 0), padding: p });
+  }
+  /** The find box's height once the list has gone (and *Put…* come), not when it is next
+   *  reported: the flight that follows gets the room. */
+  async function findSettled() {
+    await tick();
+    // Gone, when the map closed meanwhile.
+    findHeight = find?.offsetHeight ?? findHeight;
   }
 
   let over = $state(false);
@@ -761,10 +837,10 @@
   ondragleave={left}
   ondrop={dropped}
 >
-  <div class="canvas" bind:this={box}></div>
+  <div class="canvas" bind:this={box} bind:clientWidth={width} bind:clientHeight={height}></div>
   {#if aim}<div class="aim" style:left="{aim.x}px" style:top="{aim.y}px"></div>{/if}
   {#if rubber}<div class="rubber" style:left="{rubber.x}px" style:top="{rubber.y}px" style:width="{rubber.w}px" style:height="{rubber.h}px"></div>{/if}
-  <form class="find" onsubmit={search}>
+  <form class="find" onsubmit={search} bind:this={find} bind:offsetHeight={findHeight}>
     <input
       type="search"
       placeholder={settings.onlineMap ? "Find a place, or type 44°58′N 14°45′E" : "Type coordinates: 44°58′N 14°45′E"}
@@ -814,6 +890,7 @@
   {/if}
   {#if !trip}
     <UnplacedTray
+      bind:height={trayHeight}
       {filter}
       {version}
       counts={{ none: approx.unplaced, place: approx.placeOnly }}
@@ -826,7 +903,7 @@
     />
   {/if}
   {#if trip && route.length > 1}
-    <div class="route" role="group" aria-label="Route of {trip.name}">
+    <div class="route" role="group" aria-label="Route of {trip.name}" bind:offsetHeight={routeHeight}>
       <button title={playing ? "Pause" : "Play the route, photo by photo"} onclick={() => (playing ? stop() : play())}>{playing ? "❚❚" : "▶"}</button>
       <input
         type="range"
@@ -841,9 +918,9 @@
       <button title="Show the whole route" onclick={fitRoute}>⤢</button>
     </div>
   {:else if trip && route.length < 2}
-    <div class="route quiet">Too few photos of “{trip.name}” have a position to draw its route.</div>
+    <div class="route quiet" bind:offsetHeight={routeHeight}>Too few photos of “{trip.name}” have a position to draw its route.</div>
   {/if}
-  <div class="note">
+  <div class="note" bind:offsetHeight={noteHeight}>
     {#if failed}{failed}
     {:else if !settings.onlineMap && !aim && !tile && located > 0}Offline: no map tiles or place search (Settings) · {inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view
     {:else if aim}They go where the cross is; zoom in to place them closer.
