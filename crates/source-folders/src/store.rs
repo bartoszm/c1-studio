@@ -404,6 +404,14 @@ impl Writer<'_> {
         CollectionId(format!("a{}", self.state.made))
     }
 
+    /// Raises the album counter to `made`; never lowers it, so no album id is given twice.
+    pub(crate) fn raise_made(&mut self, made: u64) {
+        if made > self.state.made {
+            self.touched = true;
+            self.state.made = made;
+        }
+    }
+
     /// Records (or with `None` forgets) an image made for a photo. Does not touch the
     /// photo: its pixels are not part of what a snapshot sends.
     pub fn put_image(&mut self, ext: &str, tier: ImageTier, rec: Option<ImageRec>) -> Result<()> {
