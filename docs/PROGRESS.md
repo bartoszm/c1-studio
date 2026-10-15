@@ -1322,6 +1322,20 @@ country) and 68k have neither.
 - `tools/record/checks/`: scenarios that measure it on the recording instance (33: nodes
   replaced, focus and scroll through edits past position 500; 34: field positions each
   frame). CI runs the app's TypeScript tests (`pnpm test`).
+### Analysis: whole groups under a filter, honest empty charts (#27, #32)
+
+- **Groups:** `Library::groups` counted only a group's matching photos and kept groups
+  of 1, so with *red* picked one frame of a 7-photo burst showed as a "series" of 1.
+  `Group` now has `size` (the whole group, counted as the details panel counts it: one
+  facet count over `Dim::Group`) and `matched`; a group with fewer matching than it
+  needs (2, `SERIES_MIN` for a series) is left out. The badge says *2 of 7*. The card
+  and the panel's link both show the group within the other filters (`showGroup`).
+- **Empty charts:** *Nothing matches the filter* when the filter picks nothing, *Not
+  measured yet (N photos)* when nothing it picks is measured; the *0 of 0 photos
+  measured* line is gone.
+- Tested with a burst of four and a duplicate pair split by colour and shape
+  (`groups_split_by_a_filter_count_whole_and_drop_what_is_no_group`).
+  `tools/record/checks/27.mjs` measures it on the recording instance.
 
 ### Next
 

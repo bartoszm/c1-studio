@@ -12,7 +12,7 @@
   let {
     row, version, analysed, picked, queued, collections, keywords, clip, shared, sharedAlbums, sharedPlaces,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onaddalbum, onremovealbum, onlook,
+    onaddalbum, onremovealbum, ongroup,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
   }: {
     row: number | undefined;
@@ -42,8 +42,8 @@
     /** Puts the selected photos into an album, or takes them out. */
     onaddalbum: (id: string) => void;
     onremovealbum: (id: string) => void;
-    /** Filters by something the analysis found (a duplicate group, a series). */
-    onlook: (f: api.Filter) => void;
+    /** Shows a duplicate group's or a series' photos, keeping the other filters. */
+    ongroup: (id: string) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
     /** With several photos selected: their places, each with the photos that have it. */
@@ -431,11 +431,11 @@
       </dl>
       {#if look.duplicates}
         {@const [group, n] = look.duplicates}
-        <button class="link look-link" onclick={() => onlook({ group })}>Looks like {n - 1} other photo{n === 2 ? "" : "s"}: show them</button>
+        <button class="link look-link" title="In the grid, within the other filters" onclick={() => ongroup(group)}>Looks like {n - 1} other photo{n === 2 ? "" : "s"}: show them</button>
       {/if}
       {#if look.series}
         {@const [group, n] = look.series}
-        <button class="link look-link" onclick={() => onlook({ group })}>One of a series of {n}: show it</button>
+        <button class="link look-link" title="In the grid, within the other filters" onclick={() => ongroup(group)}>One of a series of {n}: show it</button>
       {/if}
     {/if}
 

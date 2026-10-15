@@ -955,6 +955,59 @@ fn analyses_are_searchable_and_grouped() {
 }
 
 #[test]
+fn groups_split_by_a_filter_count_whole_and_drop_what_is_no_group() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let (red, blue) = ([200, 30, 30], [40, 80, 210]);
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let d = 0x3333_cccc_5555_aaaau64;
+    // A burst of four from the X-Pro2 (odd photos), two seconds apart, one of them blue; and
+    // a duplicate pair from the X100VI (2 and 4, the same instant), one red and one blue.
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, red, 5000.0, h)),
+        (id(3).key(), (1, 1), look(400, 600, red, 5000.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, blue, 5000.0, h ^ 0b1111)),
+        (id(7).key(), (1, 1), look(400, 600, red, 5000.0, h ^ 0b11_1111)),
+        (id(2).key(), (1, 1), look(600, 400, red, 5000.0, d)),
+        (id(4).key(), (1, 1), look(600, 400, blue, 5000.0, d ^ 1)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5, 7].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    let two = source.photo(&id(2)).unwrap().captured_at;
+    source.edit_externally(&id(4), |p| p.captured_at = two);
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.regroup().unwrap(), 6);
+    let size = |g: &c1index::Group| (g.size, g.matched, g.rows.len());
+
+    // Unfiltered: the whole burst and the whole pair.
+    let series = lib.groups(&Filter::default(), true, 10).unwrap();
+    assert_eq!(series.iter().map(size).collect::<Vec<_>>(), [(4, 4, 4)]);
+    let pairs = lib.groups(&Filter::default(), false, 10).unwrap();
+    assert_eq!(pairs.iter().map(size).collect::<Vec<_>>(), [(2, 2, 2)]);
+
+    // Red: three of the burst are still a series, of four; one of the pair is no pair.
+    let reds = Filter { hues: vec!["red".into()], ..Filter::default() };
+    let series = lib.groups(&reds, true, 10).unwrap();
+    assert_eq!(series.iter().map(size).collect::<Vec<_>>(), [(4, 3, 3)]);
+    assert!(lib.groups(&reds, false, 10).unwrap().is_empty());
+    // The size is the one the details panel gives: every photo of the group.
+    let whole = Filter { group: Some(series[0].id.clone()), ..Filter::default() };
+    assert_eq!(ids(&lib, &whole), [1, 3, 5, 7]);
+
+    // Blue: one of each, neither a group.
+    let blues = Filter { hues: vec!["blue".into()], ..Filter::default() };
+    assert!(lib.groups(&blues, true, 10).unwrap().is_empty());
+    assert!(lib.groups(&blues, false, 10).unwrap().is_empty());
+    // Portrait: two of the burst (3 and 7) are fewer than a series needs.
+    let portraits = Filter { shape: vec!["portrait".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &Filter { series: true, ..portraits.clone() }), [3, 7]);
+    assert!(lib.groups(&portraits, true, 10).unwrap().is_empty());
+}
+
+#[test]
 fn analyses_outlive_the_store() {
     let dir = tempfile::tempdir().unwrap();
     let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);

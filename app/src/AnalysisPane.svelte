@@ -2,6 +2,7 @@
   import * as api from "./lib/api";
   import type { AnalysisState, Dim, Filter, Group } from "./lib/api";
   import { HUES } from "./lib/format";
+  import { emptyNote, groupBadge } from "./lib/analysis";
 
   type Key = "shape" | "hues" | "light" | "focus";
   let {
@@ -49,7 +50,8 @@
     const key = JSON.stringify({ ...asked, group: undefined }) + ":" + version + ":" + measured;
     if (key === loadedFor) return;
     loadedFor = key;
-    Promise.all([api.groups(asked, false), api.groups(asked, true)])
+    const all = { ...asked, group: undefined };
+    Promise.all([api.groups(all, false), api.groups(all, true)])
       .then(([d, s]) => { if (key === loadedFor) { dups = d; series = s; } })
       .catch(() => {});
   });
@@ -61,7 +63,7 @@
       {#if analysis?.running && analysis.total}
         Measuring photos: {analysis.done.toLocaleString()} / {analysis.total.toLocaleString()}
         <progress max={analysis.total} value={analysis.done}></progress>
-      {:else}
+      {:else if total > 0}
         {measured.toLocaleString()} of {total.toLocaleString()} photos measured
       {/if}
       {#if total > measured}
@@ -88,7 +90,7 @@
             <span class="n">{n.toLocaleString()}</span>
           </button>
         {:else}
-          <p class="none">Nothing measured here yet.</p>
+          <p class="none">{emptyNote(total, measured)}</p>
         {/each}
       </section>
     {/each}
@@ -101,18 +103,28 @@
     <section class="alike">
       <h3>
         {title}
-        <button class="link" class:on={filter[field]} title="Only these photos in the grid" onclick={() => onflag(field)}>
-          {count.toLocaleString()} photos in {groups.length >= 300 ? "300+" : groups.length} groups
-        </button>
+        <span class="totals">
+          <!-- Every photo the filter picks that is in one, also where it picks too few of a group to list. -->
+          <button class="link" class:on={filter[field]} title="Only these photos in the grid" onclick={() => onflag(field)}>
+            {count.toLocaleString()} photo{count === 1 ? "" : "s"}
+          </button>
+          · {groups.length >= 300 ? "300+" : groups.length} group{groups.length === 1 ? "" : "s"}
+        </span>
       </h3>
       <p class="hint">{hint}</p>
       <div class="groups">
         {#each groups as g (g.id)}
-          <button class="group" title="Show these {g.size} photos in the grid" onclick={() => ongroup(g.id)}>
+          <button
+            class="group"
+            title={g.matched < g.size
+              ? `Show the ${g.matched} of these ${g.size} photos the filter picks in the grid`
+              : `Show these ${g.size} photos in the grid`}
+            onclick={() => ongroup(g.id)}
+          >
             <span class="thumbs">
               {#each g.rows as row (row)}<img src={api.thumbUrl(row)} alt="" />{/each}
             </span>
-            <span class="size">{g.size.toLocaleString()}</span>
+            <span class="size">{groupBadge(g)}</span>
           </button>
         {:else}
           <p class="none">None{filter.group || total === 0 ? "" : " found"}.</p>
@@ -135,7 +147,7 @@
   .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
   .card, .alike { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line, #333); border-radius: 4px; padding: 8px 10px; }
   h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #999; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-  h3 .link { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  h3 .link, h3 .totals { text-transform: none; letter-spacing: 0; font-weight: 400; }
   .bar-row { display: grid; grid-template-columns: 110px 1fr 48px; gap: 8px; align-items: center; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
   .bar-row:hover { background: var(--hover, #333); }
   .bar-row.on { background: var(--on, #2a3a55); }

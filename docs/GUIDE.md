@@ -354,12 +354,17 @@ What the **Analysis** tab offers (the tabs above the grid are *Photos*, *Map* an
 - **Alike:** *duplicates* are one picture twice: taken at the same instant and looking
   the same (imported twice, or saved again; variants of one image do not count).
   *In a series* are bursts: three or more photos from one camera, seconds apart, each
-  looking much like the one before.
-- *N not measured yet*, while the analysis is still going.
+  looking much like the one before. Each group's badge is its size; under a filter
+  that picks only part of it, *2 of 7*. A group the filter leaves too little of (one
+  photo of a pair, two of a burst) is not listed.
+- *N not measured yet*, while the analysis is still going. A chart with nothing to show
+  says *Nothing matches the filter* or *Not measured yet*.
 
 The details panel's **Look** shows the photo's main colours as a bar, its classes, and
 for a duplicate or a burst a link to the others (*Looks like 1 other photo: show them*,
-*One of a series of 7: show it*).
+*One of a series of 7: show it*). The link and a group's card on the Analysis tab do the
+same: the grid shows the group's photos within the other filters, which stay (with
+*red* picked, the red ones of the burst); drop a filter's chip to see the whole group.
 
 ## Writing to Capture One
 

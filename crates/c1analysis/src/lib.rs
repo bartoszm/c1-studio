@@ -14,7 +14,7 @@ use image::{GrayImage, RgbImage};
 use serde::{Deserialize, Serialize};
 
 pub use colour::{MONO, name_of};
-pub use groups::{Groups, Taken, distance, group};
+pub use groups::{Groups, SERIES_MIN, Taken, distance, group};
 
 /// Bumped when what [`analyse`] measures changes: stored results of another version are
 /// measured again.
