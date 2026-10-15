@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Start-up dialog:** while a catalog opens, a dialog shows the step (opening the library, reading the catalog, indexing N of M photos, saving the index) and the time so far, instead of an empty window. The window is no longer blocked while the library opens.
+
 ## 0.2.0 — 2026-10-15
 
 ### New
