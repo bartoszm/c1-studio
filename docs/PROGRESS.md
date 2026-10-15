@@ -1284,6 +1284,29 @@ country) and 68k have neither.
 - Recording found the map's `getCanvasContainer` error after leaving the Map tab quickly
   (fixed separately).
 
+### Map: finding places, the 180° meridian, trips, following (#21, #23, #24, #25)
+
+- **Find a place** (`lib/mapview.ts` `hitView`): the map centres on the place's own point.
+  Nominatim's box covers every part of a place (Tokyo's runs to Minamitorishima, France's
+  to the Pacific, Fiji's round the world), so it sets the zoom only when the point lies
+  in its middle 60 % and it spans less than 180°; else the zoom comes from the place's
+  `addresstype` (country 5, region 7, county 9, city 10, village 13, street 16), or its
+  `place_rank`.
+- **Across 180°:** maplibre keeps longitudes unwrapped after a pan (a centre of 499.77),
+  and `view()` clamped west 422 / east 578 to nothing. On `moveend` the centre is
+  wrapped back (a jump, not seen) and stored wrapped; a remembered unwrapped one is
+  wrapped on start. A view still across 180° sends every longitude (`viewBox`): the
+  filter takes one box. Two boxes, or a box with west > east in `filter.rs` and
+  `geo.rs`, would keep it to the view.
+- **Trips:** an edit no longer fits the route again, moves the playhead to the end and
+  stops the playback; only another trip does (`routeStep`).
+- **Following:** turning *grid follows map* on, *Clear filters*, or dropping the filter
+  that kept the grid off the map applies the map's current view at once (`shouldFollow`,
+  in `run()` and an effect), not at the next move. Dropping the *Map: area* chip turns
+  following off, or it would come straight back.
+- `tools/record/checks/21.mjs`, `23.mjs`, `24.mjs`, `25.mjs` measure each on the recording
+  instance.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare

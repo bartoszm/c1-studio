@@ -7,6 +7,7 @@
   import * as api from "./lib/api";
   import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
   import { parseGeo } from "./lib/format";
+  import { hitView, parseHits, routeStep, viewBox, wrapLon, type Hit, type NominatimRow } from "./lib/mapview";
   import { movingOf } from "./lib/pins";
   import { pointFor } from "./lib/placeHints";
   import { settings } from "./lib/settings.svelte";
@@ -93,7 +94,8 @@
   function remembered(): { center: [number, number]; zoom: number } {
     try {
       const v = JSON.parse(localStorage.getItem(START) ?? "null");
-      if (Array.isArray(v?.center) && typeof v.zoom === "number") return v;
+      // Stored unwrapped before (a centre of 499.77 after panning round the world).
+      if (Array.isArray(v?.center) && typeof v.zoom === "number") return { center: [wrapLon(v.center[0]), v.center[1]], zoom: v.zoom };
     } catch {
       // Starts over the world instead.
     }
@@ -102,18 +104,7 @@
 
   function view(): { bounds: BBox; zoom: number } {
     const b = map!.getBounds();
-    const zoom = map!.getZoom();
-    // Zoomed far out the map shows the world more than once.
-    const wide = b.getEast() - b.getWest() >= 360;
-    return {
-      bounds: {
-        min_lat: Math.max(-90, b.getSouth()),
-        max_lat: Math.min(90, b.getNorth()),
-        min_lon: wide ? -180 : Math.max(-180, b.getWest()),
-        max_lon: wide ? 180 : Math.min(180, b.getEast()),
-      },
-      zoom,
-    };
+    return { bounds: viewBox(b.getWest(), b.getSouth(), b.getEast(), b.getNorth()), zoom: map!.getZoom() };
   }
 
   async function refresh() {
@@ -273,6 +264,14 @@
   }
 
   function moved() {
+    // Panned round the world: back to the same place within -180..180, without a move to
+    // see. The jump ends in another `moveend`, which does the rest.
+    const at = map!.getCenter();
+    const wrapped = at.wrap();
+    if (wrapped.lng !== at.lng) {
+      map!.jumpTo({ center: wrapped });
+      return;
+    }
     try {
       const c = map!.getCenter();
       localStorage.setItem(START, JSON.stringify({ center: [c.lng, c.lat], zoom: map!.getZoom() }));
@@ -508,14 +507,18 @@
   let head: maplibregl.Marker | undefined;
   let headImg: HTMLImageElement | undefined;
   let routeAsked = 0;
+  /** The trip whose route is shown: only another one is fitted and played from its end. */
+  let routeOf: string | null = null;
   // The canvas is painted inverted (see the style below): these read as grey and amber.
   const ROUTE_ALL = "#8a8a8a";
   const ROUTE_DONE = "#7a4f00";
 
   async function loadRoute() {
     const mine = ++routeAsked;
-    stop();
+    const next = tripKey;
+    if (next !== routeOf) stop();
     if (!trip) {
+      routeOf = null;
       route = [];
       drawRoute();
       return;
@@ -523,10 +526,13 @@
     try {
       const got = await api.route(untrack(() => $state.snapshot({ ...filter, within: undefined })));
       if (mine !== routeAsked) return;
+      // After an edit the same trip is read again: the view and the playhead stay.
+      const step = routeStep(routeOf, next, along, got.length);
+      routeOf = next;
       route = got;
-      along = got.length ? got.length - 1 : 0;
+      along = step.along;
       drawRoute();
-      fitRoute();
+      if (step.fresh) fitRoute();
     } catch (e) {
       if (mine === routeAsked) onerror(String(e));
     }
@@ -671,7 +677,6 @@
   }
 
   // Finding a place by name (OpenStreetMap's Nominatim): to look at it, or to put photos there.
-  type Hit = { name: string; lat: number; lon: number; box: [number, number, number, number] | null };
   let query = $state("");
   let hits = $state<Hit[]>([]);
   let searching = $state(false);
@@ -698,14 +703,10 @@
     }
     searching = true;
     try {
+      // jsonv2 gives each place's rank and kind (`place_rank`, `addresstype`): the zoom
+      // when its box is no guide.
       const res = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&q=${encodeURIComponent(q)}`);
-      const list = (await res.json()) as { display_name: string; lat: string; lon: string; boundingbox?: string[] }[];
-      hits = list.map((h) => ({
-        name: h.display_name,
-        lat: +h.lat,
-        lon: +h.lon,
-        box: h.boundingbox ? [+h.boundingbox[2], +h.boundingbox[0], +h.boundingbox[3], +h.boundingbox[1]] : null,
-      }));
+      hits = parseHits((await res.json()) as NominatimRow[]);
       searched = true;
     } catch {
       hits = [];
@@ -718,8 +719,7 @@
     chosen = h;
     hits = [];
     searched = false;
-    if (h.box && map) map.fitBounds([[h.box[0], h.box[1]], [h.box[2], h.box[3]]], { padding: 40, maxZoom: 17 });
-    else map?.flyTo({ center: [h.lon, h.lat], zoom: 14 });
+    if (map) map.flyTo(hitView(h, { width: box.clientWidth, height: box.clientHeight }));
   }
 
   let over = $state(false);
