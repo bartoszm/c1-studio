@@ -972,6 +972,11 @@ in `<data dir>/settings.json`) writes the queue by itself.
   generated track on the fuji copy: offset +2 placed 78 photos, offset 0 none, origin
   Gpx, undo restored the queue.
 
+- **Fixed:** leaving the Map tab while its clusters were still being counted left
+  `TypeError: Cannot read properties of undefined (reading 'getCanvasContainer')` in the
+  footer. The answer came after the map was removed and its markers were added to no map.
+  Closing the pane now drops the answers still on the way (clusters and the route).
+
 ### Previews take Capture One's colours, fitted per photo
 
 The tone curve match above left saturation, film simulations and colour edits behind.
