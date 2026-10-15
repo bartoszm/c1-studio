@@ -452,6 +452,9 @@
     });
     map.once("load", () => { failed = null; moved(); drawRoute(); });
     return () => {
+      // Answers still on the way are for a map that is gone: they draw nothing.
+      asked++;
+      routeAsked++;
       box.removeEventListener("mousedown", startBox, true);
       stop();
       head = undefined;
