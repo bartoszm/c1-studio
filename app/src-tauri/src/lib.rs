@@ -616,18 +616,6 @@ async fn promote_rows(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(u64, O
     s.library.promote_rows(&rows).map_err(|e| format!("{e:#}"))
 }
 
-/// The photos at a place, of those `filter` selects that have no position.
-#[tauri::command]
-async fn place_rows(app: State<'_, App>, filter: Filter, path: String) -> Result<Vec<u64>, String> {
-    app.session()?.library.place_rows(&filter, &path).map_err(|e| format!("{e:#}"))
-}
-
-/// The place a position is in, as the catalog writes it.
-#[tauri::command]
-async fn place_at_point(app: State<'_, App>, lat: f64, lon: f64) -> Result<Option<Place>, String> {
-    app.session()?.library.place_at_point(lat, lon).map_err(|e| format!("{e:#}"))
-}
-
 /// For the photos among `rows` with a position, the place fields it would fill.
 #[tauri::command]
 async fn fill_plan(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<c1index::FillGroup>, String> {
@@ -1881,8 +1869,6 @@ pub fn run() {
             set_place_points,
             promote_places,
             promote_rows,
-            place_rows,
-            place_at_point,
             fill_plan,
             fill_places,
             neighbour_plan,

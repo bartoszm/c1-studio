@@ -140,6 +140,9 @@ fn km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     6371.0 * dlat.hypot(dlon)
 }
 
+/// How far `reverse` looks: past the reach of the biggest cities (Moscow, about 96 km).
+const SEARCH_KM: f64 = 100.0;
+
 fn cell(lat: f64, lon: f64) -> (i32, i32) {
     (lat.floor() as i32, lon.floor() as i32)
 }
@@ -322,8 +325,12 @@ impl Gazetteer {
         let (cy, cx) = cell(lat, lon);
         let mut best: Option<(f64, u32)> = None;
         let mut nearest: Option<(f64, u32)> = None;
+        // Cells as far as the biggest city reaches (about 100 km); a degree of longitude
+        // shrinks towards the poles, so more of them there.
+        let shrink = (lat.abs() + 1.0).min(89.0).to_radians().cos().max(0.005);
+        let across = ((SEARCH_KM / (111.0 * shrink)).ceil() as i32).clamp(1, 179);
         for dy in -1..=1 {
-            for dx in -1..=1 {
+            for dx in -across..=across {
                 let x = (cx + dx + 180).rem_euclid(360) - 180;
                 for &id in self.grid.get(&(cy + dy, x)).into_iter().flatten() {
                     let c = &self.cities[id as usize];
@@ -423,6 +430,11 @@ mod tests {
         assert_eq!(krk.country_code, "HR");
         // The middle of the Atlantic.
         assert_eq!(g.reverse(30.0, -40.0), None);
+        // Far north a degree of longitude is short (38 km at 70°): the city 60 km away
+        // is three cells off, and still found.
+        let tromso = g.reverse(69.6496, 18.956).unwrap();
+        let east = g.reverse(69.6496, 18.956 + 60.0 / (111.0 * 69.6496f64.to_radians().cos())).unwrap();
+        assert_eq!((east.country_code.as_str(), east.state.as_deref()), ("NO", tromso.state.as_deref()));
     }
 
     #[test]

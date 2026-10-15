@@ -3,6 +3,7 @@
 //! photos taken just before and after, and the map itself.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use c1geo::{Approx, Level, Resolved, gazetteer};
 use c1model::{GeoOrigin, GeoPoint, Op, Place};
@@ -15,18 +16,26 @@ use super::{Library, QueryOptions};
 use crate::edits::now_ms;
 use crate::filter::Filter;
 use crate::geo::{self, Located, MapResult, MapView, PlacePoint};
-use crate::gpx::{self, Fix};
-use crate::places::{Coarse, Looked};
+use crate::gpx::Fix;
+use crate::places::{Coarse, Guessed, Looked};
 use crate::schema::{self, Dim, NO_PLACE};
 
-/// Positions of places, as worked out, by place path.
+/// What places' names were found as, remembered: the gazetteer's answers do not change,
+/// and a name it lacks is looked for with typos, which takes a while.
 #[derive(Default)]
 pub(super) struct PlaceCache {
+    /// Where the place at a path is, the gazetteer's or an online lookup's answer.
     by_path: HashMap<String, Option<Approx>>,
+    /// The gazetteer's answer alone, by path.
+    offline: HashMap<String, Option<Approx>>,
     /// Online lookups, loaded once.
     online: Option<HashMap<String, Looked>>,
     /// What place paths' names were found as in the gazetteer (`path#code`).
     resolved: HashMap<String, Resolved>,
+    /// Bumped when photos' places may have changed (a place edited, a sync).
+    places: u64,
+    /// The catalog's spellings, as of a count of `places`.
+    spellings: Option<(u64, Arc<Spellings>)>,
 }
 
 /// For each country, state and city of the gazetteer the catalog names, the name it uses
@@ -58,6 +67,9 @@ pub struct PlaceLookup {
     pub found: Option<Approx>,
 }
 
+/// Lookups kept at once, at most: the app sends a handful.
+const LOOKUPS_AT_ONCE: usize = 200;
+
 /// A photo as the placing passes read it from the index.
 struct Seen {
     row: u64,
@@ -65,8 +77,8 @@ struct Seen {
     geo: Option<(f64, f64)>,
     rating: u64,
     sharpness: f64,
-    /// Its deepest place path, `Poland|Malopolska|Kraków`.
-    path: Option<String>,
+    /// Its deepest place path, `Poland|Malopolska|Kraków` (shared by the photos at it).
+    path: Option<Arc<str>>,
 }
 
 /// Places found for photos with a position, each with the photos it is for.
@@ -79,7 +91,7 @@ pub struct FillGroup {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NeighbourSettings {
-    /// Photos taken at most this far apart count as neighbours.
+    /// Photos taken at most this far apart count as neighbours (1 to 2880: two days).
     pub max_gap_minutes: i64,
     /// Give a position from neighbours with one.
     pub positions: bool,
@@ -112,8 +124,11 @@ pub struct NeighbourPlan {
 enum Suggestion {
     Position(f64, f64),
     /// A place path, with a row of a photo at it (to read the whole place, code and all).
-    Place(String, u64),
+    Place(Arc<str>, u64),
 }
+
+/// Faster than this between two photos, they were taken from a plane: no line between them.
+const MAX_KMH: f64 = 150.0;
 
 /// The levels of a place path: `Poland|—|Kraków` → country, no state, city.
 pub fn place_of_path(path: &str) -> Place {
@@ -128,14 +143,14 @@ pub fn place_of_path(path: &str) -> Place {
 }
 
 /// The deepest of a document's place tree values: its whole place.
-fn deepest(column: &StrColumn, doc: u32, cache: &mut HashMap<u64, (usize, String)>) -> Option<String> {
-    let mut best: Option<&(usize, String)> = None;
+fn deepest(column: &StrColumn, doc: u32, cache: &mut HashMap<u64, (usize, Arc<str>)>) -> Option<Arc<str>> {
+    let mut best: Option<&(usize, Arc<str>)> = None;
     let ords: Vec<u64> = column.term_ords(doc).collect();
     for ord in &ords {
         if !cache.contains_key(ord) {
             let mut text = String::new();
             column.ord_to_str(*ord, &mut text).ok()?;
-            cache.insert(*ord, (text.matches('|').count(), text));
+            cache.insert(*ord, (text.matches('|').count(), text.into()));
         }
     }
     for ord in &ords {
@@ -149,6 +164,40 @@ fn deepest(column: &StrColumn, doc: u32, cache: &mut HashMap<u64, (usize, String
 
 fn better(a: &Located, b: &Located) -> bool {
     (a.rating, a.sharpness, std::cmp::Reverse(a.row)) > (b.rating, b.sharpness, std::cmp::Reverse(b.row))
+}
+
+fn valid(a: &Approx) -> bool {
+    a.lat.is_finite() && a.lon.is_finite() && a.lat.abs() <= 90.0 && a.lon.abs() <= 180.0
+}
+
+fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let dlat = (b.0 - a.0).to_radians();
+    let dlon = wrapped(b.1 - a.1).to_radians() * ((a.0 + b.0) / 2.0).to_radians().cos();
+    6371.0 * dlat.hypot(dlon)
+}
+
+/// A longitude difference the short way round, -180 to 180.
+fn wrapped(dlon: f64) -> f64 {
+    (dlon + 540.0).rem_euclid(360.0) - 180.0
+}
+
+/// Where a photo taken at `at` was, between the fixes either side of it if they are at
+/// most `gap` ms apart and were not taken from a plane; the short way round the world.
+fn between(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
+    let after = fixes.partition_point(|f| f.at < at);
+    let next = fixes.get(after)?;
+    if next.at == at {
+        return Some((next.lat, next.lon));
+    }
+    let prev = fixes.get(after.checked_sub(1)?)?;
+    let span = next.at - prev.at;
+    let hours = span as f64 / 3_600_000.0;
+    if span > gap || km((prev.lat, prev.lon), (next.lat, next.lon)) > 1.0 + MAX_KMH * hours {
+        return None;
+    }
+    let t = (at - prev.at) as f64 / span as f64;
+    let lon = prev.lon + wrapped(next.lon - prev.lon) * t;
+    Some((prev.lat + (next.lat - prev.lat) * t, wrapped(lon)))
 }
 
 impl Library {
@@ -184,15 +233,14 @@ impl Library {
         Ok(out)
     }
 
-    /// The photos given only their place's position that still sit there, by row.
-    fn coarse_rows(&self) -> anyhow::Result<HashMap<u64, Coarse>> {
-        let mut out = HashMap::new();
-        for (key, coarse) in self.place_book.coarse()? {
-            if let Some(row) = self.store.row_of(&key)? {
-                out.insert(row, coarse);
-            }
-        }
-        Ok(out)
+    /// The photo key of a row.
+    fn key_of(&self, row: u64) -> Option<String> {
+        self.keys.read().unwrap().get(row as usize)?.clone()
+    }
+
+    /// Photos' places may have changed: the catalog's spellings are worked out again.
+    pub(super) fn places_changed(&self) {
+        self.place_cache.lock().unwrap().places += 1;
     }
 
     /// The whole place of a photo at `path` (its country code too), or the path's levels.
@@ -210,14 +258,26 @@ impl Library {
         Ok(())
     }
 
+    /// The gazetteer's answer for the place at `path`, worked out once. The cache is not
+    /// held meanwhile: a name it lacks takes a while.
+    fn offline_at(&self, path: &str, row: u64) -> Option<Approx> {
+        if let Some(found) = self.place_cache.lock().unwrap().offline.get(path) {
+            return *found;
+        }
+        let found = gazetteer().locate(&self.place_at(path, row));
+        self.place_cache.lock().unwrap().offline.insert(path.to_owned(), found);
+        found
+    }
+
     /// Where the place at `path` is: the gazetteer's answer, or an online lookup's when
     /// that is finer.
-    fn approx_at(&self, cache: &mut PlaceCache, path: &str, row: u64) -> anyhow::Result<Option<Approx>> {
-        if let Some(found) = cache.by_path.get(path) {
+    fn approx_at(&self, path: &str, row: u64) -> anyhow::Result<Option<Approx>> {
+        if let Some(found) = self.place_cache.lock().unwrap().by_path.get(path) {
             return Ok(*found);
         }
-        Self::online(cache, &self.place_book)?;
-        let offline = gazetteer().locate(&self.place_at(path, row));
+        let offline = self.offline_at(path, row);
+        let mut cache = self.place_cache.lock().unwrap();
+        Self::online(&mut cache, &self.place_book)?;
         let online = cache.online.as_ref().and_then(|o| o.get(path)).and_then(|l| l.found);
         let found = match (offline, online) {
             (Some(a), Some(b)) if b.level > a.level => Some(b),
@@ -234,53 +294,70 @@ impl Library {
     pub fn map(&self, filter: &Filter, view: &MapView) -> anyhow::Result<MapResult> {
         let base = Filter { within: None, ..filter.clone() };
         let searcher = self.reader.searcher();
-        let coarse = self.coarse_rows()?;
         let mut points = Vec::new();
-        // Photos given their place's position: (path, position) → their place point.
-        let mut by_place: HashMap<(String, u64, u64), PlacePoint> = HashMap::new();
-        let mut add = |path: String, a: Approx, s: &Seen| {
+        // Photos at a place's position, by place path: one point per position.
+        let mut by_place: HashMap<Arc<str>, Vec<PlacePoint>> = HashMap::new();
+        let mut add = |path: &Arc<str>, a: Approx, s: &Seen| {
             let best = Located { row: s.row, lat: a.lat, lon: a.lon, rating: s.rating, sharpness: s.sharpness };
-            let p = by_place.entry((path.clone(), a.lat.to_bits(), a.lon.to_bits())).or_insert(PlacePoint {
-                path,
-                lat: a.lat,
-                lon: a.lon,
-                level: a.level,
-                count: 0,
-                best,
-            });
-            p.count += 1;
-            if better(&best, &p.best) {
-                p.best = best;
+            let at = by_place.entry(path.clone()).or_default();
+            match at.iter_mut().find(|p| p.lat == a.lat && p.lon == a.lon) {
+                Some(p) => {
+                    p.count += 1;
+                    if better(&best, &p.best) {
+                        p.best = best;
+                    }
+                }
+                None => at.push(PlacePoint {
+                    path: path.to_string(),
+                    lat: a.lat,
+                    lon: a.lon,
+                    level: a.level,
+                    count: 1,
+                    best,
+                }),
             }
         };
-        for s in self.seen(&searcher, &Filter { gps: Some(true), ..base.clone() }, false)? {
-            let Some((lat, lon)) = s.geo else { continue };
-            match coarse.get(&s.row).filter(|c| c.holds(lat, lon)) {
-                Some(c) => {
-                    let path =
-                        self.store.photo(s.row)?.and_then(|p| schema::place_tree(&p.place).pop()).unwrap_or_default();
-                    add(path, Approx { lat, lon, level: c.level }, &s);
-                }
-                None => points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness }),
+        let mut result = MapResult::default();
+        // The filter may want only positions of their own, or only those that are not.
+        let wants = |approx: bool| base.approx.is_none_or(|a| a == approx);
+        if wants(false) {
+            for s in self.seen(&searcher, &Filter { gps: Some(true), approx: Some(false), ..base.clone() }, false)? {
+                let Some((lat, lon)) = s.geo else { continue };
+                points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness });
             }
         }
-        let mut result = geo::cluster(&points, view);
-        let mut unresolved = 0;
-        {
-            let mut cache = self.place_cache.lock().unwrap();
-            for s in self.seen(&searcher, &Filter { gps: Some(false), placed: Some(true), ..base.clone() }, true)? {
-                let Some(path) = s.path.clone() else { continue };
-                result.place_only += 1;
-                match self.approx_at(&mut cache, &path, s.row)? {
-                    Some(a) => add(path, a, &s),
-                    None => unresolved += 1,
+        if wants(true) {
+            // Given their place's position: shown under the place they have now (it may
+            // have been edited since); their mark says only how precise the position is.
+            let promoted =
+                self.seen(&searcher, &Filter { gps: Some(true), approx: Some(true), ..base.clone() }, true)?;
+            let (coarse, keys) = (self.coarse.read().unwrap(), self.keys.read().unwrap());
+            for s in promoted {
+                let Some((lat, lon)) = s.geo else { continue };
+                let mark = keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| coarse.get(k));
+                match (&s.path, mark.filter(|c| c.holds(lat, lon))) {
+                    (Some(path), Some(c)) => {
+                        result.place_only += 1;
+                        add(path, Approx { lat, lon, level: c.level }, &s);
+                    }
+                    // Its place cleared since (or its mark gone): a position like any other.
+                    _ => points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness }),
                 }
             }
         }
-        let places: Vec<PlacePoint> = by_place.into_values().collect();
+        let exact = geo::cluster(&points, view);
+        (result.located, result.in_view, result.clusters) = (exact.located, exact.in_view, exact.clusters);
+        for s in self.seen(&searcher, &Filter { gps: Some(false), placed: Some(true), ..base.clone() }, true)? {
+            let Some(path) = &s.path else { continue };
+            result.place_only += 1;
+            match self.approx_at(path, s.row)? {
+                Some(a) => add(path, a, &s),
+                None => result.unresolved += 1,
+            }
+        }
+        let places: Vec<PlacePoint> = by_place.into_values().flatten().collect();
         result.approx_located = places.iter().map(|p| p.count).sum();
         (result.approx, result.approx_in_view, result.approx_hidden) = geo::cluster_places(&places, view);
-        result.unresolved = unresolved;
         let unplaced = self.compile(&Filter { gps: Some(false), placed: Some(false), ..base })?;
         result.unplaced = searcher.search(unplaced.as_ref(), &Count)?;
         Ok(result)
@@ -291,23 +368,26 @@ impl Library {
     pub fn unresolved_places(&self, filter: &Filter) -> anyhow::Result<Vec<Unresolved>> {
         let searcher = self.reader.searcher();
         let base = Filter { within: None, gps: Some(false), placed: Some(true), ..filter.clone() };
-        let mut counts: HashMap<String, (usize, u64)> = HashMap::new();
+        let mut counts: HashMap<Arc<str>, (usize, u64)> = HashMap::new();
         for s in self.seen(&searcher, &base, true)? {
             if let Some(path) = s.path {
                 counts.entry(path).or_insert((0, s.row)).0 += 1;
             }
         }
-        let mut cache = self.place_cache.lock().unwrap();
-        Self::online(&mut cache, &self.place_book)?;
-        let online = cache.online.as_ref().expect("loaded");
+        let asked: HashSet<String> = {
+            let mut cache = self.place_cache.lock().unwrap();
+            Self::online(&mut cache, &self.place_book)?;
+            let online = cache.online.as_ref().expect("loaded");
+            counts.keys().filter(|p| online.contains_key(&***p)).map(|p| p.to_string()).collect()
+        };
         let mut out = Vec::new();
         for (path, (photos, row)) in counts {
-            if online.contains_key(&path) {
+            if asked.contains(&*path) {
                 continue;
             }
             let place = self.place_at(&path, row);
             let Some(mut want) = Level::named(&place) else { continue };
-            let have = gazetteer().locate(&place).map(|a| a.level);
+            let have = self.offline_at(&path, row).map(|a| a.level);
             // A location that only names the city again (`Enna|Enna`), or a city typed as
             // the location (`Germany|—|—|Berlin`), is no finer than the city.
             let named = |v: &Option<String>| v.as_deref().map(c1geo::fold).filter(|s| !s.is_empty());
@@ -318,18 +398,23 @@ impl Library {
                 want = Level::City;
             }
             if have.is_none_or(|h| h < want) {
-                out.push(Unresolved { path, place, photos, have, want });
+                out.push(Unresolved { path: path.to_string(), place, photos, have, want });
             }
         }
         out.sort_by(|a, b| b.photos.cmp(&a.photos).then_with(|| a.path.cmp(&b.path)));
         Ok(out)
     }
 
-    /// Keeps what online lookups found (or that they found nothing: not asked again).
+    /// Keeps what online lookups found (or that they found nothing: not asked again). A
+    /// position out of range is not kept, so the place is asked again another time.
     pub fn set_place_points(&self, items: &[PlaceLookup]) -> anyhow::Result<()> {
         let now = now_ms();
-        let looked: Vec<(String, Looked)> =
-            items.iter().map(|i| (i.path.clone(), Looked { found: i.found, at: now })).collect();
+        let looked: Vec<(String, Looked)> = items
+            .iter()
+            .take(LOOKUPS_AT_ONCE)
+            .filter(|i| !i.path.trim().is_empty() && i.path.len() <= 1024 && i.found.as_ref().is_none_or(valid))
+            .map(|i| (i.path.clone(), Looked { found: i.found, at: now }))
+            .collect();
         self.place_book.put_online(&looked)?;
         let mut cache = self.place_cache.lock().unwrap();
         Self::online(&mut cache, &self.place_book)?;
@@ -340,7 +425,8 @@ impl Library {
         Ok(())
     }
 
-    /// The photos `filter` selects that have no position and whose whole place is `path`.
+    /// The photos `filter` selects whose whole place is `path` and that have no position,
+    /// not even their place's.
     pub fn place_rows(&self, filter: &Filter, path: &str) -> anyhow::Result<Vec<u64>> {
         let searcher = self.reader.searcher();
         let base = Filter { within: None, gps: Some(false), place_under: Some(path.to_owned()), ..filter.clone() };
@@ -374,18 +460,19 @@ impl Library {
             if photo.geo.is_some() {
                 continue;
             }
-            let Some(a) = self.approx_at(&mut self.place_cache.lock().unwrap(), &path, row)? else { continue };
+            let Some(a) = self.approx_at(&path, row)? else { continue };
             let value = GeoPoint { lat: a.lat, lon: a.lon, alt: None, origin: GeoOrigin::Geocoded };
             changes.push((row, Op::SetGeo { base: None, value: Some(value) }));
-            marks.push((photo.id.key(), Some(Coarse { lat: a.lat, lon: a.lon, level: a.level })));
+            marks.push((photo.id.key(), Some(Coarse { lat: a.lat, lon: a.lon, level: a.level, path })));
         }
-        let undo = self.edit(&changes)?;
+        // Marks first: a mark on a photo not (yet) at its point is ignored, a position
+        // without its mark would pass for one taken there. The index reads them too.
         self.place_book.set_coarse(&marks)?;
-        Ok(undo)
+        self.coarse.write().unwrap().extend(marks.into_iter().filter_map(|(k, c)| Some((k, c?))));
+        self.edit(&changes)
     }
 
-    /// What a place's names are in the gazetteer, remembered by path and code: a name not
-    /// found is looked for with typos, which takes a while.
+    /// What a place's names are in the gazetteer, remembered by path and code.
     fn resolve_place(&self, place: &Place) -> Resolved {
         let key = format!(
             "{}#{}",
@@ -400,8 +487,18 @@ impl Library {
         r
     }
 
-    /// For each gazetteer place the catalog names, the name it uses most.
-    fn spellings(&self) -> anyhow::Result<Spellings> {
+    /// For each gazetteer place the catalog names, the name it uses most; worked out again
+    /// when places changed.
+    fn spellings(&self) -> anyhow::Result<Arc<Spellings>> {
+        let generation = {
+            let cache = self.place_cache.lock().unwrap();
+            if let Some((g, s)) = &cache.spellings
+                && *g == cache.places
+            {
+                return Ok(s.clone());
+            }
+            cache.places
+        };
         let options = QueryOptions { limit: Some(0), facets: vec![Dim::PlaceTree], ..QueryOptions::default() };
         let counts = self.query(&Filter::default(), &options)?.facets.remove(&Dim::PlaceTree).unwrap_or_default();
         let mut votes: [HashMap<u32, HashMap<String, u64>>; 3] = Default::default();
@@ -428,7 +525,9 @@ impl Library {
                 .collect()
         };
         let [countries, states, cities] = votes;
-        Ok(Spellings { countries: pick(countries), states: pick(states), cities: pick(cities) })
+        let s = Arc::new(Spellings { countries: pick(countries), states: pick(states), cities: pick(cities) });
+        self.place_cache.lock().unwrap().spellings = Some((generation, s.clone()));
+        Ok(s)
     }
 
     /// The gazetteer's names in the catalog's own spelling.
@@ -446,21 +545,15 @@ impl Library {
         }
     }
 
-    /// The place at a position, written as the catalog writes it.
-    pub fn place_at_point(&self, lat: f64, lon: f64) -> anyhow::Result<Option<Place>> {
-        let Some(found) = gazetteer().reverse(lat, lon) else { return Ok(None) };
-        Ok(Some(Self::spell(&self.spellings()?, found)))
-    }
-
     /// For the photos among `rows` that have a position, the place it is in, for the
     /// place fields they leave empty. A photo whose place says otherwise (another
     /// country, say) is left alone.
     pub fn fill_plan(&self, rows: &[u64]) -> anyhow::Result<Vec<FillGroup>> {
         let mut groups: Vec<FillGroup> = Vec::new();
-        let spellings = self.spellings()?;
+        let mut spellings = None;
         for &row in rows {
             let Some(photo) = self.photo(row)? else { continue };
-            let Some(filled) = self.filled(&photo, &spellings) else { continue };
+            let Some(filled) = self.filled(&photo, &mut spellings)? else { continue };
             match groups.iter_mut().find(|g| g.place == filled) {
                 Some(g) => g.rows.push(row),
                 None => groups.push(FillGroup { place: filled, rows: vec![row] }),
@@ -471,26 +564,34 @@ impl Library {
     }
 
     /// A photo's place with what its position says filled in where it is empty; `None`
-    /// when there is nothing to fill or the two disagree.
-    fn filled(&self, photo: &c1model::Photo, spellings: &Spellings) -> Option<Place> {
-        let geo = photo.geo?;
-        let found = gazetteer().reverse(geo.lat, geo.lon)?;
-        let own = self.resolve_place(&photo.place);
+    /// when there is nothing to fill or the two disagree. The catalog's spellings are
+    /// worked out only once something is to be filled.
+    fn filled(&self, photo: &c1model::Photo, spellings: &mut Option<Arc<Spellings>>) -> anyhow::Result<Option<Place>> {
+        let named = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
+        let p = &photo.place;
+        if named(&p.country) && named(&p.country_code) && named(&p.state) && named(&p.city) {
+            return Ok(None);
+        }
+        let Some(geo) = photo.geo else { return Ok(None) };
+        let Some(found) = gazetteer().reverse(geo.lat, geo.lon) else { return Ok(None) };
+        let own = self.resolve_place(p);
         let agrees = |mine: Option<u32>, theirs: Option<u32>| mine.is_none() || mine == theirs;
         if !(agrees(own.country, found.ids.country)
             && agrees(own.state, found.ids.state)
             && agrees(own.city, found.ids.city))
         {
-            return None;
+            return Ok(None);
         }
-        let named = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
         // A country or state typed but not found: it is not the gazetteer's to judge.
-        if (named(&photo.place.country) && own.country.is_none()) || (named(&photo.place.state) && own.state.is_none())
-        {
-            return None;
+        if (named(&p.country) && own.country.is_none()) || (named(&p.state) && own.state.is_none()) {
+            return Ok(None);
         }
-        let spelled = Self::spell(spellings, found);
-        let mut place = photo.place.clone();
+        let s = match spellings {
+            Some(s) => s.clone(),
+            None => spellings.insert(self.spellings()?).clone(),
+        };
+        let spelled = Self::spell(&s, found);
+        let mut place = p.clone();
         for (slot, value) in [
             (&mut place.country, spelled.country),
             (&mut place.country_code, spelled.country_code),
@@ -501,17 +602,17 @@ impl Library {
                 *slot = value;
             }
         }
-        (place != photo.place).then_some(place)
+        Ok((place != *p).then_some(place))
     }
 
     /// Fills the empty place fields of the photos among `rows` from their positions.
     /// Returns the ops that undo it.
     pub fn fill_places(&self, rows: &[u64]) -> anyhow::Result<Vec<(u64, Op)>> {
         let mut changes = Vec::new();
-        let spellings = self.spellings()?;
+        let mut spellings = None;
         for &row in rows {
             let Some(photo) = self.photo(row)? else { continue };
-            if let Some(value) = self.filled(&photo, &spellings) {
+            if let Some(value) = self.filled(&photo, &mut spellings)? {
                 changes.push((row, Op::SetPlace { base: photo.place, value }));
             }
         }
@@ -520,17 +621,19 @@ impl Library {
 
     /// For each photo `filter` selects that has no position, what the photos taken just
     /// before and after it say: a position between theirs, or, failing that and if it has
-    /// no place, their place.
+    /// no place, their place. Positions given from a place or from neighbours are not used.
     fn neighbours(&self, filter: &Filter, settings: &NeighbourSettings) -> anyhow::Result<Vec<(u64, Suggestion)>> {
         let searcher = self.reader.searcher();
-        let gap = settings.max_gap_minutes.max(1) * 60_000;
-        let coarse = self.coarse_rows()?;
+        let gap = settings.max_gap_minutes.clamp(1, 2880) * 60_000;
         let mut fixes: Vec<Fix> = Vec::new();
-        let mut placed: Vec<(i64, String, u64)> = Vec::new();
+        let mut placed: Vec<(i64, Arc<str>, u64)> = Vec::new();
         if settings.positions {
-            for s in self.seen(&searcher, &Filter { gps: Some(true), ..Filter::default() }, false)? {
+            let own = self.seen(&searcher, &Filter { approx: Some(false), ..Filter::default() }, false)?;
+            let (guessed, keys) = (self.guessed.read().unwrap(), self.keys.read().unwrap());
+            for s in own {
                 let (Some(at), Some((lat, lon))) = (s.at, s.geo) else { continue };
-                if !coarse.get(&s.row).is_some_and(|c| c.holds(lat, lon)) {
+                let guess = || keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| guessed.get(k));
+                if guessed.is_empty() || !guess().is_some_and(|g| g.holds(lat, lon)) {
                     fixes.push(Fix { at, lat, lon });
                 }
             }
@@ -549,7 +652,6 @@ impl Library {
         for s in self.seen(&searcher, &wanted, settings.places)? {
             let Some(at) = s.at else { continue };
             if settings.positions {
-                let between = gpx::locate(&fixes, at, gap);
                 // At the end of a stretch: the nearest fix, if close.
                 let nearest = || {
                     let i = fixes.partition_point(|f| f.at < at);
@@ -560,7 +662,7 @@ impl Library {
                         .min_by_key(|f| (f.at - at).abs())
                         .map(|f| (f.lat, f.lon))
                 };
-                if let Some((lat, lon)) = between.or_else(nearest) {
+                if let Some((lat, lon)) = between(&fixes, at, gap).or_else(nearest) {
                     out.push((s.row, Suggestion::Position(lat, lon)));
                     continue;
                 }
@@ -587,7 +689,7 @@ impl Library {
         let candidates = self.compile(&Filter { within: None, gps: Some(false), ..filter.clone() })?;
         let mut plan =
             NeighbourPlan { candidates: searcher.search(candidates.as_ref(), &Count)?, ..NeighbourPlan::default() };
-        let mut counts: HashMap<String, usize> = HashMap::new();
+        let mut counts: HashMap<Arc<str>, usize> = HashMap::new();
         for (row, s) in self.neighbours(filter, settings)? {
             match s {
                 Suggestion::Position(lat, lon) => {
@@ -602,15 +704,17 @@ impl Library {
                 }
             }
         }
-        plan.place_counts = counts.into_iter().collect();
+        plan.place_counts = counts.into_iter().map(|(p, n)| (p.to_string(), n)).collect();
         plan.place_counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         Ok(plan)
     }
 
-    /// Places the photos as [`Library::neighbour_plan`] showed. Returns the ops that undo it.
+    /// Places the photos as [`Library::neighbour_plan`] showed, the positions marked as
+    /// guesses. Returns the ops that undo it.
     pub fn neighbour_apply(&self, filter: &Filter, settings: &NeighbourSettings) -> anyhow::Result<Vec<(u64, Op)>> {
-        let mut places: HashMap<String, Place> = HashMap::new();
+        let mut places: HashMap<Arc<str>, Place> = HashMap::new();
         let mut changes = Vec::new();
+        let mut guesses = Vec::new();
         let mut seen = HashSet::new();
         for (row, s) in self.neighbours(filter, settings)? {
             if !seen.insert(row) {
@@ -618,6 +722,9 @@ impl Library {
             }
             let op = match s {
                 Suggestion::Position(lat, lon) => {
+                    if let Some(key) = self.key_of(row) {
+                        guesses.push((key, Some(Guessed { lat, lon })));
+                    }
                     Op::SetGeo { base: None, value: Some(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual }) }
                 }
                 Suggestion::Place(path, from) => {
@@ -627,6 +734,23 @@ impl Library {
             };
             changes.push((row, op));
         }
+        self.place_book.set_guessed(&guesses)?;
+        self.guessed.write().unwrap().extend(guesses.into_iter().filter_map(|(k, g)| Some((k, g?))));
         self.edit(&changes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn between_goes_the_short_way_round_and_not_by_plane() {
+        let fix = |min: i64, lat: f64, lon: f64| Fix { at: min * 60_000, lat, lon };
+        let (lat, lon) = between(&[fix(0, -17.0, 179.9), fix(10, -17.0, -179.9)], 5 * 60_000, 30 * 60_000).unwrap();
+        assert!((lat + 17.0).abs() < 1e-9 && lon.abs() > 179.9, "across the date line, not round the world: {lon}");
+        // Kraków to Lisbon in 20 minutes: a flight.
+        assert_eq!(between(&[fix(0, 50.06, 19.94), fix(20, 38.72, -9.13)], 10 * 60_000, 30 * 60_000), None);
+        assert!(between(&[fix(0, 50.06, 19.94), fix(20, 50.08, 19.95)], 10 * 60_000, 30 * 60_000).is_some());
     }
 }

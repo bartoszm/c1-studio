@@ -30,6 +30,20 @@ test("a spot is asked once, at most one a second; refused, it waits as told and 
   fetch.mock.restore();
 });
 
+test("told to wait, those queued meanwhile go one a second after it, not all at once", async () => {
+  const at: number[] = [];
+  const fetch = mock.method(globalThis, "fetch", async () => {
+    at.push(Date.now());
+    return at.length === 1 ? reply(503, {}, { "Retry-After": "3" }) : reply(200, krakow);
+  });
+  const asked = [placeAt(2, 2), placeAt(3, 3), placeAt(4, 4)];
+  await Promise.all(asked);
+  assert.equal(at.length, 3);
+  assert.ok(at[1] - at[0] >= 2900, `waits out Retry-After, not ${at[1] - at[0]} ms`);
+  assert.ok(at[2] - at[1] >= 1000, `a second apart, not ${at[2] - at[1]} ms`);
+  fetch.mock.restore();
+});
+
 test("with online lookups off, nothing is asked", async () => {
   const fetch = mock.method(globalThis, "fetch", async () => reply(200, krakow));
   allowPlaceLookups(false);
@@ -56,6 +70,20 @@ test("a place is looked up with all its names, then fewer, down to what is known
   assert.equal(await pointFor(place, null), undefined);
   allowPlaceLookups(true);
   assert.equal(urls.length, 2);
+  fetch.mock.restore();
+});
+
+test("an answer that is no position is asked again later; a code cannot add to the query", async () => {
+  const urls: string[] = [];
+  let body: unknown = [{ lat: "not a number", lon: "19.9" }];
+  const fetch = mock.method(globalThis, "fetch", async (url: string) => (urls.push(url), reply(200, body)));
+  const place = { country: "Poland", country_code: "pl&x=1", state: null, city: "Kraków", location: null };
+  assert.equal(await pointFor(place, null), undefined);
+  assert.ok(!urls[0].includes("countrycodes"), urls[0]);
+  body = { error: "html page" };
+  assert.equal(await pointFor(place, null), undefined);
+  body = [{ lat: "95", lon: "19.9" }];
+  assert.equal(await pointFor(place, null), undefined);
   fetch.mock.restore();
 });
 

@@ -116,8 +116,9 @@ export function parsePoint(text: string): [number, number] | string {
       [latLetter, lonLetter] = [l2, l1];
     } else return HOW;
   }
-  if (latLetter === "S") lat = -lat;
-  if (lonLetter === "W") lon = -lon;
+  // A letter says the side: `-33.8688S` is south once, not twice.
+  if (latLetter) lat = latLetter === "S" ? -Math.abs(lat) : Math.abs(lat);
+  if (lonLetter) lon = lonLetter === "W" ? -Math.abs(lon) : Math.abs(lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180)
     return "Latitude is -90 to 90, longitude -180 to 180.";
   return [lat, lon];

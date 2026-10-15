@@ -94,7 +94,7 @@
   function mapMoved(bounds: api.BBox) {
     mapView = bounds;
     // Photos with no position are in no area: while the grid shows them, it does not follow.
-    if (!follow || mapTile || filter.gps === false) return;
+    if (!follow || mapTile || filter.gps === false || filter.approx) return;
     clearTimeout(followTimer);
     followTimer = setTimeout(() => {
       if (!mapOn || !follow) return;
@@ -148,7 +148,7 @@
   function showOffMap(extra: Filter) {
     clearTimeout(followTimer);
     mapTile = null;
-    filter = { ...filter, within: undefined, gps: false, ...extra };
+    filter = { ...filter, within: undefined, ...extra };
     run();
   }
   /** An area drawn on the map: the grid keeps to it, whatever the map shows next. */
@@ -898,6 +898,8 @@
         redoStack = [];
         const n = new Set(undo.map(([r]) => r)).size;
         note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} given the position of ${placeText(paths[0])}${paths.length > 1 ? ` and ${paths.length - 1} more places` : ""} (approximate)`);
+      } else {
+        note("Nothing to do: these photos have a position already");
       }
       editError = null;
     } catch (e) {
@@ -1300,6 +1302,7 @@
     place_under: (v) => [{ what: "Place", text: placeText(v) }],
     gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
     placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
+    approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
     hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
@@ -1664,11 +1667,16 @@
       onpick={mapPick}
       onsetgeo={mapSetGeo}
       onerror={(text) => (editError = text)}
-      onplace={(path) => showOffMap({ place_under: path, placed: undefined })}
+      onplace={(path) => showOffMap({ place_under: path, approx: true, gps: undefined, placed: undefined })}
       onpromote={promotePlace}
       ondragrows={(rows) => (dragging = rows && { rows })}
       onneighbours={() => (placingFromNeighbours = true)}
-      onunplaced={(placed) => showOffMap({ placed, place_under: undefined })}
+      onunplaced={(placed) =>
+        showOffMap(
+          placed
+            ? { placed, approx: true, gps: undefined, place_under: undefined }
+            : { placed, gps: false, approx: undefined, place_under: undefined },
+        )}
     />
   {/if}
   {#if tab === "analysis"}

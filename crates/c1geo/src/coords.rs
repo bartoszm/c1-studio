@@ -153,11 +153,12 @@ pub fn parse_point(text: &str) -> Result<(f64, f64), &'static str> {
     } else {
         return Err(HOW);
     };
-    if l1 == Some('S') {
-        lat = -lat;
+    // A letter says the side: `-33.8688S` is south once, not twice.
+    if let Some(l) = l1 {
+        lat = if l == 'S' { -lat.abs() } else { lat.abs() };
     }
-    if l2 == Some('W') {
-        lon = -lon;
+    if let Some(l) = l2 {
+        lon = if l == 'W' { -lon.abs() } else { lon.abs() };
     }
     if lat.abs() > 90.0 || lon.abs() > 180.0 || !lat.is_finite() || !lon.is_finite() {
         return Err("latitude is -90 to 90, longitude -180 to 180");
@@ -180,6 +181,8 @@ mod tests {
         close("50.0614 19.9366", 50.0614, 19.9366);
         close("-33.8688; 151.2093", -33.8688, 151.2093);
         close("33.8688S 151.2093E", -33.8688, 151.2093);
+        close("-33.8688S, 151.2093E", -33.8688, 151.2093);
+        close("-33.8688 S, -151.2093 W", -33.8688, -151.2093);
         close("33.8688 S, 151.2093 E", -33.8688, 151.2093);
     }
 

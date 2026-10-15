@@ -87,7 +87,10 @@ pub fn locate(fixes: &[Fix], at: i64, max_gap_ms: i64) -> Option<(f64, f64)> {
         return None;
     }
     let t = (at - prev.at) as f64 / gap as f64;
-    Some((prev.lat + (next.lat - prev.lat) * t, prev.lon + (next.lon - prev.lon) * t))
+    // The short way round: across the date line, not the whole world.
+    let dlon = (next.lon - prev.lon + 540.0).rem_euclid(360.0) - 180.0;
+    let lon = (prev.lon + dlon * t + 540.0).rem_euclid(360.0) - 180.0;
+    Some((prev.lat + (next.lat - prev.lat) * t, lon))
 }
 
 #[cfg(test)]

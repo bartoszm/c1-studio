@@ -22,7 +22,7 @@ use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, Queued
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::looks::{Look, Looks, Record};
-use crate::places::PlaceBook;
+use crate::places::{Coarse, Guessed, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
@@ -166,6 +166,12 @@ pub struct Library {
     place_book: PlaceBook,
     /// Where places are, as worked out from their names.
     place_cache: Mutex<placing::PlaceCache>,
+    /// Photos given only their place's position, by photo key (also in `place_book`):
+    /// read when their documents are made, so the index knows them.
+    coarse: RwLock<HashMap<String, Coarse>>,
+    /// Photos given a position from their neighbours in time, by photo key (also in
+    /// `place_book`).
+    guessed: RwLock<HashMap<String, Guessed>>,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -257,6 +263,22 @@ impl Library {
         let looks = Looks::open(&dir.join("analysis.redb"))?;
         let trip_book = TripBook::open(&dir.join("trips.redb"))?;
         let place_book = PlaceBook::open(&dir.join("places.redb"))?;
+        // A photo moved since it was given its place's position is placed for real: its
+        // mark goes. (One with no position keeps it: an undo can be redone.)
+        let mut marks = place_book.coarse()?;
+        let mut moved = Vec::new();
+        let keys: HashMap<u64, &str> = store.rows_of(marks.keys().map(String::as_str))?.into_iter().collect();
+        store.photos(&keys.keys().copied().collect::<Vec<_>>(), |row, p| {
+            if p.geo.is_some_and(|g| !marks[keys[&row]].holds(g.lat, g.lon)) {
+                moved.push((keys[&row].to_owned(), None));
+            }
+        })?;
+        place_book.set_coarse(&moved)?;
+        for (key, _) in &moved {
+            marks.remove(key);
+        }
+        let coarse = RwLock::new(marks);
+        let guessed = RwLock::new(place_book.guessed()?);
         let seen = looks
             .all()?
             .into_iter()
@@ -281,14 +303,28 @@ impl Library {
             trip_cache: Mutex::new(None),
             place_book,
             place_cache: Mutex::default(),
+            coarse,
+            guessed,
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
+        let flagged = library.store.meta("coarse_flagged")?.is_some();
         if !rebuild {
             library.reindex_keys(&regrouped)?;
+            // Photos given their place's position by a build that did not flag them yet:
+            // written again, once.
+            if !flagged {
+                let coarse: Vec<String> = library.coarse.read().unwrap().keys().cloned().collect();
+                library.reindex_keys(&coarse)?;
+            }
         }
         if rebuild {
             library.reindex()?;
+        }
+        if !flagged {
+            let mut batch = library.store.batch()?;
+            batch.set_meta("coarse_flagged", "1")?;
+            batch.commit()?;
         }
         library.refresh()?;
         Ok(library)
@@ -301,7 +337,10 @@ impl Library {
     /// A photo's search document, with what its analysis found.
     fn doc(&self, row: u64, photo: &Photo) -> tantivy::TantivyDocument {
         let seen = self.seen.read().unwrap();
-        schema::document(&self.fields, row, photo, seen.get(&photo.id.key()))
+        let key = photo.id.key();
+        let coarse =
+            photo.geo.is_some_and(|g| self.coarse.read().unwrap().get(&key).is_some_and(|c| c.holds(g.lat, g.lon)));
+        schema::document(&self.fields, row, photo, seen.get(&key), coarse)
     }
 
     /// Every measured photo's analysis and groups.
@@ -715,6 +754,9 @@ impl Library {
         batch.commit()?;
         edits.commit()?;
         self.refresh()?;
+        if report.added + report.updated + report.deleted > 0 {
+            self.places_changed();
+        }
         report.millis = started.elapsed().as_millis();
         Ok(report)
     }
@@ -773,6 +815,7 @@ impl Library {
         let now = now_ms();
         let mut undo = Vec::new();
         let mut learned = HashSet::new();
+        let mut placed = false;
         // One op per keyword. Removing a keyword takes everything under it too (removing
         // `animal` takes `animal|dog`), each queued on its own so undo puts back exactly
         // what went.
@@ -822,11 +865,14 @@ impl Library {
                         .flat_map(|k| k.ancestors_and_self().collect::<Vec<_>>())
                         .map(|p| (Dim::KeywordTree, p)),
                 ),
-                Op::SetPlace { value, .. } => learned.extend(
-                    [(Dim::Country, &value.country), (Dim::State, &value.state), (Dim::City, &value.city)]
-                        .into_iter()
-                        .filter_map(|(dim, v)| Some((dim, v.clone()?))),
-                ),
+                Op::SetPlace { value, .. } => {
+                    placed = true;
+                    learned.extend(
+                        [(Dim::Country, &value.country), (Dim::State, &value.state), (Dim::City, &value.city)]
+                            .into_iter()
+                            .filter_map(|(dim, v)| Some((dim, v.clone()?))),
+                    )
+                }
                 _ => {}
             }
             undo.push((row, shown.reverted()));
@@ -844,6 +890,9 @@ impl Library {
         drop(writer);
         drop(writing);
         self.learn_distinct(learned);
+        if placed {
+            self.places_changed();
+        }
         Ok(undo)
     }
 

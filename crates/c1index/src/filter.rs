@@ -147,6 +147,9 @@ pub struct Filter {
     pub collections: Vec<String>,
     pub not_in_collections: Vec<String>,
     pub gps: Option<bool>,
+    /// Photos without a position of their own (none, or one given from their place's
+    /// name: [`flag::COARSE_GPS`]), or only those with one.
+    pub approx: Option<bool>,
     pub within: Option<BBox>,
     /// A place and everything in it: `Poland|Malopolska`, levels as [`Dim::PlaceTree`]
     /// writes them.
@@ -439,6 +442,15 @@ impl Filter {
         match self.gps {
             Some(true) => must.push(has(flag::GPS)),
             Some(false) => must_not.push(has(flag::GPS)),
+            None => {}
+        }
+        // A position of its own: GPS, and not given from the place's name.
+        let exact = || -> Box<dyn Query> {
+            Box::new(BooleanQuery::new(vec![(Occur::Must, has(flag::GPS)), (Occur::MustNot, has(flag::COARSE_GPS))]))
+        };
+        match self.approx {
+            Some(true) => must_not.push(exact()),
+            Some(false) => must.push(exact()),
             None => {}
         }
         if let Some(b) = &self.within {
