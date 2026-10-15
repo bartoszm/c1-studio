@@ -379,10 +379,10 @@ export const gpxApply = (filter: Filter, settings: GpxSettings) => invoke<[numbe
 /** A duplicate group or series: its size, how many of it the filter picks, the first few of those. */
 export type Group = { id: string; size: number; matched: number; rows: number[] };
 export type GroupPage = { total: number; groups: Group[] };
-/** A page of the duplicate groups (or series) among the photos the filter selects, biggest
- *  first, with how many there are in all. */
 /** Groups the Analysis tab shows at a time. */
 export const GROUP_PAGE = 60;
+/** A page of the duplicate groups (or series) among the photos the filter selects, biggest
+ *  first, with how many there are in all. */
 export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE) =>
   invoke<GroupPage>("groups", { filter, series, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
@@ -466,13 +466,22 @@ export const keywords = () => invoke<[string, number][]>("keywords");
 export const remapKeywords = (request: RemapRequest) => invoke<number>("remap_keywords", { request });
 export const undoRemap = (seq: number) => invoke<void>("undo_remap", { seq });
 export const remaps = () => invoke<[number, string][]>("remaps");
-/** The keywords on the photos at `rows`, with how many of them carry each. */
-export const keywordCounts = (rows: number[]) => invoke<[string, number][]>("keyword_counts", { rows });
-/** The places of the photos at `rows`, each with the photos that have it, most used first;
- *  those with no location fields share the empty place. */
-export const placeCounts = (rows: number[]) => invoke<[Photo["place"], number[]][]>("place_counts", { rows });
-/** The albums the photos at `rows` are in, with how many of them each holds. */
-export const albumCounts = (rows: number[]) => invoke<[string, number][]>("album_counts", { rows });
+/** One field over several photos: the value all of them share, how many different values
+ *  they have, how many have none, and the most used values with their counts. */
+export type Merged<T> = { same: T | null; values: number; empty: number; top: [T, number][] };
+/** What the photos at `rows` have: keywords and albums with how many carry each, places with
+ *  the photos that have each (most used first; those with no location share the empty
+ *  place), and each editable field merged. */
+export type Selection = {
+  keywords: [string, number][];
+  albums: [string, number][];
+  places: [Photo["place"], number[]][];
+  rating: Merged<number>;
+  color: Merged<Color>;
+  geo: Merged<[number, number]>;
+  iptc: Record<CaptionField, Merged<string>>;
+};
+export const selectionSummary = (rows: number[]) => invoke<Selection>("selection_summary", { rows });
 /** Queues an album change; returns its number (for undo) and the change as queued (for redo). */
 export const changeCollection = (change: CollectionChange) =>
   invoke<[number, CollectionChange]>("change_collection", { change });
