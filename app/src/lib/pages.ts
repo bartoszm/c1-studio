@@ -17,13 +17,27 @@ export function pagesFor(ranges: [number, number][], total: number): number[] {
   return [...out].sort((a, b) => a - b);
 }
 
-/** A new map with `first` and the pages `wanted` read again; the old map is left as it is. */
-export async function reloadPages(
-  first: [number, number[]],
-  wanted: number[],
+/**
+ * A result read again in place. Its first page comes with `first`; the pages holding
+ * `ranges` (of a result of `total` photos) are read alongside it, not after it. Resolves to
+ * the new result and its pages once all are in: the old map is never touched, so the grid
+ * keeps showing it until then. A result that grew has its further pages read too; one that
+ * shrank loses those past its end.
+ */
+export async function refreshPages<R extends { total: number; rows: number[] }>(
+  first: Promise<R>,
+  ranges: (total: number) => [number, number][],
+  total: number,
   read: (page: number) => Promise<number[]>,
-): Promise<Map<number, number[]>> {
-  const rest = wanted.filter((page) => page !== first[0]);
-  const rows = await Promise.all(rest.map(read));
-  return new Map([first, ...rest.map((page, k): [number, number[]] => [page, rows[k]])]);
+): Promise<{ result: R; pages: Map<number, number[]> }> {
+  const early = pagesFor(ranges(total), total).filter((page) => page > 0);
+  const reads = early.map(read);
+  const result = await first;
+  const rows = await Promise.all(reads);
+  const pages = new Map<number, number[]>([[0, result.rows]]);
+  early.forEach((page, k) => { if (page * PAGE < result.total) pages.set(page, rows[k]); });
+  const late = pagesFor(ranges(result.total), result.total).filter((page) => !pages.has(page));
+  const more = await Promise.all(late.map(read));
+  late.forEach((page, k) => pages.set(page, more[k]));
+  return { result, pages };
 }

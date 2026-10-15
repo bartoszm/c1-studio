@@ -27,7 +27,7 @@
   import Timeline from "./Timeline.svelte";
   import TripsSection from "./TripsSection.svelte";
   import { tripDates, tripName } from "./lib/trips";
-  import { PAGE, pagesFor, reloadPages, rowAt as rowIn } from "./lib/pages";
+  import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -325,20 +325,25 @@
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
-      const r = await api.query(asked, {
+      const first = api.query(asked, {
         sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
+      // In place, the pages on screen and the focused photo's (and the next, for the viewer)
+      // are read again alongside the first and swapped in with the result in one go: until
+      // then the grid and the details panel keep the old ones.
+      const shown = grid?.range() ?? [0, 0];
+      const { result: r, pages: fresh } = keep
+        ? await refreshPages(
+            first,
+            (total) => {
+              const at = Math.min(selected ?? 0, total - 1);
+              return [shown, [at, at + 2]];
+            },
+            result?.total ?? 0,
+            (page) => api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+          )
+        : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
-      let fresh = new Map([[0, r.rows]]);
-      if (keep) {
-        // The pages on screen and the focused photo's are read again and swapped in with the
-        // result in one go: until then the grid and the details panel keep the old ones.
-        const at = Math.min(selected ?? 0, r.total - 1);
-        const wanted = pagesFor([grid?.range() ?? [0, 0], [at, at + 1]], r.total);
-        fresh = await reloadPages([0, r.rows], wanted, (page) =>
-          api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows));
-        if (mine !== generation) return;
-      }
       result = r;
       counted = groups;
       pages = new SvelteMap(fresh);
@@ -346,8 +351,6 @@
       error = null;
       if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
-        // Whatever was scrolled to while the pages were read.
-        need(...(grid?.range() ?? [0, 0]));
         await followPicks(mine, asked);
       } else {
         selected = null;

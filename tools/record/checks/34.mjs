@@ -1,7 +1,8 @@
 // #34: edits must not take the details panel's Look section away, so the fields below it
 // stay put. Samples, every frame, whether Look is there and where Country, City, GPS and
-// Headline are, across a rating, a keyword and five undos. Expected: Look never missing,
-// 0 px movement.
+// Headline are against Look's heading, across a rating, a keyword and undos and redos.
+// (Against the panel they move anyway: an edit adds its note and keyword above Look.)
+// Expected: Look never missing, 0 px movement.
 //
 // usage: node tools/record/drive.mjs tools/record/checks/34.mjs --port 9223
 export default {
@@ -25,9 +26,13 @@ export default {
       const w = (window.__check34 = { frames: 0, noLook: 0, moved: Object.fromEntries(ids.map((id) => [id, 0])), at: {} });
       const tick = () => {
         w.frames++;
-        if (![...document.querySelectorAll("aside.info-panel h3")].some((h) => h.textContent === "Look")) w.noLook++;
+        const look = [...document.querySelectorAll("aside.info-panel h3")].find((h) => h.textContent === "Look");
+        if (!look) w.noLook++;
+        // Without Look the fields are measured against the panel: they jump by its height.
+        const base = look?.getBoundingClientRect().top ?? document.querySelector("aside.info-panel").getBoundingClientRect().top;
         for (const id of ids) {
-          const top = document.getElementById(id)?.getBoundingClientRect().top;
+          const at = document.getElementById(id)?.getBoundingClientRect().top;
+          const top = at === undefined ? undefined : at - base;
           if (top === undefined) continue;
           if (w.at[id] !== undefined) w.moved[id] = Math.max(w.moved[id], Math.abs(top - w.at[id]));
           w.at[id] ??= top;
