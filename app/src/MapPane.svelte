@@ -261,7 +261,7 @@
           popup = { cluster: c, x: p.x, y: p.y, confirm: false };
         } else {
           const { min_lat, max_lat, min_lon, max_lon } = c.bounds;
-          map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { maxZoom: 11 });
+          map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { maxZoom: 11, padding, absolutePadding: true });
         }
       });
       el.addEventListener("dblclick", (e) => e.stopPropagation());
@@ -280,7 +280,7 @@
   function zoomToPlace(c: PlaceCluster) {
     popup = null;
     const next = { Country: 5, State: 8, City: 11, Location: 14 }[c.level];
-    map?.easeTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom(), next) });
+    map?.easeTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom(), next), padding });
   }
 
   function moved(e?: maplibregl.MapMovementEvent & { padded?: boolean }) {
@@ -295,7 +295,9 @@
       return;
     }
     try {
-      const c = map!.getCenter();
+      // The middle of the whole canvas, not of the padded part: what is left free changes
+      // with the tray and the find box, so the view comes back where it was.
+      const c = map!.unproject([box.clientWidth / 2, box.clientHeight / 2]);
       localStorage.setItem(START, JSON.stringify({ center: [c.lng, c.lat], zoom: map!.getZoom() }));
     } catch {
       // Not remembered, that's all.
@@ -307,9 +309,9 @@
   function zoomTo(c: Cluster) {
     const { min_lat, max_lat, min_lon, max_lon } = c.bounds;
     if (min_lat === max_lat && min_lon === max_lon) {
-      map!.easeTo({ center: [c.lon, c.lat], zoom: Math.min(19, map!.getZoom() + 3) });
+      map!.easeTo({ center: [c.lon, c.lat], zoom: Math.min(19, map!.getZoom() + 3), padding });
     } else {
-      map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { maxZoom: 18 });
+      map!.fitBounds([[min_lon, min_lat], [max_lon, max_lat]], { maxZoom: 18, padding, absolutePadding: true });
     }
   }
 
@@ -455,14 +457,14 @@
       failed = String(e);
       return;
     }
-    // Starts with the remembered centre in the middle of what is left free.
-    map.setPadding(padding);
     map.touchZoomRotate.disableRotation();
     map.boxZoom.disable();
     box.addEventListener("mousedown", startBox, true);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
     map.on("movestart", () => (popup = null));
+    // The remembered centre is the canvas's: it stays where it is as the padding is set.
+    pad();
     // A click on the map itself lets the picked tile go (Shift+drag draws an area instead).
     map.on("click", (e) => {
       popup = null;
@@ -534,8 +536,12 @@
     const was = map.getPadding();
     if (p.top === was.top && p.bottom === was.bottom && p.left === was.left && p.right === was.right) return;
     // The map stays where it is on screen: the new centre is what is under it now.
-    const at = map.unproject([(p.left + box.clientWidth - p.right) / 2, (p.top + box.clientHeight - p.bottom) / 2]);
+    const spot: [number, number] = [(p.left + box.clientWidth - p.right) / 2, (p.top + box.clientHeight - p.bottom) / 2];
+    const at = map.unproject(spot);
     map.jumpTo({ center: at, padding: p }, { padded: true });
+    // At the poles the map holds the centre back, so the view did move: that is reported.
+    const now = map.project(at);
+    if (Math.hypot(now.x - spot[0], now.y - spot[1]) > 0.5 && map.loaded()) moved();
   }
   $effect(() => {
     void padding;
@@ -672,7 +678,11 @@
     if (!map || route.length < 2) return;
     const lons = route.map((p) => p.lon);
     const lats = route.map((p) => p.lat);
-    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], { maxZoom: 15 });
+    map.fitBounds([[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]], {
+      maxZoom: 15,
+      padding,
+      absolutePadding: true,
+    });
   }
 
   let frame = 0;
@@ -785,7 +795,8 @@
    *  reported: the flight that follows gets the room. */
   async function findSettled() {
     await tick();
-    findHeight = find.offsetHeight;
+    // Gone, when the map closed meanwhile.
+    findHeight = find?.offsetHeight ?? findHeight;
   }
 
   let over = $state(false);

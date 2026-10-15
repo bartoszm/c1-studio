@@ -114,7 +114,8 @@ export default {
     console.log(JSON.stringify({ step: "trip", trip: found, ...(await covered(d)) }));
     const before = await d.evaluate(`localStorage.getItem("map-view")`);
     await d.press(".map .route button", /^⤢$/);
-    await settled(d, before);
+    // Fitted already, it may not move at all: a short wait.
+    await settled(d, before, 4000);
     await d.sleep(1500);
     console.log(JSON.stringify({ step: "route fitted again", trip: found, ...(await covered(d)) }));
     console.log("expected: zoomed (cluster, Kraków) and all (trip) with outside, find, tray and route 0");
