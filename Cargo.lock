@@ -380,12 +380,14 @@ dependencies = [
  "c1image",
  "c1index",
  "c1model",
+ "c1sources",
  "chrono",
  "clap",
  "image",
  "rand",
  "serde_json",
  "source-c1",
+ "source-folders",
  "tempfile",
 ]
 
