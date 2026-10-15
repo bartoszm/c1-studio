@@ -3,9 +3,12 @@
 //! A walk lists every photo file under each root (leaving out the definition's excludes
 //! and the images the source made), then compares with the store:
 //! - same path, size and modification time (and sidecar): unchanged, not read;
-//! - same path, otherwise changed: read again, its images dropped;
+//! - same path, otherwise changed: read again, its images dropped (kept when only its
+//!   sidecar changed);
 //! - a new path: first matched by content against the records whose path is gone (moved
-//!   or renamed), offline or detached, which keeps its id; else a new id;
+//!   or renamed), offline or detached, which keeps its id; else a new id. Where the image
+//!   store's patterns follow the photo's path, its images go with it (or are made again),
+//!   as they do for every photo under a root whose path changed;
 //! - a known path not found while its root is reachable: removed;
 //! - every file under a root that cannot be reached, or that is empty though it held
 //!   photos (a drive not mounted): offline, kept.
@@ -27,6 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::FolderSource;
 use crate::definition::{Definition, RootDef, SidecarNaming};
 use crate::ids::{self, ContentKey};
+use crate::images::Moved;
 use crate::meta::{self, FileKind, FileMeta};
 use crate::store::{FileRec, FileState, State, Writer, other};
 
@@ -221,11 +225,10 @@ fn scan_locked(src: &FolderSource, def: &Definition) -> Result<ScanOutcome> {
     let reads_done = AtomicUsize::new(0);
     let read: Vec<(Option<String>, FileRec, bool)> = reads
         .into_par_iter()
-        .map(|(found, rec, ext)| {
+        .map(|ToRead { found, rec, ext, invalidate }| {
             let meta = read_meta(&found);
             reads_done.fetch_add(1, Ordering::Relaxed);
             progress.step();
-            let invalidate = ext.is_some();
             (ext, FileRec { meta, ..found.onto(rec) }, invalidate)
         })
         .collect();
@@ -263,7 +266,8 @@ fn sort_out(src: &FolderSource, walked: &mut Walked, plan: &mut Plan) -> Sorted 
                 }
             }
             Some(false) => {
-                if rec.state == FileState::Present {
+                // Detached too: its root is back in the definition, though out of reach.
+                if rec.state != FileState::Offline {
                     plan.offline.push((ext.clone(), FileRec { state: FileState::Offline, ..rec.clone() }));
                 }
             }
@@ -275,9 +279,25 @@ fn sort_out(src: &FolderSource, walked: &mut Walked, plan: &mut Plan) -> Sorted 
     sorted
 }
 
+/// A file whose metadata is to be read.
+struct ToRead {
+    found: Found,
+    /// Its record so far: what is kept of the one before, or a new one.
+    rec: FileRec,
+    /// Its id; `None` for a new one.
+    ext: Option<String>,
+    /// Its pixels changed: the images made of it go.
+    invalidate: bool,
+}
+
+/// The file's content is not what the record says: its size, time or content key differ
+/// (not only its sidecar).
+fn pixels_changed(found: &Found, key: &ContentKey, rec: &FileRec) -> bool {
+    found.size != rec.size || found.mtime_ns != rec.mtime_ns || *key != rec.content
+}
+
 /// Puts the changed files, the new ones and the moves into the plan, with what is removed
-/// and counted. Returns the files whose metadata is to be read, with their records and
-/// ids (`None` for a new one).
+/// and counted. Returns the files whose metadata is to be read.
 fn settle(
     plan: &mut Plan,
     changed: Vec<Changed>,
@@ -285,15 +305,17 @@ fn settle(
     candidates: &[Candidate],
     pairs: &[(usize, usize)],
     walked: &Walked,
-) -> Vec<(Found, FileRec, Option<String>)> {
+) -> Vec<ToRead> {
     let taken: HashMap<usize, usize> = pairs.iter().copied().collect();
-    let mut reads: Vec<(Found, FileRec, Option<String>)> = Vec::new();
+    let mut reads: Vec<ToRead> = Vec::new();
     for c in changed {
         let key = c.key.expect("kept only with a key");
+        // Only its sidecar changed: what the file says is read again, its images stay.
+        let invalidate = pixels_changed(&c.found, &key, &c.rec);
         let full = if key == c.rec.content { c.full.or(c.rec.full.clone()) } else { c.full };
         let rec = FileRec { content: key, full, ..c.rec };
         plan.outcome.changed += 1;
-        reads.push((c.found, rec, Some(c.ext)));
+        reads.push(ToRead { found: c.found, rec, ext: Some(c.ext), invalidate });
     }
     let mut matched: HashSet<&str> = HashSet::new();
     for (n, new) in news.into_iter().enumerate() {
@@ -313,7 +335,7 @@ fn settle(
                 imported_at: 0,
             };
             plan.outcome.added += 1;
-            reads.push((new.found, rec, None));
+            reads.push(ToRead { found: new.found, rec, ext: None, invalidate: false });
             continue;
         };
         let cand = &candidates[c];
@@ -321,10 +343,12 @@ fn settle(
         let mut rec = cand.rec.clone();
         rec.full = new.full.or(rec.full);
         plan.outcome.moved += 1;
+        // Images that follow the photo's path are seen to when the plan is written.
         if new.found.same_as(&cand.rec) {
             plan.puts.push((Some(cand.ext.clone()), new.found.onto(rec), false));
         } else {
-            reads.push((new.found, rec, Some(cand.ext.clone())));
+            let invalidate = pixels_changed(&new.found, &new.key, &cand.rec);
+            reads.push(ToRead { found: new.found, rec, ext: Some(cand.ext.clone()), invalidate });
         }
     }
     plan.detach.retain(|(ext, _)| !matched.contains(ext.as_str()));
@@ -458,7 +482,8 @@ fn relpath(base: &Path, path: &Path) -> String {
     parts.join("/")
 }
 
-fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
+/// A file's modification time, nanoseconds since the epoch, as [`FileRec::mtime_ns`] holds it.
+pub(crate) fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
     match meta.modified().map(|t| t.duration_since(UNIX_EPOCH)) {
         Ok(Ok(d)) => d.as_nanos() as i64,
         Ok(Err(before)) => -(before.duration().as_nanos() as i64),
@@ -649,10 +674,10 @@ fn hash_whole(
 
 /// Writes the plan in one transaction.
 fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome> {
-    let Plan { puts, removes, detach, offline, fulls, outcome } = plan;
+    let Plan { puts, removes, detach, offline, fulls, mut outcome } = plan;
     let any = !(puts.is_empty() && removes.is_empty() && detach.is_empty() && offline.is_empty() && fulls.is_empty());
     src.store().write(|w| {
-        let roots = roots_changed(w, def)?;
+        let (roots, mut moves) = roots_changed(w, def)?;
         for ext in &removes {
             // Before the record goes: the images are found through it.
             src.images.invalidate(w, src, ext)?;
@@ -665,10 +690,25 @@ fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome
         for (ext, rec) in offline {
             w.put_file(&ext, rec)?;
         }
+        // Photos at a new place, while their records still say where they were: their
+        // images go where the patterns now put them.
+        for (ext, rec, _) in &puts {
+            let Some(ext) = ext else { continue };
+            if w.state().files.get(ext).is_some_and(|old| old.root != rec.root || old.relpath != rec.relpath) {
+                moves.push(Moved { ext: ext.clone(), root: rec.root.clone(), relpath: rec.relpath.clone() });
+            }
+        }
+        let carried = src.images.relocate(w, src, def, &moves)?;
         let now = chrono::Utc::now().timestamp_millis();
         for (ext, mut rec, invalidate) in puts {
             let ext = match ext {
                 Some(ext) => ext,
+                // An image carried along with its photo (a pattern that puts images among the
+                // photos), found by the walk before it was known: not a photo.
+                None if def.root(&rec.root).is_some_and(|root| carried.contains(&rec.path_under(&root.path))) => {
+                    outcome.added -= 1;
+                    continue;
+                }
                 None => {
                     rec.imported_at = now;
                     new_id(w.state())
@@ -694,8 +734,9 @@ fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome
 
 /// Compares the roots with those of the last walk. A root whose path changed has every
 /// photo under it touched (their paths changed); any change in the roots means the folder
-/// collections changed.
-fn roots_changed(w: &mut Writer, def: &Definition) -> Result<bool> {
+/// collections changed. Returns whether the roots changed, and the photos under a root
+/// whose path changed.
+fn roots_changed(w: &mut Writer, def: &Definition) -> Result<(bool, Vec<Moved>)> {
     let mut before: HashMap<String, RootDef> = HashMap::new();
     {
         let table = w.tx().open_table(ROOTS).map_err(other)?;
@@ -708,7 +749,7 @@ fn roots_changed(w: &mut Writer, def: &Definition) -> Result<bool> {
     }
     let now: HashMap<String, RootDef> = def.roots.iter().map(|r| (r.id.clone(), r.clone())).collect();
     if before == now {
-        return Ok(false);
+        return Ok((false, Vec::new()));
     }
     let moved: HashSet<&str> = def
         .roots
@@ -716,15 +757,15 @@ fn roots_changed(w: &mut Writer, def: &Definition) -> Result<bool> {
         .filter(|r| before.get(&r.id).is_some_and(|b| b.path != r.path))
         .map(|r| r.id.as_str())
         .collect();
-    let touch: Vec<String> = w
+    let touch: Vec<Moved> = w
         .state()
         .files
         .iter()
         .filter(|(_, rec)| moved.contains(rec.root.as_str()) && rec.state != FileState::Detached)
-        .map(|(ext, _)| ext.clone())
+        .map(|(ext, rec)| Moved { ext: ext.clone(), root: rec.root.clone(), relpath: rec.relpath.clone() })
         .collect();
-    for ext in touch {
-        w.touch(&ext)?;
+    for Moved { ext, .. } in &touch {
+        w.touch(ext)?;
     }
     {
         let mut table = w.tx().open_table(ROOTS).map_err(other)?;
@@ -736,7 +777,7 @@ fn roots_changed(w: &mut Writer, def: &Definition) -> Result<bool> {
             table.insert(id.as_str(), json.as_str()).map_err(other)?;
         }
     }
-    Ok(true)
+    Ok((true, touch))
 }
 
 /// A photo id not used before: 16 random hex digits.
@@ -846,6 +887,40 @@ mod tests {
         assert!(!walked.kept(&rec("r", "a/bc/x.jpg")));
         assert!(!walked.kept(&rec("q", "a/b/x.jpg")));
         assert!(walked.kept(&rec("s", "anything.jpg")));
+    }
+
+    #[test]
+    fn a_detached_root_back_but_out_of_reach_shows_its_photos_offline() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("photos");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.jpg"), b"\xFF\xD8 a photo").unwrap();
+        let location = dir.path().join("t.c1folders");
+        let def = Definition::new("t", std::slice::from_ref(&root));
+        def.save(&location).unwrap();
+        let src = FolderSource::open(&location, &dir.path().join("work")).unwrap();
+        scan(&src).unwrap();
+        let ext = src.store().read().at_path(&def.roots[0].id, "a.jpg").unwrap().to_owned();
+
+        // Taken out of the definition: detached and deleted from the library.
+        let mut without = def.clone();
+        without.roots.clear();
+        without.save(&location).unwrap();
+        src.reload_definition(None).unwrap();
+        scan(&src).unwrap();
+        assert_eq!(src.store().read().files[&ext].state, FileState::Detached);
+        assert!(src.store().read().tombs.contains_key(&ext));
+
+        // Back, while its folder cannot be reached: kept, shown again, offline.
+        std::fs::rename(&root, dir.path().join("away")).unwrap();
+        def.save(&location).unwrap();
+        src.reload_definition(None).unwrap();
+        let outcome = scan(&src).unwrap();
+        assert_eq!(outcome.offline_roots.len(), 1);
+        let state = src.store().read();
+        assert_eq!(state.files[&ext].state, FileState::Offline);
+        assert!(!state.tombs.contains_key(&ext), "no longer deleted");
+        assert_eq!(state.changed[&ext], state.generation, "sent again");
     }
 
     #[test]

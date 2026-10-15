@@ -14,32 +14,56 @@ use c1model::Photo;
 use crate::definition::Definition;
 use crate::meta::{FileKind, embed, xmp};
 
-/// Writes the XMP for each `(photo as the user sees it, its file, the file's kind)`, as
-/// `def` says (nothing unless `def.write_xmp`). Returns what could not be written, with why.
-pub(crate) fn export(def: &Definition, photos: &[(Photo, PathBuf, FileKind)]) -> Vec<String> {
-    if !def.write_xmp {
-        return Vec::new();
-    }
-    let problem = |(photo, path, kind): &(Photo, PathBuf, FileKind)| {
-        export_one(def, photo, path, *kind).err().map(|why| format!("{}: {why}", path.display()))
-    };
-    photos.iter().filter_map(problem).collect()
+/// A file the export wrote for one photo.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Written {
+    /// The XMP went into the original itself: its bytes changed, its pixels did not.
+    Original,
+    /// The sidecar at this path was written.
+    Sidecar(PathBuf),
 }
 
-fn export_one(def: &Definition, photo: &Photo, path: &Path, kind: FileKind) -> Result<(), String> {
+/// What [`export`] did.
+#[derive(Debug, Default)]
+pub(crate) struct Exported {
+    /// The files written, by the index of their photo in what was given.
+    pub written: Vec<(usize, Written)>,
+    /// What could not be written, with why.
+    pub problems: Vec<String>,
+}
+
+/// Writes the XMP for each `(photo as the user sees it, its file, the file's kind)`, as
+/// `def` says (nothing unless `def.write_xmp`).
+pub(crate) fn export(def: &Definition, photos: &[(Photo, PathBuf, FileKind)]) -> Exported {
+    let mut out = Exported::default();
+    if !def.write_xmp {
+        return out;
+    }
+    for (i, (photo, path, kind)) in photos.iter().enumerate() {
+        match export_one(def, photo, path, *kind) {
+            Ok(Some(written)) => out.written.push((i, written)),
+            Ok(None) => {}
+            Err(why) => out.problems.push(format!("{}: {why}", path.display())),
+        }
+    }
+    out
+}
+
+/// Writes one photo's XMP. `None` when nothing needed writing.
+fn export_one(def: &Definition, photo: &Photo, path: &Path, kind: FileKind) -> Result<Option<Written>, String> {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     if kind == FileKind::Png {
-        return Ok(());
+        return Ok(None);
     }
     if kind.embeds_xmp(ext) {
         // Lightroom ignores a sidecar next to these, so the choice is the packet or nothing
-        return if def.modify_originals { embed_in(photo, path, kind) } else { Ok(()) };
+        return if def.modify_originals { embed_in(photo, path, kind) } else { Ok(None) };
     }
     write_sidecar(def, photo, path)
 }
 
 /// Writes (or merges into) the sidecar of the RAW at `path`.
-fn write_sidecar(def: &Definition, photo: &Photo, path: &Path) -> Result<(), String> {
+fn write_sidecar(def: &Definition, photo: &Photo, path: &Path) -> Result<Option<Written>, String> {
     let sidecar = def.sidecar.sidecar(path);
     let existing = match fs::read(&sidecar) {
         Ok(bytes) => Some(String::from_utf8(bytes).map_err(|_| format!("{} is not UTF-8 text", sidecar.display()))?),
@@ -52,23 +76,25 @@ fn write_sidecar(def: &Definition, photo: &Photo, path: &Path) -> Result<(), Str
         None => xmp::render(photo, None),
     };
     if existing.as_deref() == Some(&xml) {
-        return Ok(());
+        return Ok(None);
     }
-    write_atomic(&sidecar, xml.as_bytes(), None).map_err(|e| format!("writing {}: {e}", sidecar.display()))
+    write_atomic(&sidecar, xml.as_bytes(), None).map_err(|e| format!("writing {}: {e}", sidecar.display()))?;
+    Ok(Some(Written::Sidecar(sidecar)))
 }
 
 /// Writes the XMP into the JPEG, TIFF or DNG at `path`.
-fn embed_in(photo: &Photo, path: &Path, kind: FileKind) -> Result<(), String> {
+fn embed_in(photo: &Photo, path: &Path, kind: FileKind) -> Result<Option<Written>, String> {
     let bytes = fs::read(path).map_err(|e| format!("reading: {e}"))?;
     let jpeg = kind == FileKind::Jpeg;
     let existing = if jpeg { xmp::packet_from_jpeg(&bytes) } else { xmp::packet_from_tiff(&bytes) };
     let xml = xmp::render(photo, existing.as_deref());
     let out = if jpeg { embed::embed_jpeg(&bytes, &xml)? } else { embed::embed_tiff(&bytes, &xml)? };
     if out == bytes {
-        return Ok(());
+        return Ok(None);
     }
     let permissions = fs::metadata(path).ok().map(|m| m.permissions());
-    write_atomic(path, &out, permissions).map_err(|e| format!("writing: {e}"))
+    write_atomic(path, &out, permissions).map_err(|e| format!("writing: {e}"))?;
+    Ok(Some(Written::Original))
 }
 
 /// Writes `bytes` to a temporary file beside `path`, then moves it over `path`.
@@ -122,7 +148,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let raw = dir.path().join("a.raf");
         fs::write(&raw, b"raw").unwrap();
-        assert!(export(&definition(false, true), &[entry(&raw, FileKind::Raw)]).is_empty());
+        let out = export(&definition(false, true), &[entry(&raw, FileKind::Raw)]);
+        assert!(out.problems.is_empty() && out.written.is_empty());
         assert_eq!(files_in(dir.path()), ["a.raf"]);
     }
 
@@ -131,7 +158,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let raw = dir.path().join("DSCF0001.RAF");
         fs::write(&raw, b"raw").unwrap();
-        assert!(export(&definition(true, false), &[entry(&raw, FileKind::Raw)]).is_empty());
+        let out = export(&definition(true, false), &[entry(&raw, FileKind::Raw)]);
+        assert!(out.problems.is_empty());
+        assert_eq!(out.written, [(0, Written::Sidecar(dir.path().join("DSCF0001.xmp")))]);
         assert_eq!(files_in(dir.path()), ["DSCF0001.RAF", "DSCF0001.xmp"]);
         let fields = xmp::parse(&fs::read_to_string(dir.path().join("DSCF0001.xmp")).unwrap());
         assert_eq!(fields.rating, Some(4));
@@ -151,7 +180,9 @@ mod tests {
         fs::write(&raw, b"raw").unwrap();
         let sidecar = dir.path().join("a.xmp");
         fs::write(&sidecar, LIGHTROOM).unwrap();
-        assert!(export(&definition(true, false), &[entry(&raw, FileKind::Raw)]).is_empty());
+        let out = export(&definition(true, false), &[entry(&raw, FileKind::Raw)]);
+        assert!(out.problems.is_empty());
+        assert_eq!(out.written, [(0, Written::Sidecar(sidecar.clone()))]);
         let xml = fs::read_to_string(&sidecar).unwrap();
         assert!(xml.contains("crs:Exposure2012=\"+0.35\"") && xml.contains("<crs:ToneCurvePV2012>"));
         assert_eq!(xmp::parse(&xml).rating, Some(4));
@@ -159,7 +190,7 @@ mod tests {
 
         // again: nothing to change, nothing rewritten
         let modified = fs::metadata(&sidecar).unwrap().modified().unwrap();
-        export(&definition(true, false), &[entry(&raw, FileKind::Raw)]);
+        assert!(export(&definition(true, false), &[entry(&raw, FileKind::Raw)]).written.is_empty());
         assert_eq!(fs::metadata(&sidecar).unwrap().modified().unwrap(), modified);
     }
 
@@ -169,7 +200,7 @@ mod tests {
         let raw = dir.path().join("a.nef");
         fs::write(&raw, b"raw").unwrap();
         fs::write(dir.path().join("a.xmp"), "<broken").unwrap();
-        let problems = export(&definition(true, false), &[entry(&raw, FileKind::Raw)]);
+        let problems = export(&definition(true, false), &[entry(&raw, FileKind::Raw)]).problems;
         assert_eq!(problems.len(), 1);
         assert!(problems[0].starts_with(&format!("{}: ", raw.display())), "{problems:?}");
         assert_eq!(fs::read_to_string(dir.path().join("a.xmp")).unwrap(), "<broken");
@@ -188,12 +219,15 @@ mod tests {
         fs::write(&png, b"png").unwrap();
         let photos = [entry(&jpeg, FileKind::Jpeg), entry(&tiff, FileKind::Tiff), entry(&png, FileKind::Png)];
 
-        assert!(export(&definition(true, false), &photos).is_empty());
+        let out = export(&definition(true, false), &photos);
+        assert!(out.problems.is_empty() && out.written.is_empty());
         assert_eq!(fs::read(&jpeg).unwrap(), original_jpeg);
         assert_eq!(fs::read(&tiff).unwrap(), original_tiff);
         assert_eq!(files_in(dir.path()), ["a.jpg", "b.tif", "c.png"]);
 
-        assert!(export(&definition(true, true), &photos).is_empty());
+        let out = export(&definition(true, true), &photos);
+        assert!(out.problems.is_empty());
+        assert_eq!(out.written, [(0, Written::Original), (1, Written::Original)], "not the PNG");
         let packet = xmp::packet_from_jpeg(&fs::read(&jpeg).unwrap()).unwrap();
         assert_eq!(xmp::parse(&packet).keywords, full_photo().keywords);
         assert!(image::open(&jpeg).is_ok());
@@ -213,7 +247,9 @@ mod tests {
         let dng = dir.path().join("b.DNG");
         fs::write(&dng, plain_tiff()).unwrap();
         let photos = [entry(&jpeg, FileKind::Jpeg), entry(&dng, FileKind::Raw)];
-        assert!(export(&definition(true, true), &photos).is_empty());
+        let out = export(&definition(true, true), &photos);
+        assert!(out.problems.is_empty());
+        assert_eq!(out.written, [(0, Written::Original), (1, Written::Original)]);
         let packet = xmp::packet_from_jpeg(&fs::read(&jpeg).unwrap()).unwrap();
         assert!(packet.contains("crs:Exposure2012=\"+0.35\""));
         assert!(xmp::packet_from_tiff(&fs::read(&dng).unwrap()).is_some());
@@ -226,7 +262,8 @@ mod tests {
         let bad = dir.path().join("bad.jpg");
         fs::write(&bad, b"not a jpeg").unwrap();
         let missing = dir.path().join("missing.tif");
-        let problems = export(&definition(true, true), &[entry(&bad, FileKind::Jpeg), entry(&missing, FileKind::Tiff)]);
+        let problems =
+            export(&definition(true, true), &[entry(&bad, FileKind::Jpeg), entry(&missing, FileKind::Tiff)]).problems;
         assert_eq!(problems.len(), 2);
         assert!(problems[0].starts_with(&format!("{}: ", bad.display())));
         assert!(problems[1].starts_with(&format!("{}: ", missing.display())));

@@ -2,9 +2,13 @@
 //! store says.
 //!
 //! - `image()` ([`Images::lookup`]) only looks: an image made earlier whose original has not
-//!   changed since, a small JPEG's original standing in for its preview, the original itself.
-//! - `make_image()` ([`Images::make`]) decodes the original once and writes both tiers.
-//! - The central store keeps under its size limit by dropping the least recently used.
+//!   changed since (and whose file is there), a small JPEG's original standing in for its
+//!   preview, the original itself.
+//! - `make_image()` ([`Images::make`]) decodes the original once and writes the tier asked
+//!   for: a thumbnail alone, or a preview with the thumbnail if that is missing.
+//! - An image is never written over a file the source did not make.
+//! - The central store keeps under its size limit by dropping the least recently used,
+//!   previews before thumbnails.
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -17,7 +21,7 @@ use c1model::{ImageFormat, ImageRef, ImageTier, Result, SourceError};
 use serde::{Deserialize, Serialize};
 
 use crate::FolderSource;
-use crate::definition::ImageStore;
+use crate::definition::{Definition, ImageStore};
 use crate::meta::FileKind;
 use crate::pattern::{self, Pattern, Preset, Tokens};
 use crate::store::{FileRec, FileState, ImageRec, Writer};
@@ -73,6 +77,11 @@ fn spec(tier: ImageTier) -> Option<&'static Spec> {
     SPECS.into_iter().find(|s| s.tier == tier)
 }
 
+/// Where `tier` is in [`SPECS`] (and in arrays that follow it).
+fn index(tier: ImageTier) -> usize {
+    usize::from(tier == ImageTier::Preview)
+}
+
 /// The photo's pattern for `spec`'s tier; one that does not parse gives the central one.
 fn pattern_for(store: &ImageStore, spec: &Spec) -> Pattern {
     let text = if spec.tier == ImageTier::Thumb { &store.thumb } else { &store.preview };
@@ -83,6 +92,15 @@ fn pattern_for(store: &ImageStore, spec: &Spec) -> Pattern {
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+/// When the file at `path` was last written, ms since the epoch; 0 for one that is not there.
+fn modified_ms(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// A plain JPEG file, as `c1image` reads it.
@@ -207,6 +225,14 @@ impl Drop for MakingGuard<'_> {
     }
 }
 
+/// A photo at a new place, for [`Images::relocate`].
+pub(crate) struct Moved {
+    pub ext: String,
+    /// Where it is now: its root's id and its path below it.
+    pub root: String,
+    pub relpath: String,
+}
+
 /// What `make` needs of a photo, copied out of the store so the slow work holds no lock.
 struct Job {
     rec: FileRec,
@@ -218,9 +244,11 @@ struct Job {
 }
 
 pub(crate) struct Images {
-    /// Photo id → last time (ms) one of its images was looked up, for the central store's
-    /// least-recently-used trimming. Kept in memory only.
-    access: Mutex<HashMap<String, u64>>,
+    /// Photo id → last time (ms) each of its images ([`SPECS`] order; 0 for not yet) was
+    /// looked up or made, for the central store's least-recently-used trimming. Kept in
+    /// memory only: an image not used since the source was opened counts from its file's
+    /// modification time.
+    access: Mutex<HashMap<String, [u64; 2]>>,
     /// Every recorded image path, for the scan to leave them out. Built on first use. Taken
     /// after the store's lock, never before.
     generated: Mutex<Option<HashSet<PathBuf>>>,
@@ -239,12 +267,14 @@ impl Images {
         }
     }
 
-    fn touch(&self, ext: &str) {
+    fn touch(&self, ext: &str, tier: ImageTier) {
         let mut access = self.access.lock().unwrap();
         match access.get_mut(ext) {
-            Some(at) => *at = now_ms(),
+            Some(at) => at[index(tier)] = now_ms(),
             None => {
-                access.insert(ext.to_owned(), now_ms());
+                let mut at = [0; 2];
+                at[index(tier)] = now_ms();
+                access.insert(ext.to_owned(), at);
             }
         }
     }
@@ -261,49 +291,63 @@ impl Images {
 
     /// The image of `tier` there is now for photo `ext`, without making anything.
     pub fn lookup(&self, src: &FolderSource, ext: &str, tier: ImageTier) -> Result<Option<ImageRef>> {
-        let state = src.store().read();
-        let Some(rec) = state.files.get(ext) else { return Ok(None) };
-        let offline = match rec.state {
-            FileState::Detached => return Ok(None),
-            FileState::Offline => true,
-            FileState::Present => false,
-        };
-        if tier == ImageTier::Original {
-            if offline {
-                return Ok(None);
+        let (made, stand_in) = {
+            let state = src.store().read();
+            let Some(rec) = state.files.get(ext) else { return Ok(None) };
+            let offline = match rec.state {
+                FileState::Detached => return Ok(None),
+                FileState::Offline => true,
+                FileState::Present => false,
+            };
+            if tier == ImageTier::Original {
+                if offline {
+                    return Ok(None);
+                }
+                return Ok(Self::root_path(src, &rec.root).map(|root| original_ref(rec, &root)));
             }
-            return Ok(Self::root_path(src, &rec.root).map(|root| original_ref(rec, &root)));
+            let Some(spec) = spec(tier) else { return Ok(None) };
+            let made = state.images.get(&(ext.to_owned(), tier)).filter(|i| is_current(i, rec)).map(|i| i.path.clone());
+            let stand_in = (spec.tier == ImageTier::Preview && !offline && small_jpeg(rec))
+                .then(|| Self::root_path(src, &rec.root).map(|root| original_ref(rec, &root)))
+                .flatten();
+            (made, stand_in)
+        };
+        // Looked at outside the store's lock: the file may be on a slow drive. A record can
+        // outlive its file (deleted by hand, carried off with a folder).
+        if let Some(path) = made.filter(|p| p.is_file()) {
+            self.touch(ext, tier);
+            return Ok(Some(jpeg_ref(path)));
         }
-        let Some(spec) = spec(tier) else { return Ok(None) };
-        if let Some(image) = state.images.get(&(ext.to_owned(), tier)).filter(|i| is_current(i, rec)) {
-            self.touch(ext);
-            return Ok(Some(jpeg_ref(image.path.clone())));
-        }
-        if spec.tier == ImageTier::Preview && !offline && small_jpeg(rec) {
-            return Ok(Self::root_path(src, &rec.root).map(|root| original_ref(rec, &root)));
-        }
-        Ok(None)
+        Ok(stand_in)
     }
 
     /// What `make` needs of photo `ext`, or `None` when there is no file to make from.
     fn job(&self, src: &FolderSource, ext: &str) -> Option<Job> {
-        let state = src.store().read();
-        let rec = state.files.get(ext).filter(|r| r.state == FileState::Present)?;
-        let def = src.def.read().unwrap();
-        let root = def.root(&rec.root)?.path.clone();
-        let images =
-            SPECS.map(|s| state.images.get(&(ext.to_owned(), s.tier)).map(|i| (i.clone(), is_current(i, rec))));
-        Some(Job {
-            rec: rec.clone(),
-            root,
-            store: def.images.clone(),
-            data: src.work_dir().to_string_lossy().into_owned(),
-            images,
-        })
+        let mut job = {
+            let state = src.store().read();
+            let rec = state.files.get(ext).filter(|r| r.state == FileState::Present)?;
+            let def = src.def.read().unwrap();
+            let root = def.root(&rec.root)?.path.clone();
+            let images =
+                SPECS.map(|s| state.images.get(&(ext.to_owned(), s.tier)).map(|i| (i.clone(), is_current(i, rec))));
+            Job {
+                rec: rec.clone(),
+                root,
+                store: def.images.clone(),
+                data: src.work_dir().to_string_lossy().into_owned(),
+                images,
+            }
+        };
+        // An image whose file is gone is made again.
+        for (image, current) in job.images.iter_mut().flatten() {
+            *current = *current && image.path.is_file();
+        }
+        Some(job)
     }
 
-    /// Makes the thumbnail and the preview of photo `ext` (if they are not there and up to
-    /// date) and returns the one of `tier`.
+    /// Makes the image of `tier` of photo `ext` if it is not there and up to date, and
+    /// returns it. A preview brings the thumbnail along if that is missing (it costs little
+    /// from the same decode); a thumbnail comes alone.
     ///
     /// One thread at a time makes a given photo (the others wait, then find it made);
     /// different photos are made in parallel.
@@ -319,7 +363,7 @@ impl Images {
             return Ok(Some(found));
         }
         let Some(job) = self.job(src, ext) else { return Ok(None) };
-        self.generate(src, ext, &job)?;
+        self.generate(src, ext, &job, tier)?;
         if self.made.fetch_add(1, Ordering::Relaxed) % EVICT_EVERY == EVICT_EVERY - 1 {
             // Making went well; a failed trim waits for the next.
             let _ = self.evict(src);
@@ -327,14 +371,30 @@ impl Images {
         self.lookup(src, ext, tier)
     }
 
-    /// Decodes the original once and writes the tiers of `job` that are missing or stale.
-    fn generate(&self, src: &FolderSource, ext: &str, job: &Job) -> Result<()> {
-        let needed: [bool; 2] = std::array::from_fn(|i| {
-            let current = job.images[i].as_ref().is_some_and(|(_, current)| *current);
-            !current && !(SPECS[i].tier == ImageTier::Preview && small_jpeg(&job.rec))
-        });
+    /// Decodes the original once and writes the thumbnail if it is missing or stale, and for
+    /// a preview asked for, the preview too (unless a small JPEG is its own).
+    fn generate(&self, src: &FolderSource, ext: &str, job: &Job, tier: ImageTier) -> Result<()> {
+        let stale = |i: usize| !job.images[i].as_ref().is_some_and(|(_, current)| *current);
+        let needed = [stale(0), tier == ImageTier::Preview && stale(1) && !small_jpeg(&job.rec)];
         if !needed.contains(&true) {
             return Ok(());
+        }
+        // Paths recorded for this photo before: still images when a new one is discarded.
+        let recorded: Vec<&Path> = job.images.iter().flatten().map(|(image, _)| image.path.as_path()).collect();
+        let paths: [Option<PathBuf>; 2] = std::array::from_fn(|i| {
+            let spec = SPECS[i];
+            let tokens = Tokens {
+                data: &job.data,
+                root: &job.root,
+                relpath: &job.rec.relpath,
+                hash: ext,
+                tier: spec.name,
+                size: spec.edge,
+            };
+            needed[i].then(|| pattern_for(&job.store, spec).render(&tokens))
+        });
+        for path in paths.iter().flatten() {
+            self.check_free(src, path, &recorded)?;
         }
         let full = c1image::load(&original_ref(&job.rec, &job.root)).map_err(other)?;
         let (preview, thumb) = if needed[1] {
@@ -345,20 +405,14 @@ impl Images {
             (None, Some(c1image::fit(full, THUMB_EDGE)))
         };
         let mut written: Vec<(ImageTier, ImageRec)> = Vec::new();
-        for (spec, image) in SPECS.into_iter().zip([thumb, preview]) {
-            let Some(image) = image else { continue };
+        for ((spec, image), path) in SPECS.into_iter().zip([thumb, preview]).zip(paths) {
+            let (Some(image), Some(path)) = (image, path) else { continue };
             let bytes = c1image::encode_jpeg(&image, spec.quality);
-            let tokens = Tokens {
-                data: &job.data,
-                root: &job.root,
-                relpath: &job.rec.relpath,
-                hash: ext,
-                tier: spec.name,
-                size: spec.edge,
-            };
-            let path = pattern_for(&job.store, spec).render(&tokens);
+            // Known as made before it is there: a walk running meanwhile must not take it for a photo.
+            self.mark_generated(src, &path);
             if let Err(e) = write_atomic(&path, &bytes) {
-                self.discard(&written);
+                self.discard(&written, &recorded);
+                self.unmark_generated(&path, &recorded);
                 return Err(e.into());
             }
             let rec =
@@ -366,7 +420,7 @@ impl Images {
             written.push((spec.tier, rec));
         }
         // The file may have changed (and been scanned) while the images were made.
-        let recorded = src.store().write(|w| {
+        let stored = src.store().write(|w| {
             let Some(cur) = w.state().files.get(ext).filter(|r| r.state != FileState::Detached) else {
                 return Ok(false);
             };
@@ -378,15 +432,15 @@ impl Images {
             }
             Ok(true)
         });
-        if !matches!(recorded, Ok(true)) {
-            self.discard(&written);
-            return recorded.map(|_| ());
+        if !matches!(stored, Ok(true)) {
+            self.discard(&written, &recorded);
+            return stored.map(|_| ());
         }
         // A pattern that changed leaves the image at its old path: take that one away.
         let old: Vec<PathBuf> = written
             .iter()
             .filter_map(|(tier, rec)| {
-                let (old, _) = job.images[usize::from(*tier == ImageTier::Preview)].as_ref()?;
+                let (old, _) = job.images[index(*tier)].as_ref()?;
                 (old.path != rec.path).then(|| old.path.clone())
             })
             .collect();
@@ -399,15 +453,75 @@ impl Images {
             }
             set.extend(written.iter().map(|(_, rec)| rec.path.clone()));
         });
-        self.touch(ext);
+        for (tier, _) in &written {
+            self.touch(ext, *tier);
+        }
         Ok(())
     }
 
-    /// Deletes image files that were written and not recorded.
-    fn discard(&self, written: &[(ImageTier, ImageRec)]) {
+    /// Fails when `path` holds a file the source did not make (a photo that a pattern maps
+    /// an image onto, say): that is never written over. `recorded` are the photo's own
+    /// images.
+    fn check_free(&self, src: &FolderSource, path: &Path, recorded: &[&Path]) -> Result<()> {
+        if !path.exists() || recorded.contains(&path) || self.is_generated(src, path) {
+            return Ok(());
+        }
+        if src.store().read().images.values().any(|i| i.path == path) {
+            return Ok(());
+        }
+        Err(SourceError::Other(format!(
+            "{}: a file the image would go to is there, not made by this source; it is not written over",
+            path.display()
+        )))
+    }
+
+    /// Deletes image files that were written and not recorded, and forgets them as made
+    /// unless `recorded` (the photo's images recorded before) still holds the path.
+    fn discard(&self, written: &[(ImageTier, ImageRec)], recorded: &[&Path]) {
         for (_, rec) in written {
             let _ = remove_file(&rec.path);
+            self.unmark_generated(&rec.path, recorded);
         }
+    }
+
+    /// Adds `path` to the images made.
+    fn mark_generated(&self, src: &FolderSource, path: &Path) {
+        self.load_generated(src);
+        self.generated_update(|set| {
+            set.insert(path.to_owned());
+        });
+    }
+
+    /// Takes `path` off the images made, unless one of `recorded` is there.
+    fn unmark_generated(&self, path: &Path, recorded: &[&Path]) {
+        if !recorded.contains(&path) {
+            self.generated_update(|set| {
+                set.remove(path);
+            });
+        }
+    }
+
+    /// Fills the list of images made from the store, once. Reads the store, so it must not
+    /// be called inside a store write.
+    fn load_generated(&self, src: &FolderSource) {
+        if self.generated.lock().unwrap().is_some() {
+            return;
+        }
+        let state = src.store().read();
+        let mut generated = self.generated.lock().unwrap();
+        generated.get_or_insert_with(|| state.images.values().map(|i| i.path.clone()).collect());
+    }
+
+    /// Deletes one image of photo `ext` and its record. Called inside a store write.
+    fn drop_image(&self, w: &mut Writer, ext: &str, tier: ImageTier, image: &ImageRec) -> Result<()> {
+        // A file that cannot be deleted stays on the list: the scan must not take it for a photo.
+        if remove_file(&image.path).is_ok() {
+            self.generated_update(|set| {
+                set.remove(&image.path);
+            });
+            tidy(&image.path);
+        }
+        w.put_image(ext, tier, None)
     }
 
     /// The file of photo `ext` changed or is gone: deletes the images made of it and their
@@ -415,17 +529,59 @@ impl Images {
     pub fn invalidate(&self, w: &mut Writer, _src: &FolderSource, ext: &str) -> Result<()> {
         for spec in SPECS {
             let Some(image) = w.state().images.get(&(ext.to_owned(), spec.tier)).cloned() else { continue };
-            // A file that cannot be deleted stays on the list: the scan must not take it for a photo.
-            if remove_file(&image.path).is_ok() {
-                self.generated_update(|set| {
-                    set.remove(&image.path);
-                });
-                tidy(&image.path);
-            }
-            w.put_image(ext, spec.tier, None)?;
+            self.drop_image(w, ext, spec.tier, &image)?;
         }
         self.access.lock().unwrap().remove(ext);
         Ok(())
+    }
+
+    /// Photos at a new place (moved or renamed, or under a root whose path changed): where
+    /// `def`'s patterns follow the photo's place, its images are no longer where they
+    /// belong. An image that travelled with the photo (a folder renamed with its `.previews`
+    /// in it) is found at its new path, the same size, and kept there; any other is deleted
+    /// with its record, to be made again when asked for. Returns the new paths of the images
+    /// kept. Called inside a store write.
+    pub(crate) fn relocate(
+        &self,
+        w: &mut Writer,
+        src: &FolderSource,
+        def: &Definition,
+        moves: &[Moved],
+    ) -> Result<HashSet<PathBuf>> {
+        let mut kept = HashSet::new();
+        let patterns = SPECS.map(|s| pattern_for(&def.images, s));
+        if !patterns.iter().any(Pattern::depends_on_location) {
+            return Ok(kept);
+        }
+        let data = src.work_dir().to_string_lossy().into_owned();
+        for Moved { ext, root, relpath } in moves {
+            let Some(root) = def.root(root) else { continue };
+            for (spec, pattern) in SPECS.into_iter().zip(&patterns) {
+                if !pattern.depends_on_location() {
+                    continue;
+                }
+                let Some(image) = w.state().images.get(&(ext.clone(), spec.tier)).cloned() else { continue };
+                let tokens =
+                    Tokens { data: &data, root: &root.path, relpath, hash: ext, tier: spec.name, size: spec.edge };
+                let to = pattern.render(&tokens);
+                if to == image.path {
+                    continue;
+                }
+                let travelled = std::fs::metadata(&to).is_ok_and(|m| m.is_file() && m.len() == image.bytes);
+                if !travelled {
+                    self.drop_image(w, ext, spec.tier, &image)?;
+                    continue;
+                }
+                // What is left at the old path (in a copy of the root) is no longer this source's.
+                self.generated_update(|set| {
+                    set.remove(&image.path);
+                    set.insert(to.clone());
+                });
+                w.put_image(ext, spec.tier, Some(ImageRec { path: to.clone(), ..image }))?;
+                kept.insert(to);
+            }
+        }
+        Ok(kept)
     }
 
     /// `path` is an image this source made (so a walk leaves it out). The first call reads
@@ -434,13 +590,8 @@ impl Images {
         if path.starts_with(src.work_dir().join("images")) {
             return true;
         }
-        if let Some(set) = self.generated.lock().unwrap().as_ref() {
-            return set.contains(path);
-        }
-        let state = src.store().read();
-        let mut generated = self.generated.lock().unwrap();
-        let set = generated.get_or_insert_with(|| state.images.values().map(|i| i.path.clone()).collect());
-        set.contains(path)
+        self.load_generated(src);
+        self.generated.lock().unwrap().as_ref().is_some_and(|set| set.contains(path))
     }
 
     /// Drops least recently used images until the central store is under its limit.
@@ -452,43 +603,58 @@ impl Images {
         }
     }
 
-    /// Drops the images of the photos looked at longest ago (those never looked at first)
-    /// if the recorded images take more than `limit` bytes, until they take 90% of it.
-    /// Returns how many photos lost theirs.
+    /// If the images in the central store's folder (`{data}/images`; images kept anywhere
+    /// else are never dropped) take more than `limit` bytes, drops some until they take 90%
+    /// of it: previews first, least recently used first, then thumbnails if that was not
+    /// enough. An image not used since the source was opened counts from its file's
+    /// modification time. Returns how many images were dropped.
     pub(crate) fn evict_to(&self, src: &FolderSource, limit: u64) -> Result<usize> {
-        let victims: Vec<String> = {
+        let central = src.work_dir().join("images");
+        let images: Vec<(String, ImageTier, ImageRec)> = {
             let state = src.store().read();
-            let mut bytes: HashMap<&str, u64> = HashMap::new();
-            for ((ext, _), image) in &state.images {
-                *bytes.entry(ext).or_default() += image.bytes;
-            }
-            let mut total: u64 = bytes.values().sum();
+            let total: u64 = state.images.values().filter(|i| i.path.starts_with(&central)).map(|i| i.bytes).sum();
             if total <= limit {
                 return Ok(0);
             }
-            let target = (u128::from(limit) * EVICT_TO_PERCENT / 100) as u64;
-            let access = self.access.lock().unwrap();
-            let mut order: Vec<(u64, &str, u64)> =
-                bytes.into_iter().map(|(ext, b)| (access.get(ext).copied().unwrap_or(0), ext, b)).collect();
-            order.sort();
-            let mut victims = Vec::new();
-            for (_, ext, b) in order {
-                if total <= target {
-                    break;
-                }
-                total -= b;
-                victims.push(ext.to_owned());
-            }
-            victims
+            state
+                .images
+                .iter()
+                .filter(|(_, i)| i.path.starts_with(&central))
+                .map(|((ext, tier), i)| (ext.clone(), *tier, i.clone()))
+                .collect()
         };
+        let used: Vec<u64> = {
+            let access = self.access.lock().unwrap();
+            images.iter().map(|(ext, tier, _)| access.get(ext).map_or(0, |at| at[index(*tier)])).collect()
+        };
+        // (a thumbnail, last used, which): previews sort first.
+        let mut order: Vec<(bool, u64, usize)> = images
+            .iter()
+            .zip(used)
+            .enumerate()
+            .map(|(i, ((_, tier, image), used))| {
+                let used = if used > 0 { used } else { modified_ms(&image.path) };
+                (*tier == ImageTier::Thumb, used, i)
+            })
+            .collect();
+        order.sort_unstable();
+        let mut total: u64 = images.iter().map(|(_, _, i)| i.bytes).sum();
+        let target = (u128::from(limit) * EVICT_TO_PERCENT / 100) as u64;
+        let mut victims: Vec<&(String, ImageTier, ImageRec)> = Vec::new();
+        for (_, _, i) in order {
+            if total <= target {
+                break;
+            }
+            total -= images[i].2.bytes;
+            victims.push(&images[i]);
+        }
         let paths = src.store().write(|w| {
             let mut paths = Vec::new();
-            for ext in &victims {
-                for spec in SPECS {
-                    if let Some(image) = w.state().images.get(&(ext.clone(), spec.tier)).cloned() {
-                        paths.push(image.path);
-                        w.put_image(ext, spec.tier, None)?;
-                    }
+            for (ext, tier, image) in &victims {
+                // Unless it was made again meanwhile.
+                if w.state().images.get(&(ext.clone(), *tier)) == Some(image) {
+                    paths.push(image.path.clone());
+                    w.put_image(ext, *tier, None)?;
                 }
             }
             Ok(paths)
@@ -504,10 +670,12 @@ impl Images {
             }
         });
         let mut access = self.access.lock().unwrap();
-        for ext in &victims {
-            access.remove(ext);
+        for (ext, tier, _) in &victims {
+            if let Some(at) = access.get_mut(ext) {
+                at[index(*tier)] = 0;
+            }
         }
-        Ok(victims.len())
+        Ok(paths.len())
     }
 
     /// Moves the images made under `old` to where `new` puts them, or deletes them.
@@ -638,6 +806,12 @@ impl Images {
         let state = src.store().read();
         let def = src.def.read().unwrap();
         let data = src.work_dir().to_string_lossy().into_owned();
+        // Every photo's file, by its path in lower case (Windows and macOS ignore case).
+        let photos: HashMap<String, &FileRec> = state
+            .files
+            .values()
+            .filter_map(|rec| Some((rec.path_under(&def.root(&rec.root)?.path).to_string_lossy().to_lowercase(), rec)))
+            .collect();
         let mut rendered = Vec::new();
         for (ext, rec) in state.files.iter().filter(|(_, r)| r.state != FileState::Detached) {
             let Some(root) = def.root(&rec.root) else { continue };
@@ -650,7 +824,16 @@ impl Images {
                     tier: spec.name,
                     size: spec.edge,
                 };
-                rendered.push((pattern.render(&tokens), format!("{ext}/{}", spec.name)));
+                let path = pattern.render(&tokens);
+                if let Some(photo) = photos.get(&path.to_string_lossy().to_lowercase()) {
+                    let what = if spec.tier == ImageTier::Thumb { "thumbnail" } else { "preview" };
+                    return Some(format!(
+                        "The {what} of {} would be written over the photo {}",
+                        rec.name(),
+                        photo.path_under(&def.root(&photo.root)?.path).display()
+                    ));
+                }
+                rendered.push((path, format!("{ext}/{}", spec.name)));
             }
         }
         let (path, labels) = pattern::shared_paths(rendered).into_iter().next()?;
@@ -790,7 +973,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_looked_up_before_it_is_made_and_make_writes_both_tiers() {
+    fn nothing_is_looked_up_before_it_is_made_and_a_thumbnail_comes_alone() {
         let fx = fixture(Preset::Central);
         fx.big(A, "2024/big.jpg");
         assert_eq!(fx.lookup(A, ImageTier::Thumb), None);
@@ -805,9 +988,14 @@ mod tests {
         let images = fx.dir.path().join("work").join("images");
         assert_eq!(thumb.path, images.join("thumb").join("00").join(format!("{A}.jpg")));
         assert_eq!(dims(&thumb.path), (450, 300));
-        let preview = fx.lookup(A, ImageTier::Preview).expect("made with the thumbnail");
+        assert_eq!(fx.lookup(A, ImageTier::Preview), None, "no preview with the thumbnail");
+        assert!(!images.join("preview").exists());
+
+        let thumb_rec = fx.recorded(A, ImageTier::Thumb).unwrap();
+        let preview = fx.make(A, ImageTier::Preview).expect("made");
         assert_eq!(preview.path, images.join("preview").join("00").join(format!("{A}.jpg")));
         assert_eq!(dims(&preview.path), (2000, 1333));
+        assert_eq!(fx.recorded(A, ImageTier::Thumb).unwrap(), thumb_rec, "the thumbnail is left as it was");
         assert_eq!(fx.lookup(A, ImageTier::Thumb).unwrap(), thumb);
         for tier in [ImageTier::Thumb, ImageTier::Preview] {
             let image = fx.recorded(A, tier).unwrap();
@@ -816,13 +1004,19 @@ mod tests {
             assert_eq!(image.bytes, std::fs::metadata(&image.path).unwrap().len());
         }
         assert_eq!(fx.make(A, ImageTier::Preview).unwrap(), preview, "asking again changes nothing");
+
+        // A preview brings the thumbnail along when that is missing.
+        fx.big(B, "other.jpg");
+        fx.make(B, ImageTier::Preview).unwrap();
+        assert_eq!(dims(&fx.lookup(B, ImageTier::Thumb).unwrap().path), (450, 300));
     }
 
     #[test]
     fn a_changed_original_makes_its_images_stale() {
         let fx = fixture(Preset::Central);
         fx.big(A, "big.jpg");
-        let thumb = fx.make(A, ImageTier::Thumb).unwrap();
+        let preview = fx.make(A, ImageTier::Preview).unwrap();
+        let thumb = fx.lookup(A, ImageTier::Thumb).unwrap();
         fx.edit(A, |r| r.size += 1);
         assert_eq!(fx.lookup(A, ImageTier::Thumb), None);
         assert_eq!(fx.lookup(A, ImageTier::Preview), None);
@@ -832,9 +1026,68 @@ mod tests {
         assert!(again.path.is_file(), "written again");
         let size = fx.src.store().read().files[A].size;
         assert_eq!(fx.recorded(A, ImageTier::Thumb).unwrap().src_size, size);
+        assert_eq!(fx.lookup(A, ImageTier::Preview), None, "the preview is made when asked for");
+        // Written over the stale one, which this source made.
+        assert_eq!(fx.make(A, ImageTier::Preview).unwrap(), preview);
         assert_eq!(fx.recorded(A, ImageTier::Preview).unwrap().src_size, size);
         fx.edit(A, |r| r.mtime_ns += 1);
         assert_eq!(fx.lookup(A, ImageTier::Preview), None, "the modification time counts too");
+    }
+
+    #[test]
+    fn an_image_whose_file_is_gone_is_made_again() {
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        let thumb = fx.make(A, ImageTier::Thumb).unwrap();
+        std::fs::remove_file(&thumb.path).unwrap();
+        assert_eq!(fx.lookup(A, ImageTier::Thumb), None, "the record alone is not enough");
+        assert!(fx.recorded(A, ImageTier::Thumb).is_some());
+        let again = fx.make(A, ImageTier::Thumb).unwrap();
+        assert_eq!(again, thumb);
+        assert!(again.path.is_file());
+    }
+
+    #[test]
+    fn an_image_is_never_written_over_a_file_the_source_did_not_make() {
+        let fx = fixture_with(custom("{dir}/{stem}.{tier}.jpg"));
+        fx.big(A, "a.jpg");
+        // A photo of its own where A's thumbnail would go.
+        fx.image("a.thumb.jpg", 600, 400);
+        fx.add(B, "a.thumb.jpg", FileKind::Jpeg, Some((600, 400)));
+        let before = std::fs::read(fx.root.join("a.thumb.jpg")).unwrap();
+        let err = fx.src.images.make(&fx.src, A, ImageTier::Thumb).unwrap_err();
+        assert!(matches!(&err, SourceError::Other(m) if m.contains("a.thumb.jpg")), "{err}");
+        assert_eq!(std::fs::read(fx.root.join("a.thumb.jpg")).unwrap(), before);
+        assert!(fx.recorded(A, ImageTier::Thumb).is_none());
+        let err = fx.src.images.make(&fx.src, A, ImageTier::Preview).unwrap_err();
+        assert!(err.to_string().contains("a.thumb.jpg"), "nothing is written when one of them cannot be: {err}");
+        assert!(!fx.root.join("a.preview.jpg").exists());
+        // The photo's own images are made (and made again over themselves) as usual.
+        let b = fx.make(B, ImageTier::Thumb).unwrap();
+        assert_eq!(b.path, fx.root.join("a.thumb.thumb.jpg"));
+        fx.edit(B, |r| r.size += 1);
+        assert_eq!(fx.make(B, ImageTier::Thumb).unwrap(), b);
+
+        // A file under the central store's folder is the source's own.
+        let fx = fixture(Preset::Central);
+        fx.big(A, "a.jpg");
+        let path = fx.src.work_dir().join("images").join("thumb").join("00").join(format!("{A}.jpg"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"left over").unwrap();
+        assert_eq!(fx.make(A, ImageTier::Thumb).unwrap().path, path);
+        assert_eq!(dims(&path), (450, 300));
+    }
+
+    #[test]
+    fn a_failed_write_leaves_nothing_on_the_list() {
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        // Where the images should go is a file, so their folder cannot be made.
+        std::fs::write(fx.root.join(".previews"), b"in the way").unwrap();
+        assert!(fx.src.images.make(&fx.src, A, ImageTier::Preview).is_err());
+        let thumb = fx.root.join(".previews").join("a.thumb.jpg");
+        assert!(!fx.src.images.is_generated(&fx.src, &thumb));
+        assert!(fx.src.store().read().images.is_empty());
     }
 
     #[test]
@@ -884,9 +1137,9 @@ mod tests {
         assert_eq!((original.format, original.as_stored), (ImageFormat::Png, false));
         assert_eq!(fx.lookup(B, ImageTier::Original).unwrap().format, ImageFormat::Tiff);
         assert_eq!(fx.lookup(A, ImageTier::Preview), None, "a PNG is never its own preview");
-        let thumb = fx.make(A, ImageTier::Thumb).unwrap();
-        assert_eq!(dims(&thumb.path), (450, 338));
-        assert_eq!(dims(&fx.lookup(A, ImageTier::Preview).unwrap().path), (1600, 1200));
+        let preview = fx.make(A, ImageTier::Preview).unwrap();
+        assert_eq!(dims(&preview.path), (1600, 1200));
+        assert_eq!(dims(&fx.lookup(A, ImageTier::Thumb).unwrap().path), (450, 338));
         let preview = fx.make(B, ImageTier::Preview).unwrap();
         assert_eq!(dims(&preview.path), (1000, 500));
         assert_eq!(dims(&fx.lookup(B, ImageTier::Thumb).unwrap().path), (450, 225));
@@ -939,10 +1192,12 @@ mod tests {
     fn the_per_root_store_writes_under_the_root() {
         let fx = fixture(Preset::PerRoot);
         fx.big(A, "2024/rome/big.jpg");
-        let thumb = fx.make(A, ImageTier::Thumb).unwrap();
+        let preview = fx.make(A, ImageTier::Preview).unwrap();
+        let thumb = fx.lookup(A, ImageTier::Thumb).unwrap();
         let base = fx.root.join(".c1studio");
         assert_eq!(thumb.path, base.join("thumb").join("2024").join("rome").join("big.jpg.jpg"));
-        assert!(base.join("preview").join("2024").join("rome").join("big.jpg.jpg").is_file());
+        assert_eq!(preview.path, base.join("preview").join("2024").join("rome").join("big.jpg.jpg"));
+        assert!(preview.path.is_file());
         assert!(fx.src.images.is_generated(&fx.src, &thumb.path));
     }
 
@@ -950,7 +1205,8 @@ mod tests {
     fn the_beside_store_writes_next_to_the_photo() {
         let fx = fixture(Preset::Beside);
         fx.big(A, "2024/big.jpg");
-        let thumb = fx.make(A, ImageTier::Thumb).unwrap();
+        fx.make(A, ImageTier::Preview).unwrap();
+        let thumb = fx.lookup(A, ImageTier::Thumb).unwrap();
         let dir = fx.root.join("2024").join(".previews");
         assert_eq!(thumb.path, dir.join("big.thumb.jpg"));
         assert!(dir.join("big.preview.jpg").is_file());
@@ -987,8 +1243,8 @@ mod tests {
         let fx = fixture(Preset::Beside);
         fx.big(A, "a.jpg");
         fx.big(B, "b.jpg");
-        let a = fx.make(A, ImageTier::Thumb).unwrap();
-        let a_preview = fx.lookup(A, ImageTier::Preview).unwrap();
+        let a_preview = fx.make(A, ImageTier::Preview).unwrap();
+        let a = fx.lookup(A, ImageTier::Thumb).unwrap();
         let b = fx.make(B, ImageTier::Thumb).unwrap();
         assert!(fx.src.images.is_generated(&fx.src, &a.path));
         fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, A)).unwrap();
@@ -1014,7 +1270,7 @@ mod tests {
         let thumb = fx.make(A, ImageTier::Thumb).unwrap();
         assert!(images.is_generated(&fx.src, &thumb.path), "added when made");
         assert!(!images.is_generated(&fx.src, &elsewhere));
-        let preview = fx.lookup(A, ImageTier::Preview).unwrap();
+        let preview = fx.make(A, ImageTier::Preview).unwrap();
         assert!(images.is_generated(&fx.src, &preview.path));
         // Under the central store's folder, whatever the records say.
         assert!(images.is_generated(&fx.src, &fx.src.work_dir().join("images").join("thumb").join("zz").join("x.jpg")));
@@ -1026,49 +1282,80 @@ mod tests {
         assert!(!fresh.is_generated(&fx.src, &elsewhere));
     }
 
+    impl Fx {
+        /// Sets when photo `ext`'s images were last used, `[thumbnail, preview]` (0: not
+        /// since the source was opened).
+        fn used(&self, ext: &str, at: [u64; 2]) {
+            self.src.images.access.lock().unwrap().insert(ext.into(), at);
+        }
+
+        /// What the recorded images (of `tier`, or all) take.
+        fn bytes(&self, tier: Option<ImageTier>) -> u64 {
+            let state = self.src.store().read();
+            state.images.iter().filter(|((_, t), _)| tier.is_none_or(|w| w == *t)).map(|(_, i)| i.bytes).sum()
+        }
+
+        /// Three big photos, A, B and C, with both their images made.
+        fn three(&self) {
+            for (ext, name) in [(A, "a.jpg"), (B, "b.jpg"), (C, "c.jpg")] {
+                self.big(ext, name);
+                self.make(ext, ImageTier::Preview).unwrap();
+            }
+        }
+    }
+
     #[test]
-    fn eviction_drops_the_least_recently_used_first() {
+    fn eviction_drops_previews_first_least_recently_used_first() {
         let fx = fixture(Preset::Central);
-        for (ext, name) in [(A, "a.jpg"), (B, "b.jpg"), (C, "c.jpg")] {
-            fx.big(ext, name);
-            fx.make(ext, ImageTier::Thumb).unwrap();
-        }
+        fx.three();
         let (a, b, c) = (fx.files(A), fx.files(B), fx.files(C));
-        // B was looked up longest ago, then C; A most recently.
-        {
-            let mut access = fx.src.images.access.lock().unwrap();
-            access.insert(A.into(), 3000);
-            access.insert(B.into(), 1000);
-            access.insert(C.into(), 2000);
-        }
-        let total: u64 = fx.src.store().read().images.values().map(|i| i.bytes).sum();
-
+        // B's preview was looked at longest ago, then C's, then A's; the thumbnails since.
+        fx.used(A, [5000, 3000]);
+        fx.used(B, [5000, 1000]);
+        fx.used(C, [5000, 2000]);
+        let total = fx.bytes(None);
         assert_eq!(fx.src.images.evict_to(&fx.src, total).unwrap(), 0, "under the limit");
-        assert!(fx.recorded(B, ImageTier::Thumb).is_some());
 
-        // 90% of the limit is two photos' worth of three: one goes.
+        // 90% of the limit: one preview's worth goes.
         assert_eq!(fx.src.images.evict_to(&fx.src, total - 1).unwrap(), 1);
-        assert!(fx.recorded(B, ImageTier::Thumb).is_none() && fx.recorded(B, ImageTier::Preview).is_none());
-        assert!(b.iter().all(|p| !p.exists()), "files go too");
+        assert!(fx.recorded(B, ImageTier::Preview).is_none() && !b[1].exists(), "its file goes too");
+        assert!(fx.recorded(B, ImageTier::Thumb).is_some() && b[0].is_file(), "the thumbnail stays");
         assert!(a.iter().chain(&c).all(|p| p.is_file()));
 
-        // Photos never looked up count as the oldest.
-        fx.src.images.access.lock().unwrap().remove(C);
+        // Room for the thumbnails alone: every preview goes, every thumbnail stays.
+        let thumbs = fx.bytes(Some(ImageTier::Thumb));
+        assert_eq!(fx.src.images.evict_to(&fx.src, thumbs * 10 / 9 + 2).unwrap(), 2);
+        assert_eq!(fx.bytes(Some(ImageTier::Preview)), 0);
+        assert_eq!(fx.bytes(Some(ImageTier::Thumb)), thumbs);
+
+        // Then thumbnails, least recently used first.
+        fx.used(A, [1000, 0]);
+        assert_eq!(fx.src.images.evict_to(&fx.src, thumbs - 1).unwrap(), 1);
+        assert!(fx.recorded(A, ImageTier::Thumb).is_none() && fx.recorded(C, ImageTier::Thumb).is_some());
         assert_eq!(fx.src.images.evict_to(&fx.src, 1).unwrap(), 2, "everything, as far as it takes");
         assert!(fx.src.store().read().images.is_empty());
     }
 
     #[test]
-    fn unknown_photos_go_before_known_ones() {
+    fn after_a_restart_the_files_times_tell_what_was_used_last() {
         let fx = fixture(Preset::Central);
-        for (ext, name) in [(A, "a.jpg"), (B, "b.jpg")] {
-            fx.big(ext, name);
-            fx.make(ext, ImageTier::Thumb).unwrap();
-        }
-        fx.src.images.access.lock().unwrap().remove(B);
-        let total: u64 = fx.src.store().read().images.values().map(|i| i.bytes).sum();
-        assert_eq!(fx.src.images.evict_to(&fx.src, total - 1).unwrap(), 1);
-        assert!(fx.recorded(B, ImageTier::Thumb).is_none() && fx.recorded(A, ImageTier::Thumb).is_some());
+        fx.three();
+        fx.src.images.access.lock().unwrap().clear();
+        let written = |ext: &str, secs: u64| {
+            let path = fx.recorded(ext, ImageTier::Preview).unwrap().path;
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(secs)).unwrap();
+        };
+        written(B, 500);
+        written(A, 1000);
+        written(C, 2000);
+        // B's preview is the oldest file, but was looked at since the source was opened.
+        fx.lookup(B, ImageTier::Preview).unwrap();
+        assert_eq!(fx.src.images.evict_to(&fx.src, fx.bytes(None) - 1).unwrap(), 1);
+        assert!(fx.recorded(A, ImageTier::Preview).is_none());
+        assert_eq!(fx.src.images.evict_to(&fx.src, fx.bytes(None) - 1).unwrap(), 1);
+        assert!(fx.recorded(C, ImageTier::Preview).is_none());
+        assert!(fx.recorded(B, ImageTier::Preview).is_some());
     }
 
     #[test]
@@ -1083,7 +1370,7 @@ mod tests {
 
         let mut store = ImageStore::preset(Preset::Central);
         store.central_limit_mb = Some(0);
-        let fx = fixture_with(store);
+        let fx = fixture_with(store.clone());
         fx.big(A, "a.jpg");
         fx.make(A, ImageTier::Thumb).unwrap();
         fx.src.images.evict(&fx.src).unwrap();
@@ -1094,6 +1381,18 @@ mod tests {
         fx.make(A, ImageTier::Thumb).unwrap();
         fx.src.images.evict(&fx.src).unwrap();
         assert!(fx.recorded(A, ImageTier::Thumb).is_some(), "4 GB is plenty");
+
+        // Images made beside the photos, left there when the store became the central one,
+        // are not the central store's to drop.
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        fx.big(B, "b.jpg");
+        let beside = fx.make(A, ImageTier::Thumb).unwrap();
+        fx.src.def.write().unwrap().images = store;
+        fx.make(B, ImageTier::Thumb).unwrap();
+        fx.src.images.evict(&fx.src).unwrap();
+        assert!(fx.recorded(B, ImageTier::Thumb).is_none());
+        assert!(fx.recorded(A, ImageTier::Thumb).is_some() && beside.path.is_file());
     }
 
     #[test]
@@ -1116,8 +1415,9 @@ mod tests {
         let fx = fixture(Preset::Central);
         fx.big(A, "2024/a.jpg");
         fx.big(B, "b.jpg");
-        let old_thumb = fx.make(A, ImageTier::Thumb).unwrap();
-        fx.make(B, ImageTier::Thumb).unwrap();
+        fx.make(A, ImageTier::Preview).unwrap();
+        fx.make(B, ImageTier::Preview).unwrap();
+        let old_thumb = fx.lookup(A, ImageTier::Thumb).unwrap();
         let old = fx.src.definition().images;
         let new = ImageStore::preset(Preset::Beside);
         let report = fx.src.images.migrate(&fx.src, &old, &new, Migrate::Move).unwrap();
@@ -1140,8 +1440,8 @@ mod tests {
     fn migrating_to_regenerate_deletes_the_files_and_records() {
         let fx = fixture(Preset::Central);
         fx.big(A, "a.jpg");
-        let thumb = fx.make(A, ImageTier::Thumb).unwrap();
-        let preview = fx.lookup(A, ImageTier::Preview).unwrap();
+        let preview = fx.make(A, ImageTier::Preview).unwrap();
+        let thumb = fx.lookup(A, ImageTier::Thumb).unwrap();
         let old = fx.src.definition().images;
         let new = ImageStore::preset(Preset::PerRoot);
         let report = fx.src.images.migrate(&fx.src, &old, &new, Migrate::Regenerate).unwrap();
@@ -1156,8 +1456,9 @@ mod tests {
         let fx = fixture(Preset::Central);
         fx.big(A, "a.jpg");
         fx.big(B, "b.jpg");
-        let a = fx.make(A, ImageTier::Thumb).unwrap();
-        let b = fx.make(B, ImageTier::Thumb).unwrap();
+        fx.make(A, ImageTier::Preview).unwrap();
+        fx.make(B, ImageTier::Preview).unwrap();
+        let (a, b) = (fx.lookup(A, ImageTier::Thumb).unwrap(), fx.lookup(B, ImageTier::Thumb).unwrap());
         fx.edit(A, |r| r.state = FileState::Detached);
         // Where B's images should go is a file, so their folder cannot be made.
         std::fs::write(fx.root.join(".previews"), b"in the way").unwrap();
@@ -1237,6 +1538,20 @@ mod tests {
     }
 
     #[test]
+    fn check_names_a_photo_an_image_would_be_written_over() {
+        let fx = fixture(Preset::Central);
+        for (ext, name) in [(A, "x.jpg"), (B, "X.PREVIEW.JPG")] {
+            std::fs::write(fx.root.join(name), b"x").unwrap();
+            fx.add(ext, name, FileKind::Jpeg, None);
+        }
+        // Told apart from photos by case alone is not apart at all.
+        let problem = fx.src.check_image_store(&custom("{dir}/{stem}.{tier}.jpg")).unwrap();
+        assert!(problem.starts_with("The preview of x.jpg would be written over the photo "), "{problem}");
+        assert!(problem.ends_with("X.PREVIEW.JPG"), "{problem}");
+        assert_eq!(fx.src.check_image_store(&custom("{dir}/.previews/{stem}.{tier}.jpg")), None);
+    }
+
+    #[test]
     fn two_threads_making_one_photo_wait_for_each_other() {
         let fx = fixture(Preset::Central);
         fx.big(A, "a.jpg");
@@ -1266,7 +1581,7 @@ mod tests {
                 scope.spawn(move || fx.make(ext, ImageTier::Thumb).unwrap());
             }
         });
-        assert_eq!(fx.src.store().read().images.len(), exts.len() * 2);
+        assert_eq!(fx.src.store().read().images.len(), exts.len(), "thumbnails only");
         for ext in &exts {
             assert!(fx.lookup(ext, ImageTier::Thumb).unwrap().path.is_file());
         }
