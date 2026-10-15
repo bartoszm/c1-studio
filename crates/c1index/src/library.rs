@@ -28,7 +28,10 @@ use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
 
 mod placing;
+mod selection;
+
 pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
+pub use selection::{Merged, Selection, group_places};
 
 /// Dimensions whose values substring filters match against.
 const SUBSTRING_DIMS: [Dim; 7] =
