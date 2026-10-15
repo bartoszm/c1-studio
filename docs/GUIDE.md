@@ -269,6 +269,9 @@ network; everything else works without one).
   then sharpest) and the count in its corner; at street level, single photos.
 - Click a cluster to zoom to its photos; click a single photo to show it in the
   details panel.
+- Zooms and flights (to a cluster, a place found, a trip's route) fit the photos, pins and
+  all, in what the find box, the *Not on the map* tray (open or not) and the route bar
+  leave free; the map doesn't move when these open or close.
 - **Grid follows map** (on by default) makes the grid show only the photos in view: pan
   and zoom to filter. It applies at once: when you tick it, after *Clear filters*, and
   when a filter that kept the grid off the map (photos with no position, or placed only
