@@ -1337,6 +1337,27 @@ country) and 68k have neither.
   (`groups_split_by_a_filter_count_whole_and_drop_what_is_no_group`).
   `tools/record/checks/27.mjs` measures it on the recording instance.
 
+### Map: room for the find box, the tray and the pins (#22)
+
+- **Padding:** fits and flights used one padding on all sides (90 px, 80 for a route), so
+  pins went under the find box and cards under the open tray. The map's padding now
+  follows what covers it (`lib/mapview.ts` `mapPadding`): at the top the find box's
+  bottom (its list of places too) plus 80 px for a pin standing above its point (card,
+  stem, dot and count reach 79); at the bottom the highest of the note, the tray (open or
+  not) and the route bar, plus 60 px for a ≈ card hanging below its point; 34 px each
+  side for half a card and its count; 8 px to spare. A small map keeps a quarter of each
+  side free. The sizes are measured (`bind:offsetHeight`; the tray's through a bindable
+  `height`).
+- `map.setPadding` is kept current (while the map moves, once it stops: setting it stops
+  a move) and the map stays where it is on screen: the new centre is what is under it,
+  and `moved()` skips that jump. `fitBounds` gets no padding of its own (it adds to the
+  map's); `easeTo`/`flyTo` centre in what is left. A place found is zoomed to fit what is
+  left (`hitView` with the free size) once its list has closed; a new trip's route is
+  fitted once the route bar is in. `getBounds()` ignores padding: the grid still follows
+  the whole map.
+- `tools/record/checks/22.mjs` counts cards under the find box, the tray and the route
+  bar, and past the edge, after each zoom and flight.
+
 ### Next
 
 1. Time travel views on the change log: state on a date, growth of the collection, compare

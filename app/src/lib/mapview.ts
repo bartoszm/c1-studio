@@ -1,5 +1,5 @@
-// What the map shows: where a place found by name goes, the area the grid follows, and when
-// a trip's route is fitted again.
+// What the map shows: where a place found by name goes, the area the grid follows, when
+// a trip's route is fitted again, and the room zooms and flights leave around the photos.
 import type { BBox, Filter } from "./api";
 
 /** A place found by name: its point, and Nominatim's box (west, south, east, north),
@@ -126,4 +126,36 @@ export function routeStep(shown: string | null, trip: string | null, along: numb
  */
 export function shouldFollow(s: { follow: boolean; mapOn: boolean; tile: boolean; filter: Pick<Filter, "gps" | "approx" | "within"> }): boolean {
   return s.follow && s.mapOn && !s.tile && s.filter.gps !== false && !s.filter.approx && !s.filter.within;
+}
+
+/** What covers the map, in px: the find box's bottom edge, from the canvas's top, and the
+ *  highest of what lies along the bottom (the note, the tray, the route bar), from its bottom. */
+export type Covers = { width: number; height: number; findBottom: number; coverBottom: number };
+export type Padding = { top: number; bottom: number; left: number; right: number };
+
+/** A photo stands above its point: card 56, stem 10 and dot 10, less the half dot below the
+ *  point, and its count 8 over the card's top (79, see `.pin` in MapPane). */
+const PIN_ABOVE = 80;
+/** A ≈ card hangs below its point: 4 down, then 56. */
+const CARD_BELOW = 60;
+/** Half a card, and the count past its right edge. */
+const PIN_SIDE = 34;
+/** Between a photo and what covers the map. */
+const MARGIN = 8;
+/** The share of the map's height and width always left to fit photos in. */
+const FREE = 0.25;
+
+/**
+ * The map's padding: zooms and flights put the photos in what is left, so their pins clear the
+ * find box and their cards the tray, the route bar and the note. On a small map it shrinks
+ * so a quarter of each side is still free.
+ */
+export function mapPadding(c: Covers): Padding {
+  const top = Math.max(0, c.findBottom) + PIN_ABOVE + MARGIN;
+  const bottom = Math.max(0, c.coverBottom) + CARD_BELOW + MARGIN;
+  const side = PIN_SIDE + MARGIN;
+  const scale = (taken: number, size: number) => Math.min(1, (Math.max(0, size) * (1 - FREE)) / taken);
+  const v = scale(top + bottom, c.height);
+  const h = scale(2 * side, c.width);
+  return { top: Math.floor(top * v), bottom: Math.floor(bottom * v), left: Math.floor(side * h), right: Math.floor(side * h) };
 }

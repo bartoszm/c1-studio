@@ -8,7 +8,7 @@
   // The photos of the view the map cannot show: with no position at all, or with only a
   // place's name. Drag them onto the map, type where they were, or let their neighbours
   // in time say.
-  let { filter, version, counts, ondragrows, onsetgeo, onneighbours, onshow, onpick, onerror }: {
+  let { filter, version, counts, ondragrows, onsetgeo, onneighbours, onshow, onpick, onerror, height = $bindable(0) }: {
     filter: Filter;
     version: number;
     /** From the map: photos with neither a position nor a place, and with a place only. */
@@ -21,6 +21,8 @@
     onshow: (placed: boolean) => void;
     onpick: (row: number) => void;
     onerror: (text: string) => void;
+    /** How tall the tray is, open or not: the map keeps photos clear of it. */
+    height?: number;
   } = $props();
 
   const PAGE = 150;
@@ -115,7 +117,7 @@
   }
 </script>
 
-<div class="tray" class:open>
+<div class="tray" class:open bind:offsetHeight={height}>
   <div class="bar">
     <button class="fold" aria-expanded={open} onclick={() => (open = !open)}>
       {open ? "▾" : "▸"} Not on the map
