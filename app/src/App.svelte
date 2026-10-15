@@ -13,6 +13,7 @@
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
   import BackupsDialog from "./BackupsDialog.svelte";
+  import StartupDialog from "./StartupDialog.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import PlaceDialog from "./PlaceDialog.svelte";
@@ -45,6 +46,10 @@
   let status = $state<api.Status | null>(null);
   /** The source menu in the header; open by itself when nothing could be opened. */
   let choosingSource = $state(false);
+  /** How far opening a source has got, while it is under way. */
+  let startup = $state<api.Startup | null>(null);
+  /** The window has read the source the app started with. It may start before it is open. */
+  let loaded = false;
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
@@ -458,13 +463,24 @@
     }
   }
 
-  onMount(() => {
+  /** Reads what the open source holds; at start, once it is open. */
+  function loadSource() {
+    loaded = true;
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
+  }
+
+  onMount(() => {
     const unwatch = api.watchBrokenImages();
     const off = [
+      // The dialog while a source opens. The one the app started with has no session yet:
+      // the window reads it when it is ready.
+      listen<api.Startup | null>("startup-progress", (e) => {
+        startup = e.payload;
+        if (!e.payload && !loaded) loadSource();
+      }),
       listen<api.ThumbsState>("thumbs", (e) => {
         thumbs = e.payload;
         // While a run makes them, tiles that showed nothing pick up their new thumbnails
@@ -490,6 +506,14 @@
       }),
       listen("analysis-done", () => { version++; analysed++; refresh(true); }),
     ];
+    // Listening first, so the end of start-up is not missed between the question and the answer.
+    Promise.all(off)
+      .then(() => api.startupProgress())
+      .then((p) => {
+        if (!p) loadSource();
+        else if (!loaded) startup = p;
+      })
+      .catch(() => loadSource());
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
     return () => { clearTimeout(quiet); unwatch(); off.forEach((p) => p.then((f) => f())); };
@@ -2039,6 +2063,10 @@
     oncopy={(fields, fill) => { if (syncing) sync(syncing, fields, fill); }}
     onclose={() => (syncing = null)}
   />
+{/if}
+
+{#if startup}
+  <StartupDialog progress={startup} />
 {/if}
 
 {#if pasting && clipboard}
