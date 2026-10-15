@@ -369,6 +369,9 @@ impl Library {
         }
         let least = if series { c1analysis::SERIES_MIN } else { 2 };
         by.retain(|_, g| g.matched >= least);
+        if by.is_empty() {
+            return Ok(Vec::new());
+        }
         // Each whole group's size, as the details panel counts it: every group in one count.
         let all = Filter { duplicates: !series, series, ..Filter::default() };
         let options = QueryOptions { limit: Some(0), facets: vec![Dim::Group], ..QueryOptions::default() };
@@ -376,6 +379,10 @@ impl Library {
             if let Some(g) = by.get_mut(&id) {
                 g.size = n as usize;
             }
+        }
+        // A photo trashed since the groups were worked out still matches with trash shown.
+        for g in by.values_mut() {
+            g.size = g.size.max(g.matched);
         }
         let mut out: Vec<Group> = by.into_values().collect();
         out.sort_by(|a, b| b.matched.cmp(&a.matched).then_with(|| b.size.cmp(&a.size)).then_with(|| a.id.cmp(&b.id)));
