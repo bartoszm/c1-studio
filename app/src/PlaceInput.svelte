@@ -8,7 +8,7 @@
   // catalog's, those inside the photo's own country and state first. Picking one sets
   // the levels above it too; Enter or leaving the field sets what was typed.
   let {
-    id, level, shown, placeholder, title, context, selection, picked, geo, version, onfields, ontext,
+    id, level, shown, placeholder, title, readonly = false, context, selection, picked, geo, version, onfields, ontext,
   }: {
     id: string;
     level: Level;
@@ -16,6 +16,8 @@
     shown: string;
     placeholder: string;
     title?: string;
+    /** Not to be typed in yet (the selection is being read). */
+    readonly?: boolean;
     /** The levels already filled: the photo's, or those the selection shares. */
     context: Partial<Place>;
     /** With several photos selected: their places, counted among them. */
@@ -125,6 +127,7 @@
     value={shown}
     {placeholder}
     {title}
+    {readonly}
     autocomplete="off"
     spellcheck="false"
     role="combobox"

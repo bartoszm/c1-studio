@@ -583,19 +583,44 @@
   /** What the picked photos have, read together; null for one. A reply for the pick before
    *  stays while the new one is read, so the panel dims it rather than going blank. */
   let selection = $state.raw<{ rows: number[]; data: api.Selection } | null>(null);
-  let selectionAsked = 0;
-  $effect(() => {
-    const rows = [...picked];
-    void version;
-    const mine = ++selectionAsked;
-    if (rows.length < 2 || !showInfo) {
+  let selectionError = $state<string | null>(null);
+  // Not state: one read at a time. Picks changing faster (Shift+arrow over a big range) wait
+  // for it, and then the newest pick is read once.
+  let selectionReading = false;
+  let selectionAgain = false;
+  function readSelection() {
+    if (selectionReading) {
+      selectionAgain = true;
+      return;
+    }
+    if (picked.size < 2 || !showInfo) {
       selection = null;
       return;
     }
-    api.selectionSummary(rows).then((data) => { if (mine === selectionAsked) selection = { rows, data }; }).catch(() => {});
+    selectionReading = true;
+    const rows = [...picked];
+    api.selectionSummary(rows)
+      .then((data) => {
+        selection = { rows, data };
+        selectionError = null;
+      })
+      .catch((e) => (selectionError = String(e)))
+      .finally(() => {
+        selectionReading = false;
+        if (selectionAgain) {
+          selectionAgain = false;
+          readSelection();
+        }
+      });
+  }
+  $effect(() => {
+    void [...picked];
+    void version;
+    void showInfo;
+    untrack(readSelection);
   });
   /** Whether `selection` is about the photos picked now. */
-  let selectionNow = $derived(!!selection && sameRows(selection.rows, picked));
+  let selectionNow = $derived(!!selection && sameRows(selection.rows, new Set(picked)));
   /** How many of the picked photos have edits waiting. */
   let queuedPicked = $derived(picked.size > 1 ? [...picked].filter((r) => queued.has(r)).length : 0);
   /** Sync: the focused photo, whose fields go onto the rest of the selection. */
@@ -677,14 +702,14 @@
 
   /** What runs now, for the footer: an edit on many photos takes a while. */
   let busy = $state<string | null>(null);
-  let busyAsked = 0;
+  let running = 0;
   async function working(note: string, run: () => Promise<void>) {
-    const mine = ++busyAsked;
+    running++;
     busy = note;
     try {
       await run();
     } finally {
-      if (mine === busyAsked) busy = null;
+      if (--running === 0) busy = null;
     }
   }
   /** How many photos an undo or redo of these ops touches. */
@@ -1475,6 +1500,7 @@
     oncamera={(camera) => only({ camera })}
     summary={selection?.data ?? null}
     stale={!selectionNow}
+    summaryError={selectionError}
     {queuedPicked}
     onplace={(fields, rows) => applyEdit({ Place: fields }, rows ?? targets())}
     ongeo={async (value) => {

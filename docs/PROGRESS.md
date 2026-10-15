@@ -1344,7 +1344,10 @@ country) and 68k have neither.
   counts, and each editable field merged (`Merged { same, values, empty }`: rating, colour,
   GPS, every IPTC field). The `selection_summary` command replaces `keyword_counts`,
   `album_counts` and `place_counts`, and the app's three effects with their 80 ms timers.
-  A reply for the pick before stays, dimmed, until the new one is in.
+  One read runs at a time; picks changing faster are read once it is done, newest only.
+  A reply for the pick before stays, dimmed and inert, until the new one is in; the
+  fields wait (read-only, "…") so nothing typed is overwritten. `Merged.top` lists the
+  most used values with their counts, for the fields' tooltips.
 - **The panel with several picked** opens with an *Edit N photos* block in a fixed order and
   height (rating, colour, keyword field, Location fields, GPS, IPTC), merged values in
   placeholders and tooltips (`lib/batch.ts`), never the focused photo's values as the

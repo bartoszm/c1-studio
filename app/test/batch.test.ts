@@ -13,14 +13,19 @@ test("a reply is about the pick only when its rows are the picked ones", () => {
 test("a field over the selection: the shared value, or how they differ, never one photo's", () => {
   // Not read yet: nothing shown as theirs.
   assert.deepEqual(mergedField(null, 10), { shown: "", placeholder: "…", title: "Reading the selection…" });
-  assert.equal(mergedField({ same: "Rynek", values: 1, empty: 0 }, 10).shown, "Rynek");
-  assert.equal(mergedField({ same: null, values: 0, empty: 10 }, 10).placeholder, "empty on 10");
-  assert.equal(mergedField({ same: null, values: 1, empty: 7 }, 10).placeholder, "on 3 of 10");
-  assert.equal(mergedField({ same: null, values: 3, empty: 0 }, 10).placeholder, "3 values");
-  assert.equal(mergedField({ same: null, values: 2, empty: 4 }, 10).placeholder, "2 values, 4 empty");
-  assert.equal(mergedField({ same: null, values: 2, empty: 4 }, 20559).title, `Type to set it on all ${n(20559)}`);
+  assert.equal(mergedField({ same: "Rynek", values: 1, empty: 0, top: [] }, 10).shown, "Rynek");
+  assert.equal(mergedField({ same: null, values: 0, empty: 10, top: [] }, 10).placeholder, "empty on 10");
+  // As the Location fields say it: the one value and on how many, or how many values.
+  assert.equal(mergedField({ same: null, values: 1, empty: 7, top: [["Rynek", 3]] }, 10).placeholder, "Rynek (3/10)");
+  assert.equal(mergedField({ same: null, values: 3, empty: 0, top: [] }, 10).placeholder, "3 values");
+  const two = mergedField({ same: null, values: 2, empty: 4, top: [["a", 4], ["b", 2]] }, 10);
+  assert.equal(two.placeholder, "2 values (4 empty)");
+  // The tooltip lists them, with those left out and the empty ones.
+  assert.equal(two.title, "a: 4\nb: 2\n(empty): 4\nType to set it on all 10");
+  const many = mergedField({ same: null, values: 30, empty: 0, top: [["a", 9]] }, 20559);
+  assert.equal(many.title, `a: 9\n… 29 more\nType to set it on all ${n(20559)}`);
   // A shared position, written as the GPS field writes it.
-  const at = mergedField({ same: [50.06, 19.94] as [number, number], values: 1, empty: 0 }, 2, ([a, b]) => `${a}, ${b}`);
+  const at = mergedField({ same: [50.06, 19.94] as [number, number], values: 1, empty: 0, top: [] }, 2, ([a, b]) => `${a}, ${b}`);
   assert.equal(at.shown, "50.06, 19.94");
 });
 

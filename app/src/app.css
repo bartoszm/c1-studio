@@ -91,8 +91,9 @@ header {
 .toggle.on { color: var(--text); background: var(--on); }
 .toggle.settings { display: inline-grid; place-items: center; padding: 4px 7px; }
 .toggle.settings:hover { color: var(--text); }
+.count { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A fixed width: the result's size and time change with every query. */
-.count { min-width: 15em; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
+header .count { min-width: 15em; text-align: right; }
 
 aside {
   grid-area: side;
@@ -431,7 +432,7 @@ footer .busy { color: var(--text); }
 .info-panel .palette i { min-width: 3px; }
 .info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
-.copy-slot { flex: none; width: 13em; display: flex; justify-content: flex-end; }
+.copy-slot { flex: none; width: 16em; display: flex; justify-content: flex-end; }
 .copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; white-space: nowrap; }
 .copy-to.hidden { visibility: hidden; }
 .app.busy, .app.busy * { cursor: progress; }

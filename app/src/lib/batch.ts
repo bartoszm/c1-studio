@@ -7,18 +7,23 @@ export const sameRows = (rows: number[], picked: { size: number; has: (row: numb
   rows.length === picked.size && rows.every((r) => picked.has(r));
 
 /** What a field shows over the selection: the value all of them share, or a placeholder
- *  saying how they differ. `m` is null while the selection is being read. */
+ *  saying how they differ (as the Location fields do) and a tooltip with the values and
+ *  their counts. `m` is null while the selection is being read. */
 export function mergedField<T>(m: Merged<T> | null | undefined, picked: number, text: (v: T) => string = String) {
   const all = picked.toLocaleString();
   if (!m) return { shown: "", placeholder: "…", title: "Reading the selection…" };
   if (m.same !== null) return { shown: text(m.same), placeholder: "", title: `The same on all ${all}` };
-  const title = `Type to set it on all ${all}`;
-  if (!m.values) return { shown: "", placeholder: `empty on ${all}`, title };
+  const set = `Type to set it on all ${all}`;
+  if (!m.values) return { shown: "", placeholder: `empty on ${all}`, title: set };
+  const lines = m.top.map(([v, n]) => `${text(v)}: ${n.toLocaleString()}`);
+  if (m.values > m.top.length) lines.push(`… ${(m.values - m.top.length).toLocaleString()} more`);
+  if (m.empty) lines.push(`(empty): ${m.empty.toLocaleString()}`);
+  lines.push(set);
   const placeholder =
-    m.values === 1
-      ? `on ${(picked - m.empty).toLocaleString()} of ${all}`
-      : `${m.values.toLocaleString()} values${m.empty ? `, ${m.empty.toLocaleString()} empty` : ""}`;
-  return { shown: "", placeholder, title };
+    m.values === 1 && m.top.length
+      ? `${text(m.top[0][0])} (${m.top[0][1].toLocaleString()}/${all})`
+      : `${m.values.toLocaleString()} values${m.empty ? ` (${m.empty.toLocaleString()} empty)` : ""}`;
+  return { shown: "", placeholder, title: lines.join("\n") };
 }
 
 /** A long list cut to its first `n` rows, those on only some photos first; `more` is how

@@ -1384,14 +1384,22 @@ fn a_selection_counts_and_merges_what_its_photos_have() {
     assert_eq!(s.albums, [("10".to_owned(), 1)]);
     let places: Vec<_> = s.places.iter().map(|(p, rows)| (p.city.as_deref(), rows.len())).collect();
     assert_eq!(places, [(None, 2), (Some("Wrocław"), 1)]);
-    assert_eq!(s.rating, Merged { same: None, values: 3, empty: 0 });
-    assert_eq!(s.color, Merged { same: None, values: 1, empty: 2 });
-    assert_eq!(s.geo, Merged { same: None, values: 1, empty: 2 });
-    assert_eq!(s.iptc["description"], Merged { same: None, values: 1, empty: 2 });
-    assert_eq!(s.iptc["headline"], Merged { same: None, values: 0, empty: 3 });
+    fn shape<T: Clone>(m: &Merged<T>) -> (Option<T>, usize, usize) {
+        (m.same.clone(), m.values, m.empty)
+    }
+    assert_eq!(shape(&s.rating), (None, 3, 0));
+    assert_eq!((s.color.values, s.color.empty), (1, 2));
+    assert_eq!(s.color.top, [(ColorLabel::Red, 1)]);
+    assert_eq!((s.geo.values, s.geo.empty), (1, 2));
+    assert_eq!(s.geo.top, [([51.11, 17.03], 1)]);
+    // Each value with how many have it, for the field's tooltip.
+    assert_eq!(s.iptc["description"].top, [("Rynek we Wrocławiu".to_owned(), 1)]);
+    assert_eq!(shape(&s.iptc["description"]), (None, 1, 2));
+    assert_eq!(shape(&s.iptc["headline"]), (None, 0, 3));
     // What all of them share is given as such: 1 and 6 are both ★1.
     let s = lib.selection(&rows(&[1, 6])).unwrap();
-    assert_eq!(s.rating, Merged { same: Some(1), values: 1, empty: 0 });
+    assert_eq!((s.rating.same, s.rating.values, s.rating.empty), (Some(1), 1, 0));
+    assert_eq!(s.rating.top, []);
     assert_eq!(s.keywords, [("best|best2018".to_owned(), 1), ("street".to_owned(), 2)]);
     // Rows that don't exist are left out.
     assert_eq!(lib.selection(&[9_999]).unwrap().places, []);

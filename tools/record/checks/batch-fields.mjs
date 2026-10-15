@@ -20,8 +20,8 @@ export default {
     const cells = await d.evaluate(`[...document.querySelectorAll(".cell")].slice(0, 10).map((c) => { const r = c.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })`);
     await d.clickAt(cells[0].x, cells[0].y);
     await d.clickAt(cells[9].x, cells[9].y, { modifiers: 8 });
-    await d.waitFor(".info-panel .batch");
-    await d.sleep(1500);
+    // From the moment the block shows, while the selection is still being read.
+    await d.waitFor(".info-panel .batch", null, { timeout: 15000 });
 
     await d.evaluate(`(() => {
       const ids = ${JSON.stringify(FIELDS)};
@@ -52,6 +52,8 @@ export default {
     const results = [];
     let edits = 0;
     try {
+      await d.sleep(1500);
+      results.push(await take("the pick read"));
       await d.key("4");
       edits++;
       await d.sleep(1500);

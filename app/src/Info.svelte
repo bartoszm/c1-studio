@@ -12,7 +12,7 @@
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
-    row, version, analysed, picked, queued, queuedPicked, collections, keywords, clip, summary, stale,
+    row, version, analysed, picked, queued, queuedPicked, collections, keywords, clip, summary, stale, summaryError,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, ongroup,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
@@ -40,6 +40,8 @@
     summary: api.Selection | null;
     /** `summary` is about the photos picked before: shown dimmed until the new one is in. */
     stale: boolean;
+    /** Why the selection could not be read. */
+    summaryError: string | null;
     onremovekeyword: (path: string) => void;
     onkeyword: (path: string) => void;
     onalbum: (id: string) => void;
@@ -292,6 +294,8 @@
 
   /** The selection's rating, colour, GPS and IPTC fields; null while it is read. */
   let merged = $derived(fresh);
+  /** Several picked and not read yet: the fields wait, so nothing typed is overwritten. */
+  let reading = $derived(batch && !fresh);
   const geoOf = ([lat, lon]: [number, number]) => geoText({ lat, lon });
 
   // The field being typed in stays where it is when what is above it changes (a list
@@ -391,7 +395,7 @@
   {/if}
   <ul class="links keywords">
     {#each shownKeywords.shown as { full, path, n } (full)}
-      <li class:queued={queued.includes(`keyword:${full}`)} class:partial={n < picked}>
+      <li class:queued={!batch && queued.includes(`keyword:${full}`)} class:partial={n < picked}>
         {#each path as part, i}
           {#if i}<span class="sep">›</span>{/if}
           <button class="link" onclick={() => onkeyword(path.slice(0, i + 1).join("|"))}>{part}</button>
@@ -438,7 +442,7 @@
   <h3>Albums</h3>
   <ul class="links keywords albums">
     {#each shownAlbums.shown as { c, n } (c.id)}
-      <li class:queued={queued.includes(`collection:${c.id}`)} class:partial={n < picked}>
+      <li class:queued={!batch && queued.includes(`collection:${c.id}`)} class:partial={n < picked}>
         <button class="link" title={c.kind === "Project" ? "A project" : undefined} onclick={() => onalbum(c.id)}>{c.path}</button>
         {#if n < picked}
           <span class="count" title="Holds {n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{n.toLocaleString()}/{picked.toLocaleString()}</span>
@@ -534,7 +538,7 @@
 {/snippet}
 
 {#snippet locationFields(p: api.Photo)}
-  <dl class="fields" class:queued={queued.includes("place")}>
+  <dl class="fields" class:queued={!batch && queued.includes("place")}>
     {#each PLACE_FIELDS as [field, label] (field)}
       {@const view = fieldView(p.place, field)}
       <dt><label for="place-{field}">{label}</label></dt>
@@ -547,6 +551,7 @@
             placeholder={view.placeholder}
             title={view.title}
             maxlength={3}
+            readonly={reading}
             spellcheck="false"
             onkeydown={(e) => fieldKeys(e, view.shown)}
             onchange={(e) => onplace(withCode(field, e.currentTarget.value, sharedPlace(p.place)))}
@@ -561,7 +566,8 @@
             context={sharedPlace(p.place)}
             selection={placeKeys}
             {picked}
-            geo={batch ? null : p.geo}
+            readonly={reading}
+            geo={batch ? (merged?.geo.same ? { lat: merged.geo.same[0], lon: merged.geo.same[1] } : null) : p.geo}
             {version}
             onfields={(fields) => onplace(fields)}
             ontext={(value) => onplace(withCode(field, value, sharedPlace(p.place)))}
@@ -570,8 +576,8 @@
       </dd>
     {/each}
   </dl>
-  <dl class="fields" class:queued={queued.includes("geo")}>
-    {#key batch ? JSON.stringify(merged?.geo ?? null) : p.geo}
+  <dl class="fields" class:queued={!batch && queued.includes("geo")}>
+    {#key batch ? (merged?.geo.same?.join(",") ?? "") : p.geo}
       {@const view = batch ? mergedField(merged?.geo, picked, geoOf) : { shown: p.geo ? geoText(p.geo) : "", placeholder: "latitude, longitude", title: undefined }}
       <dt><label for="place-geo">GPS</label></dt>
       <dd>
@@ -580,6 +586,7 @@
           class="field"
           value={view.shown}
           placeholder={view.placeholder}
+          readonly={reading}
           title={`${view.title ? view.title + "\n" : ""}Decimal (50.0614, 19.9366), with N/S/E/W, or degrees and minutes (44°58′N 14°45′E). Empty clears it.`}
           spellcheck="false"
           onkeydown={(e) => fieldKeys(e, view.shown)}
@@ -611,7 +618,7 @@
 {#snippet iptcFields(p: api.Photo)}
   {#each IPTC_GROUPS as [title, fields] (title)}
     <h3>{title}</h3>
-    <dl class="fields" class:queued={queued.includes("iptc")}>
+    <dl class="fields" class:queued={!batch && queued.includes("iptc")}>
       {#each fields as [field, label, hint] (field)}
         {@const view = batch
           ? mergedField(merged?.iptc[field], picked)
@@ -626,6 +633,7 @@
               rows={batch ? 2 : Math.min(8, Math.max(2, shown.split("\n").length))}
               value={shown}
               placeholder={view.placeholder}
+              readonly={reading}
               title={`${batch && view.title ? view.title + "\n" : ""}Enter adds a line; Ctrl+Enter or leaving the field saves; Escape puts it back`}
               onkeydown={(e) => textKeys(e, shown)}
               onchange={(e) => oniptc(field, e.currentTarget.value)}
@@ -636,6 +644,7 @@
               class="field"
               value={shown}
               placeholder={view.placeholder}
+              readonly={reading}
               title={batch ? view.title : hint}
               spellcheck={field !== "title" && field !== "job_id"}
               onkeydown={(e) => fieldKeys(e, shown)}
@@ -710,8 +719,10 @@
     {#if typedError}<p class="error">{typedError}</p>{/if}
     {#if geoError}<p class="error">{geoError}</p>{/if}
     {@render clipRows()}
-    <div class="lists" class:stale={stale && !!summary}>
-      {#if !summary}<p class="hint">Reading the {picked.toLocaleString()} photos…</p>{/if}
+    <!-- The pick before's lists, dimmed: their buttons would act on photos no longer picked. -->
+    <div class="lists" class:stale={stale && !!summary} inert={stale && !!summary}>
+      {#if summaryError}<p class="error">Could not read the selection: {summaryError}</p>
+      {:else if !summary}<p class="hint">Reading the {picked.toLocaleString()} photos…</p>{/if}
       {@render keywordList()}
       {@render albumList()}
       <h3>Places</h3>

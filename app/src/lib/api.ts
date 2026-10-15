@@ -462,8 +462,8 @@ export const remapKeywords = (request: RemapRequest) => invoke<number>("remap_ke
 export const undoRemap = (seq: number) => invoke<void>("undo_remap", { seq });
 export const remaps = () => invoke<[number, string][]>("remaps");
 /** One field over several photos: the value all of them share, how many different values
- *  they have, and how many have none. */
-export type Merged<T> = { same: T | null; values: number; empty: number };
+ *  they have, how many have none, and the most used values with their counts. */
+export type Merged<T> = { same: T | null; values: number; empty: number; top: [T, number][] };
 /** What the photos at `rows` have: keywords and albums with how many carry each, places with
  *  the photos that have each (most used first; those with no location share the empty
  *  place), and each editable field merged. */

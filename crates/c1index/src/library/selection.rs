@@ -1,7 +1,7 @@
 //! What several picked photos have, read together for the details panel: their keywords,
 //! albums and places with how many carry each, and each editable field merged.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
 use c1model::{ColorLabel, Iptc, Photo, Place};
@@ -10,13 +10,17 @@ use serde::Serialize;
 use super::Library;
 
 /// One field over the selection: the value all of them share (`same`), how many different
-/// values they have, and how many have none.
+/// values they have, how many have none, and the most used values with their counts.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Merged<T> {
     pub same: Option<T>,
     pub values: usize,
     pub empty: usize,
+    pub top: Vec<(T, usize)>,
 }
+
+/// Values a [`Merged`] lists, the most used first.
+const TOP: usize = 12;
 
 /// The picked photos' keywords, albums and places, and their fields merged.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -37,31 +41,29 @@ pub struct Selection {
 
 /// Merges one field's values, keyed by `key` (a value its own key, or its bits for floats).
 struct Merger<K, T> {
-    seen: HashSet<K>,
-    first: Option<T>,
+    counts: HashMap<K, (T, usize)>,
     empty: usize,
 }
 
-impl<K: Hash + Eq, T> Merger<K, T> {
+impl<K: Hash + Eq + Ord, T> Merger<K, T> {
     fn new() -> Self {
-        Merger { seen: HashSet::new(), first: None, empty: 0 }
+        Merger { counts: HashMap::new(), empty: 0 }
     }
 
     fn add(&mut self, value: Option<T>, key: impl Fn(&T) -> K) {
         match value {
             None => self.empty += 1,
-            Some(v) => {
-                if self.seen.insert(key(&v)) && self.first.is_none() {
-                    self.first = Some(v);
-                }
-            }
+            Some(v) => self.counts.entry(key(&v)).or_insert((v, 0)).1 += 1,
         }
     }
 
     fn done(self) -> Merged<T> {
-        let values = self.seen.len();
-        let same = if values == 1 && self.empty == 0 { self.first } else { None };
-        Merged { same, values, empty: self.empty }
+        let values = self.counts.len();
+        let mut top: Vec<(K, (T, usize))> = self.counts.into_iter().collect();
+        top.sort_by(|(ka, (_, a)), (kb, (_, b))| b.cmp(a).then_with(|| ka.cmp(kb)));
+        let mut top: Vec<(T, usize)> = top.into_iter().take(TOP).map(|(_, v)| v).collect();
+        let same = if values == 1 && self.empty == 0 { top.pop().map(|(v, _)| v) } else { None };
+        Merged { same, values, empty: self.empty, top }
     }
 }
 
@@ -79,39 +81,57 @@ const IPTC_FIELDS: [(&str, IptcField); 8] = [
     ("source", |i| &i.source),
 ];
 
-/// The summary of `photos` (row and photo).
-pub fn summarize(photos: impl IntoIterator<Item = (u64, Photo)>) -> Selection {
-    let mut keywords = BTreeMap::<String, u64>::new();
-    let mut albums = BTreeMap::<String, u64>::new();
-    let mut places = Vec::new();
-    let mut rating = Merger::new();
-    let mut color = Merger::new();
-    let mut geo = Merger::new();
-    let mut iptc: Vec<Merger<String, String>> = IPTC_FIELDS.iter().map(|_| Merger::new()).collect();
-    let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
-    for (row, photo) in photos {
+/// A selection summed up one photo at a time, so a big one is never held whole.
+struct Tally {
+    keywords: BTreeMap<String, u64>,
+    albums: BTreeMap<String, u64>,
+    places: Vec<(u64, Place)>,
+    rating: Merger<u8, u8>,
+    color: Merger<u8, ColorLabel>,
+    geo: Merger<(u64, u64), [f64; 2]>,
+    iptc: Vec<Merger<String, String>>,
+}
+
+impl Tally {
+    fn new() -> Self {
+        Tally {
+            keywords: BTreeMap::new(),
+            albums: BTreeMap::new(),
+            places: Vec::new(),
+            rating: Merger::new(),
+            color: Merger::new(),
+            geo: Merger::new(),
+            iptc: IPTC_FIELDS.iter().map(|_| Merger::new()).collect(),
+        }
+    }
+
+    fn add(&mut self, row: u64, photo: Photo) {
+        let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned);
         for path in &photo.keywords {
-            *keywords.entry(path.to_pipe()).or_default() += 1;
+            *self.keywords.entry(path.to_pipe()).or_default() += 1;
         }
         for id in &photo.collections {
-            *albums.entry(id.0.clone()).or_default() += 1;
+            *self.albums.entry(id.0.clone()).or_default() += 1;
         }
-        rating.add(photo.rating, |v| *v);
-        color.add(photo.color, |v| *v);
-        geo.add(photo.geo.map(|g| [g.lat, g.lon]), |v| (v[0].to_bits(), v[1].to_bits()));
-        for (merger, (_, field)) in iptc.iter_mut().zip(IPTC_FIELDS) {
+        self.rating.add(photo.rating, |v| *v);
+        self.color.add(photo.color, |v| *v as u8);
+        self.geo.add(photo.geo.map(|g| [g.lat, g.lon]), |v| (v[0].to_bits(), v[1].to_bits()));
+        for (merger, (_, field)) in self.iptc.iter_mut().zip(IPTC_FIELDS) {
             merger.add(text(field(&photo.iptc)), String::clone);
         }
-        places.push((row, photo.place));
+        self.places.push((row, photo.place));
     }
-    Selection {
-        keywords: keywords.into_iter().collect(),
-        albums: albums.into_iter().collect(),
-        places: group_places(places),
-        rating: rating.done(),
-        color: color.done(),
-        geo: geo.done(),
-        iptc: IPTC_FIELDS.iter().map(|(name, _)| *name).zip(iptc.into_iter().map(Merger::done)).collect(),
+
+    fn done(self) -> Selection {
+        Selection {
+            keywords: self.keywords.into_iter().collect(),
+            albums: self.albums.into_iter().collect(),
+            places: group_places(self.places),
+            rating: self.rating.done(),
+            color: self.color.done(),
+            geo: self.geo.done(),
+            iptc: IPTC_FIELDS.iter().map(|(name, _)| *name).zip(self.iptc.into_iter().map(Merger::done)).collect(),
+        }
     }
 }
 
@@ -135,8 +155,8 @@ pub fn group_places(places: Vec<(u64, Place)>) -> Vec<(Place, Vec<u64>)> {
 impl Library {
     /// What the photos at `rows` have, read together in one transaction.
     pub fn selection(&self, rows: &[u64]) -> anyhow::Result<Selection> {
-        let mut photos = Vec::with_capacity(rows.len());
-        self.photos(rows, |row, photo| photos.push((row, photo)))?;
-        Ok(summarize(photos))
+        let mut tally = Tally::new();
+        self.photos(rows, |row, photo| tally.add(row, photo))?;
+        Ok(tally.done())
     }
 }
