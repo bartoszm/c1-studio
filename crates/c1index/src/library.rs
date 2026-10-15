@@ -95,12 +95,13 @@ pub struct QueryResult {
 /// Photos shown for a group of alike photos.
 const GROUP_SHOWN: usize = 6;
 
-/// A duplicate group or series: its id (a [`Filter::group`] value), how many of its photos
-/// the filter selects, and the first few.
+/// A duplicate group or series: its id (a [`Filter::group`] value), how many photos it has,
+/// how many of them the filter selects, and the first few of those.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Group {
     pub id: String,
     pub size: usize,
+    pub matched: usize,
     pub rows: Vec<u64>,
 }
 
@@ -348,9 +349,10 @@ impl Library {
         self.seen.read().unwrap().values().cloned().collect()
     }
 
-    /// What the analysis found for a photo, if it has been measured.
-    /// The duplicate groups (or series) among the photos `filter` selects, biggest first:
-    /// each with how many of its photos match and a few of them to show.
+    /// The duplicate groups (or series) among the photos `filter` selects, most matching
+    /// first: each with its size, how many of its photos match and a few of those to show.
+    /// A group with fewer matching than a group needs (2, [`c1analysis::SERIES_MIN`] for a
+    /// series) is left out: one red frame of a burst is no series.
     pub fn groups(&self, filter: &Filter, series: bool, limit: usize) -> anyhow::Result<Vec<Group>> {
         let narrowed =
             Filter { duplicates: filter.duplicates || !series, series: filter.series || series, ..filter.clone() };
@@ -359,18 +361,29 @@ impl Library {
         for row in rows {
             let Some(look) = self.look(row) else { continue };
             let Some(id) = (if series { look.series } else { look.duplicates }) else { continue };
-            let group = by.entry(id.clone()).or_insert_with(|| Group { id, size: 0, rows: Vec::new() });
-            group.size += 1;
+            let group = by.entry(id.clone()).or_insert_with(|| Group { id, size: 0, matched: 0, rows: Vec::new() });
+            group.matched += 1;
             if group.rows.len() < GROUP_SHOWN {
                 group.rows.push(row);
             }
         }
+        let least = if series { c1analysis::SERIES_MIN } else { 2 };
+        by.retain(|_, g| g.matched >= least);
+        // Each whole group's size, as the details panel counts it: every group in one count.
+        let all = Filter { duplicates: !series, series, ..Filter::default() };
+        let options = QueryOptions { limit: Some(0), facets: vec![Dim::Group], ..QueryOptions::default() };
+        for (id, n) in self.query(&all, &options)?.facets.remove(&Dim::Group).unwrap_or_default() {
+            if let Some(g) = by.get_mut(&id) {
+                g.size = n as usize;
+            }
+        }
         let mut out: Vec<Group> = by.into_values().collect();
-        out.sort_by(|a, b| b.size.cmp(&a.size).then_with(|| a.id.cmp(&b.id)));
+        out.sort_by(|a, b| b.matched.cmp(&a.matched).then_with(|| b.size.cmp(&a.size)).then_with(|| a.id.cmp(&b.id)));
         out.truncate(limit);
         Ok(out)
     }
 
+    /// What the analysis found for a photo, if it has been measured.
     pub fn look(&self, row: u64) -> Option<Look> {
         let key = self.keys.read().unwrap().get(row as usize)?.clone()?;
         self.seen.read().unwrap().get(&key).cloned()

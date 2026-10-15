@@ -1201,6 +1201,13 @@
     filter = { ...filter, ...f };
     run();
   }
+  /** A duplicate group's or a series' photos, from the Analysis tab or the panel: within the
+   *  other filters, which stay. */
+  function showGroup(group: string) {
+    filter = { ...filter, group };
+    showTab("photos");
+    run();
+  }
   function showKeyword(path: string) {
     // Open the branches above it so the pick is visible in the tree.
     const parts = path.split("|");
@@ -1413,7 +1420,7 @@
     sharedAlbums={selectionAlbums}
     onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
-    onlook={(f) => only(f)}
+    ongroup={showGroup}
     onfolder={showFolder}
     oncamera={(camera) => only({ camera })}
     sharedPlaces={placesNow}
@@ -1688,7 +1695,7 @@
       {version}
       ontoggle={toggleList}
       onflag={toggleFlag}
-      ongroup={(id) => { filter = { ...filter, group: id }; showTab("photos"); run(); }}
+      ongroup={showGroup}
       onshow={() => showTab("photos")}
     />
   {:else}

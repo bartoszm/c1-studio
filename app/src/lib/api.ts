@@ -376,7 +376,8 @@ export const pickGpx = () => invoke<string | null>("pick_gpx");
 export const gpxPlan = (filter: Filter, settings: GpxSettings) => invoke<GpxPlan>("gpx_plan", { filter, settings });
 /** Places the photos the track covers; returns the ops that undo it. */
 export const gpxApply = (filter: Filter, settings: GpxSettings) => invoke<[number, Op][]>("gpx_apply", { filter, settings });
-export type Group = { id: string; size: number; rows: number[] };
+/** A duplicate group or series: its size, how many of it the filter picks, the first few of those. */
+export type Group = { id: string; size: number; matched: number; rows: number[] };
 /** Duplicate groups (or series) among the photos the filter selects, biggest first. */
 export const groups = (filter: Filter, series: boolean) => invoke<Group[]>("groups", { filter, series });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });

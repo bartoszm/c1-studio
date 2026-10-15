@@ -2,6 +2,7 @@
   import * as api from "./lib/api";
   import type { AnalysisState, Dim, Filter, Group } from "./lib/api";
   import { HUES } from "./lib/format";
+  import { emptyNote, groupBadge } from "./lib/analysis";
 
   type Key = "shape" | "hues" | "light" | "focus";
   let {
@@ -61,7 +62,7 @@
       {#if analysis?.running && analysis.total}
         Measuring photos: {analysis.done.toLocaleString()} / {analysis.total.toLocaleString()}
         <progress max={analysis.total} value={analysis.done}></progress>
-      {:else}
+      {:else if total > 0}
         {measured.toLocaleString()} of {total.toLocaleString()} photos measured
       {/if}
       {#if total > measured}
@@ -88,7 +89,7 @@
             <span class="n">{n.toLocaleString()}</span>
           </button>
         {:else}
-          <p class="none">Nothing measured here yet.</p>
+          <p class="none">{emptyNote(total, measured)}</p>
         {/each}
       </section>
     {/each}
@@ -108,11 +109,17 @@
       <p class="hint">{hint}</p>
       <div class="groups">
         {#each groups as g (g.id)}
-          <button class="group" title="Show these {g.size} photos in the grid" onclick={() => ongroup(g.id)}>
+          <button
+            class="group"
+            title={g.matched < g.size
+              ? `Show the ${g.matched} of these ${g.size} photos the filter picks in the grid`
+              : `Show these ${g.size} photos in the grid`}
+            onclick={() => ongroup(g.id)}
+          >
             <span class="thumbs">
               {#each g.rows as row (row)}<img src={api.thumbUrl(row)} alt="" />{/each}
             </span>
-            <span class="size">{g.size.toLocaleString()}</span>
+            <span class="size">{groupBadge(g)}</span>
           </button>
         {:else}
           <p class="none">None{filter.group || total === 0 ? "" : " found"}.</p>
