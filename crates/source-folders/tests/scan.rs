@@ -414,7 +414,6 @@ fn conforms() {
 }
 
 #[test]
-#[ignore = "needs write.rs (WP3)"]
 fn conforms_incrementally() {
     let fx = Fixture::new(&["a.jpg", "x/b.jpg"]);
     let probe = upserts(&fx.snap(None))[0].id.clone();

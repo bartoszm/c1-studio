@@ -647,14 +647,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs snapshot (WP2)"]
     fn passes_the_write_conformance_check() {
         let f = fixture(3);
         assert_eq!(c1model::conformance::check_write(&f.src, &f.id(1)), Vec::<String>::new());
     }
 
     #[test]
-    #[ignore = "needs snapshot (WP2)"]
     fn passes_the_backup_conformance_check() {
         let f = fixture(3);
         assert_eq!(c1model::conformance::check_backup(&f.src, &f.id(1)), Vec::<String>::new());
