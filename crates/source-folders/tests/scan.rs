@@ -271,6 +271,27 @@ fn a_deleted_file_is_deleted() {
 }
 
 #[test]
+fn an_empty_root_that_held_photos_is_taken_as_not_mounted() {
+    let fx = Fixture::new(&["a.jpg", "x/b.jpg"]);
+    let first = fx.snap(None);
+    let before = ids(&first, &fx.root());
+    // The drive's mount point stays, empty.
+    std::fs::remove_dir_all(fx.root()).unwrap();
+    std::fs::create_dir_all(fx.root()).unwrap();
+    let events = fx.rescan(&cursor(&first));
+    assert!(deletes(&events).is_empty(), "{events:?}");
+    assert!(upserts(&events).iter().all(|p| p.file.offline));
+    assert_eq!(fx.src.last_scan().unwrap().offline_roots, ["photos"]);
+    // Mounted again.
+    put(&fx.root().join("a.jpg"), &jpeg("a.jpg"));
+    put(&fx.root().join("x/b.jpg"), &jpeg("x/b.jpg"));
+    let events = fx.rescan(&cursor(&events));
+    assert!(deletes(&events).is_empty());
+    assert_eq!(ids(&events, &fx.root()), before);
+    assert!(upserts(&events).iter().all(|p| !p.file.offline));
+}
+
+#[test]
 fn a_root_out_of_reach_goes_offline_and_comes_back() {
     let fx = Fixture::new(&["a.jpg", "x/b.jpg"]);
     let first = fx.snap(None);

@@ -7,7 +7,8 @@
 //! - a new path: first matched by content against the records whose path is gone (moved
 //!   or renamed), offline or detached, which keeps its id; else a new id;
 //! - a known path not found while its root is reachable: removed;
-//! - every file under a root that cannot be reached: offline, kept.
+//! - every file under a root that cannot be reached, or that is empty though it held
+//!   photos (a drive not mounted): offline, kept.
 //!
 //! All of it is written in one store transaction.
 
@@ -351,6 +352,7 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
         if !reachable {
             continue;
         }
+        let before = listed.len();
         let note = Some(root.display_name());
         let progress =
             SourceProgress { phase: SCANNING.into(), done: listed.len() as u64, total: None, note: note.clone() };
@@ -395,6 +397,12 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
                 src.set_progress(Some(progress));
             }
         }
+        // An empty root that held photos is most likely a drive not mounted (an empty mount
+        // point): its photos are kept, offline, rather than deleted.
+        if listed.len() == before && known_under(src, &root.id) {
+            walked.reachable.insert(root.id.clone(), false);
+            walked.problems.push(format!("{}: no photos found; taken as not mounted", root.path));
+        }
     }
 
     let none = HashMap::new();
@@ -414,6 +422,11 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
         }
     }
     walked
+}
+
+/// The store has photos under root `id` that are shown.
+fn known_under(src: &FolderSource, id: &str) -> bool {
+    src.store().read().files.values().any(|r| r.root == id && r.state != FileState::Detached)
 }
 
 /// The excludes as one set. A pattern for everything in a folder (`**/tmp/**`) also
