@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use c1model::provider::data_root;
 use clap::{Subcommand, ValueEnum};
-use source_folders::definition::EXTENSION;
 use source_folders::pattern::Pattern;
 use source_folders::{Definition, FolderSource, ImageStore, Migrate, Preset, STORE_FILE};
 
@@ -282,7 +281,7 @@ fn init(name: &str, excludes: Vec<String>, out: Option<PathBuf>, force: bool, ro
     let mut def = Definition::new(name.trim(), roots);
     def.excludes = excludes;
     let file = match out {
-        Some(dir) if dir.is_dir() => dir.join(format!("{}.{EXTENSION}", def.data_key())),
+        Some(dir) if dir.is_dir() => dir.join(def.file_name()),
         Some(file) => file,
         None => def.default_path(),
     };
