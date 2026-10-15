@@ -178,6 +178,11 @@
     return () => el.removeEventListener("wheel", wheel);
   });
 
+  /** The positions on screen (with the rows kept above and below), [from, to). */
+  export function range(): [number, number] {
+    return [first * cols, Math.min(total, last * cols)];
+  }
+
   /** Back to the top, for a new result. */
   export function reset() {
     if (el) el.scrollTop = 0;

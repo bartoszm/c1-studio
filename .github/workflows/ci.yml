@@ -30,6 +30,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           pnpm check
+          pnpm test
           pnpm build
 
       - name: Format
