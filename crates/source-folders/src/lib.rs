@@ -133,6 +133,11 @@ impl FolderSource {
         self.images.check(self, store)
     }
 
+    /// How many thumbnails and previews are recorded as made.
+    pub fn image_count(&self) -> usize {
+        self.store.read().images.len()
+    }
+
     pub(crate) fn store(&self) -> &Store {
         &self.store
     }

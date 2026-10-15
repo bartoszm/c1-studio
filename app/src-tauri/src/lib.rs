@@ -38,6 +38,8 @@ struct Session {
     last_refresh: Mutex<Instant>,
     /// Why the last sync failed, until one succeeds: shown however late the window asks.
     sync_error: Mutex<Option<String>>,
+    /// The source has been read once in this session.
+    synced: AtomicBool,
     /// `settings.json` beside the library.
     settings_path: PathBuf,
     /// Write the queue to the source by itself (off unless the user turns it on).
@@ -185,6 +187,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         syncing: Mutex::new(()),
         last_refresh: Mutex::new(Instant::now()),
         sync_error: Mutex::new(None),
+        synced: AtomicBool::new(false),
         settings_path,
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
@@ -257,10 +260,16 @@ fn count_missing(app: &AppHandle) {
 /// then measures the new ones. Photos that failed before are tried again.
 #[tauri::command]
 async fn fill_thumbnails(app: AppHandle) -> Result<(), String> {
+    start_fill(&app)
+}
+
+/// Starts [`fill_thumbnails`]' run in the background, unless one is under way.
+fn start_fill(app: &AppHandle) -> Result<(), String> {
     let s = app.state::<App>().session()?;
     if s.filling.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    let app = app.clone();
     std::thread::spawn(move || {
         let _done = Lowers(&s.filling);
         s.thumbs.forget();
@@ -751,6 +760,10 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
     *s.sync_error.lock().unwrap() = failed;
     let report = report?;
     let changed = report.changed();
+    // A source that makes its own images has none yet for what it just found; the first
+    // read of a session also looks for those left from before.
+    let first = !s.synced.swap(true, Ordering::SeqCst);
+    let fill = (changed || first) && s.source.capabilities().rescan;
     if changed {
         s.log.event(
             &format!(
@@ -765,6 +778,9 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
         let _ = app.emit("library-changed", &report);
     }
     if !recheck && !changed {
+        if fill {
+            let _ = start_fill(app);
+        }
         return Ok(report);
     }
     // Previews may have been rendered, or crops changed: made thumbnails are checked
@@ -772,6 +788,9 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
     s.thumbs.forget();
     start_analysis(app);
     count_missing(app);
+    if fill {
+        let _ = start_fill(app);
+    }
     Ok(report)
 }
 

@@ -286,7 +286,7 @@ still need `--apply`.
 | `folders show [PATH] [--json]` | Print a definition: roots, excludes, image store. Defaults to the one `--source` names. |
 | `folders add-root ROOT [--label TEXT] [--file FILE]` | Add a folder. |
 | `folders remove-root ROOT [--file FILE]` | Take a folder out (give its path, or its id from `show`). Its photos are kept, detached, and come back if it is added again. |
-| `folders set-store central\|per-root\|beside [--limit-mb MB] [--file FILE]` | Where thumbnails and previews are kept: the app's data folder (limited to `--limit-mb`, 0 for none), `.c1studio` under each root, or a `.previews` folder beside each photo. Images already made stay where they are and are made again in the new place. |
+| `folders set-store central\|per-root\|beside\|custom [--limit-mb MB] [--thumb PATTERN --preview PATTERN] [--move\|--regenerate] [--file FILE]` | Where thumbnails and previews are kept: the app's data folder (limited to `--limit-mb`, 0 for none), `.c1studio` under each root, a `.previews` folder beside each photo, or your own path patterns (`custom`, which needs both `--thumb` and `--preview`, such as `{dir}/.previews/{stem}.{tier}.jpg`). The patterns are checked first, and, once the source has been read, against its photos: a store that would give two photos one file (a RAW and its JPEG with `{stem}`) is refused. If images were already made in the old place, one of `--move` (move them to where the new store puts them) or `--regenerate` (delete them; they are made again as needed) is required, and the command changes nothing without it. It prints how many were moved, deleted or failed. Close the app first: it holds the source's store open. |
 
 `--file` defaults to the definition `--source` names. Excludes are globs matched against a
 path below its root, with `/` separators: `**/tmp/**`, `*.tmp`. The `.c1studio` and
@@ -294,10 +294,11 @@ path below its root, with `/` separators: `**/tmp/**`, `*.tmp`. The `.c1studio` 
 
 ### idbench
 
-`idbench DIR [--limit N] [--json]` times the stable ids and looks for the risk in them.
+`idbench DIR [--limit N] [--parallel] [--json]` times the stable ids and looks for the risk in them.
 A photo is told apart by its size and a hash of the first and last 64 KB of the file, so
 each photo costs at most 128 KB of reading. `idbench` walks `DIR` for photo files (at
-most `--limit`), keys them one at a time, and reports:
+most `--limit`), keys them one at a time (or with `--parallel` on all cores at once, which
+is how a scan does it), and reports:
 
 - files and total size, seconds, files per second, and MB per second actually read;
 - the keys more than one file has, split into files with the same content (copies, which
