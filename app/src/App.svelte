@@ -1308,6 +1308,13 @@
     }
   }
 
+  /** Keys typed into a text field belong to the field, not to the shortcuts. */
+  function typingIn(e: KeyboardEvent) {
+    const t = e.target;
+    if (t instanceof HTMLInputElement) return t.type !== "checkbox";
+    return t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+  }
+
   function onkey(e: KeyboardEvent) {
     if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu || sectionMenu)) {
       keywordMenu = null;
@@ -1316,7 +1323,7 @@
       sectionMenu = null;
       return;
     }
-    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing || typingIn(e) || e.defaultPrevented) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
