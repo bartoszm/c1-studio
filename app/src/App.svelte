@@ -1028,7 +1028,7 @@
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
     try {
-      const undo = await api.promotePlaces({ ...filter, within: undefined }, paths);
+      const undo = await api.promotePlaces({ ...compile($state.snapshot(filter), match), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1445,7 +1445,7 @@
     unkeyworded: (v) => (v ? [{ text: "no keywords" }] : []),
     not_in_collections: (v) =>
       v.map((id) => ({ what: "Album", text: `not ${byId.get(id)?.name ?? id}`, out: true, title: byId.get(id)?.path, rest: without(v, id) })),
-    uncollected: (v) => [{ what: "Album", text: v ? "none" : "any", out: !v }],
+    uncollected: (v) => [{ what: "Album", text: v ? "none" : "any" }],
     all_of: () => [],
     any_of: () => [],
     collections: (v) =>
@@ -1453,7 +1453,7 @@
     folder: (v) => [{ what: "Folder", text: v }],
     place_under: (v) => [{ what: "Place", text: placeText(v) }],
     gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
-    placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place", out: v }],
+    placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
     approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
@@ -1572,7 +1572,7 @@
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
     ongroup={showGroup}
     onfolder={showFolder}
-    oncamera={(camera) => only({ camera })}
+    oncamera={(camera) => only({ cameras: [camera] })}
     summary={selection?.data ?? null}
     stale={!selectionNow}
     summaryError={selectionError}
@@ -1842,7 +1842,7 @@
           Match
           <span class="seg" role="group" aria-label="Match all or any">
             <button class:on={match === "all"} onclick={() => setMatch("all")} title="Photos must satisfy every criterion">All</button>
-            <button class:on={match === "any"} onclick={() => setMatch("any")} title="Photos may satisfy any one criterion">Any</button>
+            <button class:on={match === "any"} onclick={() => setMatch("any")} title="Photos may satisfy any one of the rating, colour, camera, keyword, album and place picks; the rest still apply">Any</button>
           </span>
         </span>
       {/if}
