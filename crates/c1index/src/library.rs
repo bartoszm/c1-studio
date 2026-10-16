@@ -1,11 +1,12 @@
 //! The library: a store and a search index kept in step, fed by [`PhotoSource`]s.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
+use c1analysis::ClassSettings;
 use c1model::change::{Check, collection_diff, collection_problem, descendants, diff, membership_problem};
 use c1model::{
     Change, Collection, CollectionChange, CollectionId, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap,
@@ -108,6 +109,28 @@ pub struct Group {
     pub rows: Vec<u64>,
 }
 
+/// The duplicate group and the series a photo falls in.
+type Groupings = (Option<String>, Option<String>);
+
+/// What a photo's measures come to as classes: shape, colours, light, focus.
+type Classes = (&'static str, Vec<&'static str>, Vec<&'static str>, &'static str);
+
+fn classes_of(a: &c1analysis::Analysis, s: &ClassSettings) -> Classes {
+    (a.shape(s), a.hues(s), a.light(s), a.focus(s))
+}
+
+/// How many measured photos some class settings would put in each class.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ClassPreview {
+    /// Photos measured.
+    pub measured: usize,
+    /// `<dimension>|<class>` (`hue|red`, `focus|soft`) → photos.
+    pub counts: BTreeMap<String, usize>,
+    /// Photos that would be in a duplicate group, and in a series.
+    pub duplicates: usize,
+    pub series: usize,
+}
+
 /// A page of [`Group`]s, and how many there are in all.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GroupPage {
@@ -174,6 +197,8 @@ pub struct Library {
     /// duplicate groups and series they fall in.
     looks: Looks,
     seen: RwLock<HashMap<String, Look>>,
+    /// Where the lines between classes lie (also in `looks`): read when documents are made.
+    classes: RwLock<ClassSettings>,
     /// One writer at a time: syncs and edits both rewrite documents.
     writing: Mutex<()>,
     /// One sync at a time: a sync reads its source before it takes `writing`.
@@ -299,6 +324,7 @@ impl Library {
         }
         let coarse = RwLock::new(marks);
         let guessed = RwLock::new(place_book.guessed()?);
+        let classes = looks.settings()?;
         let seen = looks
             .all()?
             .into_iter()
@@ -317,6 +343,7 @@ impl Library {
             edits,
             looks,
             seen: RwLock::new(seen),
+            classes: RwLock::new(classes),
             writing: Mutex::new(()),
             syncing: Mutex::new(()),
             trip_book,
@@ -360,7 +387,63 @@ impl Library {
         let key = photo.id.key();
         let coarse =
             photo.geo.is_some_and(|g| self.coarse.read().unwrap().get(&key).is_some_and(|c| c.holds(g.lat, g.lon)));
-        schema::document(&self.fields, row, photo, seen.get(&key), coarse)
+        schema::document(&self.fields, row, photo, seen.get(&key), coarse, &self.classes.read().unwrap())
+    }
+
+    /// Where the lines between classes lie in this library.
+    pub fn class_settings(&self) -> ClassSettings {
+        self.classes.read().unwrap().clone()
+    }
+
+    /// Draws the lines between classes where `settings` say (brought into range first;
+    /// returns what was kept): the measured photos are classed and grouped again, and
+    /// those whose classes changed are written to the index. Nothing is measured again.
+    pub fn set_class_settings(&self, settings: &ClassSettings) -> anyhow::Result<ClassSettings> {
+        let settings = settings.sanitized();
+        let _writing = self.writing.lock().unwrap();
+        if settings == *self.classes.read().unwrap() {
+            return Ok(settings);
+        }
+        self.looks.set_settings(&settings)?;
+        let before = std::mem::replace(&mut *self.classes.write().unwrap(), settings.clone());
+        let mut changed: HashSet<String> = self
+            .seen
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|(_, l)| classes_of(&l.analysis, &before) != classes_of(&l.analysis, &settings))
+            .map(|(k, _)| k.clone())
+            .collect();
+        changed.extend(self.group_looks()?);
+        let keys: Vec<String> = changed.into_iter().collect();
+        self.reindex_keys(&keys)?;
+        Ok(settings)
+    }
+
+    /// How many measured photos `settings` would put in each class, and in groups, without
+    /// changing anything: for a preview while the user moves a slider.
+    pub fn preview_classes(&self, settings: &ClassSettings) -> anyhow::Result<ClassPreview> {
+        let settings = settings.sanitized();
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        let measured = {
+            let seen = self.seen.read().unwrap();
+            for look in seen.values() {
+                let (shape, hues, light, focus) = classes_of(&look.analysis, &settings);
+                for (dim, names) in [("shape", vec![shape]), ("hue", hues), ("light", light), ("focus", vec![focus])] {
+                    for name in names {
+                        *counts.entry(format!("{dim}|{name}")).or_default() += 1;
+                    }
+                }
+            }
+            seen.len()
+        };
+        let wanted = self.grouping(&settings)?;
+        Ok(ClassPreview {
+            measured,
+            counts,
+            duplicates: wanted.values().filter(|w| w.0.is_some()).count(),
+            series: wanted.values().filter(|w| w.1.is_some()).count(),
+        })
     }
 
     /// Every measured photo's analysis and groups.
@@ -370,7 +453,7 @@ impl Library {
 
     /// The duplicate groups (or series) among the photos `filter` selects, most matching
     /// first: each with its size, how many of its photos match and a few of those to show.
-    /// A group with fewer matching than a group needs (2, [`c1analysis::SERIES_MIN`] for a
+    /// A group with fewer matching than a group needs (2, [`ClassSettings::series_min`] for a
     /// series) is left out: one red frame of a burst is no series. `limit` groups from
     /// `offset` on, with the number of groups in all.
     pub fn groups(&self, filter: &Filter, series: bool, offset: usize, limit: usize) -> anyhow::Result<GroupPage> {
@@ -387,7 +470,7 @@ impl Library {
                 group.rows.push(row);
             }
         }
-        let least = if series { c1analysis::SERIES_MIN } else { 2 };
+        let least = if series { self.classes.read().unwrap().series_min } else { 2 };
         by.retain(|_, g| g.matched >= least);
         if by.is_empty() {
             return Ok(GroupPage { total: 0, groups: Vec::new() });
@@ -457,13 +540,14 @@ impl Library {
         Ok(changed.len())
     }
 
-    /// Sets each measured photo's groups; returns the keys whose groups changed.
-    fn group_looks(&self) -> anyhow::Result<Vec<String>> {
+    /// The duplicate group and series (`dup:<row>`, `series:<row>`) each measured photo
+    /// falls in under `settings`, by photo key; photos in neither are left out.
+    fn grouping(&self, settings: &ClassSettings) -> anyhow::Result<HashMap<String, Groupings>> {
         let mut members: Vec<(u64, String, c1analysis::Taken)> = Vec::new();
         {
             let seen = self.seen.read().unwrap();
             if seen.is_empty() {
-                return Ok(Vec::new());
+                return Ok(HashMap::new());
             }
             for (row, key) in self.store.keys()? {
                 let Some(look) = seen.get(&key) else { continue };
@@ -481,13 +565,13 @@ impl Library {
             }
         }
         let taken: Vec<c1analysis::Taken> = members.iter().map(|(_, _, t)| t.clone()).collect();
-        let groups = c1analysis::group(&taken);
-        let mut wanted: HashMap<&str, (Option<String>, Option<String>)> = HashMap::new();
+        let groups = c1analysis::group(&taken, settings);
+        let mut wanted: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
         for (prefix, list) in [("dup", &groups.duplicates), ("series", &groups.series)] {
             for group in list {
                 let name = format!("{prefix}:{}", group.iter().map(|&i| members[i].0).min().unwrap_or(0));
                 for &i in group {
-                    let slot = wanted.entry(members[i].1.as_str()).or_default();
+                    let slot = wanted.entry(members[i].1.clone()).or_default();
                     if prefix == "dup" {
                         slot.0 = Some(name.clone());
                     } else {
@@ -496,6 +580,12 @@ impl Library {
                 }
             }
         }
+        Ok(wanted)
+    }
+
+    /// Sets each measured photo's groups; returns the keys whose groups changed.
+    fn group_looks(&self) -> anyhow::Result<Vec<String>> {
+        let mut wanted = self.grouping(&self.classes.read().unwrap().clone())?;
         let mut changed = Vec::new();
         let mut seen = self.seen.write().unwrap();
         for (key, look) in seen.iter_mut() {

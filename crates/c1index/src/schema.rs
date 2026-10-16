@@ -5,6 +5,7 @@
 //! filters and fast for sorting. A value that is missing is simply not added, so a range
 //! filter never matches a photo without that value — the same as SQL `NULL`.
 
+use c1analysis::ClassSettings;
 use c1model::Photo;
 
 use crate::looks::Look;
@@ -334,7 +335,15 @@ fn sort_key(ms: Option<i64>, row: u64) -> i64 {
 }
 
 /// `coarse`: its position was given from its place's name (see [`flag::COARSE_GPS`]).
-pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse: bool) -> TantivyDocument {
+/// `classes`: where the analysis draws the lines between classes.
+pub fn document(
+    f: &Fields,
+    row: u64,
+    photo: &Photo,
+    look: Option<&Look>,
+    coarse: bool,
+    classes: &ClassSettings,
+) -> TantivyDocument {
     let mut doc = TantivyDocument::default();
     let mut dim = |d: Dim, value: &str| doc_add_str(&mut doc, f.dim(d), value);
     dim(Dim::Source, &photo.id.source.0);
@@ -396,14 +405,14 @@ pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse
     }
     if let Some(look) = look {
         let a = &look.analysis;
-        dim(Dim::Shape, a.shape());
-        for hue in a.hues() {
+        dim(Dim::Shape, a.shape(classes));
+        for hue in a.hues(classes) {
             dim(Dim::Hue, hue);
         }
-        for light in a.light() {
+        for light in a.light(classes) {
             dim(Dim::Light, light);
         }
-        dim(Dim::Focus, a.focus());
+        dim(Dim::Focus, a.focus(classes));
         for group in [&look.duplicates, &look.series].into_iter().flatten() {
             dim(Dim::Group, group);
         }

@@ -565,3 +565,37 @@ export const writeApply = () => invoke<{ written: number; backup: string | null 
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
+
+/** Where the analysis draws the lines between classes (shares are 0..1). */
+export type ClassSettings = {
+  mono_chroma: number;
+  colour_share: number;
+  colour_floor: number;
+  dark_below: number;
+  bright_above: number;
+  clipped_share: number;
+  blocked_share: number;
+  flat_below: number;
+  soft_below: number;
+  blurry_below: number;
+  square_ratio: number;
+  panorama_ratio: number;
+  duplicate_bits: number;
+  series_bits: number;
+  series_gap_ms: number;
+  series_min: number;
+};
+/** What some settings would give: `<dimension>|<class>` → photos, and photos in groups. */
+export type ClassPreview = {
+  measured: number;
+  counts: Record<string, number>;
+  duplicates: number;
+  series: number;
+};
+export const classSettings = () => invoke<ClassSettings>("class_settings");
+export const defaultClassSettings = () => invoke<ClassSettings>("default_class_settings");
+/** Classes the measured photos again; returns the settings kept (brought into range). */
+export const setClassSettings = (settings: ClassSettings) =>
+  invoke<ClassSettings>("set_class_settings", { settings });
+export const previewClasses = (settings: ClassSettings) =>
+  invoke<ClassPreview>("preview_classes", { settings });

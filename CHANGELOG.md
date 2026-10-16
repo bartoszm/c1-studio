@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Analysis settings:** Settings now has an Analysis section where you set when a photo counts as a colour (share of the photo, floor for the biggest colour, black & white chroma), as dark, bright, clipped or low contrast, as soft or blurry, as square or panorama, and what makes a duplicate or a series. The numbers beside each group show how many photos each class would get; Apply sorts the measured photos again without measuring them. Kept per library (#29). Not yet: a "has a distinct patch of red" colour mode, which needs the photos measured again.
+
 - **Start-up dialog:** while a catalog opens, a dialog shows the step (opening the library, reading the catalog, indexing N of M photos, saving the index) and the time so far, instead of an empty window. The window is no longer blocked while the library opens.
 
 ## 0.2.0 — 2026-10-15

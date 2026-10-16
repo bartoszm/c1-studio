@@ -485,15 +485,54 @@ async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String>
         Ok(Some((group, s.library.query(&filter, &options).map_err(text)?.total)))
     };
     let a = &look.analysis;
+    let classes = s.library.class_settings();
     Ok(Some(LookView {
-        shape: a.shape(),
-        hues: a.hues(),
-        light: a.light(),
-        focus: a.focus(),
+        shape: a.shape(&classes),
+        hues: a.hues(&classes),
+        light: a.light(&classes),
+        focus: a.focus(&classes),
         duplicates: size(look.duplicates.clone())?,
         series: size(look.series.clone())?,
         analysis: look.analysis,
     }))
+}
+
+/// Where this library draws the lines between analysis classes.
+#[tauri::command]
+async fn class_settings(app: State<'_, App>) -> Result<c1analysis::ClassSettings, String> {
+    Ok(app.session()?.library.class_settings())
+}
+
+/// The lines the app draws until the user moves them.
+#[tauri::command]
+fn default_class_settings() -> c1analysis::ClassSettings {
+    c1analysis::ClassSettings::default()
+}
+
+/// Classes the measured photos again by these settings; returns what was kept.
+#[tauri::command]
+async fn set_class_settings(
+    app: State<'_, App>,
+    settings: c1analysis::ClassSettings,
+) -> Result<c1analysis::ClassSettings, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.set_class_settings(&settings))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// How many photos these settings would put in each class, without applying them.
+#[tauri::command]
+async fn preview_classes(
+    app: State<'_, App>,
+    settings: c1analysis::ClassSettings,
+) -> Result<c1index::ClassPreview, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.preview_classes(&settings))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// The system dialog for a GPX track; None if cancelled.
@@ -1943,6 +1982,10 @@ pub fn run() {
             neighbour_plan,
             neighbour_apply,
             set_trip_settings,
+            class_settings,
+            default_class_settings,
+            set_class_settings,
+            preview_classes,
             edit_trips,
             map,
             pick_gpx,

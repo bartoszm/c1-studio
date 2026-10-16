@@ -2211,7 +2211,11 @@
 {/if}
 
 {#if showSettings}
-  <SettingsDialog titles={TITLES} onclose={() => (showSettings = false)} />
+  <SettingsDialog
+    titles={TITLES}
+    onclose={() => (showSettings = false)}
+    onclasses={() => { version++; analysed++; refresh(true); }}
+  />
 {/if}
 
 {#if showBackups}

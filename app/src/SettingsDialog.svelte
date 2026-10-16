@@ -2,10 +2,16 @@
   import { onMount } from "svelte";
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
+  import ClassSettings from "./ClassSettings.svelte";
 
   // The app's preferences, applied as they are changed: the sidebar's sections (which,
-  // in what order) and whether the map may use the internet.
-  let { titles, onclose }: { titles: Record<string, string>; onclose: () => void } = $props();
+  // in what order) and whether the map may use the internet. The analysis lines are the
+  // exception: they are applied on request, and `onclasses` is told when they are.
+  let {
+    titles,
+    onclose,
+    onclasses,
+  }: { titles: Record<string, string>; onclose: () => void; onclasses: () => void } = $props();
 
   /** The row being dragged, and the row it would land before. */
   let from = $state<number | null>(null);
@@ -112,6 +118,8 @@
     <p class="muted small">
       Place names and positions: <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a>, CC BY 4.0.
     </p>
+
+    <ClassSettings onapplied={onclasses} />
 
     <div class="buttons">
       <button disabled={isDefault} onclick={() => (settings.sections = defaultSections())}>Reset sidebar</button>

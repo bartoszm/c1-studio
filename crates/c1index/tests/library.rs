@@ -1016,6 +1016,51 @@ fn analyses_are_searchable_and_grouped() {
 }
 
 #[test]
+fn class_settings_reclass_the_measured_photos_and_survive_a_reopen() {
+    let (d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [40, 80, 210], 5000.0, 1)),
+        (key(2), (1, 1), look(400, 600, [40, 80, 210], 500.0, 2)),
+        (key(3), (1, 1), look(600, 400, [200, 30, 30], 100.0, 3)),
+    ])
+    .unwrap();
+    let soft = Filter { focus: vec!["soft".into()], ..Filter::default() };
+    let blurry = Filter { focus: vec!["blurry".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &soft), [2]);
+    assert_eq!(ids(&lib, &blurry), [3]);
+
+    // Asked first, nothing changes.
+    let stricter = c1analysis::ClassSettings { soft_below: 6000.0, blurry_below: 400.0, ..lib.class_settings() };
+    let preview = lib.preview_classes(&stricter).unwrap();
+    assert_eq!(preview.measured, 3);
+    assert_eq!((preview.counts["focus|soft"], preview.counts["focus|blurry"]), (2, 1));
+    assert!(!preview.counts.contains_key("focus|sharp"));
+    assert_eq!(ids(&lib, &soft), [2]);
+
+    lib.set_class_settings(&stricter).unwrap();
+    assert_eq!(ids(&lib, &soft), [1, 2]);
+    assert_eq!(ids(&lib, &blurry), [3]);
+    // Nothing was measured again.
+    assert_eq!(lib.analysed().len(), 3);
+
+    // Out-of-order values are brought into range.
+    let kept = lib
+        .set_class_settings(&c1analysis::ClassSettings { soft_below: 100.0, blurry_below: 900.0, ..stricter.clone() })
+        .unwrap();
+    assert!(kept.blurry_below <= kept.soft_below);
+
+    // Kept for the library: a reopened one classes by it.
+    lib.set_class_settings(&stricter).unwrap();
+    drop(lib);
+    let lib = Library::open(d.path()).unwrap();
+    assert_eq!(lib.class_settings(), stricter);
+    assert_eq!(ids(&lib, &soft), [1, 2]);
+    lib.set_class_settings(&c1analysis::ClassSettings::default()).unwrap();
+    assert_eq!(ids(&lib, &soft), [2]);
+}
+
+#[test]
 fn groups_split_by_a_filter_count_whole_and_drop_what_is_no_group() {
     let (_d, lib, source) = setup();
     let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
