@@ -489,10 +489,9 @@ impl Filter {
             Some(false) => must.push(Box::new(ExistsQuery::new(Dim::Collection.field_name().to_owned(), false))),
             None => {}
         }
-        for (dim, include, exclude) in [
-            (Dim::Camera, &self.cameras, &self.cameras_not),
-            (Dim::Lens, &self.lenses, &self.lenses_not),
-        ] {
+        for (dim, include, exclude) in
+            [(Dim::Camera, &self.cameras, &self.cameras_not), (Dim::Lens, &self.lenses, &self.lenses_not)]
+        {
             if !include.is_empty() {
                 must.push(any_of(f.dim(dim), include.iter().cloned()));
             }
