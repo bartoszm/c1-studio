@@ -103,6 +103,13 @@ fn keywords_exact_under_and_not() {
     assert_eq!(ids(&lib, &none), [2, 5, 8]);
 }
 
+fn either_of(under: &[&str], rating: &str) -> Vec<Filter> {
+    vec![
+        Filter { keywords_under: under.iter().map(|s| (*s).to_owned()).collect(), ..Filter::default() },
+        Filter { rating: Some(parse_rating(rating).unwrap()), ..Filter::default() },
+    ]
+}
+
 #[test]
 fn multi_value_and_negated_filters() {
     let (_d, lib, _s) = setup();
@@ -123,6 +130,13 @@ fn multi_value_and_negated_filters() {
         ..Filter::default()
     };
     assert_eq!(f(either), [2, 4, 5, 8]);
+    // Match any: counting a dimension leaves out the alternatives that pick among its values.
+    let any = Filter {
+        all_of: vec![Filter { any_of: either_of(&["street"], ">=4"), ..Filter::default() }],
+        ..Filter::default()
+    };
+    assert_eq!(any.without(Dim::KeywordTree).all_of, [Filter::default()]);
+    assert_eq!(any.without(Dim::Camera), any);
     // Picking a camera leaves its alternatives countable.
     let picked = Filter { cameras: vec!["X100VI".into()], ..Filter::default() };
     assert!(picked.without(Dim::Camera).cameras.is_empty());

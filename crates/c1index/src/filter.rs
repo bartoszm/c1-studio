@@ -328,6 +328,13 @@ impl Filter {
             Dim::Group => f.group = None,
             Dim::Flag => {}
         }
+        // Alternatives (the UI's "match any"): a group that picks among this dimension's
+        // values is left out whole, as one alternative less would hide the values that
+        // picking another would add.
+        f.all_of = f.all_of.iter().map(|s| s.without(dim)).collect();
+        if f.any_of.iter().any(|s| s.without(dim) != *s) {
+            f.any_of.clear();
+        }
         f
     }
 

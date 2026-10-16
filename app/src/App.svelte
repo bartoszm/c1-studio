@@ -519,8 +519,10 @@
   async function refreshCollections() {
     collections = await api.collections();
     const ids = new Set(collections.map((c) => c.id));
-    const kept = filter.collections?.filter((id) => ids.has(id));
-    if (kept && kept.length !== filter.collections?.length) filter = { ...filter, collections: kept.length ? kept : undefined };
+    for (const key of ["collections", "not_in_collections"] as const) {
+      const kept = filter[key]?.filter((id) => ids.has(id));
+      if (kept && kept.length !== filter[key]?.length) filter = { ...filter, [key]: kept.length ? kept : undefined };
+    }
   }
 
   /** Queues an album change (shown at once), undoable like any edit. `fill` puts the
