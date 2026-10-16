@@ -178,6 +178,8 @@ pub struct Filter {
     /// Free text: words AND-ed, `"a phrase"`, `a OR b`.
     pub text: Option<String>,
     pub edited: Option<bool>,
+    /// Only photos whose original cannot be reached now, or only those that can.
+    pub offline: Option<bool>,
     pub style: Option<String>,
     pub has_local_layers: bool,
     pub trashed: Trashed,
@@ -533,6 +535,11 @@ impl Filter {
         match self.edited {
             Some(true) => must.push(has(flag::EDITED)),
             Some(false) => must_not.push(has(flag::EDITED)),
+            None => {}
+        }
+        match self.offline {
+            Some(true) => must.push(has(flag::OFFLINE)),
+            Some(false) => must_not.push(has(flag::OFFLINE)),
             None => {}
         }
         if self.has_local_layers {

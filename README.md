@@ -77,6 +77,9 @@ photo's history. This is the groundwork for browsing the catalog as it was on an
   rendering previews to JPEG. See [docs/CLI.md](docs/CLI.md).
 - **Backups**: every write is preceded by a backup of the catalog, and any backup can be
   restored from the app.
+- **Photo folders**: C1 Studio also opens plain folders of JPEG, PNG, TIFF and camera raw
+  files, with its own edits and optional XMP export. See
+  [the guide](docs/GUIDE.md#photo-folders).
 
 Place data from [GeoNames](https://www.geonames.org/), licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).

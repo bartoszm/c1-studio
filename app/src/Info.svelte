@@ -1,6 +1,7 @@
 <script lang="ts">
   import * as api from "./lib/api";
-  import { COLORS, ORIGINS, bytes, camera, date, eventText, exposure, folderOf, geoText, parseGeo } from "./lib/format";
+  import { source } from "./lib/source.svelte";
+  import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText, parseGeo } from "./lib/format";
   import { allFields, fieldValues, isEmpty, keyOf, treeKeys, withCode, type Place } from "./lib/places";
   import { placeText } from "./lib/tree";
   import PlaceInput from "./PlaceInput.svelte";
@@ -24,7 +25,7 @@
     analysed: number;
     /** How many photos an edit here applies to. */
     picked: number;
-    /** Fields of this photo edited here and not yet written to Capture One. */
+    /** Fields of this photo edited here and not yet written to the source. */
     queued: string[];
     /** With several photos selected: how many of them have edits waiting. */
     queuedPicked: number;
@@ -329,6 +330,7 @@
     {#if !batch}
       {#if p.trashed}<span class="tag">in trash</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
+      {#if p.file.offline}<span class="tag" style:color="#e8b03a" title="The original is not reachable now: its folder or drive is not connected. Everything known about the photo stays.">offline</span>{/if}
     {/if}
   </div>
   <div class="colors" role="group" aria-label="Colour tag">
@@ -671,7 +673,7 @@
     {#if p.edit.local_layers || p.edit.retouch_layers}
       <dt>Layers</dt><dd>{p.edit.local_layers} local · {p.edit.retouch_layers} retouch</dd>
     {/if}
-    <dt>Catalog id</dt><dd class="muted">{p.id.ext}</dd>
+    <dt>{source.isCaptureOne ? "Catalog id" : "Photo id"}</dt><dd class="muted">{p.id.ext}</dd>
   </dl>
 
   <details class="history" bind:open={historyOpen}>
@@ -687,8 +689,8 @@
         {#each history as e}
           <li>
             <span class="when">{date(e.at)}</span>
-            <span class="origin from-{e.origin.toLowerCase()}">{ORIGINS[e.origin]}</span>
-            <span class="what">{eventText(e, loggedAlbumName)}</span>
+            <span class="origin from-{e.origin.toLowerCase()}">{originLabel(e.origin, source.provider)}</span>
+            <span class="what">{eventText(e, loggedAlbumName, source.provider)}</span>
           </li>
         {/each}
       </ol>
@@ -714,7 +716,7 @@
       {@render iptcFields(p)}
     </section>
     <p class="queued-note badge" class:none={!queuedPicked}>
-      {#if queuedPicked}{queuedPicked.toLocaleString()} of the {picked.toLocaleString()} edited here, not yet written to Capture One.{/if}
+      {#if queuedPicked}{queuedPicked.toLocaleString()} of the {picked.toLocaleString()} edited here, not yet written to {source.word}.{/if}
     </p>
     {#if typedError}<p class="error">{typedError}</p>{/if}
     {#if geoError}<p class="error">{geoError}</p>{/if}
@@ -738,7 +740,7 @@
     {@render marks(p)}
     {@render clipRows()}
     {#if queued.length}
-      <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to Capture One.</p>
+      <p class="queued-note">Edited here ({queued.map(fieldName).join(", ")}), not yet written to {source.word}.</p>
     {/if}
     {@render exif(p)}
     {@render keywordList()}

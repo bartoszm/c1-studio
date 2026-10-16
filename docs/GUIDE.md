@@ -42,6 +42,8 @@ opens another one: pick one from *Recent* (× takes it off the list), browse wit
 catalog, with its own library, queue and settings. If nothing could be opened, the menu
 opens by itself.
 
+To open plain photo folders instead of a catalog, see [Photo folders](#photo-folders).
+
 **Versions.** The menu shows which Capture One made the catalog, and whether reading and
 writing are checked for it. Catalogs from Capture One 16.8 are read and written; 16.5
 catalogs are read only; any other version is tried for reading only, untested. A
@@ -140,7 +142,8 @@ window. *3:2* switches to square tiles and back. Ctrl+wheel over the grid, Ctrl+
 Ctrl+minus step one tile per row; Ctrl+0 resets. Tiles bigger than the thumbnail load
 the sharp preview once scrolling stops.
 
-The app shows Capture One's thumbnails and previews, never the original files.
+For a Capture One catalog the app shows Capture One's thumbnails and previews, never the
+original files. A photo folders source makes its own; see [Photo folders](#photo-folders).
 
 ## Editing
 
@@ -430,6 +433,123 @@ you next write.
 
 The queue is saved with the library and survives restarts.
 
+## Photo folders
+
+C1 Studio can also open plain photo folders, with no Capture One catalog. A photo folders
+source is a named set of folders, scanned recursively, holding JPEG, PNG, TIFF and camera
+raw files. The window is the same: search, the sidebar, the grid, the viewer and the
+details panel work as they do for a catalog. This section covers what differs.
+
+**Making a source.** Choose *New photo folders…* in the source menu. The dialog asks for:
+
+- **Name:** what the menu and the window title show.
+- **Folders:** *Add folder…* picks one, *Remove* takes it out. Every photo in a folder,
+  and in the folders below it, is listed. A label, if you give one, is shown instead of
+  the folder's name.
+- **Leave out:** one pattern per line, matched against each path below its folder, with
+  `/` between folders. `**/tmp/**` leaves out every folder called `tmp`, and `*.tmp`
+  every file whose name ends in `.tmp`. A folder that matches is not entered. The
+  `.c1studio` and `.previews` folders are always left out.
+- **Thumbnails and previews**, and **XMP**: see below.
+
+*Save and open* saves the definition and opens the source. The definition is a
+`.c1folders` file, by default in `%APPDATA%\c1studio\sources`. Its path is the source's
+location. To open one made earlier, choose *Open photo folders…* in the source menu.
+
+**Renaming and moving.** The source keeps its data under an id stored inside the
+`.c1folders` file. Renaming the source, or moving the file, keeps everything: edits,
+albums and the rest of its data.
+
+**Editing the folders.** *Edit folders…* in the source menu changes the folders, the
+excludes, where images are kept and the XMP options of the open source. *Save* reads the
+source again. Removing a folder keeps its photos' edits in the app; they come back if the
+folder is added again.
+
+**Rescanning.** The folders are read when the source opens, and again on *Rescan*, in the
+source menu or the button in the footer. Files whose path, size and modification time are
+unchanged are not read again. Between scans the library is not checked against the disk.
+The footer shows the progress of a scan.
+
+**Moved and renamed files.** A photo keeps its id when its file is moved or renamed, or
+when its folder is removed and added back. So its rating, keywords, albums and places stay
+with it. Files are told apart by their size and a hash of their first and last 64 KB, and
+by the whole file where two files share those. A copy made while the original is still
+there is a new photo. So is a file that is both moved and changed between two rescans.
+
+**Offline drives.** A folder that cannot be reached, such as a drive that is not plugged
+in, makes its photos offline. So does a folder that is empty although it held photos
+before, such as an empty mount point. Nothing is removed in either case. Offline photos
+keep their edits, show dimmed in the grid and carry an *offline* tag in the details
+panel. The footer says how many folders are offline. When the drive is back, choose
+*Rescan*.
+
+**Thumbnails and previews.** The app makes its own. Thumbnails, 450 pixels on the long
+edge, are made in the background after a scan. A preview, 2000 pixels on the long edge,
+is made when a photo is opened in the viewer. A JPEG up to 3 MB, with its long edge up to
+2560 pixels, is shown from the original, with no copy made. A raw file is shown through
+the JPEG its camera embedded.
+
+**Where they are kept** is set in the dialog:
+
+- **Central** (the default): in the app's data folder,
+  `%LOCALAPPDATA%\c1studio\folders-<id>\work\images`. It has a size limit of 4 GB by
+  default; leave the field empty for no limit. Over the limit, the least recently used
+  images go first, previews before thumbnails.
+- **Per root:** in a `.c1studio` folder under each root, so the images travel with an
+  external drive.
+- **Beside the file:** in a `.previews` folder next to each photo.
+- **Custom:** patterns of your own, for thumbnails and previews. The tokens are `{data}`,
+  `{root}`, `{dir}`, `{relpath}`, `{name}`, `{stem}`, `{ext}`, `{hash}` (or `{hash:N}` for
+  its first N digits), `{tier}` and `{size}`. A pattern must end in `.jpg`. Save stays off
+  while the patterns would give two photos one image file, or put an image on a photo;
+  the dialog says which.
+
+Only the central store is trimmed. The other stores are yours and are never trimmed.
+If the source is open and the place of the images changes, the dialog asks whether to
+*Move existing images* or to *Make them again*, which deletes the old ones to be made as
+photos are shown. Changing only the size limit asks nothing.
+
+**XMP export.** Edits are kept in the app whatever the XMP options. Both options are off
+by default.
+
+- **Write XMP:** after each write, a Lightroom-style sidecar is written next to each raw
+  file: `DSCF0001.xmp`, or `DSCF0001.RAF.xmp` if *Sidecar file name* is set to the second
+  form (used by darktable). The sidecar gets the rating, colour label, keywords, IPTC
+  fields, place and GPS. An existing sidecar, such as one from another program holding
+  develop settings, is merged, so what is in it stays. An existing sidecar that cannot be
+  merged is left alone.
+- **Allow changing original JPEG, TIFF and DNG files:** the XMP goes into those files
+  rather than a sidecar. This needs *Write XMP*. Raw files still get sidecars. Without
+  this option, original JPEG, TIFF and DNG files are never touched. PNG files never get
+  XMP.
+
+Lightroom reads XMP only when it imports a photo, or when you choose *Read Metadata from
+Files*. So this is an export for another program to pick up, not a sync. A file that
+cannot be written does not undo the edit.
+
+**Edits.** Edits are queued as they are for a catalog. They are written with *Write to the
+photo folders…* in the footer, or by themselves with Autosave on. They go to the app's own
+store for the source, and the original files change only as the XMP options allow. Ratings,
+colour tags, keywords, IPTC fields, place, GPS and albums can all be edited. Albums,
+groups and smart albums work as they do for a catalog. The folders show in the Albums
+section as read-only collections.
+
+**Backups.** Before each write, the app saves its own edits for the source in
+`%LOCALAPPDATA%\c1studio\folders-<id>\work\backups\`. The newest five are kept. Restore one
+from *Backups…* in the source menu, as for a catalog. A backup holds the app's edits, not
+the photo files.
+
+**The command line.** `c1cat folders init` makes a definition, and `c1cat --source FILE`
+opens one. See [CLI.md](CLI.md#photo-folders).
+
+**Not in this version.**
+
+- Moving, renaming or deleting files on disk.
+- More than one source open at once.
+- Full raw development: a raw file shows the JPEG its camera embedded.
+- HEIC, video and CR3 files: they are not read.
+- A file watcher: changes on disk show up at the next rescan.
+
 ## Keyboard
 
 | Key | Does |
@@ -459,4 +579,6 @@ Keys do not act while you type in a field.
   their settings (`library\trips.redb`), the autosave setting and backups:
   `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
+- Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is
+  the first eight characters of the source's `id` in its `.c1folders` file.
 - The sidebar layout, tile size and the copy clipboard: the app's own browser storage.

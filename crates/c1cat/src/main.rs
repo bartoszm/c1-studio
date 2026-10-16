@@ -1,7 +1,10 @@
 //! `c1cat`: the c1-studio library from the command line.
 
 mod bench;
+mod folders;
+mod idbench;
 mod selector;
+mod source;
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -10,29 +13,57 @@ use anyhow::Context;
 use c1index::{Dim, Filter, Library, QueryOptions, Sort};
 use c1model::{
     ApplyPlan, Change, CollectionChange, CollectionId, CollectionKind, ColorLabel, Condition, GeoOrigin, GeoPoint,
-    ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, SmartRule,
+    ImageRef, ImageTier, KeywordPath, KeywordRemap, Op, Photo, PhotoId, SmartRule,
 };
 use clap::{Parser, Subcommand};
-use source_c1::{CaptureOne, data_dir, find_catalog};
 
 use crate::selector::Selector;
+use crate::source::{Session, SourceArgs, open};
 
 #[derive(Parser)]
-#[command(name = "c1cat", version, about = "Search and inspect a Capture One catalog through the c1-studio library")]
+#[command(
+    name = "c1cat",
+    version,
+    about = "Search, inspect and edit a photo source (a Capture One catalog, photo folders) through the c1-studio library"
+)]
 struct Cli {
-    /// Catalog file; defaults to C1_CATALOG, then %APPDATA%\c1studio\config.json.
-    #[arg(long, global = true)]
-    catalog: Option<PathBuf>,
+    #[command(flatten)]
+    target: SourceArgs,
     #[command(subcommand)]
     command: Command,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Pull the catalog into the library (fast when nothing changed).
+    /// Pull the source into the library (fast when nothing changed).
     Sync,
-    /// Catalog and library state.
+    /// Look again for changes the source cannot see by itself (photo files added, moved or
+    /// removed on disk), then pull them into the library.
+    Rescan {
+        /// Only ask the source to look; the next command's sync reads what it found.
+        #[arg(long)]
+        no_sync: bool,
+    },
+    /// Source and library state.
     Status,
+    /// Make and change the definitions of photo folder sources.
+    Folders {
+        #[command(subcommand)]
+        action: folders::Action,
+    },
+    /// Time the stable photo ids on a real folder, and look for two files sharing one.
+    Idbench {
+        /// A folder of photos, searched below.
+        dir: PathBuf,
+        /// Stop after this many photo files.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Key the files on all cores at once, as a scan does, instead of one at a time.
+        #[arg(long)]
+        parallel: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Measure each photo's thumbnail (shape, colours, light, focus, a hash for
     /// duplicates and bursts); only photos not measured yet, or whose thumbnail changed.
     Analyse {
@@ -50,8 +81,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Put a backup (by file name, from `backups`) back as the catalog. The catalog as it
-    /// is now is backed up first. A dry run unless --apply is given.
+    /// Put a backup (by name, from `backups`) back as the source. The source as it is now
+    /// is backed up first. A dry run unless --apply is given.
     Restore {
         #[arg(value_name = "BACKUP")]
         name: String,
@@ -116,8 +147,8 @@ enum Command {
         #[arg(long)]
         no_sync: bool,
     },
-    /// Write viewable JPEGs of matching photos, from Capture One's thumbnail, its
-    /// preview (white-balanced here) or the original's embedded JPEG.
+    /// Write viewable JPEGs of matching photos, from the source's thumbnail, its preview
+    /// or the original (a raw's embedded JPEG).
     Image {
         #[command(flatten)]
         select: Selector,
@@ -469,7 +500,7 @@ impl RuleArgs {
 
 #[derive(clap::Args)]
 struct WriteFlags {
-    /// Write to the catalog. Without it nothing is written and the plan is shown.
+    /// Write to the source. Without it nothing is written and the plan is shown.
     #[arg(long)]
     apply: bool,
     /// Print the outcome as JSON.
@@ -479,23 +510,8 @@ struct WriteFlags {
     no_sync: bool,
 }
 
-struct Session {
-    source: CaptureOne,
-    library: Library,
-    /// Thumbnails made for photos Capture One has none for (shared with the app).
-    thumbs: c1index::thumbs::Thumbs,
-}
-
-fn open(catalog: Option<&PathBuf>) -> anyhow::Result<Session> {
-    let path = find_catalog(catalog.map(PathBuf::as_path))?;
-    let dir = data_dir(&path);
-    let source = CaptureOne::open(&path, dir.join("work"))?;
-    let library = Library::open(dir.join("library")).context("opening the library")?;
-    Ok(Session { source, library, thumbs: c1index::thumbs::Thumbs::new(dir.join("thumbs")) })
-}
-
 fn sync(session: &Session, quiet: bool) -> anyhow::Result<()> {
-    let report = session.library.sync(&session.source)?;
+    let report = session.library.sync(session.source.as_ref())?;
     if !quiet && (report.full || report.added + report.updated + report.deleted > 0) {
         eprintln!(
             "synced {}: +{} ~{} -{} ={} in {} ms",
@@ -508,6 +524,28 @@ fn sync(session: &Session, quiet: bool) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+/// Where the pixels of `id` at `tier` are: the source's own, else (a source that renders
+/// its own) one it makes. Thumbnails also come from the thumbnails made here.
+fn tier_image(session: &Session, id: &PhotoId, tier: ImageTier) -> anyhow::Result<Option<ImageRef>> {
+    if tier == ImageTier::Thumb {
+        return Ok(session.thumbs.get_or_make(session.source.as_ref(), id)?.map(|made| made.image));
+    }
+    match session.source.image(id, tier)? {
+        Some(found) => Ok(Some(found)),
+        None if tier == ImageTier::Preview => Ok(session.source.make_image(id, tier)?),
+        None => Ok(None),
+    }
+}
+
+/// A time in milliseconds since the epoch, as local `2026-10-11 14:03:22`; empty when unknown.
+fn local_time(ms: u64) -> String {
+    i64::try_from(ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_default()
 }
 
 fn parse_dims(text: &str) -> anyhow::Result<Vec<Dim>> {
@@ -530,18 +568,13 @@ fn set_text(field: &mut Option<String>, given: &Option<String>) {
 
 /// Plans `op` for every matching photo and, with `--apply`, writes it. Capture One must
 /// be closed for the write; the plan works either way.
-fn edit(
-    catalog: Option<&PathBuf>,
-    select: &Selector,
-    flags: &WriteFlags,
-    op: impl Fn(&Photo) -> Op,
-) -> anyhow::Result<()> {
+fn edit(catalog: &SourceArgs, select: &Selector, flags: &WriteFlags, op: impl Fn(&Photo) -> Op) -> anyhow::Result<()> {
     edit_many(catalog, select, flags, |p| vec![op(p)])
 }
 
 /// As [`edit`], with any number of ops per photo.
 fn edit_many(
-    catalog: Option<&PathBuf>,
+    catalog: &SourceArgs,
     select: &Selector,
     flags: &WriteFlags,
     ops: impl Fn(&Photo) -> Vec<Op>,
@@ -597,7 +630,7 @@ fn edit_many(
 
 /// Plans a keyword tree change and, with `--apply`, writes it.
 fn remap(
-    catalog: Option<&PathBuf>,
+    catalog: &SourceArgs,
     flags: &WriteFlags,
     build: impl FnOnce(&Library) -> anyhow::Result<KeywordRemap>,
 ) -> anyhow::Result<()> {
@@ -677,7 +710,7 @@ fn create(
 /// Plans album changes, then photo changes into and out of albums, and with `--apply`
 /// writes them together.
 fn albums(
-    catalog: Option<&PathBuf>,
+    catalog: &SourceArgs,
     flags: &WriteFlags,
     build: impl FnOnce(&Session) -> anyhow::Result<(Vec<CollectionChange>, Vec<Change>)>,
 ) -> anyhow::Result<()> {
@@ -800,7 +833,7 @@ fn main() -> anyhow::Result<()> {
                 "original" => ImageTier::Original,
                 other => anyhow::bail!("--tier is thumb, preview or original, not {other:?}"),
             };
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             if !no_sync {
                 sync(&session, false)?;
             }
@@ -811,7 +844,7 @@ fn main() -> anyhow::Result<()> {
             for row in result.rows {
                 let Some(id) = session.library.photo_id(row) else { continue };
                 let started = Instant::now();
-                let Some(source) = session.source.image(&id, tier)? else {
+                let Some(source) = tier_image(&session, &id, tier)? else {
                     eprintln!("{}: no {tier:?} image", id.ext);
                     continue;
                 };
@@ -833,7 +866,7 @@ fn main() -> anyhow::Result<()> {
                 (None, true) => None,
                 _ => anyhow::bail!("pass --set 0..5 or --clear"),
             };
-            edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetRating { base: p.rating, value })?;
+            edit(&cli.target, &select, &write, |p| Op::SetRating { base: p.rating, value })?;
         }
         Command::Color { select, set, write } => {
             let value = match set.trim().to_ascii_lowercase().as_str() {
@@ -842,13 +875,13 @@ fn main() -> anyhow::Result<()> {
                     format!("unknown colour {set:?}; choose none, red, orange, yellow, green, blue, pink or purple")
                 })?),
             };
-            edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetColor { base: p.color, value })?;
+            edit(&cli.target, &select, &write, |p| Op::SetColor { base: p.color, value })?;
         }
         Command::Describe { select, description, headline, title, write } => {
             if description.is_none() && headline.is_none() && title.is_none() {
                 anyhow::bail!("pass --description, --headline or --title");
             }
-            edit(cli.catalog.as_ref(), &select, &write, |p| {
+            edit(&cli.target, &select, &write, |p| {
                 let mut value = p.iptc.clone();
                 set_text(&mut value.description, &description);
                 set_text(&mut value.headline, &headline);
@@ -878,7 +911,7 @@ fn main() -> anyhow::Result<()> {
             let touches_iptc = iptc.iter().any(|v| v.is_some());
             let touches_place = place.iter().any(|v| v.is_some());
             // One command, up to two ops per photo: planned and written together.
-            edit_many(cli.catalog.as_ref(), &select, &write, |p| {
+            edit_many(&cli.target, &select, &write, |p| {
                 let mut ops = Vec::new();
                 if touches_iptc {
                     let mut value = p.iptc.clone();
@@ -919,7 +952,7 @@ fn main() -> anyhow::Result<()> {
                 (None, None, true) => None,
                 _ => anyhow::bail!("pass --lat and --lon (or --at), or --clear"),
             };
-            edit(cli.catalog.as_ref(), &select, &write, |p| Op::SetGeo { base: p.geo, value })?;
+            edit(&cli.target, &select, &write, |p| Op::SetGeo { base: p.geo, value })?;
         }
         Command::Keyword { action } => {
             let (select, write, op) = match action {
@@ -933,7 +966,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 KeywordAction::Rename { path, to, write } => {
                     let path = KeywordPath::from_pipe(&path);
-                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::rename(path, &to)));
+                    return remap(&cli.target, &write, |_| Ok(KeywordRemap::rename(path, &to)));
                 }
                 KeywordAction::Move { path, to_parent, to_root, write } => {
                     if to_root == to_parent.is_some() {
@@ -941,21 +974,21 @@ fn main() -> anyhow::Result<()> {
                     }
                     let under = to_parent.map(|p| KeywordPath::from_pipe(&p));
                     let path = KeywordPath::from_pipe(&path);
-                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::group(vec![path], under)));
+                    return remap(&cli.target, &write, |_| Ok(KeywordRemap::group(vec![path], under)));
                 }
                 KeywordAction::Merge { from, into, write } => {
                     let from = from.iter().map(|p| KeywordPath::from_pipe(p)).collect();
                     let into = KeywordPath::from_pipe(&into);
-                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::join(from, into)));
+                    return remap(&cli.target, &write, |_| Ok(KeywordRemap::join(from, into)));
                 }
                 KeywordAction::Group { paths, under, write } => {
                     let paths = paths.iter().map(|p| KeywordPath::from_pipe(p)).collect();
                     let under = Some(KeywordPath::from_pipe(&under));
-                    return remap(cli.catalog.as_ref(), &write, |_| Ok(KeywordRemap::group(paths, under)));
+                    return remap(&cli.target, &write, |_| Ok(KeywordRemap::group(paths, under)));
                 }
                 KeywordAction::Ungroup { path, write } => {
                     let group = KeywordPath::from_pipe(&path);
-                    return remap(cli.catalog.as_ref(), &write, |library| {
+                    return remap(&cli.target, &write, |library| {
                         let children: Vec<KeywordPath> = library
                             .keywords()?
                             .into_iter()
@@ -969,10 +1002,10 @@ fn main() -> anyhow::Result<()> {
                     });
                 }
             };
-            edit(cli.catalog.as_ref(), &select, &write, |_| op.clone())?;
+            edit(&cli.target, &select, &write, |_| op.clone())?;
         }
         Command::Album { action } => {
-            let catalog = cli.catalog.as_ref();
+            let catalog = &cli.target;
             let member = |photos: Vec<Photo>, id: &CollectionId, add: bool| -> Vec<Change> {
                 let op = if add {
                     Op::AddToCollection { collection: id.clone() }
@@ -1020,21 +1053,21 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Group { action: GroupAction::Create { name, parent, allow_duplicate, write } } => {
-            albums(cli.catalog.as_ref(), &write, |s| {
+            albums(&cli.target, &write, |s| {
                 Ok((vec![create(s, &name, CollectionKind::Group, parent.as_deref(), None, allow_duplicate)?], vec![]))
             })?
         }
         Command::Smart { action } => match action {
             SmartAction::Create { name, parent, rule, allow_duplicate, write } => {
                 let rule = rule.rule()?;
-                albums(cli.catalog.as_ref(), &write, |s| {
+                albums(&cli.target, &write, |s| {
                     let new = create(s, &name, CollectionKind::Smart, parent.as_deref(), Some(rule), allow_duplicate)?;
                     Ok((vec![new], vec![]))
                 })?
             }
             SmartAction::Rule { album, rule, write } => {
                 let rule = rule.rule()?;
-                albums(cli.catalog.as_ref(), &write, |s| {
+                albums(&cli.target, &write, |s| {
                     let id = CollectionId(s.library.resolve_collection(&album)?);
                     Ok((vec![CollectionChange::SetRule { id, rule }], vec![]))
                 })?
@@ -1044,19 +1077,44 @@ fn main() -> anyhow::Result<()> {
             bench::bench(&bench::Config { photos, keywords, queries, seed, dir, rebuild, dims: parse_dims(&dims)? })?;
         }
         Command::Sync => {
-            let session = open(cli.catalog.as_ref())?;
-            let report = session.library.sync(&session.source)?;
+            let session = open(&cli.target)?;
+            let report = session.library.sync(session.source.as_ref())?;
             println!("{}", serde_json::to_string_pretty(&report)?);
         }
+        Command::Rescan { no_sync } => {
+            let session = open(&cli.target)?;
+            let name = session.source.info().name;
+            session.source.rescan().with_context(|| format!("{name} cannot look for changes"))?;
+            if no_sync {
+                println!("asked {name} to look again; the next sync reads what it finds");
+            } else {
+                let report = session.library.sync(session.source.as_ref())?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            }
+        }
+        Command::Folders { action } => folders::run(action, &cli.target)?,
+        Command::Idbench { dir, limit, parallel, json } => {
+            let report = idbench::run(&dir, limit, parallel)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report.to_json())?);
+            } else {
+                println!("{report}");
+            }
+        }
         Command::Analyse { threads, stats, no_sync } => {
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             if !no_sync {
                 sync(&session, false)?;
             }
             let stop = std::sync::atomic::AtomicBool::new(false);
             let threads = threads.unwrap_or_else(c1index::analyse::default_threads);
-            let done =
-                c1index::analyse::run(&session.library, &session.source, &session.thumbs, threads, &stop, |p| {
+            let done = c1index::analyse::run(
+                &session.library,
+                session.source.as_ref(),
+                &session.thumbs,
+                threads,
+                &stop,
+                |p| {
                     eprintln!(
                         "measured {} of {} ({} unreadable) in {:.1} s",
                         p.done,
@@ -1064,7 +1122,8 @@ fn main() -> anyhow::Result<()> {
                         p.failed,
                         p.millis as f64 / 1000.0
                     );
-                })?;
+                },
+            )?;
             let per = if done.done > 0 { done.millis as f64 / done.done as f64 } else { 0.0 };
             println!(
                 "{} measured, {} unreadable, {:.1} s ({per:.2} ms a photo, {threads} threads)",
@@ -1077,49 +1136,49 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Backups { json } => {
-            let session = open(cli.catalog.as_ref())?;
-            let list = session.source.backups();
+            let session = open(&cli.target)?;
+            let list = session.source.backups()?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&list)?);
             } else {
                 for b in &list {
                     let note = b.note.as_deref().map(|n| format!("  ({n})")).unwrap_or_default();
-                    println!(
-                        "{}  {:>6} MB  {}{note}",
-                        b.created.replace('T', " "),
-                        b.size / 1_000_000,
-                        b.backup.display()
-                    );
+                    println!("{}  {:>6} MB  {}{note}", local_time(b.created_ms), b.size / 1_000_000, b.path);
                 }
                 println!("{} backup(s)", list.len());
             }
         }
         Command::Restore { name, apply } => {
-            let session = open(cli.catalog.as_ref())?;
-            let Some(chosen) = session.source.backups().into_iter().find(|b| b.backup.ends_with(&name)) else {
+            let session = open(&cli.target)?;
+            let Some(chosen) = session.source.backups()?.into_iter().find(|b| b.id == name || b.path.ends_with(&name))
+            else {
                 anyhow::bail!("no backup {name:?}; `backups` lists them");
             };
-            println!("restore   {} ({})", chosen.backup.display(), chosen.created.replace('T', " "));
-            println!("over      {}", session.source.catalog_path().display());
+            println!("restore   {} ({})", chosen.path, local_time(chosen.created_ms));
+            println!("over      {}", session.spec.location);
             if !apply {
-                println!("dry run: nothing changed; add --apply to restore (the catalog is backed up first)");
+                println!("dry run: nothing changed; add --apply to restore (the source is backed up first)");
                 return Ok(());
             }
-            let file = chosen.backup.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            let before = PhotoSource::restore(&session.source, &file)?;
-            println!("restored; the catalog it replaced is kept as {}", before.path);
+            let before = session.source.restore(&chosen.id)?;
+            println!("restored; what it replaced is kept as {}", before.path);
             sync(&session, true)?;
         }
         Command::Status => {
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             let info = session.source.info();
-            println!("catalog   {}", session.source.catalog_path().display());
-            println!("source    {} (schema {})", info.name, info.version);
+            println!("source    {} ({})", info.name, session.spec.provider);
+            println!("location  {}", session.spec.location);
+            println!("format    {} (version {})", info.compatibility.format, info.version);
+            println!("support   read {:?}, write {:?}", info.compatibility.read, info.compatibility.write);
+            if let Some(note) = &info.compatibility.note {
+                println!("note      {note}");
+            }
             println!("writes    {:?}", session.source.write_status());
             println!("library   {} photos in {}", session.library.len(), session.library.dir().display());
         }
         Command::Find { select, sort, limit, offset, print_ids, json, no_sync } => {
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             if !no_sync {
                 sync(&session, print_ids || json)?;
             }
@@ -1156,7 +1215,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Command::Count { select, no_sync } => {
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             if !no_sync {
                 sync(&session, true)?;
             }
@@ -1165,7 +1224,7 @@ fn main() -> anyhow::Result<()> {
             println!("{}", result.total);
         }
         Command::Trips { select, home, gap_hours, json, no_sync } => {
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             if !no_sync {
                 sync(&session, false)?;
             }
@@ -1234,7 +1293,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
         Command::Facets { select, dims, top, no_sync } => {
-            let session = open(cli.catalog.as_ref())?;
+            let session = open(&cli.target)?;
             if !no_sync {
                 sync(&session, false)?;
             }

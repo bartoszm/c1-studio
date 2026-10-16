@@ -1,8 +1,8 @@
 # c1cat
 
-`c1cat` is the c1-studio library from the command line: search a Capture One catalog,
-count and facet it, render its images, and edit ratings, colour tags, captions, IPTC,
-GPS and keywords. Selection flags are spelled as the Python `c1cat` spelled them
+`c1cat` is the c1-studio library from the command line: search a photo source (a
+Capture One catalog, or plain photo folders), count and facet it, render its images, and
+edit ratings, colour tags, captions, IPTC, GPS and keywords. Selection flags are spelled as the Python `c1cat` spelled them
 (`legacy/c1cat-py`), so the two can be compared command for command.
 
 ```powershell
@@ -12,29 +12,44 @@ $c1 = '.\target\release\c1cat.exe'
 & $c1 find --help
 ```
 
-## Catalog and library
+## Source and library
 
-The catalog is the first of:
+Every command (except `bench`, `idbench` and `folders`) works on one source, the way the
+desktop app opens one. Two options, accepted by every command, choose it:
 
-1. `--catalog PATH` (accepted by every command)
-2. `C1_CATALOG`
-3. `%APPDATA%\c1studio\config.json`: `{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`
-4. the only `*.cocatalogdb` under `C:\c1_catalogs\*\`
+- `--source PATH`: a Capture One catalog file, a folder holding one, or a `.c1folders`
+  definition (or a folder holding one). `--catalog` is the old name and still works.
+- `--provider ID`: use this provider (`capture-one`, `folders`) instead of the first that
+  recognises the path; with no `--source`, only sources of that provider are considered.
 
-The library (redb store + tantivy index) and write backups live in
-`%LOCALAPPDATA%\c1studio\<catalog id>\`. The library takes a lock, so `c1cat` cannot
-run while the desktop app has the same catalog open ("Database already open. Cannot
-acquire lock").
+The source is the first of:
 
-Every command except `bench` syncs the library from the catalog first; that is quick
-when nothing changed. Pass `--no-sync` to skip it.
+1. `--source PATH`
+2. `C1_CATALOG` (a Capture One catalog)
+3. the source the app opened last (`%APPDATA%\c1studio\sources.json`)
+4. the old Capture One search: `%APPDATA%\c1studio\config.json`
+   (`{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`), then the only
+   `*.cocatalogdb` under `C:\c1_catalogs\*\`
+
+A source that was asked for and cannot be opened is an error; the next step is not tried
+in its place. When none is found, the error lists what was tried.
+
+The library (redb store + tantivy index), thumbnails and write backups live in
+`%LOCALAPPDATA%\c1studio\<source key>\`, the same folder the app uses, so the two share
+them. For a Capture One catalog the key is the one `c1cat` always used (the catalog's
+name and a hash of its path). The library takes a lock, so `c1cat` cannot run while the
+desktop app has the same source open ("Database already open. Cannot acquire lock").
+
+Every command except `bench`, `idbench` and `folders` syncs the library from the source
+first; that is quick when nothing changed. Pass `--no-sync` to skip it.
 
 ## Reading
 
 | Command | Does |
 |---|---|
-| `sync` | Pull the catalog into the library; prints the report as JSON. The first run indexes everything. |
-| `status` | Catalog path, source schema, whether writes are possible, library size. |
+| `sync` | Pull the source into the library; prints the report as JSON. The first run indexes everything. |
+| `rescan [--no-sync]` | Make the source look again for changes it cannot see by itself (photo files added, moved or removed on disk), then sync and print the report. `--no-sync` only asks; the next command's sync reads what it found. Capture One cannot do this, and says so. |
+| `status` | Source name and provider, location, format and how far it is tested (read, write), whether writes are possible, library size. |
 | `find` | List matching photos. |
 | `count` | Print the number of matches. |
 | `facets` | Count values per dimension over the matches. |
@@ -89,8 +104,11 @@ set (the app's Trips section and this command share the setting).
 
 **image**
 
-- `--tier`: `thumb`, `preview` (default; Capture One's preview, white-balanced here) or
-  `original` (the JPEG embedded in the raw).
+- `--tier`: `thumb`, `preview` (default) or `original`. A thumbnail is the source's own
+  or, for a source with none (photo folders), one made and kept in the library's
+  `thumbs` folder, as the app does. A preview is the source's own (Capture One's,
+  white-balanced here) or one the source makes from the original. `original` is the file
+  itself (a raw gives the JPEG embedded in it).
 - `-o, --out DIR` (required), `--size PX` for the longer edge (0 keeps the size),
   `--limit N` (default 10).
 - Files are named `<id>-<tier>.jpg`. Photos with no image at that tier are reported on
@@ -215,8 +233,8 @@ and *Recent Imports* are never changed, and projects are deleted in Capture One.
 
 | Command | Does |
 |---|---|
-| `backups [--json]` | The backups made before writes, newest first: when, size, file. |
-| `restore BACKUP [--apply]` | Put a backup (its file name, or the end of it) back as the catalog. The catalog as it is now is backed up first, and the path printed; restoring that undoes it. Capture One must be closed. |
+| `backups [--json]` | The backups made before writes, newest first: when, size, where. |
+| `restore BACKUP [--apply]` | Put a backup (its name, or the end of its path) back as the source. The source as it is now is backed up first, and the path printed; restoring that undoes it. Capture One must be closed. |
 
 ### How writes work
 
@@ -224,17 +242,77 @@ and *Recent Imports* are never changed, and projects are deleted in Capture One.
   many photos would change, how many already hold the value, and any conflicts.
 - **A selection is required.** Photo edits refuse to run with no filter, so a bare
   `rate --set 0` cannot touch the whole catalog.
-- **Capture One must be closed** for `--apply`. Writes are also refused while another
+- **Capture One must be closed** for `--apply` on a catalog (a photo folders source has
+  no such program to close). Writes are also refused while another
   program holds the catalog, a rollback journal is present, or the catalog's schema is
   not the one the writer was verified against; `status` shows which (`writes Ready`).
 - **Backup first.** Before writing, the catalog is copied to
-  `%LOCALAPPDATA%\c1studio\<catalog id>\work\backups\`; the path is printed. Writes in a
+  `%LOCALAPPDATA%\c1studio\<source key>\work\backups\`; the path is printed. Writes in a
   row within an hour share one backup if nothing else touched the catalog meanwhile.
   The newest 5 are kept.
 - **Conflicts.** A change is planned against the value the library last saw. If the
   catalog now holds something else, the change is reported as a conflict and skipped.
 - `--json` prints the outcome as JSON: `applied`, `backup`, and the ids to `apply`,
   `unchanged` and in `conflicts` (album commands add `collections`, what they do).
+
+## Photo folders
+
+A photo folders source is a few folders of JPEG, PNG, TIFF and raw files, described by a
+definition file (`*.c1folders`). The definition lists the folders (roots), what to leave
+out and where thumbnails and previews are kept; its path is the source's location. Photos
+keep their id when files are moved or renamed, or a root is picked again, so the ratings,
+keywords and albums made here stay with them.
+
+Make a definition, then open it like any source:
+
+```powershell
+& $c1 folders init --name 'Family archive' --exclude '**/tmp/**' D:\Photos E:\Scans
+# prints the file (by default in %APPDATA%\c1studio\sources) and:
+#   hint: c1cat --source <file> sync
+$def = 'C:\Users\me\AppData\Roaming\c1studio\sources\family-archive-1a2b3c4d.c1folders'
+& $c1 --source $def sync
+& $c1 --source $def find --rating '>=4' --limit 20
+& $c1 --source $def rescan                  # after files were added on disk
+```
+
+The roots are walked when the source is opened and by `rescan`; in between, commands read
+what was kept. Edits (`rate`, `keyword`, `album`, ...) are the same commands as for
+Capture One. They are kept in the source's own store, on top of what the files say, and
+still need `--apply`.
+
+| Command | Does |
+|---|---|
+| `folders init --name NAME [--exclude GLOB]... [--out FILE] [--force] ROOT...` | Make a definition and save it, by default in `%APPDATA%\c1studio\sources`; `--out` is a file, or a folder to put it in. Prints the path. Refuses to replace a file unless `--force` (which gives the source a new id). |
+| `folders show [PATH] [--json]` | Print a definition: roots, excludes, image store. Defaults to the one `--source` names. |
+| `folders add-root ROOT [--label TEXT] [--file FILE]` | Add a folder. |
+| `folders remove-root ROOT [--file FILE]` | Take a folder out (give its path, or its id from `show`). Its photos are kept, detached, and come back if it is added again. |
+| `folders set-store central\|per-root\|beside\|custom [--limit-mb MB] [--thumb PATTERN --preview PATTERN] [--move\|--regenerate] [--file FILE]` | Where thumbnails and previews are kept: the app's data folder (limited to `--limit-mb`, 0 for none), `.c1studio` under each root, a `.previews` folder beside each photo, or your own path patterns (`custom`, which needs both `--thumb` and `--preview`, such as `{dir}/.previews/{stem}.{tier}.jpg`). The patterns are checked first, and, once the source has been read, against its photos: a store that would give two photos one file (a RAW and its JPEG with `{stem}`) is refused. If images were already made in the old place, one of `--move` (move them to where the new store puts them) or `--regenerate` (delete them; they are made again as needed) is required, and the command changes nothing without it. It prints how many were moved, deleted or failed. Close the app first: it holds the source's store open. |
+
+`--file` defaults to the definition `--source` names. Excludes are globs matched against a
+path below its root, with `/` separators: `**/tmp/**`, `*.tmp`. The `.c1studio` and
+`.previews` folders are always left out.
+
+### idbench
+
+`idbench DIR [--limit N] [--parallel] [--json]` times the stable ids and looks for the risk in them.
+A photo is told apart by its size and a hash of the first and last 64 KB of the file, so
+each photo costs at most 128 KB of reading. `idbench` walks `DIR` for photo files (at
+most `--limit`), keys them one at a time (or with `--parallel` on all cores at once, which
+is how a scan does it), and reports:
+
+- files and total size, seconds, files per second, and MB per second actually read;
+- the keys more than one file has, split into files with the same content (copies, which
+  is fine) and files with different content (two photos that would share an id: should
+  be none);
+- the time the whole-file hashes of those files took.
+
+```powershell
+& $c1 idbench D:\Photos --limit 5000
+& $c1 idbench D:\Photos --json
+```
+
+Run it on a folder not read recently to see disk speed rather than the cache's; it does
+not change anything.
 
 ## Analysis
 

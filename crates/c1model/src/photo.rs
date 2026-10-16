@@ -129,6 +129,10 @@ pub struct FileInfo {
     /// Where the original lives, in this machine's native form (`H:\fotos\x.RAF`).
     pub path: Option<String>,
     pub size: Option<u64>,
+    /// The file's volume or folder is not reachable now (a removable drive that is not
+    /// plugged in). The photo and everything known about it stay.
+    #[serde(default)]
+    pub offline: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -289,4 +293,27 @@ pub struct KeywordNode {
     pub path: KeywordPath,
     /// How many photos carry exactly this keyword.
     pub uses: u32,
+}
+
+impl KeywordNode {
+    /// The keyword tree of a set of photos' keywords: every keyword and every level above
+    /// it, in order of first appearance, with how many times each was used as given.
+    pub fn tree<'a>(keywords: impl IntoIterator<Item = &'a KeywordPath>) -> Vec<KeywordNode> {
+        let mut tree: Vec<KeywordNode> = Vec::new();
+        let mut at: std::collections::HashMap<KeywordPath, usize> = std::collections::HashMap::new();
+        for path in keywords {
+            for n in 1..=path.0.len() {
+                let level = KeywordPath(path.0[..n].to_vec());
+                let uses = u32::from(n == path.0.len());
+                match at.get(&level) {
+                    Some(&i) => tree[i].uses += uses,
+                    None => {
+                        at.insert(level.clone(), tree.len());
+                        tree.push(KeywordNode { path: level, uses });
+                    }
+                }
+            }
+        }
+        tree
+    }
 }

@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::change::{Change, Op};
 use crate::photo::{Photo, PhotoId};
-use crate::source::{Field, PhotoSource, SourceError, SourceEvent, WriteStatus};
+use crate::source::{Cursor, Field, PhotoSource, SourceError, SourceEvent, WriteStatus};
 
 /// Collects a full snapshot, checking event order along the way.
 pub fn collect(source: &dyn PhotoSource) -> Result<(Vec<Photo>, Vec<String>), SourceError> {
@@ -119,6 +119,140 @@ pub fn check_write(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
     problems
 }
 
+/// Incremental snapshots: asked again with the cursor it just gave, an unchanged source
+/// sends `BeginIncremental` then `End`; after a rating write to `probe`, a snapshot from the
+/// earlier cursor either starts over (`BeginFull`) or carries the probe and no other photo.
+/// Leaves the probe as it found it. The write half is skipped when ratings cannot be written.
+pub fn check_incremental(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
+    let mut problems = Vec::new();
+    let run = |since: Option<&Cursor>| -> Result<Vec<SourceEvent>, SourceError> {
+        let mut events = Vec::new();
+        source.snapshot(since, &mut |e| {
+            events.push(e);
+            Ok(())
+        })?;
+        Ok(events)
+    };
+    let end = |events: &[SourceEvent]| match events.last() {
+        Some(SourceEvent::End(c)) => Some(c.clone()),
+        _ => None,
+    };
+    let first = match run(None) {
+        Ok(events) => events,
+        Err(e) => return vec![format!("snapshot failed: {e}")],
+    };
+    let Some(cursor) = end(&first) else {
+        return vec!["snapshot did not end with End".to_owned()];
+    };
+    match run(Some(&cursor)) {
+        Ok(events) if matches!(events.as_slice(), [SourceEvent::BeginIncremental, SourceEvent::End(_)]) => {}
+        Ok(events) => problems.push(format!("unchanged source should send BeginIncremental, End; sent {events:?}")),
+        Err(e) => problems.push(format!("incremental snapshot failed: {e}")),
+    }
+    if !source.capabilities().can_write(Field::Rating) || source.write_status() != WriteStatus::Ready {
+        return problems;
+    }
+    let Some(before) = first.iter().find_map(|e| match e {
+        SourceEvent::Upsert(p) if &p.id == probe => Some(p.rating),
+        _ => None,
+    }) else {
+        problems.push(format!("probe {probe} not in snapshot"));
+        return problems;
+    };
+    let target = if before == Some(5) { Some(4) } else { Some(5) };
+    let set = |base, value| Change { photo: probe.clone(), op: Op::SetRating { base, value } };
+    if let Err(e) = source.plan(&[set(before, target)]).and_then(|plan| source.apply(&plan)) {
+        problems.push(format!("write failed: {e}"));
+        return problems;
+    }
+    match run(Some(&cursor)) {
+        Ok(events) => {
+            let full = matches!(events.first(), Some(SourceEvent::BeginFull));
+            let upserts: Vec<&Photo> = events
+                .iter()
+                .filter_map(|e| match e {
+                    SourceEvent::Upsert(p) => Some(&**p),
+                    _ => None,
+                })
+                .collect();
+            match upserts.iter().find(|p| &p.id == probe) {
+                Some(p) if p.rating != target => problems.push("changed probe sent with the old rating".to_owned()),
+                Some(_) => {}
+                None => problems.push("changed probe missing from the snapshot after a write".to_owned()),
+            }
+            if !full && upserts.iter().any(|p| &p.id != probe) {
+                problems.push("incremental snapshot sent photos that did not change".to_owned());
+            }
+            if !full && events.iter().any(|e| matches!(e, SourceEvent::Delete(_))) {
+                problems.push("incremental snapshot deleted photos after a rating write".to_owned());
+            }
+        }
+        Err(e) => problems.push(format!("snapshot after a write failed: {e}")),
+    }
+    if let Ok(plan) = source.plan(&[set(target, before)]) {
+        let _ = source.apply(&plan);
+    }
+    problems
+}
+
+/// Backups: after a rating write to `probe`, restoring the newest backup made before it
+/// brings the old rating back, and the restore itself returns a backup of the state it
+/// replaced. Skipped (no problems) when the source keeps no backups or cannot write ratings.
+/// Leaves the probe as it found it.
+pub fn check_backup(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
+    if !source.capabilities().can_write(Field::Rating) || source.write_status() != WriteStatus::Ready {
+        return Vec::new();
+    }
+    let rating = |source: &dyn PhotoSource| -> Option<Option<u8>> {
+        collect(source).ok()?.0.into_iter().find(|p| &p.id == probe).map(|p| p.rating)
+    };
+    let Some(before) = rating(source) else {
+        return vec![format!("probe {probe} not in snapshot")];
+    };
+    let target = if before == Some(5) { Some(4) } else { Some(5) };
+    let set = |base, value| Change { photo: probe.clone(), op: Op::SetRating { base, value } };
+    let report = match source.plan(&[set(before, target)]).and_then(|plan| source.apply(&plan)) {
+        Ok(report) => report,
+        Err(e) => return vec![format!("write failed: {e}")],
+    };
+    let backups = match source.backups() {
+        Ok(b) => b,
+        Err(e) => return vec![format!("backups() failed: {e}")],
+    };
+    let mut problems = Vec::new();
+    if backups.is_empty() {
+        if report.backup.is_some() {
+            problems.push("apply reported a backup that backups() does not list".to_owned());
+        }
+        if let Ok(plan) = source.plan(&[set(target, before)]) {
+            let _ = source.apply(&plan);
+        }
+        return problems;
+    }
+    if backups.windows(2).any(|w| w[0].created_ms < w[1].created_ms) {
+        problems.push("backups() is not newest first".to_owned());
+    }
+    match source.restore(&backups[0].id) {
+        Ok(undo) => {
+            if rating(source) != Some(before) {
+                problems.push("restoring the newest backup did not bring the old rating back".to_owned());
+            }
+            match source.backups() {
+                Ok(list) if list.iter().any(|b| b.id == undo.id) => {}
+                Ok(_) => problems.push("the backup made before restoring is not listed".to_owned()),
+                Err(e) => problems.push(format!("backups() failed after restore: {e}")),
+            }
+        }
+        Err(e) => {
+            problems.push(format!("restore failed: {e}"));
+            if let Ok(plan) = source.plan(&[set(target, before)]) {
+                let _ = source.apply(&plan);
+            }
+        }
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +295,16 @@ mod tests {
         let s = source();
         let probe = PhotoId::new(&SourceId("mem".into()), "2");
         assert_eq!(check_write(&s, &probe), Vec::<String>::new());
+        assert_eq!(s.photo(&probe).unwrap().rating, Some(3), "probe restored");
+    }
+
+    #[test]
+    fn memory_source_passes_incremental_and_backup_checks() {
+        let s = source();
+        let probe = PhotoId::new(&SourceId("mem".into()), "2");
+        // MemorySource starts over after a write, which the check accepts.
+        assert_eq!(check_incremental(&s, &probe), Vec::<String>::new());
+        assert_eq!(check_backup(&s, &probe), Vec::<String>::new(), "keeps no backups: skipped");
         assert_eq!(s.photo(&probe).unwrap().rating, Some(3), "probe restored");
     }
 

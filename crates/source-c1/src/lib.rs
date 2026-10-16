@@ -130,6 +130,7 @@ impl PhotoSource for CaptureOne {
             tiers: vec![ImageTier::Thumb, ImageTier::Preview, ImageTier::Original],
             geo_per_asset: true,
             collections: true,
+            rescan: false,
         }
     }
 
@@ -278,7 +279,7 @@ impl PhotoSource for CaptureOne {
         let applied = write::write(&mut con, plan, |c| self.variant_pk(&c.photo))?;
         drop(con);
         write::wrote(&self.catalog, &backup)?;
-        Ok(ApplyReport { applied, backup: Some(backup.backup.display().to_string()) })
+        Ok(ApplyReport { applied, backup: Some(backup.backup.display().to_string()), warnings: Vec::new() })
     }
 
     fn backups(&self) -> Result<Vec<BackupInfo>> {

@@ -7,6 +7,7 @@
 //!   previews): white balance, highlight scaling and the sRGB curve are applied here,
 //!   then the quarter turn and straightening, the colours of the source's own small
 //!   render, fitted pixel by pixel, and the crop.
+//! - PNG and TIFF originals: decoded like a JPEG.
 //! - Camera raws: the full-size JPEG the camera embedded, framed alike. Not a raw
 //!   conversion, so no edits show beyond the turn and crop.
 
@@ -52,7 +53,9 @@ pub(crate) fn io_err(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
 pub fn load(r: &ImageRef) -> Result<RgbImage> {
     let exif = !r.as_stored;
     let image = match r.format {
-        ImageFormat::Jpeg => jpeg(&std::fs::read(&r.path).map_err(io_err(&r.path))?, &r.path, exif),
+        ImageFormat::Jpeg | ImageFormat::Png | ImageFormat::Tiff => {
+            jpeg(&std::fs::read(&r.path).map_err(io_err(&r.path))?, &r.path, exif)
+        }
         ImageFormat::JpegXl => return Ok(frame(render_preview(r, Matching::Colours)?, r)),
         ImageFormat::Raw => match raw::embedded_jpeg(&r.path)? {
             Some(bytes) => jpeg(&bytes, &r.path, exif),
@@ -108,7 +111,14 @@ pub(crate) fn load_jpeg(path: &Path) -> Result<RgbImage> {
     jpeg(&std::fs::read(path).map_err(io_err(path))?, path, true)
 }
 
-/// Decodes a JPEG, turned as its EXIF orientation says when `exif`.
+/// The full-size JPEG a camera raw embeds (Fuji RAF, TIFF-based raws such as DNG, NEF,
+/// CR2, ARW), or `None` if it has none this reader finds.
+pub fn embedded_jpeg(path: &Path) -> Result<Option<Vec<u8>>> {
+    raw::embedded_jpeg(path)
+}
+
+/// Decodes a JPEG (or PNG or TIFF: the format is sniffed), turned as its EXIF orientation
+/// says when `exif`.
 fn jpeg(bytes: &[u8], path: &Path, exif: bool) -> Result<RgbImage> {
     let mut decoder = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
@@ -121,4 +131,63 @@ fn jpeg(bytes: &[u8], path: &Path, exif: bool) -> Result<RgbImage> {
         image.apply_orientation(orientation);
     }
     Ok(image.into_rgb8())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gradient(w: u32, h: u32) -> RgbImage {
+        RgbImage::from_fn(w, h, |x, y| image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 90]))
+    }
+
+    fn plain(path: PathBuf, format: ImageFormat) -> ImageRef {
+        ImageRef {
+            path,
+            format,
+            white_balance: None,
+            rotation: 0,
+            as_stored: false,
+            monochrome: false,
+            look: None,
+            straighten: 0.0,
+            crop: None,
+        }
+    }
+
+    #[test]
+    fn png_and_tiff_originals_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = gradient(64, 32);
+        for (name, format) in [("a.png", ImageFormat::Png), ("a.tif", ImageFormat::Tiff)] {
+            let path = dir.path().join(name);
+            source.save(&path).unwrap();
+            let loaded = load(&plain(path, format)).unwrap();
+            assert_eq!(loaded.dimensions(), (64, 32), "{name}");
+            // Lossless formats: the pixels are the ones written.
+            assert_eq!(loaded, source, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_png_is_turned_and_fitted_as_the_ref_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.png");
+        gradient(64, 32).save(&path).unwrap();
+        let turned = load(&ImageRef { rotation: 90, ..plain(path.clone(), ImageFormat::Png) }).unwrap();
+        assert_eq!(turned.dimensions(), (32, 64));
+        let fitted = load_fitted(&plain(path, ImageFormat::Png), 16).unwrap();
+        assert_eq!(fitted.dimensions(), (16, 8));
+    }
+
+    #[test]
+    fn a_missing_or_broken_original_is_an_error_naming_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = load(&plain(dir.path().join("none.png"), ImageFormat::Png)).unwrap_err();
+        assert!(matches!(err, Error::Io { .. }) && err.to_string().contains("none.png"), "{err}");
+        let broken = dir.path().join("broken.tif");
+        std::fs::write(&broken, b"not a tiff").unwrap();
+        let err = load(&plain(broken, ImageFormat::Tiff)).unwrap_err();
+        assert!(matches!(err, Error::Decode { .. }) && err.to_string().contains("broken.tif"), "{err}");
+    }
 }

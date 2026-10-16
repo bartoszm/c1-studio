@@ -18,6 +18,7 @@
 
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
 
   // Make an album, smart album or group; rename one; change a smart album's rule; or
   // delete one. Queued like any edit: it shows at once and is written on demand.
@@ -178,7 +179,7 @@
         {:else}
           The photos stay in the catalog; only their place in {doomed.length > 1 ? "these albums" : "the album"} goes.
         {/if}
-        Queued until you write to Capture One; Ctrl+Z takes it back.
+        Queued until you write to {source.word}; Ctrl+Z takes it back.
       </p>
       {#if doomed.length > 1}
         <ul class="doomed">
@@ -248,7 +249,7 @@
           Put the {picked.toLocaleString()} selected photo{picked === 1 ? "" : "s"} in it
         </label>
       {/if}
-      {#if mode !== "delete"}<p class="muted">Queued until you write to Capture One; Ctrl+Z takes it back.</p>{/if}
+      {#if mode !== "delete"}<p class="muted">Queued until you write to {source.word}; Ctrl+Z takes it back.</p>{/if}
     {/if}
 
     {#if typeof change === "string" && (name || mode === "rule" || mode === "move")}<p class="warn">{change}</p>{/if}

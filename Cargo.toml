@@ -11,6 +11,8 @@ authors = ["Bartosz Michalik <bartosz.michalik@gmail.com>"]
 [workspace.dependencies]
 c1model = { path = "crates/c1model" }
 source-c1 = { path = "crates/source-c1" }
+source-folders = { path = "crates/source-folders" }
+c1sources = { path = "crates/sources" }
 c1index = { path = "crates/c1index" }
 c1image = { path = "crates/c1image" }
 c1geo = { path = "crates/c1geo" }
@@ -27,11 +29,16 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 redb = "4"
 tantivy = "0.26"
 clap = { version = "4", features = ["derive"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "tiff"] }
 jxl-oxide = "0.12"
 rand = "0.10"
 tempfile = "3"
 uuid = { version = "1", features = ["v4"] }
+kamadak-exif = "0.6"
+quick-xml = "0.42"
+globset = "0.4"
+walkdir = "2"
+rayon = "1"
 
 # Dependencies are slow in debug builds (tantivy especially), which makes tests and
 # benchmarks misleading. Optimising them costs one slower first build.

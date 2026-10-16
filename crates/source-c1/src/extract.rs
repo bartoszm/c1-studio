@@ -183,6 +183,7 @@ fn load_variants(
                 ext,
                 path: Some(path),
                 size: int(17)?.and_then(|v| u64::try_from(v).ok()),
+                offline: false,
             },
             captured_at: secs_to_ms(float(6)?),
             imported_at: secs_to_ms(float(7)?),

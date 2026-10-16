@@ -16,6 +16,7 @@ fn photo(n: u32) -> Photo {
             ext: "raf".into(),
             path: Some(format!(r"H:\fotos\{}\DSCF{n:04}.RAF", 2020 + n % 3)),
             size: None,
+            offline: false,
         },
         // 2023-11-14 plus n days.
         captured_at: Some(1_700_000_000_000 + i64::from(n) * 86_400_000),
@@ -1451,6 +1452,24 @@ fn trip_edits_outlive_reopening_and_new_photos() {
     assert_eq!(list.trips.len(), 1);
     let t = &list.trips[0];
     assert_eq!((t.trip.id, t.trip.name.as_deref(), t.photos), (id, Some("Japan 2026"), 13));
+}
+
+#[test]
+fn offline_photos_are_told_apart() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::open(dir.path()).unwrap();
+    let photos = (1..=4)
+        .map(|n| {
+            let mut p = photo(n);
+            p.file.offline = n.is_multiple_of(2);
+            p
+        })
+        .collect();
+    library.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    assert_eq!(ids(&library, &Filter { offline: Some(true), ..Filter::default() }), [2, 4]);
+    assert_eq!(ids(&library, &Filter { offline: Some(false), ..Filter::default() }), [1, 3]);
+    assert_eq!(ids(&library, &Filter::default()), [1, 2, 3, 4]);
+    assert!(library.photo(0).unwrap().is_some());
 }
 
 #[test]
