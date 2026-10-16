@@ -38,9 +38,24 @@ export type Filter = {
   /** A trip's span: kept apart from `captured`, so days picked inside a trip narrow it. */
   trip?: TimeRange;
   camera?: string;
+  /** Exact camera models: any of them / none of them. */
+  cameras?: string[];
+  cameras_not?: string[];
+  /** None of these colour labels. */
+  colors_not?: Color[];
   country?: string;
   keywords_under?: string[];
+  /** None of these keywords, nor anything beneath them. */
+  keywords_under_not?: string[];
+  /** Photos with no keyword at all. */
+  unkeyworded?: boolean;
   collections?: string[];
+  not_in_collections?: string[];
+  /** In no album (`true`), or in at least one (`false`). */
+  uncollected?: boolean;
+  /** Each also holds / at least one of these holds. */
+  all_of?: Filter[];
+  any_of?: Filter[];
   /** Folder subtree, `H:/fotos/2026`. */
   folder?: string;
   /** From the analysis, each any of its values. */
