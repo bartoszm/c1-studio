@@ -1743,7 +1743,7 @@ fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool) {
 /// usable at once, and reads in the background.
 fn finish_opening(app: &AppHandle) {
     let boot = app.state::<Boot>();
-    if app.state::<App>().session().is_ok_and(|s| s.library.len() == 0) {
+    if app.state::<App>().session().is_ok_and(|s| s.library.is_empty()) {
         if let Err(e) = run_sync(app) {
             let _ = app.emit("sync-failed", e);
         }
