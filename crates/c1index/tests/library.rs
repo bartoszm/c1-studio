@@ -1,5 +1,6 @@
 use c1index::{
-    Dim, Filter, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, TimeRange, Trashed, What, parse_rating,
+    Dim, Filter, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed, What,
+    parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
@@ -67,6 +68,27 @@ fn ids(library: &Library, filter: &Filter) -> Vec<u32> {
     out.sort();
     assert_eq!(out.len(), result.total);
     out
+}
+
+#[test]
+fn a_sync_reports_reading_then_indexing_then_saving() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::open(dir.path()).unwrap();
+    let source = MemorySource::new("mem", (1..=600).map(photo).collect(), vec![]);
+    let mut steps = Vec::new();
+    library.sync_with(&source, Origin::Source, &mut |step| steps.push(step)).unwrap();
+    assert_eq!(steps.first(), Some(&SyncStep::Reading));
+    assert_eq!(steps.last(), Some(&SyncStep::Saving));
+    let counts: Vec<(usize, usize)> = steps
+        .iter()
+        .filter_map(|s| if let SyncStep::Indexing { done, total } = s { Some((*done, *total)) } else { None })
+        .collect();
+    // Every event is counted: the 600 photos, and what the source sends around them.
+    let total = counts[0].1;
+    assert!(total >= 600);
+    assert!(counts.iter().all(|(_, t)| *t == total));
+    assert!(counts.windows(2).all(|w| w[0].0 < w[1].0));
+    assert!(counts.len() >= 600 / 256);
 }
 
 #[test]

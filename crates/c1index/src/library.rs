@@ -126,6 +126,15 @@ pub struct PendingEdit {
     pub pending: Pending,
 }
 
+/// Where a sync is: reading the source (no count yet), putting what it sent into the
+/// index, or writing the index out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncStep {
+    Reading,
+    Indexing { done: usize, total: usize },
+    Saving,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct SyncReport {
     pub full: bool,
@@ -595,7 +604,19 @@ impl Library {
     /// [`Library::sync`], with what changed logged as coming from `origin` (a backup put
     /// back from the app, say).
     pub fn sync_as(&self, source: &dyn PhotoSource, origin: Origin) -> anyhow::Result<SyncReport> {
+        self.sync_with(source, origin, &mut |_| {})
+    }
+
+    /// [`Library::sync_as`], telling `progress` which step it is on: it is called often
+    /// while indexing, so it should be cheap.
+    pub fn sync_with(
+        &self,
+        source: &dyn PhotoSource,
+        origin: Origin,
+        progress: &mut dyn FnMut(SyncStep),
+    ) -> anyhow::Result<SyncReport> {
         let _one = self.syncing.lock().unwrap_or_else(|e| e.into_inner());
+        progress(SyncStep::Reading);
         let started = Instant::now();
         let source_id = source.info().id.0;
         let cursor_key = format!("cursor:{source_id}");
@@ -642,7 +663,11 @@ impl Library {
 
         // Sources send their albums before their photos, so photos are diffed against
         // albums already sorted out.
-        for event in events {
+        let total = events.len();
+        for (done, event) in events.into_iter().enumerate() {
+            if done % 256 == 0 {
+                progress(SyncStep::Indexing { done, total });
+            }
             match event {
                 SourceEvent::BeginFull => report.full = true,
                 SourceEvent::BeginIncremental => {}
@@ -781,6 +806,7 @@ impl Library {
 
         // Index first: if we crash between the two commits the store still holds the old
         // fingerprints, so the next sync redoes the work instead of losing it.
+        progress(SyncStep::Saving);
         writer.commit()?;
         batch.commit()?;
         edits.commit()?;

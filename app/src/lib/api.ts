@@ -336,6 +336,10 @@ export type CaptionField =
 export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | PlaceField | "geo" | CaptionField;
 
 export const status = () => invoke<Status>("status");
+/** How far opening a source has got; null once it is ready to use. Also sent as the
+ *  `startup-progress` event. */
+export type Startup = { step: "opening" | "reading" | "indexing" | "saving"; done: number; total: number };
+export const startupProgress = () => invoke<Startup | null>("startup_progress");
 export const sources = () => invoke<SourcesView>("sources");
 /** The system dialog for a provider's kind of source; null if cancelled. */
 export const pickSource = (provider: string) => invoke<string | null>("pick_source", { provider });
