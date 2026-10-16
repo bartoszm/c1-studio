@@ -1,5 +1,6 @@
 use c1index::{
-    Dim, Filter, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed, What, parse_rating,
+    Dim, Filter, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed, What,
+    parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
