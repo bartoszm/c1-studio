@@ -104,6 +104,31 @@ fn keywords_exact_under_and_not() {
 }
 
 #[test]
+fn multi_value_and_negated_filters() {
+    let (_d, lib, _s) = setup();
+    let f = |f: Filter| ids(&lib, &f);
+    assert_eq!(f(Filter { collections_any: vec!["10".into(), "99".into()], ..Filter::default() }), [1, 2, 3, 4]);
+    assert_eq!(f(Filter { uncollected: Some(true), ..Filter::default() }), [5, 6, 7, 8, 10]);
+    assert_eq!(f(Filter { uncollected: Some(false), ..Filter::default() }), [1, 2, 3, 4]);
+    assert_eq!(f(Filter { cameras: vec!["X100VI".into()], ..Filter::default() }), [2, 4, 6, 8, 10]);
+    assert_eq!(f(Filter { cameras_not: vec!["X100VI".into()], ..Filter::default() }), [1, 3, 5, 7]);
+    assert!(f(Filter { lenses_not: vec!["XF23mmF2 R WR".into()], ..Filter::default() }).is_empty());
+    assert_eq!(f(Filter { colors_not: vec![ColorLabel::Red], ..Filter::default() }), [1, 2, 4, 5, 6, 7, 8, 10]);
+    // "No keywords" OR rated 4 and up.
+    let either = Filter {
+        any_of: vec![
+            Filter { unkeyworded: true, ..Filter::default() },
+            Filter { rating: Some(parse_rating(">=4").unwrap()), ..Filter::default() },
+        ],
+        ..Filter::default()
+    };
+    assert_eq!(f(either), [2, 4, 5, 8]);
+    // Picking a camera leaves its alternatives countable.
+    let picked = Filter { cameras: vec!["X100VI".into()], ..Filter::default() };
+    assert!(picked.without(Dim::Camera).cameras.is_empty());
+}
+
+#[test]
 fn substring_text_folder_and_geo() {
     let (_d, lib, _s) = setup();
     assert_eq!(ids(&lib, &Filter { camera: Some("x100".into()), ..Filter::default() }), [2, 4, 6, 8, 10]);

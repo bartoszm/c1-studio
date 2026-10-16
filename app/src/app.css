@@ -143,6 +143,8 @@ aside section { padding: 4px 0; }
 .node .name { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .node .n { color: var(--muted); font-variant-numeric: tabular-nums; }
 .node.on .icon { color: var(--text); }
+.node.out .name, .facet.out .name, .none-row.out .name { color: var(--error); text-decoration: line-through; }
+.node.out, .facet.out, .none-row.out { background: color-mix(in srgb, var(--error) 14%, transparent); }
 /* Changed here and not yet written to Capture One. */
 .node.queued .name { color: var(--queued); }
 
@@ -551,3 +553,17 @@ footer > span { white-space: nowrap; }
 .info-panel .places li, .info-panel .fill-places li { flex-wrap: nowrap; }
 .info-panel .places li > .link, .info-panel .fill-places li > .link { flex: 1 1 auto; min-width: 0; text-align: left; }
 .info-panel .places .count, .info-panel .fill-places .count { flex: none; }
+
+/* Multi-criteria: Match toggle, rating operator, "No …" rows. */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.seg button { padding: 1px 9px; color: var(--muted); }
+.seg button:hover { background: var(--hover); }
+.seg button.on { background: var(--on); color: var(--text); }
+.match { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.rating-op { display: flex; align-items: center; gap: 8px; padding: 2px 8px 4px; color: var(--muted); }
+.none-row { display: flex; width: 100%; align-items: center; padding: 3px 8px 3px 24px; text-align: left; font-style: italic; }
+.none-row:hover { background: var(--hover); }
+.none-row.on { background: var(--on); }
+.none-row .name { flex: 1; }
+.none-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.chip.out .text { color: var(--error); text-decoration: line-through; }

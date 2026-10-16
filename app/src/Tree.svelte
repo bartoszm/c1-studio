@@ -6,9 +6,11 @@
 
   // One level of a tree; expanded children render a nested Tree, so closed branches
   // cost nothing however large they are.
-  let { nodes, selected, expanded, onpick, oncontext, drag, candrop, ondropnode, depth = 0 }: {
+  let { nodes, selected, mark, expanded, onpick, oncontext, drag, candrop, ondropnode, depth = 0 }: {
     nodes: Node[];
     selected: string | undefined;
+    /** Whether a node is picked in (✓) or out (excluded): several can be at once. */
+    mark?: (node: Node) => "in" | "out" | null;
     expanded: SvelteSet<string>;
     onpick: (node: Node) => void;
     /** Right-click on a node (its menu). */
@@ -32,15 +34,17 @@
 
 {#each nodes as node (node.key)}
   {@const open = expanded.has(node.key)}
+  {@const m = mark?.(node) ?? null}
   <div
     class="node"
-    class:on={selected === node.key}
+    class:on={selected === node.key || m === "in"}
+    class:out={m === "out"}
     class:empty={node.count === 0}
     class:queued={node.queued}
     style:padding-left="{6 + depth * 14}px"
     title={node.disabled ?? (node.queued ? "Changed here; not yet written to Capture One" : undefined)}
     role="treeitem"
-    aria-selected={selected === node.key}
+    aria-selected={selected === node.key || m === "in"}
     tabindex="-1"
     oncontextmenu={oncontext && ((e) => { e.preventDefault(); oncontext(node, e); })}
     class:drop={over === node.key}
@@ -82,6 +86,6 @@
     </button>
   </div>
   {#if open && node.children.length}
-    <Tree nodes={node.children} {selected} {expanded} {onpick} {oncontext} {drag} {candrop} {ondropnode} depth={depth + 1} />
+    <Tree nodes={node.children} {selected} {mark} {expanded} {onpick} {oncontext} {drag} {candrop} {ondropnode} depth={depth + 1} />
   {/if}
 {/each}
