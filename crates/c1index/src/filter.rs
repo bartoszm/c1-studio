@@ -123,6 +123,8 @@ pub struct Filter {
     /// Each of these, or anything beneath it.
     pub keywords_under: Vec<String>,
     pub keywords_not: Vec<String>,
+    /// None of these, nor anything beneath them.
+    pub keywords_under_not: Vec<String>,
     /// For each of these, some keyword with a name containing it at any level of its
     /// path, ignoring case (Capture One's "keywords contains").
     pub keywords_containing: Vec<String>,
@@ -146,6 +148,17 @@ pub struct Filter {
     /// Collection ids the photo must be in (each).
     pub collections: Vec<String>,
     pub not_in_collections: Vec<String>,
+    /// In at least one of these.
+    pub collections_any: Vec<String>,
+    /// In no collection at all (`true`), or in at least one (`false`).
+    pub uncollected: Option<bool>,
+    /// Exact camera models, any of them / none of them.
+    pub cameras: Vec<String>,
+    pub cameras_not: Vec<String>,
+    pub lenses: Vec<String>,
+    pub lenses_not: Vec<String>,
+    /// None of these colour labels.
+    pub colors_not: Vec<ColorLabel>,
     pub gps: Option<bool>,
     /// Photos without a position of their own (none, or one given from their place's
     /// name: [`flag::COARSE_GPS`]), or only those with one.
@@ -257,7 +270,7 @@ impl Filter {
 
     /// This filter with the parts that pick values of `dim` left out: what a sidebar
     /// group counts over, so that picking one value leaves its alternatives visible.
-    /// Exclusions (`keywords_not`, `not_in_collections`) stay, as they hide rather than pick.
+    /// The exclusions of the dimension go too, so an excluded value stays listed to be let go of.
     pub fn without(&self, dim: Dim) -> Filter {
         let mut f = self.clone();
         match dim {
@@ -265,11 +278,28 @@ impl Filter {
             Dim::Keyword => {
                 f.keywords.clear();
                 f.keywords_any.clear();
+                f.keywords_not.clear();
             }
-            Dim::KeywordTree => f.keywords_under.clear(),
-            Dim::Collection => f.collections.clear(),
-            Dim::Camera => f.camera = None,
-            Dim::Lens => f.lens = None,
+            Dim::KeywordTree => {
+                f.keywords_under.clear();
+                f.keywords_under_not.clear();
+            }
+            Dim::Collection => {
+                f.collections.clear();
+                f.collections_any.clear();
+                f.not_in_collections.clear();
+                f.uncollected = None;
+            }
+            Dim::Camera => {
+                f.camera = None;
+                f.cameras.clear();
+                f.cameras_not.clear();
+            }
+            Dim::Lens => {
+                f.lens = None;
+                f.lenses.clear();
+                f.lenses_not.clear();
+            }
             Dim::Country => f.country = None,
             Dim::State => f.state = None,
             Dim::City => f.city = None,
@@ -283,7 +313,10 @@ impl Filter {
                 f.captured = None;
             }
             Dim::Rating => f.rating = None,
-            Dim::Color => f.color = None,
+            Dim::Color => {
+                f.color = None;
+                f.colors_not.clear();
+            }
             Dim::Ext => f.ext.clear(),
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
@@ -294,6 +327,13 @@ impl Filter {
             Dim::Focus => f.focus.clear(),
             Dim::Group => f.group = None,
             Dim::Flag => {}
+        }
+        // Alternatives (the UI's "match any"): a group that picks among this dimension's
+        // values is left out whole, as one alternative less would hide the values that
+        // picking another would add.
+        f.all_of = f.all_of.iter().map(|s| s.without(dim)).collect();
+        if f.any_of.iter().any(|s| s.without(dim) != *s) {
+            f.any_of.clear();
         }
         f
     }
@@ -363,6 +403,9 @@ impl Filter {
         }
         for path in &self.keywords_not {
             must_not.push(term(kw, path));
+        }
+        for path in &self.keywords_under_not {
+            must_not.push(term(tree, path));
         }
         for needle in &self.keywords_containing {
             let needle = needle.to_lowercase();
@@ -437,6 +480,27 @@ impl Filter {
         }
         for id in &self.not_in_collections {
             must_not.push(term(coll, id));
+        }
+        if !self.collections_any.is_empty() {
+            must.push(any_of(coll, self.collections_any.iter().cloned()));
+        }
+        match self.uncollected {
+            Some(true) => must_not.push(Box::new(ExistsQuery::new(Dim::Collection.field_name().to_owned(), false))),
+            Some(false) => must.push(Box::new(ExistsQuery::new(Dim::Collection.field_name().to_owned(), false))),
+            None => {}
+        }
+        for (dim, include, exclude) in
+            [(Dim::Camera, &self.cameras, &self.cameras_not), (Dim::Lens, &self.lenses, &self.lenses_not)]
+        {
+            if !include.is_empty() {
+                must.push(any_of(f.dim(dim), include.iter().cloned()));
+            }
+            if !exclude.is_empty() {
+                must_not.push(any_of(f.dim(dim), exclude.iter().cloned()));
+            }
+        }
+        if !self.colors_not.is_empty() {
+            must_not.push(any_of(f.dim(Dim::Color), self.colors_not.iter().map(|c| c.name().to_owned())));
         }
 
         match self.gps {

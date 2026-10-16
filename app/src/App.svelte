@@ -9,6 +9,10 @@
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
+  import {
+    RATING_OPS, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
+    type Match, type Pick, type RatingOp,
+  } from "./lib/criteria";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
@@ -345,7 +349,7 @@
   async function run(keep = false) {
     const mine = ++generation;
     untrack(() => (filter = following(filter)));
-    const asked = $state.snapshot(filter);
+    const asked = compile($state.snapshot(filter), match);
     const groups = dims;
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
@@ -424,7 +428,7 @@
     if (pending) return pending;
     const mine = generation;
     const into = pages;
-    const p = api.query($state.snapshot(filter), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
+    const p = api.query(compile($state.snapshot(filter), match), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
       .then((r) => { if (mine === generation) into.set(page, r.rows); })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
@@ -515,8 +519,10 @@
   async function refreshCollections() {
     collections = await api.collections();
     const ids = new Set(collections.map((c) => c.id));
-    const kept = filter.collections?.filter((id) => ids.has(id));
-    if (kept && kept.length !== filter.collections?.length) filter = { ...filter, collections: kept.length ? kept : undefined };
+    for (const key of ["collections", "not_in_collections"] as const) {
+      const kept = filter[key]?.filter((id) => ids.has(id));
+      if (kept && kept.length !== filter[key]?.length) filter = { ...filter, [key]: kept.length ? kept : undefined };
+    }
   }
 
   /** Queues an album change (shown at once), undoable like any edit. `fill` puts the
@@ -817,7 +823,7 @@
 
   async function pickAll() {
     if (!result) return;
-    const all = await api.query($state.snapshot(filter), { sort: "DateDesc" });
+    const all = await api.query(compile($state.snapshot(filter), match), { sort: "DateDesc" });
     picked.clear();
     for (const r of all.rows) picked.add(r);
   }
@@ -835,37 +841,101 @@
     }, 150);
   }
 
-  // Flat sidebar values ↔ filter fields.
-  function filterFor(dim: Dim, value: string): Filter {
+  // Flat sidebar values ↔ filter fields. A value is off → in → out → off.
+  const cap = (v: string) => v[0].toUpperCase() + v.slice(1);
+  /** The colours picked in, or none. */
+  const colorsIn = () => (typeof filter.color === "object" ? filter.color.Values : undefined);
+  function pickState(dim: Dim, value: string): Pick {
     switch (dim) {
-      case "rating": return { rating: value === "none" ? "None" : { Values: { min: +value, max: +value } } };
-      case "color": return { color: value === "none" ? "None" : { Values: [(value[0].toUpperCase() + value.slice(1)) as api.Color] } };
-      case "year": return { year: +value };
-      case "camera": return { camera: value };
-      case "country": return { country: value };
-      default: return {};
+      case "rating": {
+        const r = filter.rating;
+        if (value === "none") return r === "None" ? "in" : r === "Any" ? "out" : null;
+        return sameRating(r, ratingFor(ratingOp, +value)) ? "in" : null;
+      }
+      case "color": {
+        const c = filter.color;
+        if (value === "none") return c === "None" ? "in" : c === "Any" ? "out" : null;
+        return pickOf(colorsIn(), filter.colors_not, cap(value));
+      }
+      case "camera": return pickOf(filter.cameras, filter.cameras_not, value);
+      case "hue": return filter.hues?.includes(value) ? "in" : null;
+      case "year": return filter.year === +value ? "in" : null;
+      case "country": return filter.country === value ? "in" : null;
+      default: return null;
     }
-  }
-
-  function isActive(dim: Dim, value: string) {
-    if (dim === "hue") return !!filter.hues?.includes(value);
-    const want = filterFor(dim, value);
-    const key = Object.keys(want)[0] as keyof Filter;
-    return JSON.stringify(filter[key]) === JSON.stringify(want[key]);
   }
 
   function toggle(dim: Dim, value: string) {
     // Main colours add up, as in the analysis tab: any of those picked.
     if (dim === "hue") return toggleList("hues", value);
-    const want = filterFor(dim, value);
-    const key = Object.keys(want)[0] as keyof Filter;
-    filter = isActive(dim, value) ? { ...filter, [key]: undefined } : { ...filter, ...want };
+    switch (dim) {
+      case "rating":
+        if (value === "none") {
+          const r = filter.rating;
+          filter = { ...filter, rating: r === "None" ? "Any" : r === "Any" ? undefined : "None" };
+        } else {
+          filter = { ...filter, rating: pickState(dim, value) ? undefined : ratingFor(ratingOp, +value) };
+        }
+        break;
+      case "color":
+        if (value === "none") {
+          const c = filter.color;
+          filter = { ...filter, color: c === "None" ? "Any" : c === "Any" ? undefined : "None" };
+        } else {
+          const { inc, exc } = cycle(colorsIn(), filter.colors_not, cap(value));
+          filter = { ...filter, color: inc && { Values: inc as api.Color[] }, colors_not: exc as api.Color[] | undefined };
+        }
+        break;
+      case "camera": {
+        const { inc, exc } = cycle(filter.cameras, filter.cameras_not, value);
+        filter = { ...filter, camera: undefined, cameras: inc, cameras_not: exc };
+        break;
+      }
+      case "year": filter = { ...filter, year: pickState(dim, value) ? undefined : +value }; break;
+      case "country": filter = { ...filter, country: pickState(dim, value) ? undefined : value }; break;
+      default: return;
+    }
+    run();
+  }
+
+  let match = $state<Match>("all");
+  let ratingOp = $state<RatingOp>("≥");
+  /** What the rest of the app asks the index: the filter with Match applied. */
+  let eff = $derived(compile(filter, match));
+  function setMatch(m: Match) {
+    match = m;
+    run();
+  }
+  function setRatingOp(op: RatingOp) {
+    const was = ratingParts(filter.rating);
+    ratingOp = op;
+    if (was) filter = { ...filter, rating: ratingFor(op, was.n) };
+    run();
+  }
+  /** "No album" / "No place" rows: off → none → has some → off. */
+  function toggleNone(key: "uncollected" | "placed") {
+    const none = key === "placed" ? false : true;
+    const v = filter[key];
+    filter = { ...filter, [key]: v === undefined ? none : v === none ? !none : undefined };
+    run();
+  }
+  function toggleUnkeyworded() {
+    filter = { ...filter, unkeyworded: filter.unkeyworded ? undefined : true };
     run();
   }
 
   // Trees: picking a node filters by it, picking it again lets go.
   function pickAlbum(n: Node) {
-    filter = { ...filter, collections: filter.collections?.[0] === n.value ? undefined : [n.value] };
+    // A smart album can only be included: the index has no "not this rule".
+    if (byId.get(n.value)?.kind === "Smart") {
+      const on = filter.collections?.includes(n.value);
+      const left = (filter.collections ?? []).filter((v) => v !== n.value);
+      const next = on ? left : [...left, n.value];
+      filter = { ...filter, collections: next.length ? next : undefined };
+    } else {
+      const { inc, exc } = cycle(filter.collections, filter.not_in_collections, n.value);
+      filter = { ...filter, collections: inc, not_in_collections: exc };
+    }
     run();
   }
   /** A value of a many-valued filter field on or off (the analysis' groups). */
@@ -960,7 +1030,7 @@
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
     try {
-      const undo = await api.promotePlaces({ ...filter, within: undefined }, paths);
+      const undo = await api.promotePlaces({ ...compile($state.snapshot(filter), match), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -976,7 +1046,8 @@
     await edited();
   }
   function pickKeyword(n: Node) {
-    filter = { ...filter, keywords_under: filter.keywords_under?.[0] === n.value ? undefined : [n.value] };
+    const { inc, exc } = cycle(filter.keywords_under, filter.keywords_under_not, n.value);
+    filter = { ...filter, keywords_under: inc, keywords_under_not: exc };
     run();
   }
 
@@ -1068,7 +1139,7 @@
   async function refreshTrips(): Promise<api.TripList | null> {
     const mine = ++tripsAsked;
     try {
-      const got = await api.trips($state.snapshot(filter));
+      const got = await api.trips(compile($state.snapshot(filter), match));
       if (mine === tripsAsked) tripList = got;
     } catch (e) {
       if (mine === tripsAsked) editError = String(e);
@@ -1342,19 +1413,11 @@
 
   // The filter as chips above the grid, one per value; × on a chip drops just that value.
   // `rest` is what the field holds without it (undefined lets go of the field).
-  type Chip = { what?: string; text: string; title?: string; dot?: string; stars?: boolean; rest?: unknown };
+  type Chip = { out?: boolean; what?: string; text: string; title?: string; dot?: string; stars?: boolean; rest?: unknown };
   const without = <T,>(list: T[], v: T) => {
     const left = list.filter((x) => x !== v);
     return left.length ? left : undefined;
   };
-  function ratingText(r: NonNullable<Filter["rating"]>): string {
-    if (r === "None") return "unrated";
-    if (r === "Any") return "rated";
-    const { min, max } = r.Values;
-    if (min !== undefined && min === max) return stars(min);
-    if (min !== undefined && max !== undefined) return `★ ${min}–${max}`;
-    return min !== undefined ? `★ ${min}+` : `★ up to ${max}`;
-  }
   /** Every filter field, in the order its chips show. A new field needs a line here. */
   const CHIPS: { [K in keyof Filter]-?: (v: NonNullable<Filter[K]>) => Chip[] } = {
     text: (v) => [{ what: "Search", text: `“${v}”` }],
@@ -1373,8 +1436,20 @@
     captured: (v) => [{ what: "Dates", text: rangeText(v) }],
     trip: (v) => [{ what: "Trip", text: shownTrip ? tripName(shownTrip) : rangeText(v), title: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
+    cameras: (v) => v.map((c) => ({ what: "Camera", text: c, rest: without(v, c) })),
+    cameras_not: (v) => v.map((c) => ({ what: "Camera", text: `not ${c}`, out: true, rest: without(v, c) })),
+    colors_not: (v) =>
+      v.map((c) => ({ what: "Colour", text: `not ${c.toLowerCase()}`, out: true, dot: COLORS[c.toLowerCase()], rest: without(v, c) })),
     country: (v) => [{ what: "Country", text: v }],
     keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
+    keywords_under_not: (v) =>
+      v.map((p) => ({ what: "Keyword", text: `not ${p.split("|").join(" › ")}`, out: true, title: p, rest: without(v, p) })),
+    unkeyworded: (v) => (v ? [{ text: "no keywords" }] : []),
+    not_in_collections: (v) =>
+      v.map((id) => ({ what: "Album", text: `not ${byId.get(id)?.name ?? id}`, out: true, title: byId.get(id)?.path, rest: without(v, id) })),
+    uncollected: (v) => [{ what: "Album", text: v ? "none" : "any" }],
+    all_of: () => [],
+    any_of: () => [],
     collections: (v) =>
       v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
@@ -1499,7 +1574,7 @@
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
     ongroup={showGroup}
     onfolder={showFolder}
-    oncamera={(camera) => only({ camera })}
+    oncamera={(camera) => only({ cameras: [camera] })}
     summary={selection?.data ?? null}
     stale={!selectionNow}
     summaryError={selectionError}
@@ -1610,9 +1685,17 @@
               <button title="A new smart album: a rule, not photos" onclick={() => (albumDialog = { mode: "create", kind: "Smart" })}>+ Smart album</button>
               <button title="A new group, to hold albums" onclick={() => (albumDialog = { mode: "create", kind: "Group" })}>+ Group</button>
             </div>
+            <button
+              class="none-row"
+              class:on={filter.uncollected === true}
+              class:out={filter.uncollected === false}
+              title="Photos in no album · click again for photos in some album"
+              onclick={() => toggleNone("uncollected")}
+            ><span class="name">{filter.uncollected === false ? "In an album" : "No album"}</span></button>
             <Tree
               nodes={albums}
-              selected={filter.collections && "a:" + filter.collections[0]}
+              selected={undefined}
+              mark={(n) => pickOf(filter.collections, filter.not_in_collections, n.value)}
               {expanded}
               onpick={pickAlbum}
               oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
@@ -1646,6 +1729,13 @@
         <section>
           {@render head("places")}
           {#if !folded.has("places")}
+            <button
+              class="none-row"
+              class:on={filter.placed === false}
+              class:out={filter.placed === true}
+              title="Photos without a place · click again for photos with one"
+              onclick={() => toggleNone("placed")}
+            ><span class="name">{filter.placed === true ? "With a place" : "No place"}</span></button>
             <Tree
               nodes={places}
               selected={filter.place_under && "p:" + filter.place_under}
@@ -1679,9 +1769,16 @@
               bind:value={keywordSearch}
               onkeydown={(e) => { if (e.key === "Escape") { keywordSearch = ""; e.currentTarget.blur(); } }}
             />
+            <button
+              class="none-row"
+              class:on={filter.unkeyworded}
+              title="Photos without any keyword"
+              onclick={toggleUnkeyworded}
+            ><span class="name">No keywords</span></button>
             <Tree
               nodes={keywordView.nodes}
-              selected={filter.keywords_under && "k:" + filter.keywords_under[0]}
+              selected={undefined}
+              mark={(n) => pickOf(filter.keywords_under, filter.keywords_under_not, n.value)}
               expanded={keywordSearch.trim() ? searchOpen : expanded}
               onpick={pickKeyword}
               oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
@@ -1696,8 +1793,25 @@
           <section>
             {@render head(dim)}
             {#if !folded.has(dim)}
+              {#if dim === "rating"}
+                <div class="rating-op">
+                  Stars
+                  <span class="seg" role="group" aria-label="Rating comparison">
+                    {#each RATING_OPS as op}
+                      <button class:on={ratingOp === op} onclick={() => setRatingOp(op)} title={op === "≥" ? "At least" : op === "≤" ? "At most" : "Exactly"}>{op}</button>
+                    {/each}
+                  </span>
+                </div>
+              {/if}
               {#each list as [value, n]}
-                <button class="facet" class:on={isActive(dim, value)} onclick={() => toggle(dim, value)}>
+                {@const state = pickState(dim, value)}
+                <button
+                  class="facet"
+                  class:on={state === "in"}
+                  class:out={state === "out"}
+                  title="Click to include · again to exclude"
+                  onclick={() => toggle(dim, value)}
+                >
                   {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
                   {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? HUES.muted}></i>{/if}
                   <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
@@ -1714,7 +1828,7 @@
   {#if active}
     <div class="filters" role="group" aria-label="Filters">
       {#each chips as chip}
-        <span class="chip" title={chip.title}>
+        <span class="chip" class:out={chip.out} title={chip.title}>
           {#if chip.dot}<i class="dot" style:background={chip.dot}></i>{/if}
           {#if chip.what}<span class="what">{chip.what}:</span>{/if}
           <span class="text" class:stars={chip.stars}>{chip.text}</span>
@@ -1725,6 +1839,15 @@
           >×</button>
         </span>
       {/each}
+      {#if criteriaCount(filter) >= 2}
+        <span class="match">
+          Match
+          <span class="seg" role="group" aria-label="Match all or any">
+            <button class:on={match === "all"} onclick={() => setMatch("all")} title="Photos must satisfy every criterion">All</button>
+            <button class:on={match === "any"} onclick={() => setMatch("any")} title="Photos may satisfy any one of the rating, colour, camera, keyword, album and place picks; the rest still apply">Any</button>
+          </span>
+        </span>
+      {/if}
       <button class="clear" onclick={clearAll}>Clear filters</button>
     </div>
   {/if}
@@ -1732,7 +1855,7 @@
   <div class="pane" class:strip={mapOn || tab === "analysis"}>
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
-      {filter}
+      filter={eff}
       {version}
       trips={tripList?.settings.home ? tripList.trips : []}
       trip={shownTrip}
@@ -1743,7 +1866,7 @@
   {/if}
   {#if mapOn}
     <MapPane
-      {filter}
+      filter={eff}
       {version}
       focus={selected === null ? mapRow : (focusRow ?? null)}
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
@@ -1770,7 +1893,7 @@
   {/if}
   {#if tab === "analysis"}
     <AnalysisPane
-      {filter}
+      filter={eff}
       facets={result?.facets ?? {}}
       total={result?.total ?? 0}
       {analysis}
@@ -2011,15 +2134,15 @@
 {/if}
 
 {#if importingGpx}
-  <GpxDialog {filter} onclose={() => (importingGpx = false)} ondone={placedMany} />
+  <GpxDialog filter={eff} onclose={() => (importingGpx = false)} ondone={placedMany} />
 {/if}
 
 {#if placingFromNeighbours}
-  <NeighbourDialog {filter} onclose={() => (placingFromNeighbours = false)} ondone={placedMany} />
+  <NeighbourDialog filter={eff} onclose={() => (placingFromNeighbours = false)} ondone={placedMany} />
 {/if}
 
 {#if fillingCodes}
-  <CountryCodesDialog {filter} onclose={() => (fillingCodes = false)} ondone={codesFilled} />
+  <CountryCodesDialog filter={eff} onclose={() => (fillingCodes = false)} ondone={codesFilled} />
 {/if}
 
 {#if copying}
