@@ -548,10 +548,17 @@ async fn gpx_apply(app: State<'_, App>, filter: Filter, settings: GpxSettings) -
     s.library.edit_as(&changes, Origin::Gpx).map_err(text_of)
 }
 
-/// Duplicate groups (or series) among the photos `filter` selects, biggest first.
+/// A page of the duplicate groups (or series) among the photos `filter` selects, biggest
+/// first, with how many there are in all.
 #[tauri::command]
-async fn groups(app: State<'_, App>, filter: Filter, series: bool) -> Result<Vec<c1index::Group>, String> {
-    app.session()?.library.groups(&filter, series, 300).map_err(text)
+async fn groups(
+    app: State<'_, App>,
+    filter: Filter,
+    series: bool,
+    offset: usize,
+    limit: usize,
+) -> Result<c1index::GroupPage, String> {
+    app.session()?.library.groups(&filter, series, offset, limit).map_err(text)
 }
 
 #[tauri::command]
@@ -1260,62 +1267,11 @@ async fn remaps(app: State<'_, App>) -> Result<Vec<(u64, String)>, String> {
     Ok(list.into_iter().map(|(seq, q)| (seq, q.remap.label)).collect())
 }
 
-/// The keywords on the photos at `rows`, with how many of them carry each: the
-/// selection's keywords, on all of them or only on some.
+/// What the photos at `rows` have, for the details panel's batch editing: their keywords,
+/// albums and places with how many carry each, and each editable field merged.
 #[tauri::command]
-async fn keyword_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(String, u64)>, String> {
-    let s = app.session()?;
-    let mut counts = BTreeMap::<String, u64>::new();
-    for row in rows {
-        if let Some(photo) = s.library.photo(row).map_err(text)? {
-            for path in &photo.keywords {
-                *counts.entry(path.to_pipe()).or_default() += 1;
-            }
-        }
-    }
-    Ok(counts.into_iter().collect())
-}
-
-/// The places of the photos at `rows`, each with the photos that have it, the most used
-/// first; photos with no location fields at all share the empty place.
-#[tauri::command]
-async fn place_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(Place, Vec<u64>)>, String> {
-    let s = app.session()?;
-    let mut places = Vec::with_capacity(rows.len());
-    s.library.photos(&rows, |row, photo| places.push((row, photo.place))).map_err(text)?;
-    Ok(group_places(places))
-}
-
-/// Groups photos by place, a field of only spaces counting as empty: such a photo has
-/// no location, as the index sees it.
-fn group_places(places: Vec<(u64, Place)>) -> Vec<(Place, Vec<u64>)> {
-    let clean = |v: Option<String>| v.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
-    let mut groups = BTreeMap::<[Option<String>; 5], Vec<u64>>::new();
-    for (row, p) in places {
-        let key = [clean(p.country), clean(p.country_code), clean(p.state), clean(p.city), clean(p.location)];
-        groups.entry(key).or_default().push(row);
-    }
-    let groups = groups.into_iter().map(|([country, country_code, state, city, location], rows)| {
-        (Place { country, country_code, state, city, location }, rows)
-    });
-    let mut out: Vec<_> = groups.collect();
-    out.sort_by_key(|(_, rows)| std::cmp::Reverse(rows.len()));
-    out
-}
-
-/// The albums the photos at `rows` are in, with how many of them each holds.
-#[tauri::command]
-async fn album_counts(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<(String, u64)>, String> {
-    let s = app.session()?;
-    let mut counts = BTreeMap::<String, u64>::new();
-    for row in rows {
-        if let Some(photo) = s.library.photo(row).map_err(text)? {
-            for id in &photo.collections {
-                *counts.entry(id.0.clone()).or_default() += 1;
-            }
-        }
-    }
-    Ok(counts.into_iter().collect())
+async fn selection_summary(app: State<'_, App>, rows: Vec<u64>) -> Result<c1index::Selection, String> {
+    app.session()?.library.selection(&rows).map_err(text)
 }
 
 /// Queues an album change; a new collection with an empty id gets one. Returns its
@@ -2097,8 +2053,6 @@ pub fn run() {
             undo_remap,
             remaps,
             keyword_users,
-            album_counts,
-            place_counts,
             change_collection,
             undo_collection,
             collection_changes,
@@ -2109,7 +2063,6 @@ pub fn run() {
             fill_thumbnails,
             thumbs_state,
             open_log,
-            keyword_counts,
             pending,
             discard,
             resolve,
@@ -2117,6 +2070,7 @@ pub fn run() {
             write_apply,
             autosave,
             set_autosave,
+            selection_summary,
             photo_history,
             change_log
         ])
@@ -2127,6 +2081,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use c1index::group_places;
     use c1model::{AssetId, EditInfo, Exif, FileInfo, PhotoId, SourceId};
 
     fn photo(n: u32, keywords: &[&str], city: Option<&str>) -> Photo {

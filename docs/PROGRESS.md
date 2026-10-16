@@ -972,6 +972,11 @@ in `<data dir>/settings.json`) writes the queue by itself.
   generated track on the fuji copy: offset +2 placed 78 photos, offset 0 none, origin
   Gpx, undo restored the queue.
 
+- **Fixed:** leaving the Map tab while its clusters were still being counted left
+  `TypeError: Cannot read properties of undefined (reading 'getCanvasContainer')` in the
+  footer. The answer came after the map was removed and its markers were added to no map.
+  Closing the pane now drops the answers still on the way (clusters and the route).
+
 ### Previews take Capture One's colours, fitted per photo
 
 The tone curve match above left saturation, film simulations and colour edits behind.
@@ -1320,6 +1325,137 @@ country) and 68k have neither.
     `c1cat idbench` before relying on the ids;
   - the UI was not exercised in a running window;
   - the 10k-photo browse, search and map check was not done by hand.
+
+### Feature page and recorded clips
+
+- **`docs/FEATURES.md`:** one section per feature (search, browsing, editing, keyword
+  tree, albums, analysis, map, trips and the timeline, writing with history and backups),
+  each with a GIF and a link to the guide. The README links to it.
+- **`tools/record`:** the clips are recorded by scripts. `start.ps1` runs a second instance
+  on a copy of the newest fuji backup (CDP on 9223, a junction to the live `Cache`);
+  `drive.mjs` drives it over CDP and records screencast frames with their times, with a
+  drawn pointer and captions (`overlay.js`); one scenario per clip in `scenarios/`;
+  `assemble.py` makes the GIF with Pillow, `to_mp4.py` an MP4 with ffmpeg from the same
+  frames. `record.ps1` runs them all. Scenarios undo their edits; `history` writes to the
+  copy.
+- Recording found the map's `getCanvasContainer` error after leaving the Map tab quickly
+  (fixed separately).
+
+### Map: finding places, the 180° meridian, trips, following (#21, #23, #24, #25)
+
+- **Find a place** (`lib/mapview.ts` `hitView`): the map centres on the place's own point.
+  Nominatim's box covers every part of a place (Tokyo's runs to Minamitorishima, France's
+  to the Pacific, Fiji's round the world), so it sets the zoom only when the point lies
+  in its middle 60 % and it spans less than 180°; else the zoom comes from the place's
+  `addresstype` (country 5, region 7, county 9, city 10, village 13, street 16), or its
+  `place_rank`.
+- **Across 180°:** maplibre keeps longitudes unwrapped after a pan (a centre of 499.77),
+  and `view()` clamped west 422 / east 578 to nothing. On `moveend` the centre is
+  wrapped back (a jump, not seen) and stored wrapped; a remembered unwrapped one is
+  wrapped on start. A view still across 180° sends every longitude (`viewBox`): the
+  filter takes one box. Two boxes, or a box with west > east in `filter.rs` and
+  `geo.rs`, would keep it to the view.
+- **Trips:** an edit no longer fits the route again, moves the playhead to the end and
+  stops the playback; only another trip does (`routeStep`).
+- **Following:** turning *grid follows map* on, *Clear filters*, or dropping the filter
+  that kept the grid off the map applies the map's current view at once (`shouldFollow`,
+  in `run()` and an effect), not at the next move. Dropping the *Map: area* chip turns
+  following off, or it would come straight back.
+- `tools/record/checks/21.mjs`, `23.mjs`, `24.mjs`, `25.mjs` measure each on the recording
+  instance.
+
+### Edits no longer blank the grid and the panel (#33, #34)
+
+- **Pages kept through a refresh:** after an edit, an undo or a sync, `run(true)` read
+  only the first page again and dropped the rest, so past position 500 the grid's tiles
+  and the details panel went blank for 25-100 ms (65 of 70 thumbnails made again, focus
+  and the panel's scroll lost). Now the pages on screen and the focused photo's are read
+  again into a new map, swapped in with the result in one go (`lib/pages.ts`); the old
+  ones show until then. The focused photo's row is kept in its own state (`focusRow`),
+  so the panel and the viewer never see a gap.
+- **Look stays:** the panel's Look was cleared and read again on every edit (the fields
+  below jumped 139 px and back). It is read again only for another photo, or when the
+  analysis has measured photos again (`analysis-done`).
+- `tools/record/checks/`: scenarios that measure it on the recording instance (33: nodes
+  replaced, focus and scroll through edits past position 500; 34: field positions each
+  frame). CI runs the app's TypeScript tests (`pnpm test`).
+### Analysis: whole groups under a filter, honest empty charts (#27, #32)
+
+- **Groups:** `Library::groups` counted only a group's matching photos and kept groups
+  of 1, so with *red* picked one frame of a 7-photo burst showed as a "series" of 1.
+  `Group` now has `size` (the whole group, counted as the details panel counts it: one
+  facet count over `Dim::Group`) and `matched`; a group with fewer matching than it
+  needs (2, `SERIES_MIN` for a series) is left out. The badge says *2 of 7*. The card
+  and the panel's link both show the group within the other filters (`showGroup`).
+- **Empty charts:** *Nothing matches the filter* when the filter picks nothing, *Not
+  measured yet (N photos)* when nothing it picks is measured; the *0 of 0 photos
+  measured* line is gone.
+- Tested with a burst of four and a duplicate pair split by colour and shape
+  (`groups_split_by_a_filter_count_whole_and_drop_what_is_no_group`).
+  `tools/record/checks/27.mjs` measures it on the recording instance.
+
+### Editing several photos: a fixed block, one read, feedback (#35, #36, #37)
+
+- **One read for the selection:** `Library::selection` (`library/selection.rs`) reads the
+  picked photos in one transaction and returns their keywords, albums and places with
+  counts, and each editable field merged (`Merged { same, values, empty }`: rating, colour,
+  GPS, every IPTC field). The `selection_summary` command replaces `keyword_counts`,
+  `album_counts` and `place_counts`, and the app's three effects with their 80 ms timers.
+  One read runs at a time; picks changing faster are read once it is done, newest only.
+  A reply for the pick before stays, dimmed and inert, until the new one is in; the
+  fields wait (read-only, "…") so nothing typed is overwritten. `Merged.top` lists the
+  most used values with their counts, for the fields' tooltips.
+- **The panel with several picked** opens with an *Edit N photos* block in a fixed order and
+  height (rating, colour, keyword field, Location fields, GPS, IPTC), merged values in
+  placeholders and tooltips (`lib/batch.ts`), never the focused photo's values as the
+  selection's. Below it: a one-line badge for waiting edits, the lists cut to 8 (partial
+  first, *+N more*), then the focused photo's EXIF, Look and File. If the layout above a
+  focused field still changes, the panel scrolls by as much. The Code field is wide enough
+  for its placeholder.
+- **Header:** *⇉ Copy to N selected* has its own slot, shown or hidden; the count has a fixed
+  width. **Footer:** *Editing N photos…* while an edit, undo or redo runs, with a busy cursor.
+- `tools/record/checks/batch-fields.mjs` samples the block's fields and the header every
+  frame through edits, undos and Ctrl+A.
+### Map: room for the find box, the tray and the pins (#22)
+
+- **Padding:** fits and flights used one padding on all sides (90 px, 80 for a route), so
+  pins went under the find box and cards under the open tray. The map's padding now
+  follows what covers it (`lib/mapview.ts` `mapPadding`): at the top the find box's
+  bottom (its list of places too) plus 80 px for a pin standing above its point (card,
+  stem, dot and count reach 79); at the bottom the highest of the note, the tray (open or
+  not) and the route bar, plus 60 px for a ≈ card hanging below its point; 34 px each
+  side for half a card and its count; 8 px to spare. A small map keeps a quarter of each
+  side free. The sizes are measured (`bind:offsetHeight`; the tray's through a bindable
+  `height`).
+- `map.setPadding` is kept current (while the map moves, once it stops: setting it stops
+  a move) and the map stays where it is on screen: the new centre is what is under it,
+  and `moved()` skips that jump. `fitBounds` gets no padding of its own (it adds to the
+  map's); `easeTo`/`flyTo` centre in what is left. A place found is zoomed to fit what is
+  left (`hitView` with the free size) once its list has closed; a new trip's route is
+  fitted once the route bar is in. `getBounds()` ignores padding: the grid still follows
+  the whole map.
+- `tools/record/checks/22.mjs` counts cards under the find box, the tray and the route
+  bar, and past the edge, after each zoom and flight.
+
+### Analysis: photos in a strip, every group (#26, #28)
+
+- **Photos on the tab:** the Analysis tab unmounted the grid, so a bar's photos showed
+  only on *Photos*. The grid now stays as a 190 px strip under the charts and groups, as
+  under the map (`.pane.strip`): the same result as the Photos grid, so the counts
+  agree; a click shows the photo in the details panel and the arrow keys move through
+  it. A group's card and the panel's group link stay on the Analysis tab (the card shown
+  is outlined); from another tab the link opens *Photos* as before.
+- **Every group:** the lists stopped at 300 groups (*300+ groups*) and every filter
+  change drew up to 600 cards of six thumbnails. `Library::groups` takes an offset and
+  a limit and returns a `GroupPage` with the exact total (the order ends on the id, so
+  pages follow on). The tab reads 60 of each, the header gives the total, and *Show
+  more (N left)* adds the next 60; another filter starts again from the first page,
+  while an edit or new measurements read as many as are shown, so an opened list stays
+  open. *Show more* waits while the lists are read again. Thumbnails load lazily. On the
+  Analysis tab the page keys scroll the charts; the arrows move in the strip.
+- Tested with three pairs and a three paged two at a time
+  (`groups_page_with_an_exact_total`). `tools/record/checks/26-28.mjs` measures it on
+  the recording instance.
 
 ### Next
 

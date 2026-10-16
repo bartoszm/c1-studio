@@ -177,7 +177,7 @@ pub fn embed_tiff(bytes: &[u8], xmp: &str) -> Result<Vec<u8>, String> {
     let next = bytes.get(entries_end..entries_end + 4).ok_or_else(truncated)?;
 
     let (old, mut kept): (Vec<&[u8]>, Vec<&[u8]>) =
-        entries.chunks_exact(12).partition(|e| get_u16(e, little) == TIFF_TAG);
+        entries.as_chunks::<12>().0.iter().map(|e| &e[..]).partition(|e| get_u16(e, little) == TIFF_TAG);
     if let Some(old) = old.first() {
         let (kind, len, at) =
             (get_u16(&old[2..], little), get_u32(&old[4..], little) as usize, get_u32(&old[8..], little) as usize);

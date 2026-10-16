@@ -9,6 +9,10 @@
   import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
+  import {
+    RATING_OPS, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
+    type Match, type Pick, type RatingOp,
+  } from "./lib/criteria";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
@@ -29,11 +33,13 @@
   import Timeline from "./Timeline.svelte";
   import TripsSection from "./TripsSection.svelte";
   import { tripDates, tripName } from "./lib/trips";
+  import { shouldFollow } from "./lib/mapview";
+  import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
+  import { editingNote, sameRows } from "./lib/batch";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
 
-  const PAGE = 500;
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
   const ALWAYS: Dim[] = ["country", "flag", "shape", "hue", "light", "focus"];
   /** The sidebar's sections as set in Settings, the hidden ones left out. */
@@ -59,6 +65,9 @@
   let smart = $state<Map<string, number> | null>(null);
   /** Position of the photo picked in the grid; the viewer and the panel show it. */
   let selected = $state<number | null>(null);
+  /** The photo at `selected`. It stays while a refresh reads its page again, so the panel and
+   *  the viewer never lose it in between. */
+  let focusRow = $state<number | undefined>(undefined);
   let viewing = $state(false);
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
@@ -92,7 +101,7 @@
   });
   let followTimer: ReturnType<typeof setTimeout>;
   /** What the map shows now, for when a picked tile is let go. */
-  let mapView: api.BBox | null = null;
+  let mapView = $state.raw<api.BBox | null>(null);
   /** A tile picked on the map: the grid shows just its photos until it is let go. */
   let mapTile = $state.raw<api.BBox | null>(null);
   /** The area the grid kept to before the tile was picked (a drawn one, or none). */
@@ -133,6 +142,21 @@
   $effect(() => {
     if (mapTile && !sameBox(filter.within, mapTile)) mapTile = null;
   });
+  /** The filter with the map's view as its area, when the grid follows the map. */
+  function following(f: Filter): Filter {
+    return mapView && shouldFollow({ follow, mapOn, tile: !!mapTile, filter: f }) ? { ...f, within: mapView } : f;
+  }
+  // Following turned on, or possible again (a tile let go, Clear filters, a chip that kept
+  // the grid off the map dropped): the grid takes what the map shows now, not at its next move.
+  $effect(() => {
+    if (!mapView || !shouldFollow({ follow, mapOn, tile: !!mapTile, filter })) return;
+    untrack(() => {
+      // The map's own report of this view, waiting to be followed, would only run it again.
+      clearTimeout(followTimer);
+      filter = following(filter);
+      run(true);
+    });
+  });
   /** Letting go of the map's area. */
   function mapReleased() {
     clearTimeout(followTimer);
@@ -142,6 +166,8 @@
     }
   }
   function showTab(next: Tab) {
+    // The map reports its view again when it opens: one kept from before would be followed first.
+    if (next !== "map") mapView = null;
     tab = next;
     mapRow = null;
     viewing = false;
@@ -149,6 +175,11 @@
   function toggleFollow() {
     follow = !follow;
     if (!follow) mapReleased();
+    else if (mapView && !mapTile && filter.within) {
+      // A drawn area gives way to what the map shows.
+      filter = { ...filter, within: undefined };
+      run(true);
+    }
   }
   /** Photos the map cannot show by position (no GPS): the grid lets go of the map's area. */
   function showOffMap(extra: Filter) {
@@ -193,6 +224,8 @@
   let queuedCount = $state(0);
   /** Bumped after every edit, so the details panel reads the photo again. */
   let version = $state(0);
+  /** Bumped when the analysis has measured photos again: the panel's Look reads them again. */
+  let analysed = $state(0);
   let writing = $state(false);
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
@@ -321,18 +354,34 @@
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks. */
   async function run(keep = false) {
     const mine = ++generation;
-    const asked = $state.snapshot(filter);
+    untrack(() => (filter = following(filter)));
+    const asked = compile($state.snapshot(filter), match);
     const groups = dims;
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
-      const r = await api.query(asked, {
+      const first = api.query(asked, {
         sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
+      // In place, the pages on screen and the focused photo's (and the next, for the viewer)
+      // are read again alongside the first and swapped in with the result in one go: until
+      // then the grid and the details panel keep the old ones.
+      const shown = grid?.range() ?? [0, 0];
+      const { result: r, pages: fresh } = keep
+        ? await refreshPages(
+            first,
+            (total) => {
+              const at = Math.min(selected ?? 0, total - 1);
+              return [shown, [at, at + 2]];
+            },
+            result?.total ?? 0,
+            (page) => api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+          )
+        : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
       result = r;
       counted = groups;
-      pages = new SvelteMap([[0, r.rows]]);
+      pages = new SvelteMap(fresh);
       loading = new Map();
       error = null;
       showOffline(mine, asked);
@@ -382,14 +431,22 @@
     }
   }
 
-  const rowAt = (i: number) => pages.get(Math.floor(i / PAGE))?.[i % PAGE];
+  const rowAt = (i: number) => rowIn(pages, i);
+  // The focused photo follows `selected` once its page is in.
+  $effect(() => {
+    if (selected === null) focusRow = undefined;
+    else {
+      const row = rowAt(selected);
+      if (row !== undefined) focusRow = row;
+    }
+  });
 
   function load(page: number): Promise<void> {
     const pending = loading.get(page);
     if (pending) return pending;
     const mine = generation;
     const into = pages;
-    const p = api.query($state.snapshot(filter), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
+    const p = api.query(compile($state.snapshot(filter), match), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
       .then((r) => { if (mine === generation) into.set(page, r.rows); })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
@@ -456,7 +513,7 @@
           run(true);
         }
       }),
-      listen("analysis-done", () => { version++; refresh(true); }),
+      listen("analysis-done", () => { version++; analysed++; refresh(true); }),
     ];
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
@@ -483,8 +540,10 @@
   async function refreshCollections() {
     collections = await api.collections();
     const ids = new Set(collections.map((c) => c.id));
-    const kept = filter.collections?.filter((id) => ids.has(id));
-    if (kept && kept.length !== filter.collections?.length) filter = { ...filter, collections: kept.length ? kept : undefined };
+    for (const key of ["collections", "not_in_collections"] as const) {
+      const kept = filter[key]?.filter((id) => ids.has(id));
+      if (kept && kept.length !== filter[key]?.length) filter = { ...filter, [key]: kept.length ? kept : undefined };
+    }
   }
 
   /** Queues an album change (shown at once), undoable like any edit. `fill` puts the
@@ -525,7 +584,7 @@
   /** The photos an edit applies to: the picked ones, else the focused one. */
   function targets(): number[] {
     if (picked.size) return [...picked];
-    const row = selected === null ? mapRow ?? undefined : rowAt(selected);
+    const row = selected === null ? mapRow ?? undefined : focusRow;
     return row === undefined ? [] : [row];
   }
 
@@ -548,62 +607,49 @@
   }
   let clipboard = $state<Clipboard | null>(rememberedClip());
   let copying = $state<api.Photo | null>(null);
-  /** The keywords across the picked photos, with how many carry each; null for one. */
-  let selectionKeywords = $state<[string, number][] | null>(null);
-  let keywordsAsked = 0;
-  $effect(() => {
-    const rows = [...picked];
-    void version;
-    const mine = ++keywordsAsked;
-    if (rows.length < 2 || !showInfo) {
-      selectionKeywords = null;
+  /** What the picked photos have, read together; null for one. A reply for the pick before
+   *  stays while the new one is read, so the panel dims it rather than going blank. */
+  let selection = $state.raw<{ rows: number[]; data: api.Selection } | null>(null);
+  let selectionError = $state<string | null>(null);
+  // Not state: one read at a time. Picks changing faster (Shift+arrow over a big range) wait
+  // for it, and then the newest pick is read once.
+  let selectionReading = false;
+  let selectionAgain = false;
+  function readSelection() {
+    if (selectionReading) {
+      selectionAgain = true;
       return;
     }
-    // A moment's wait: Shift+arrow picks change faster than a big selection reads.
-    const wait = setTimeout(() => {
-      api.keywordCounts(rows).then((c) => { if (mine === keywordsAsked) selectionKeywords = c; }).catch(() => {});
-    }, 80);
-    return () => clearTimeout(wait);
-  });
-  /** The albums the picked photos are in, with how many each holds; null for one. */
-  let selectionAlbums = $state<[string, number][] | null>(null);
-  let albumsAsked = 0;
-  $effect(() => {
-    const rows = [...picked];
-    void version;
-    const mine = ++albumsAsked;
-    if (rows.length < 2 || !showInfo) {
-      selectionAlbums = null;
+    if (picked.size < 2 || !showInfo) {
+      selection = null;
       return;
     }
-    const wait = setTimeout(() => {
-      api.albumCounts(rows).then((c) => { if (mine === albumsAsked) selectionAlbums = c; }).catch(() => {});
-    }, 80);
-    return () => clearTimeout(wait);
-  });
-  /** The places of the picked photos, each with the photos that have it; null for one. */
-  let selectionPlaces = $state.raw<{ rows: number[]; groups: [api.Photo["place"], number[]][] } | null>(null);
-  let placesAsked = 0;
-  $effect(() => {
+    selectionReading = true;
     const rows = [...picked];
+    api.selectionSummary(rows)
+      .then((data) => {
+        selection = { rows, data };
+        selectionError = null;
+      })
+      .catch((e) => (selectionError = String(e)))
+      .finally(() => {
+        selectionReading = false;
+        if (selectionAgain) {
+          selectionAgain = false;
+          readSelection();
+        }
+      });
+  }
+  $effect(() => {
+    void [...picked];
     void version;
-    const mine = ++placesAsked;
-    if (rows.length < 2 || !showInfo) {
-      selectionPlaces = null;
-      return;
-    }
-    const wait = setTimeout(() => {
-      api.placeCounts(rows).then((groups) => { if (mine === placesAsked) selectionPlaces = { rows, groups }; }).catch(() => {});
-    }, 80);
-    return () => clearTimeout(wait);
+    void showInfo;
+    untrack(readSelection);
   });
-  /** The places of the selection as it is now: their rows are edited by the places
-   *  list, so a reply for the selection before is not shown. */
-  let placesNow = $derived(
-    selectionPlaces && selectionPlaces.rows.length === picked.size && selectionPlaces.rows.every((r) => picked.has(r))
-      ? selectionPlaces.groups
-      : null,
-  );
+  /** Whether `selection` is about the photos picked now. */
+  let selectionNow = $derived(!!selection && sameRows(selection.rows, new Set(picked)));
+  /** How many of the picked photos have edits waiting. */
+  let queuedPicked = $derived(picked.size > 1 ? [...picked].filter((r) => queued.has(r)).length : 0);
   /** Sync: the focused photo, whose fields go onto the rest of the selection. */
   let syncing = $state<{ from: api.Photo; row: number } | null>(null);
   /** Paste…: the photos the clipboard goes onto, with a choice of fields and how. */
@@ -639,13 +685,13 @@
   );
 
   async function openCopy() {
-    const row = selected === null ? undefined : rowAt(selected);
+    const row = selected === null ? undefined : focusRow;
     if (row === undefined) return;
     copying = await api.photo(row);
   }
 
   async function openSync() {
-    const row = selected === null ? undefined : rowAt(selected);
+    const row = selected === null ? undefined : focusRow;
     if (row === undefined || picked.size < 2) return;
     const from = await api.photo(row);
     if (from) syncing = { from, row };
@@ -681,22 +727,49 @@
     await edited();
   }
 
+  /** What runs now, for the footer: an edit on many photos takes a while. */
+  let busy = $state<string | null>(null);
+  let running = 0;
+  async function working(note: string, run: () => Promise<void>) {
+    running++;
+    busy = note;
+    try {
+      await run();
+    } finally {
+      if (--running === 0) busy = null;
+    }
+  }
+  /** How many photos an undo or redo of these ops touches. */
+  const opRows = (ops: [number, api.Op][]) => new Set(ops.map(([row]) => row)).size;
+
   async function applyEdit(edit: api.Edit, rows = targets()) {
     if (!rows.length) return;
-    try {
-      const undo = await api.edit(rows, edit);
-      if (undo.length) {
-        undoStack.push({ ops: undo });
-        redoStack = [];
+    await working(editingNote("edit", rows.length), async () => {
+      try {
+        const undo = await api.edit(rows, edit);
+        if (undo.length) {
+          undoStack.push({ ops: undo });
+          redoStack = [];
+        }
+        editError = null;
+      } catch (e) {
+        editError = String(e);
       }
-      editError = null;
-    } catch (e) {
-      editError = String(e);
-    }
-    await edited();
+      await edited();
+    });
   }
 
-  async function undo() {
+  function undo() {
+    const last = undoStack.at(-1);
+    if (last) return working(editingNote("undo", "ops" in last ? opRows(last.ops) : null), undoNow);
+  }
+
+  function redo() {
+    const last = redoStack.at(-1);
+    if (last) return working(editingNote("redo", "ops" in last ? opRows(last.ops) : null), redoNow);
+  }
+
+  async function undoNow() {
     const last = undoStack.pop();
     if (!last) return;
     try {
@@ -723,7 +796,7 @@
     await edited();
   }
 
-  async function redo() {
+  async function redoNow() {
     const last = redoStack.pop();
     if (!last) return;
     try {
@@ -755,7 +828,7 @@
         if (r !== undefined) picked.add(r);
       }
     } else if (how?.add && row !== undefined) {
-      if (picked.size === 0 && selected !== null && rowAt(selected) !== undefined) picked.add(rowAt(selected)!);
+      if (picked.size === 0 && selected !== null && focusRow !== undefined) picked.add(focusRow);
       if (picked.has(row)) picked.delete(row);
       else picked.add(row);
       anchor = i;
@@ -765,12 +838,13 @@
       anchor = i;
     }
     selected = i;
+    focusRow = row;
     mapRow = null;
   }
 
   async function pickAll() {
     if (!result) return;
-    const all = await api.query($state.snapshot(filter), { sort: "DateDesc" });
+    const all = await api.query(compile($state.snapshot(filter), match), { sort: "DateDesc" });
     picked.clear();
     for (const r of all.rows) picked.add(r);
   }
@@ -788,37 +862,101 @@
     }, 150);
   }
 
-  // Flat sidebar values ↔ filter fields.
-  function filterFor(dim: Dim, value: string): Filter {
+  // Flat sidebar values ↔ filter fields. A value is off → in → out → off.
+  const cap = (v: string) => v[0].toUpperCase() + v.slice(1);
+  /** The colours picked in, or none. */
+  const colorsIn = () => (typeof filter.color === "object" ? filter.color.Values : undefined);
+  function pickState(dim: Dim, value: string): Pick {
     switch (dim) {
-      case "rating": return { rating: value === "none" ? "None" : { Values: { min: +value, max: +value } } };
-      case "color": return { color: value === "none" ? "None" : { Values: [(value[0].toUpperCase() + value.slice(1)) as api.Color] } };
-      case "year": return { year: +value };
-      case "camera": return { camera: value };
-      case "country": return { country: value };
-      default: return {};
+      case "rating": {
+        const r = filter.rating;
+        if (value === "none") return r === "None" ? "in" : r === "Any" ? "out" : null;
+        return sameRating(r, ratingFor(ratingOp, +value)) ? "in" : null;
+      }
+      case "color": {
+        const c = filter.color;
+        if (value === "none") return c === "None" ? "in" : c === "Any" ? "out" : null;
+        return pickOf(colorsIn(), filter.colors_not, cap(value));
+      }
+      case "camera": return pickOf(filter.cameras, filter.cameras_not, value);
+      case "hue": return filter.hues?.includes(value) ? "in" : null;
+      case "year": return filter.year === +value ? "in" : null;
+      case "country": return filter.country === value ? "in" : null;
+      default: return null;
     }
-  }
-
-  function isActive(dim: Dim, value: string) {
-    if (dim === "hue") return !!filter.hues?.includes(value);
-    const want = filterFor(dim, value);
-    const key = Object.keys(want)[0] as keyof Filter;
-    return JSON.stringify(filter[key]) === JSON.stringify(want[key]);
   }
 
   function toggle(dim: Dim, value: string) {
     // Main colours add up, as in the analysis tab: any of those picked.
     if (dim === "hue") return toggleList("hues", value);
-    const want = filterFor(dim, value);
-    const key = Object.keys(want)[0] as keyof Filter;
-    filter = isActive(dim, value) ? { ...filter, [key]: undefined } : { ...filter, ...want };
+    switch (dim) {
+      case "rating":
+        if (value === "none") {
+          const r = filter.rating;
+          filter = { ...filter, rating: r === "None" ? "Any" : r === "Any" ? undefined : "None" };
+        } else {
+          filter = { ...filter, rating: pickState(dim, value) ? undefined : ratingFor(ratingOp, +value) };
+        }
+        break;
+      case "color":
+        if (value === "none") {
+          const c = filter.color;
+          filter = { ...filter, color: c === "None" ? "Any" : c === "Any" ? undefined : "None" };
+        } else {
+          const { inc, exc } = cycle(colorsIn(), filter.colors_not, cap(value));
+          filter = { ...filter, color: inc && { Values: inc as api.Color[] }, colors_not: exc as api.Color[] | undefined };
+        }
+        break;
+      case "camera": {
+        const { inc, exc } = cycle(filter.cameras, filter.cameras_not, value);
+        filter = { ...filter, camera: undefined, cameras: inc, cameras_not: exc };
+        break;
+      }
+      case "year": filter = { ...filter, year: pickState(dim, value) ? undefined : +value }; break;
+      case "country": filter = { ...filter, country: pickState(dim, value) ? undefined : value }; break;
+      default: return;
+    }
+    run();
+  }
+
+  let match = $state<Match>("all");
+  let ratingOp = $state<RatingOp>("≥");
+  /** What the rest of the app asks the index: the filter with Match applied. */
+  let eff = $derived(compile(filter, match));
+  function setMatch(m: Match) {
+    match = m;
+    run();
+  }
+  function setRatingOp(op: RatingOp) {
+    const was = ratingParts(filter.rating);
+    ratingOp = op;
+    if (was) filter = { ...filter, rating: ratingFor(op, was.n) };
+    run();
+  }
+  /** "No album" / "No place" rows: off → none → has some → off. */
+  function toggleNone(key: "uncollected" | "placed") {
+    const none = key === "placed" ? false : true;
+    const v = filter[key];
+    filter = { ...filter, [key]: v === undefined ? none : v === none ? !none : undefined };
+    run();
+  }
+  function toggleUnkeyworded() {
+    filter = { ...filter, unkeyworded: filter.unkeyworded ? undefined : true };
     run();
   }
 
   // Trees: picking a node filters by it, picking it again lets go.
   function pickAlbum(n: Node) {
-    filter = { ...filter, collections: filter.collections?.[0] === n.value ? undefined : [n.value] };
+    // A smart album can only be included: the index has no "not this rule".
+    if (byId.get(n.value)?.kind === "Smart") {
+      const on = filter.collections?.includes(n.value);
+      const left = (filter.collections ?? []).filter((v) => v !== n.value);
+      const next = on ? left : [...left, n.value];
+      filter = { ...filter, collections: next.length ? next : undefined };
+    } else {
+      const { inc, exc } = cycle(filter.collections, filter.not_in_collections, n.value);
+      filter = { ...filter, collections: inc, not_in_collections: exc };
+    }
     run();
   }
   /** A value of a many-valued filter field on or off (the analysis' groups). */
@@ -913,7 +1051,7 @@
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
     try {
-      const undo = await api.promotePlaces({ ...filter, within: undefined }, paths);
+      const undo = await api.promotePlaces({ ...compile($state.snapshot(filter), match), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -929,7 +1067,8 @@
     await edited();
   }
   function pickKeyword(n: Node) {
-    filter = { ...filter, keywords_under: filter.keywords_under?.[0] === n.value ? undefined : [n.value] };
+    const { inc, exc } = cycle(filter.keywords_under, filter.keywords_under_not, n.value);
+    filter = { ...filter, keywords_under: inc, keywords_under_not: exc };
     run();
   }
 
@@ -1021,7 +1160,7 @@
   async function refreshTrips(): Promise<api.TripList | null> {
     const mine = ++tripsAsked;
     try {
-      const got = await api.trips($state.snapshot(filter));
+      const got = await api.trips(compile($state.snapshot(filter), match));
       if (mine === tripsAsked) tripList = got;
     } catch (e) {
       if (mine === tripsAsked) editError = String(e);
@@ -1086,6 +1225,7 @@
   }
 
   function clearAll() {
+    mapTile = null;
     filter = {};
     search = "";
     run();
@@ -1129,6 +1269,7 @@
     if (to < 0 || to >= result.total) return;
     await need(to, to + 2);
     selected = to;
+    focusRow = rowAt(to);
   }
 
   function close() {
@@ -1211,15 +1352,24 @@
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
-      const row = selected === null ? undefined : rowAt(selected);
+      const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
+    // On Analysis the page keys scroll the charts and groups; arrows move in the strip.
+    else if (tab === "analysis" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
   // Links in the info panel: filter by what was clicked.
   function only(f: Filter) {
     filter = { ...filter, ...f };
+    run();
+  }
+  /** A duplicate group's or a series' photos, from the Analysis tab or the panel: within the
+   *  other filters, which stay. The Analysis tab shows them in its strip; elsewhere, the grid. */
+  function showGroup(group: string) {
+    filter = { ...filter, group };
+    if (tab !== "analysis") showTab("photos");
     run();
   }
   function showKeyword(path: string) {
@@ -1284,19 +1434,11 @@
 
   // The filter as chips above the grid, one per value; × on a chip drops just that value.
   // `rest` is what the field holds without it (undefined lets go of the field).
-  type Chip = { what?: string; text: string; title?: string; dot?: string; stars?: boolean; rest?: unknown };
+  type Chip = { out?: boolean; what?: string; text: string; title?: string; dot?: string; stars?: boolean; rest?: unknown };
   const without = <T,>(list: T[], v: T) => {
     const left = list.filter((x) => x !== v);
     return left.length ? left : undefined;
   };
-  function ratingText(r: NonNullable<Filter["rating"]>): string {
-    if (r === "None") return "unrated";
-    if (r === "Any") return "rated";
-    const { min, max } = r.Values;
-    if (min !== undefined && min === max) return stars(min);
-    if (min !== undefined && max !== undefined) return `★ ${min}–${max}`;
-    return min !== undefined ? `★ ${min}+` : `★ up to ${max}`;
-  }
   /** Every filter field, in the order its chips show. A new field needs a line here. */
   const CHIPS: { [K in keyof Filter]-?: (v: NonNullable<Filter[K]>) => Chip[] } = {
     text: (v) => [{ what: "Search", text: `“${v}”` }],
@@ -1315,8 +1457,20 @@
     captured: (v) => [{ what: "Dates", text: rangeText(v) }],
     trip: (v) => [{ what: "Trip", text: shownTrip ? tripName(shownTrip) : rangeText(v), title: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
+    cameras: (v) => v.map((c) => ({ what: "Camera", text: c, rest: without(v, c) })),
+    cameras_not: (v) => v.map((c) => ({ what: "Camera", text: `not ${c}`, out: true, rest: without(v, c) })),
+    colors_not: (v) =>
+      v.map((c) => ({ what: "Colour", text: `not ${c.toLowerCase()}`, out: true, dot: COLORS[c.toLowerCase()], rest: without(v, c) })),
     country: (v) => [{ what: "Country", text: v }],
     keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
+    keywords_under_not: (v) =>
+      v.map((p) => ({ what: "Keyword", text: `not ${p.split("|").join(" › ")}`, out: true, title: p, rest: without(v, p) })),
+    unkeyworded: (v) => (v ? [{ text: "no keywords" }] : []),
+    not_in_collections: (v) =>
+      v.map((id) => ({ what: "Album", text: `not ${byId.get(id)?.name ?? id}`, out: true, title: byId.get(id)?.path, rest: without(v, id) })),
+    uncollected: (v) => [{ what: "Album", text: v ? "none" : "any" }],
+    all_of: () => [],
+    any_of: () => [],
     collections: (v) =>
       v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
@@ -1353,6 +1507,12 @@
   );
 
   function dropChip(key: keyof Filter, rest: unknown) {
+    // A picked tile dropped: the grid goes back to the map's view. The map's area dropped:
+    // the grid stops following it, or it would come straight back.
+    if (key === "within") {
+      if (mapTile) mapTile = null;
+      else follow = false;
+    }
     filter = { ...filter, [key]: rest };
     if (key === "text") search = "";
     run();
@@ -1413,10 +1573,11 @@
 {/snippet}
 
 {#snippet details()}
-  {@const row = selected === null ? mapRow ?? undefined : rowAt(selected)}
+  {@const row = selected === null ? mapRow ?? undefined : focusRow}
   <Info
     {row}
     {version}
+    {analysed}
     picked={Math.max(picked.size, row === undefined ? 0 : 1)}
     queued={(row !== undefined && queued.get(row)) || []}
     onrate={(n) => applyEdit({ Rating: n })}
@@ -1427,18 +1588,19 @@
       applyEdit({ AddKeywords: [path] });
     }}
     onremovekeyword={(path) => applyEdit({ RemoveKeywords: [path] })}
-    shared={selectionKeywords}
     onaddkeywords={(paths) => applyEdit({ AddKeywords: paths })}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
-    sharedAlbums={selectionAlbums}
     onaddalbum={(id) => applyEdit({ AddToAlbum: id })}
     onremovealbum={(id) => applyEdit({ RemoveFromAlbum: id })}
-    onlook={(f) => only(f)}
+    ongroup={showGroup}
     onfolder={showFolder}
-    oncamera={(camera) => only({ camera })}
-    sharedPlaces={placesNow}
+    oncamera={(camera) => only({ cameras: [camera] })}
+    summary={selection?.data ?? null}
+    stale={!selectionNow}
+    summaryError={selectionError}
+    {queuedPicked}
     onplace={(fields, rows) => applyEdit({ Place: fields }, rows ?? targets())}
     ongeo={async (value) => {
       const rows = targets();
@@ -1458,7 +1620,7 @@
 
 <svelte:window onkeydown={onkey} ondragend={() => (dragging = null)} />
 
-<div class="app" class:with-info={showInfo}>
+<div class="app" class:with-info={showInfo} class:busy={!!busy} aria-busy={!!busy}>
   <header>
     <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} onchanged={() => refresh(true)} />
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
@@ -1467,7 +1629,7 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
-    <div class="tiles" class:gone={tab === "analysis"} title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
         type="range"
@@ -1497,13 +1659,15 @@
         onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
       >{shape}</button>
     </div>
-    {#if picked.size > 1 && selected !== null}
+    <!-- Its own slot, there or not, so the header doesn't move as photos are picked. -->
+    <span class="copy-slot">
       <button
         class="copy-to"
+        class:hidden={!(picked.size > 1 && selected !== null)}
         title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
         onclick={openSync}
-      >⇉ Copy to {(picked.size - 1).toLocaleString()} selected</button>
-    {/if}
+      >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
+    </span>
     {#if mapOn}
       <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
@@ -1543,9 +1707,17 @@
               <button title="A new smart album: a rule, not photos" onclick={() => (albumDialog = { mode: "create", kind: "Smart" })}>+ Smart album</button>
               <button title="A new group, to hold albums" onclick={() => (albumDialog = { mode: "create", kind: "Group" })}>+ Group</button>
             </div>
+            <button
+              class="none-row"
+              class:on={filter.uncollected === true}
+              class:out={filter.uncollected === false}
+              title="Photos in no album · click again for photos in some album"
+              onclick={() => toggleNone("uncollected")}
+            ><span class="name">{filter.uncollected === false ? "In an album" : "No album"}</span></button>
             <Tree
               nodes={albums}
-              selected={filter.collections && "a:" + filter.collections[0]}
+              selected={undefined}
+              mark={(n) => pickOf(filter.collections, filter.not_in_collections, n.value)}
               {expanded}
               onpick={pickAlbum}
               oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
@@ -1567,7 +1739,7 @@
             <TripsSection
               list={tripList}
               selected={shownTrip?.id ?? null}
-              focusRow={selected === null ? undefined : rowAt(selected)}
+              focusRow={selected === null ? undefined : focusRow}
               onpick={pickTrip}
               onchanged={refreshTrips}
               onexport={exportTrip}
@@ -1579,6 +1751,13 @@
         <section>
           {@render head("places")}
           {#if !folded.has("places")}
+            <button
+              class="none-row"
+              class:on={filter.placed === false}
+              class:out={filter.placed === true}
+              title="Photos without a place · click again for photos with one"
+              onclick={() => toggleNone("placed")}
+            ><span class="name">{filter.placed === true ? "With a place" : "No place"}</span></button>
             <Tree
               nodes={places}
               selected={filter.place_under && "p:" + filter.place_under}
@@ -1612,9 +1791,16 @@
               bind:value={keywordSearch}
               onkeydown={(e) => { if (e.key === "Escape") { keywordSearch = ""; e.currentTarget.blur(); } }}
             />
+            <button
+              class="none-row"
+              class:on={filter.unkeyworded}
+              title="Photos without any keyword"
+              onclick={toggleUnkeyworded}
+            ><span class="name">No keywords</span></button>
             <Tree
               nodes={keywordView.nodes}
-              selected={filter.keywords_under && "k:" + filter.keywords_under[0]}
+              selected={undefined}
+              mark={(n) => pickOf(filter.keywords_under, filter.keywords_under_not, n.value)}
               expanded={keywordSearch.trim() ? searchOpen : expanded}
               onpick={pickKeyword}
               oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
@@ -1629,8 +1815,25 @@
           <section>
             {@render head(dim)}
             {#if !folded.has(dim)}
+              {#if dim === "rating"}
+                <div class="rating-op">
+                  Stars
+                  <span class="seg" role="group" aria-label="Rating comparison">
+                    {#each RATING_OPS as op}
+                      <button class:on={ratingOp === op} onclick={() => setRatingOp(op)} title={op === "≥" ? "At least" : op === "≤" ? "At most" : "Exactly"}>{op}</button>
+                    {/each}
+                  </span>
+                </div>
+              {/if}
               {#each list as [value, n]}
-                <button class="facet" class:on={isActive(dim, value)} onclick={() => toggle(dim, value)}>
+                {@const state = pickState(dim, value)}
+                <button
+                  class="facet"
+                  class:on={state === "in"}
+                  class:out={state === "out"}
+                  title="Click to include · again to exclude"
+                  onclick={() => toggle(dim, value)}
+                >
                   {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
                   {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? HUES.muted}></i>{/if}
                   <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
@@ -1647,7 +1850,7 @@
   {#if active}
     <div class="filters" role="group" aria-label="Filters">
       {#each chips as chip}
-        <span class="chip" title={chip.title}>
+        <span class="chip" class:out={chip.out} title={chip.title}>
           {#if chip.dot}<i class="dot" style:background={chip.dot}></i>{/if}
           {#if chip.what}<span class="what">{chip.what}:</span>{/if}
           <span class="text" class:stars={chip.stars}>{chip.text}</span>
@@ -1658,14 +1861,23 @@
           >×</button>
         </span>
       {/each}
+      {#if criteriaCount(filter) >= 2}
+        <span class="match">
+          Match
+          <span class="seg" role="group" aria-label="Match all or any">
+            <button class:on={match === "all"} onclick={() => setMatch("all")} title="Photos must satisfy every criterion">All</button>
+            <button class:on={match === "any"} onclick={() => setMatch("any")} title="Photos may satisfy any one of the rating, colour, camera, keyword, album and place picks; the rest still apply">Any</button>
+          </span>
+        </span>
+      {/if}
       <button class="clear" onclick={clearAll}>Clear filters</button>
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn}>
+  <div class="pane" class:strip={mapOn || tab === "analysis"}>
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
-      {filter}
+      filter={eff}
       {version}
       trips={tripList?.settings.home ? tripList.trips : []}
       trip={shownTrip}
@@ -1676,9 +1888,9 @@
   {/if}
   {#if mapOn}
     <MapPane
-      {filter}
+      filter={eff}
       {version}
-      focus={selected === null ? mapRow : (rowAt(selected) ?? null)}
+      focus={selected === null ? mapRow : (focusRow ?? null)}
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
       pickedRows={[...picked]}
       tile={mapTile}
@@ -1703,17 +1915,17 @@
   {/if}
   {#if tab === "analysis"}
     <AnalysisPane
-      {filter}
+      filter={eff}
       facets={result?.facets ?? {}}
       total={result?.total ?? 0}
       {analysis}
       {version}
       ontoggle={toggleList}
       onflag={toggleFlag}
-      ongroup={(id) => { filter = { ...filter, group: id }; showTab("photos"); run(); }}
+      ongroup={showGroup}
       onshow={() => showTab("photos")}
     />
-  {:else}
+  {/if}
   <Grid
     bind:this={grid}
     total={result?.total ?? 0}
@@ -1740,7 +1952,6 @@
       <p class="empty">Nothing matches.</p>
     {/if}
   </Grid>
-  {/if}
   </div>
 
   {#if showInfo && !viewing}{@render details()}{/if}
@@ -1784,7 +1995,7 @@
         <button onclick={() => (fillOffer = null)}>No</button>
       </span>
     {/if}
-    {#if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
+    {#if busy}<span class="busy">{busy}</span>{:else if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     {#if thumbs?.running}
       <span class="sync" title="From each photo's preview, or its original when there is no preview">
@@ -1958,15 +2169,15 @@
 {/if}
 
 {#if importingGpx}
-  <GpxDialog {filter} onclose={() => (importingGpx = false)} ondone={placedMany} />
+  <GpxDialog filter={eff} onclose={() => (importingGpx = false)} ondone={placedMany} />
 {/if}
 
 {#if placingFromNeighbours}
-  <NeighbourDialog {filter} onclose={() => (placingFromNeighbours = false)} ondone={placedMany} />
+  <NeighbourDialog filter={eff} onclose={() => (placingFromNeighbours = false)} ondone={placedMany} />
 {/if}
 
 {#if fillingCodes}
-  <CountryCodesDialog {filter} onclose={() => (fillingCodes = false)} ondone={codesFilled} />
+  <CountryCodesDialog filter={eff} onclose={() => (fillingCodes = false)} ondone={codesFilled} />
 {/if}
 
 {#if copying}
@@ -2011,8 +2222,8 @@
   <WriteDialog onclose={() => (writing = false)} onchanged={() => { refreshKeywords(); edited(); }} />
 {/if}
 
-{#if viewing && selected !== null && rowAt(selected) !== undefined}
-  <Viewer row={rowAt(selected)!} next={rowAt(selected + 1)} onclose={close} onstep={step}>
+{#if viewing && selected !== null && focusRow !== undefined}
+  <Viewer row={focusRow} next={rowAt(selected + 1)} onclose={close} onstep={step}>
     {#if showInfo}{@render details()}{/if}
   </Viewer>
 {/if}

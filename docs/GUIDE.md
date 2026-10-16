@@ -148,7 +148,8 @@ original files. A photo folders source makes its own; see [Photo folders](#photo
 ## Editing
 
 Edits apply to the picked photos, or the focused one if only one is picked. They show
-at once everywhere (grid, counts, panel) and are queued for Capture One; a blue dot marks
+at once everywhere (grid, counts, panel), with the grid, the panel's scroll and the field
+being typed in left where they were, and are queued for Capture One; a blue dot marks
 photos with edits not yet written, and the panel lists which fields.
 
 | Edit | How |
@@ -157,11 +158,20 @@ photos with edits not yet written, and the panel lists which fields.
 | Colour tag | `-` red, `+` green, `*` yellow. Or click a dot in the panel; clicking the current one clears it. |
 | Add a keyword | Ctrl+K (with the panel shown), or the *Add a keyword* field in the panel. It completes from the catalog, most used first. Nested keywords are typed with `\|`: `trips \| japan`. A keyword that does not exist yet is created. |
 | Remove a keyword | × next to it in the panel. Keywords under it go too; the × says so. |
-| Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. |
+| Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. Long lists show their first 8 (those on only some first); *+N more* shows the rest. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
 | Albums | Drag the photos onto an album in the sidebar (several picked go together). The panel lists the albums a photo is in; × takes it out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. While the grid shows an album, Delete takes the picked photos out of it. Only albums take photos; see [Albums](#albums). |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
+
+**Several photos picked.** The panel opens with an *Edit N photos* block: rating, colour,
+the keyword field, Country, Code, State, City, Location, GPS and the IPTC fields, always in
+that order and at the same height, so a field you are typing in never moves. A field shows
+the value all of them share; otherwise its placeholder says how they differ (*3 values*,
+*on 4 of 10*, *empty on 10*), with more in its tooltip. Below the block: how many of them
+have edits waiting, the keyword, album and place lists, then the focused photo's details
+(EXIF, Look, File). While a new pick is read, the lists from before stay, dimmed. The
+footer says *Editing 20,559 photos…* while a big edit or an undo runs.
 
 **Title is not a caption.** Capture One follows the strict IPTC meaning: Title is the
 *Object Name*, a short formal identifier of the image (a file or job code), and sits
@@ -262,13 +272,21 @@ network; everything else works without one).
   then sharpest) and the count in its corner; at street level, single photos.
 - Click a cluster to zoom to its photos; click a single photo to show it in the
   details panel.
+- Zooms and flights (to a cluster, a place found, a trip's route) fit the photos, pins and
+  all, in what the find box, the *Not on the map* tray (open or not) and the route bar
+  leave free; the map doesn't move when these open or close.
 - **Grid follows map** (on by default) makes the grid show only the photos in view: pan
-  and zoom to filter. The chip *Map: area* drops it. Off, the grid keeps its
-  own filter.
+  and zoom to filter. It applies at once: when you tick it, after *Clear filters*, and
+  when a filter that kept the grid off the map (photos with no position, or placed only
+  by name) is dropped. Removing the chip *Map: area* turns it off. Off, the grid keeps
+  its own filter. A view across the 180° meridian (the middle of the Pacific) takes in
+  every photo in its latitudes.
 - **Pick an area:** Shift+drag a box on the map. The grid then shows just its photos
   (and stops following the map); the chip *Map: area* drops it.
 - **Find a place:** the box at the map's top left searches OpenStreetMap's Nominatim by
-  name and flies there. With photos picked in the strip, *Put N picked photos here*
+  name and flies there, with the place in the middle: zoomed to its outline when that
+  is around it, else by what it is (a country, a region, a city, a street), so far-off
+  islands (Tokyo's, France's) don't pull the view away. With photos picked in the strip, *Put N picked photos here*
   places them at the place found.
 - **GPX…** (Map tab) gives photos a position from a recorded track by when they were
   taken. Choose the file, then say what the camera's clock showed against UTC (hours
@@ -351,12 +369,25 @@ What the **Analysis** tab offers (the tabs above the grid are *Photos*, *Map* an
 - **Alike:** *duplicates* are one picture twice: taken at the same instant and looking
   the same (imported twice, or saved again; variants of one image do not count).
   *In a series* are bursts: three or more photos from one camera, seconds apart, each
-  looking much like the one before.
-- *N not measured yet*, while the analysis is still going.
+  looking much like the one before. Each group's badge is its size; under a filter
+  that picks only part of it, *2 of 7*. A group the filter leaves too little of (one
+  photo of a pair, two of a burst) is not listed. Each list's header gives the number
+  of groups in all; the first 60 show, and *Show more (N left)* adds the next 60.
+- *N not measured yet*, while the analysis is still going. A chart with nothing to show
+  says *Nothing matches the filter* or *Not measured yet*.
+
+Under the charts and groups, a strip shows the photos the filter picks, as the map's does:
+pick a bar and see its photos without leaving the tab. They are the same photos as on the
+*Photos* tab, so the counts agree. Click one to see it in the details panel; the arrow
+keys move through them, while Page Up and Page Down scroll the charts and groups.
 
 The details panel's **Look** shows the photo's main colours as a bar, its classes, and
 for a duplicate or a burst a link to the others (*Looks like 1 other photo: show them*,
-*One of a series of 7: show it*).
+*One of a series of 7: show it*). The link and a group's card on the Analysis tab do the
+same: the grid shows the group's photos within the other filters, which stay (with
+*red* picked, the red ones of the burst); drop a filter's chip to see the whole group.
+On the Analysis tab both stay there and show the photos in its strip (the card shown is
+outlined); from another tab the link opens *Photos*.
 
 ## Writing to Capture One
 

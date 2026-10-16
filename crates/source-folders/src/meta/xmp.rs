@@ -382,7 +382,7 @@ fn tiff_packet_location<R: Read + Seek>(reader: &mut R) -> Option<(u64, u32)> {
     reader.read_exact(&mut count).ok()?;
     let mut entries = vec![0; usize::from(embed::get_u16(&count, little)) * 12];
     reader.read_exact(&mut entries).ok()?;
-    let entry = entries.chunks_exact(12).find(|e| embed::get_u16(e, little) == TIFF_TAG)?;
+    let entry = entries.as_chunks::<12>().0.iter().find(|e| embed::get_u16(*e, little) == TIFF_TAG)?;
     let (kind, count) = (embed::get_u16(&entry[2..], little), embed::get_u32(&entry[4..], little));
     if !matches!(kind, 1 | 2 | 7) || !(5..=MAX_TIFF_PACKET).contains(&count) {
         // shorter than five bytes it would sit in the entry, and is no packet

@@ -1,5 +1,5 @@
 use c1index::{
-    Dim, Filter, Library, Origin, Presence, QueryOptions, Range, Sort, TimeRange, Trashed, What, parse_rating,
+    Dim, Filter, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, TimeRange, Trashed, What, parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
@@ -102,6 +102,45 @@ fn keywords_exact_under_and_not() {
     assert_eq!(ids(&lib, &not), [2, 5, 8]);
     let none = Filter { unkeyworded: true, ..Filter::default() };
     assert_eq!(ids(&lib, &none), [2, 5, 8]);
+}
+
+fn either_of(under: &[&str], rating: &str) -> Vec<Filter> {
+    vec![
+        Filter { keywords_under: under.iter().map(|s| (*s).to_owned()).collect(), ..Filter::default() },
+        Filter { rating: Some(parse_rating(rating).unwrap()), ..Filter::default() },
+    ]
+}
+
+#[test]
+fn multi_value_and_negated_filters() {
+    let (_d, lib, _s) = setup();
+    let f = |f: Filter| ids(&lib, &f);
+    assert_eq!(f(Filter { collections_any: vec!["10".into(), "99".into()], ..Filter::default() }), [1, 2, 3, 4]);
+    assert_eq!(f(Filter { uncollected: Some(true), ..Filter::default() }), [5, 6, 7, 8, 10]);
+    assert_eq!(f(Filter { uncollected: Some(false), ..Filter::default() }), [1, 2, 3, 4]);
+    assert_eq!(f(Filter { cameras: vec!["X100VI".into()], ..Filter::default() }), [2, 4, 6, 8, 10]);
+    assert_eq!(f(Filter { cameras_not: vec!["X100VI".into()], ..Filter::default() }), [1, 3, 5, 7]);
+    assert!(f(Filter { lenses_not: vec!["XF23mmF2 R WR".into()], ..Filter::default() }).is_empty());
+    assert_eq!(f(Filter { colors_not: vec![ColorLabel::Red], ..Filter::default() }), [1, 2, 4, 5, 6, 7, 8, 10]);
+    // "No keywords" OR rated 4 and up.
+    let either = Filter {
+        any_of: vec![
+            Filter { unkeyworded: true, ..Filter::default() },
+            Filter { rating: Some(parse_rating(">=4").unwrap()), ..Filter::default() },
+        ],
+        ..Filter::default()
+    };
+    assert_eq!(f(either), [2, 4, 5, 8]);
+    // Match any: counting a dimension leaves out the alternatives that pick among its values.
+    let any = Filter {
+        all_of: vec![Filter { any_of: either_of(&["street"], ">=4"), ..Filter::default() }],
+        ..Filter::default()
+    };
+    assert_eq!(any.without(Dim::KeywordTree).all_of, [Filter::default()]);
+    assert_eq!(any.without(Dim::Camera), any);
+    // Picking a camera leaves its alternatives countable.
+    let picked = Filter { cameras: vec!["X100VI".into()], ..Filter::default() };
+    assert!(picked.without(Dim::Camera).cameras.is_empty());
 }
 
 #[test]
@@ -943,16 +982,110 @@ fn analyses_are_searchable_and_grouped() {
     let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
     assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
     assert_eq!(lib.regroup().unwrap(), 0, "nothing changed");
-    let groups = lib.groups(&Filter::default(), false, 10).unwrap();
+    let groups = lib.groups(&Filter::default(), false, 0, 10).unwrap().groups;
     assert_eq!(groups.len(), 1);
     assert_eq!((groups[0].size, groups[0].rows.len()), (2, 2));
-    assert!(lib.groups(&Filter::default(), true, 10).unwrap().is_empty());
+    assert!(lib.groups(&Filter::default(), true, 0, 10).unwrap().groups.is_empty());
     // Counted per value, as the sidebar shows them.
     let r = lib
         .query(&Filter::default(), &QueryOptions { facets: vec![Dim::Shape, Dim::Focus], ..QueryOptions::default() })
         .unwrap();
     assert!(r.facets[&Dim::Shape].contains(&("landscape".into(), 2)));
     assert_eq!(lib.analysed().len(), 3);
+}
+
+#[test]
+fn groups_split_by_a_filter_count_whole_and_drop_what_is_no_group() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let (red, blue) = ([200, 30, 30], [40, 80, 210]);
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let d = 0x3333_cccc_5555_aaaau64;
+    // A burst of four from the X-Pro2 (odd photos), two seconds apart, one of them blue; and
+    // a duplicate pair from the X100VI (2 and 4, the same instant), one red and one blue.
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, red, 5000.0, h)),
+        (id(3).key(), (1, 1), look(400, 600, red, 5000.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, blue, 5000.0, h ^ 0b1111)),
+        (id(7).key(), (1, 1), look(400, 600, red, 5000.0, h ^ 0b11_1111)),
+        (id(2).key(), (1, 1), look(600, 400, red, 5000.0, d)),
+        (id(4).key(), (1, 1), look(600, 400, blue, 5000.0, d ^ 1)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5, 7].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    let two = source.photo(&id(2)).unwrap().captured_at;
+    source.edit_externally(&id(4), |p| p.captured_at = two);
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.regroup().unwrap(), 6);
+    let size = |g: &c1index::Group| (g.size, g.matched, g.rows.len());
+
+    // Unfiltered: the whole burst and the whole pair.
+    let series = lib.groups(&Filter::default(), true, 0, 10).unwrap().groups;
+    assert_eq!(series.iter().map(size).collect::<Vec<_>>(), [(4, 4, 4)]);
+    let pairs = lib.groups(&Filter::default(), false, 0, 10).unwrap().groups;
+    assert_eq!(pairs.iter().map(size).collect::<Vec<_>>(), [(2, 2, 2)]);
+
+    // Red: three of the burst are still a series, of four; one of the pair is no pair.
+    let reds = Filter { hues: vec!["red".into()], ..Filter::default() };
+    let series = lib.groups(&reds, true, 0, 10).unwrap().groups;
+    assert_eq!(series.iter().map(size).collect::<Vec<_>>(), [(4, 3, 3)]);
+    assert!(lib.groups(&reds, false, 0, 10).unwrap().groups.is_empty());
+    // The size is the one the details panel gives: every photo of the group.
+    let whole = Filter { group: Some(series[0].id.clone()), ..Filter::default() };
+    assert_eq!(ids(&lib, &whole), [1, 3, 5, 7]);
+
+    // Blue: one of each, neither a group.
+    let blues = Filter { hues: vec!["blue".into()], ..Filter::default() };
+    assert!(lib.groups(&blues, true, 0, 10).unwrap().groups.is_empty());
+    assert!(lib.groups(&blues, false, 0, 10).unwrap().groups.is_empty());
+    // Portrait: two of the burst (3 and 7) are fewer than a series needs.
+    let portraits = Filter { shape: vec!["portrait".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &Filter { series: true, ..portraits.clone() }), [3, 7]);
+    assert!(lib.groups(&portraits, true, 0, 10).unwrap().groups.is_empty());
+}
+
+#[test]
+fn groups_page_with_an_exact_total() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    // Three pairs and a three, each taken at one instant and with its own picture.
+    let sets: [(&[u32], u64); 4] = [
+        (&[1, 2], 0x0f0f_3c3c_5a5a_a5a5),
+        (&[3, 4], 0x3333_cccc_5555_aaaa),
+        (&[5, 6], 0x00ff_00ff_f0f0_0f0f),
+        (&[7, 8, 10], 0x6969_9696_c3c3_3c3c),
+    ];
+    let mut analyses = Vec::new();
+    for (photos, hash) in sets {
+        let at = source.photo(&id(photos[0])).unwrap().captured_at;
+        for (k, &n) in photos.iter().enumerate() {
+            source.edit_externally(&id(n), |p| p.captured_at = at);
+            analyses.push((id(n).key(), (1, 1), look(600, 400, [200, 30, 30], 5000.0, hash ^ k as u64)));
+        }
+    }
+    lib.put_analyses(analyses).unwrap();
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.regroup().unwrap(), 9);
+
+    let all = lib.groups(&Filter::default(), false, 0, 100).unwrap();
+    assert_eq!(all.total, 4);
+    assert_eq!(all.groups.iter().map(|g| g.size).collect::<Vec<_>>(), [3, 2, 2, 2]);
+    // Pages of two follow on from each other: every group once, in the same order.
+    let first = lib.groups(&Filter::default(), false, 0, 2).unwrap();
+    let second = lib.groups(&Filter::default(), false, 2, 2).unwrap();
+    assert_eq!((first.total, second.total), (4, 4));
+    assert_eq!([first.groups, second.groups].concat(), all.groups);
+    let unique: std::collections::HashSet<&str> = all.groups.iter().map(|g| g.id.as_str()).collect();
+    assert_eq!(unique.len(), 4);
+    let last = lib.groups(&Filter::default(), false, 3, 2).unwrap();
+    assert_eq!(last.groups, all.groups[3..]);
+    // Past the end: nothing, and still the total.
+    let past = lib.groups(&Filter::default(), false, 4, 2).unwrap();
+    assert_eq!((past.total, past.groups.len()), (4, 0));
+    assert_eq!(lib.groups(&Filter::default(), false, 50, 2).unwrap().total, 4);
 }
 
 #[test]
@@ -1337,4 +1470,36 @@ fn offline_photos_are_told_apart() {
     assert_eq!(ids(&library, &Filter { offline: Some(false), ..Filter::default() }), [1, 3]);
     assert_eq!(ids(&library, &Filter::default()), [1, 2, 3, 4]);
     assert!(library.photo(0).unwrap().is_some());
+}
+
+#[test]
+fn a_selection_counts_and_merges_what_its_photos_have() {
+    let (_d, lib, _source) = setup();
+    let rows = |ns: &[u32]| ns.iter().map(|&n| row_of(&lib, n)).collect::<Vec<_>>();
+    // 3: ★3, red, street and best|best2018, in the album; 6: ★1, street and best|best2018;
+    // 7: ★2, street, a description, Wrocław and a position.
+    let s = lib.selection(&rows(&[3, 6, 7])).unwrap();
+    assert_eq!(s.keywords, [("best|best2018".to_owned(), 2), ("street".to_owned(), 3)]);
+    assert_eq!(s.albums, [("10".to_owned(), 1)]);
+    let places: Vec<_> = s.places.iter().map(|(p, rows)| (p.city.as_deref(), rows.len())).collect();
+    assert_eq!(places, [(None, 2), (Some("Wrocław"), 1)]);
+    fn shape<T: Clone>(m: &Merged<T>) -> (Option<T>, usize, usize) {
+        (m.same.clone(), m.values, m.empty)
+    }
+    assert_eq!(shape(&s.rating), (None, 3, 0));
+    assert_eq!((s.color.values, s.color.empty), (1, 2));
+    assert_eq!(s.color.top, [(ColorLabel::Red, 1)]);
+    assert_eq!((s.geo.values, s.geo.empty), (1, 2));
+    assert_eq!(s.geo.top, [([51.11, 17.03], 1)]);
+    // Each value with how many have it, for the field's tooltip.
+    assert_eq!(s.iptc["description"].top, [("Rynek we Wrocławiu".to_owned(), 1)]);
+    assert_eq!(shape(&s.iptc["description"]), (None, 1, 2));
+    assert_eq!(shape(&s.iptc["headline"]), (None, 0, 3));
+    // What all of them share is given as such: 1 and 6 are both ★1.
+    let s = lib.selection(&rows(&[1, 6])).unwrap();
+    assert_eq!((s.rating.same, s.rating.values, s.rating.empty), (Some(1), 1, 0));
+    assert_eq!(s.rating.top, []);
+    assert_eq!(s.keywords, [("best|best2018".to_owned(), 1), ("street".to_owned(), 2)]);
+    // Rows that don't exist are left out.
+    assert_eq!(lib.selection(&[9_999]).unwrap().places, []);
 }
