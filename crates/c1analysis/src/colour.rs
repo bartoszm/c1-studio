@@ -13,6 +13,8 @@ pub const BLACK_AND_WHITE: &str = "black & white";
 pub const MUTED: &str = "muted";
 /// Names that are not colours, for [`crate::Analysis::hues`].
 pub const NEUTRAL: [&str; 3] = ["black", "white", "grey"];
+/// Every name [`name_of`] gives that is a colour, in the order of [`crate::Analysis::hue_shares`].
+pub const HUES: [&str; 9] = ["brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
 
 const K: usize = 5;
 const ITERATIONS: usize = 10;

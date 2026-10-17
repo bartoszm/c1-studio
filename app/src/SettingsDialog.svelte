@@ -2,10 +2,16 @@
   import { onMount } from "svelte";
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
+  import ClassSettings from "./ClassSettings.svelte";
 
   // The app's preferences, applied as they are changed: the sidebar's sections (which,
-  // in what order) and whether the map may use the internet.
-  let { titles, onclose }: { titles: Record<string, string>; onclose: () => void } = $props();
+  // in what order) and whether the map may use the internet. The analysis lines are the
+  // exception: they are applied on request, and `onclasses` is told when they are.
+  let {
+    titles,
+    onclose,
+    onclasses,
+  }: { titles: Record<string, string>; onclose: () => void; onclasses: () => void } = $props();
 
   /** The row being dragged, and the row it would land before. */
   let from = $state<number | null>(null);
@@ -23,17 +29,37 @@
   );
   const title = (key: string) => titles[key] ?? key;
 
+  const TABS = [
+    { key: "sidebar", label: "Sidebar" },
+    { key: "map", label: "Map & places" },
+    { key: "analysis", label: "Analysis" },
+  ] as const;
+  type Tab = (typeof TABS)[number]["key"];
+  let tab = $state<Tab>("sidebar");
+  /** Arrow keys move between the categories, as in any tab list. */
+  function tabKey(e: KeyboardEvent, key: Tab) {
+    const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    const i = TABS.findIndex((t) => t.key === key);
+    tab = TABS[(i + step + TABS.length) % TABS.length].key;
+    e.preventDefault();
+    queueMicrotask(() => dialog.querySelector<HTMLElement>(`#tab-${tab}`)?.focus());
+  }
+  /** What can take focus now: not in a category that is not shown. */
+  const focusable = () =>
+    [...dialog.querySelectorAll<HTMLElement>("input, button:not(:disabled)")].filter((el) => !el.closest("[hidden]"));
+
   // Focus goes into the dialog, stays in it, and goes back where it was on closing.
   let dialog: HTMLDivElement;
   onMount(() => {
     const before = document.activeElement;
-    dialog.querySelector<HTMLElement>("input, button:not(:disabled)")?.focus();
+    focusable()[0]?.focus();
     return () => { if (before instanceof HTMLElement) before.focus(); };
   });
   function onkey(e: KeyboardEvent) {
     if (e.key === "Escape") return onclose();
     if (e.key !== "Tab") return;
-    const all = [...dialog.querySelectorAll<HTMLElement>("input, button:not(:disabled)")];
+    const all = focusable();
     if (!all.length) return;
     const at = all.indexOf(document.activeElement as HTMLElement);
     const next = e.shiftKey ? (at <= 0 ? all.length - 1 : at - 1) : (at < 0 || at === all.length - 1 ? 0 : at + 1);
@@ -48,6 +74,24 @@
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" bind:this={dialog}>
     <h2 id="settings-title">Settings</h2>
 
+    <div class="body">
+    <div class="tabs" role="tablist" aria-orientation="vertical" aria-label="Settings categories">
+      {#each TABS as t (t.key)}
+        <button
+          role="tab"
+          id="tab-{t.key}"
+          aria-selected={tab === t.key}
+          aria-controls="panel-{t.key}"
+          tabindex={tab === t.key ? 0 : -1}
+          class:active={tab === t.key}
+          onclick={() => (tab = t.key)}
+          onkeydown={(e) => tabKey(e, t.key)}
+        >{t.label}</button>
+      {/each}
+    </div>
+    <div class="pane">
+
+    <div role="tabpanel" id="panel-sidebar" aria-labelledby="tab-sidebar" hidden={tab !== "sidebar"}>
     <h3>Sidebar sections</h3>
     <p class="muted">Untick a section to hide it; drag one, or use the arrows, to change the order.</p>
     <ul ondragleave={(e) => { if (e.currentTarget === e.target) over = null; }}>
@@ -79,6 +123,10 @@
     </ul>
     <p class="muted small">Main colour lists the colours the analysis found; it shows once photos are measured.</p>
 
+    <div class="reset"><button disabled={isDefault} onclick={() => (settings.sections = defaultSections())}>Reset sidebar</button></div>
+    </div>
+
+    <div role="tabpanel" id="panel-map" aria-labelledby="tab-map" hidden={tab !== "map"}>
     <h3>Map</h3>
     <label class="option">
       <input type="checkbox" bind:checked={settings.onlineMap} />
@@ -113,8 +161,15 @@
       Place names and positions: <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a>, CC BY 4.0.
     </p>
 
+    </div>
+
+    <div role="tabpanel" id="panel-analysis" aria-labelledby="tab-analysis" hidden={tab !== "analysis"}>
+      <ClassSettings onapplied={onclasses} />
+    </div>
+    </div>
+    </div>
+
     <div class="buttons">
-      <button disabled={isDefault} onclick={() => (settings.sections = defaultSections())}>Reset sidebar</button>
       <button onclick={onclose}>Close</button>
     </div>
   </div>
@@ -131,9 +186,10 @@
     background: rgb(0 0 0 / 55%);
   }
   .dialog {
-    width: min(460px, 100%);
-    max-height: calc(100vh - 32px);
-    overflow: auto;
+    width: min(900px, 100%);
+    height: min(640px, calc(100vh - 32px));
+    display: flex;
+    flex-direction: column;
     padding: 18px 20px;
     background: var(--panel);
     border: 1px solid var(--line);
@@ -142,6 +198,16 @@
   }
   h2 { margin: 0 0 10px; font-size: 16px; font-weight: 600; }
   h3 { margin: 16px 0 4px; font-size: 13px; font-weight: 600; }
+  [role="tabpanel"] > h3:first-child { margin-top: 0; }
+  .body { flex: 1; min-height: 0; display: flex; gap: 18px; }
+  .tabs { flex: none; width: 150px; display: flex; flex-direction: column; gap: 2px; padding-right: 12px; border-right: 1px solid var(--line); }
+  .tabs button { padding: 6px 10px; text-align: left; border-radius: 4px; }
+  .tabs button:hover { background: var(--hover); }
+  .tabs button.active { background: var(--hover); font-weight: 600; box-shadow: inset 2px 0 0 var(--queued); }
+  .pane { flex: 1; min-width: 0; overflow: auto; padding-right: 4px; }
+  .reset { margin-top: 8px; }
+  .reset button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 4px; }
+  .reset button:hover:not(:disabled) { background: var(--hover); }
   p { margin: 4px 0 8px; }
   .muted { color: var(--muted); }
   .small { font-size: 12px; }

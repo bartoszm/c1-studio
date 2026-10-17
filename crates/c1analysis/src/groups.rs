@@ -2,17 +2,18 @@
 //!
 //! - **Duplicates** are one picture twice: different images (not variants of one, which
 //!   are made on purpose) taken at the same instant and looking the same (hashes at most
-//!   [`DUPLICATE`] bits apart): imported twice, or saved again. Burst frames a moment
+//!   [`ClassSettings::duplicate_bits`] bits apart): imported twice, or saved again. Burst frames a moment
 //!   apart look as alike, but they are a series.
-//! - A **series** is a burst: [`SERIES_MIN`] or more photos from one camera, each taken
-//!   within [`SERIES_GAP_MS`] of the one before and looking much like it.
+//! - A **series** is a burst: [`ClassSettings::series_min`] or more photos from one camera, each taken
+//!   within [`ClassSettings::series_gap_ms`] of the one before and looking much like it.
 
 use std::collections::HashMap;
 
-pub const DUPLICATE: u32 = 3;
-pub const SERIES_STEP: u32 = 22;
-pub const SERIES_GAP_MS: i64 = 4_000;
-pub const SERIES_MIN: usize = 3;
+use crate::ClassSettings;
+
+/// The most hash bits apart that [`group`] finds duplicates at: the lookup splits a hash
+/// into four bands, and hashes within 3 bits share one of them exactly.
+pub const DUPLICATE_MAX: u32 = 3;
 
 pub fn distance(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
@@ -41,11 +42,11 @@ fn featureless(hash: u64) -> bool {
     !(6..=58).contains(&hash.count_ones())
 }
 
-pub fn group(photos: &[Taken]) -> Groups {
-    Groups { duplicates: duplicates(photos), series: series(photos) }
+pub fn group(photos: &[Taken], s: &ClassSettings) -> Groups {
+    Groups { duplicates: duplicates(photos, s.duplicate_bits.min(DUPLICATE_MAX)), series: series(photos, s) }
 }
 
-fn duplicates(photos: &[Taken]) -> Vec<Vec<usize>> {
+fn duplicates(photos: &[Taken], bits: u32) -> Vec<Vec<usize>> {
     // Hashes within 3 bits share at least one of four 16-bit bands exactly.
     let mut buckets: HashMap<(u8, u16), Vec<usize>> = HashMap::new();
     for (i, p) in photos.iter().enumerate().filter(|(_, p)| !featureless(p.hash)) {
@@ -65,7 +66,7 @@ fn duplicates(photos: &[Taken]) -> Vec<Vec<usize>> {
         for (n, &a) in members.iter().enumerate() {
             for &b in &members[n + 1..] {
                 let (pa, pb) = (&photos[a], &photos[b]);
-                if pa.asset != pb.asset && pa.at == pb.at && distance(pa.hash, pb.hash) <= DUPLICATE {
+                if pa.asset != pb.asset && pa.at == pb.at && distance(pa.hash, pb.hash) <= bits {
                     let (ra, rb) = (root(&mut parent, a), root(&mut parent, b));
                     if ra != rb {
                         parent[ra.max(rb)] = ra.min(rb);
@@ -82,7 +83,7 @@ fn duplicates(photos: &[Taken]) -> Vec<Vec<usize>> {
     sorted(groups.into_values().filter(|g| g.len() > 1).collect())
 }
 
-fn series(photos: &[Taken]) -> Vec<Vec<usize>> {
+fn series(photos: &[Taken], s: &ClassSettings) -> Vec<Vec<usize>> {
     let mut timed: Vec<usize> = (0..photos.len()).filter(|&i| photos[i].at.is_some()).collect();
     timed.sort_by_key(|&i| (photos[i].camera.clone(), photos[i].at, i));
     let mut out = Vec::new();
@@ -91,19 +92,19 @@ fn series(photos: &[Taken]) -> Vec<Vec<usize>> {
         let follows = run.last().is_some_and(|&prev| {
             let (a, b) = (&photos[prev], &photos[i]);
             a.camera == b.camera
-                && b.at.unwrap_or(0) - a.at.unwrap_or(0) <= SERIES_GAP_MS
+                && b.at.unwrap_or(0) - a.at.unwrap_or(0) <= s.series_gap_ms
                 && a.asset != b.asset
-                && distance(a.hash, b.hash) <= SERIES_STEP
+                && distance(a.hash, b.hash) <= s.series_bits
         });
         if !follows {
-            if run.len() >= SERIES_MIN {
+            if run.len() >= s.series_min {
                 out.push(std::mem::take(&mut run));
             }
             run.clear();
         }
         run.push(i);
     }
-    if run.len() >= SERIES_MIN {
+    if run.len() >= s.series_min {
         out.push(run);
     }
     sorted(out)
@@ -137,7 +138,10 @@ mod tests {
             p("4", 0, 0),         // featureless
             p("5", 0, 0),
         ];
-        assert_eq!(group(&photos).duplicates, [vec![0, 1, 2]], "not the burst frame");
+        let s = ClassSettings::default();
+        assert_eq!(group(&photos, &s).duplicates, [vec![0, 1, 2]], "not the burst frame");
+        let strict = ClassSettings { duplicate_bits: 1, ..s };
+        assert!(group(&photos, &strict).duplicates.is_empty(), "two bits off is too far");
     }
 
     #[test]
@@ -151,6 +155,10 @@ mod tests {
             p("5", 31_000, !h),        // too different
             p("6", 31_500, !h),
         ];
-        assert_eq!(group(&photos).series, [vec![0, 1, 2]]);
+        let s = ClassSettings::default();
+        assert_eq!(group(&photos, &s).series, [vec![0, 1, 2]]);
+        // Asking for four photos, or a shorter wait, leaves it out.
+        assert!(group(&photos, &ClassSettings { series_min: 4, ..s.clone() }).series.is_empty());
+        assert!(group(&photos, &ClassSettings { series_gap_ms: 1_200, ..s }).series.is_empty());
     }
 }

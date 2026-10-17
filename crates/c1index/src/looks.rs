@@ -5,12 +5,15 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Context;
-use c1analysis::Analysis;
+use c1analysis::{Analysis, ClassSettings};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 /// photo key → postcard [`Record`].
 const ANALYSES: TableDefinition<&str, &[u8]> = TableDefinition::new("analyses");
+/// name → value, for the class settings.
+const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
+const SETTINGS: &str = "class_settings";
 
 /// An analysis as stored, with what it was measured from.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -31,6 +34,9 @@ pub struct Look {
     pub stamp: (u64, u64),
     pub duplicates: Option<String>,
     pub series: Option<String>,
+    /// Not the sharpest of its group (see [`crate::filter::Filter::stacked`]).
+    #[serde(skip)]
+    pub stacked: bool,
 }
 
 pub struct Looks {
@@ -42,8 +48,26 @@ impl Looks {
         let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
         let tx = db.begin_write()?;
         tx.open_table(ANALYSES)?;
+        tx.open_table(META)?;
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    /// Where this library draws the lines between classes; the defaults until changed.
+    pub fn settings(&self) -> anyhow::Result<ClassSettings> {
+        let tx = self.db.begin_read()?;
+        let meta = tx.open_table(META)?;
+        Ok(match meta.get(SETTINGS)? {
+            Some(json) => serde_json::from_str::<ClassSettings>(json.value()).unwrap_or_default().sanitized(),
+            None => ClassSettings::default(),
+        })
+    }
+
+    pub fn set_settings(&self, settings: &ClassSettings) -> anyhow::Result<()> {
+        let tx = self.db.begin_write()?;
+        tx.open_table(META)?.insert(SETTINGS, serde_json::to_string(settings)?.as_str())?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// Every stored analysis of the current version, by photo key.
