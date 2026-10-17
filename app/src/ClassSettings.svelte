@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
-  import { GROUPS, sameSettings, shown, summary, withField } from "./lib/classes";
+  import { GROUPS, mergeFields, sameSettings, shown, summary, withField } from "./lib/classes";
 
   // Where the analysis draws the lines between classes (what counts as red, as soft, as a
   // burst). Moving a value previews how many photos each class would get; Apply classes the
@@ -31,14 +31,17 @@
   });
 
   // The preview follows the draft a moment after the last keystroke.
+  // A counter, not a comparison of drafts (a $state proxy never equals the object it wraps):
+  // only the newest request's answer is shown.
+  let asked = 0;
   function edit(next: api.ClassSettings) {
     draft = next;
     clearTimeout(timer);
+    const mine = ++asked;
     timer = setTimeout(async () => {
       try {
-        const asked = next;
-        const got = await api.previewClasses(asked);
-        if (draft === asked) preview = got;
+        const got = await api.previewClasses(next);
+        if (mine === asked) preview = got;
       } catch (e) {
         error = String(e);
       }
@@ -49,8 +52,12 @@
     if (!draft || busy) return;
     busy = true;
     error = "";
+    clearTimeout(timer);
+    asked++;
     try {
-      saved = await api.setClassSettings(draft);
+      // Only this dialog's fields: the Alike tab may have moved its own meanwhile.
+      const mine = GROUPS.filter((g) => g.title !== "Alike").flatMap((g) => g.fields);
+      saved = await api.setClassSettings(mergeFields(await api.classSettings(), draft, mine));
       draft = { ...saved };
       preview = await api.previewClasses(saved);
       onapplied();

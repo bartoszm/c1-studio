@@ -993,12 +993,12 @@ fn analyses_are_searchable_and_grouped() {
     assert_eq!(ids(&lib, &Filter { analysed: Some(false), ..Filter::default() }), [4, 5, 6, 7, 8, 10]);
     // 1 and 2 look the same, but were taken a day apart: not duplicates.
     assert_eq!(lib.regroup().unwrap(), 0);
-    // Taken at the same instant (imported twice), they are; groups come with regroup.
+    // Taken at the same instant (imported twice), they are; the sync that brings the new
+    // time works the groups out again.
     let one = source.photo(&lib.photo_id(row_of(&lib, 1)).unwrap()).unwrap().captured_at;
     source.edit_externally(&lib.photo_id(row_of(&lib, 2)).unwrap(), |p| p.captured_at = one);
     lib.sync(&source).unwrap();
-    assert!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }).is_empty());
-    assert_eq!(lib.regroup().unwrap(), 2);
+    assert_eq!(lib.regroup().unwrap(), 0, "the sync already grouped them");
     assert_eq!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }), [1, 2]);
     let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
     assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
@@ -1106,6 +1106,44 @@ fn best_match_averages_the_dimensions_and_ranks_unmeasured_photos_last() {
     // Soft or sharp: the better of the two counts, so all three are still matched.
     let either = Filter { hues: vec!["red".into()], focus: vec!["soft".into(), "sharp".into()], ..Filter::default() };
     assert_eq!(ordered(&lib, &either, Sort::Match).len(), 3);
+}
+
+#[test]
+fn stacking_under_a_filter_hides_only_frames_whose_sharpest_matches_and_follows_the_sync() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let (red, blue) = ([210, 30, 30], [40, 80, 210]);
+    // A burst of three, seconds apart (1, 3, 5): 3 is the sharpest and the only blue one.
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, red, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, blue, 900.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, red, 300.0, h ^ 0b1111)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    lib.sync(&source).unwrap();
+
+    let stacked = |f: Filter| ids(&lib, &Filter { stacked: true, ..f });
+    // Nothing else picked: only the sharpest of the burst shows.
+    assert_eq!(stacked(Filter::default()), [2, 3, 4, 6, 7, 8, 10]);
+    // Red picks 1 and 5, but their sharpest (3) is blue: both stay, the burst does not vanish.
+    assert_eq!(stacked(Filter { hues: vec!["red".into()], ..Filter::default() }), [1, 5]);
+    // Blue picks only the sharpest.
+    assert_eq!(stacked(Filter { hues: vec!["blue".into()], ..Filter::default() }), [3]);
+    // Measured (all three): the sharpest matches, so the others are stacked away.
+    assert_eq!(stacked(Filter { analysed: Some(true), ..Filter::default() }), [3]);
+    // One group picked: all its frames show.
+    let group = lib.look(row_of(&lib, 3)).unwrap().series.unwrap();
+    assert_eq!(stacked(Filter { group: Some(group), ..Filter::default() }), [1, 3, 5]);
+
+    // The sharpest is trashed in the source: two frames are no burst, so none stays hidden.
+    source.edit_externally(&id(3), |p| p.trashed = true);
+    lib.sync(&source).unwrap();
+    assert_eq!(stacked(Filter { analysed: Some(true), ..Filter::default() }), [1, 5]);
 }
 
 #[test]
@@ -1246,7 +1284,7 @@ fn groups_split_by_a_filter_count_whole_and_drop_what_is_no_group() {
     let two = source.photo(&id(2)).unwrap().captured_at;
     source.edit_externally(&id(4), |p| p.captured_at = two);
     lib.sync(&source).unwrap();
-    assert_eq!(lib.regroup().unwrap(), 6);
+    assert_eq!(lib.regroup().unwrap(), 0, "the sync already grouped them");
     let size = |g: &c1index::Group| (g.size, g.matched, g.rows.len());
 
     // Unfiltered: the whole burst and the whole pair.
@@ -1295,7 +1333,7 @@ fn groups_page_with_an_exact_total() {
     }
     lib.put_analyses(analyses).unwrap();
     lib.sync(&source).unwrap();
-    assert_eq!(lib.regroup().unwrap(), 9);
+    assert_eq!(lib.regroup().unwrap(), 0, "the sync already grouped them");
 
     let all = lib.groups(&Filter::default(), false, 0, 100).unwrap();
     assert_eq!(all.total, 4);

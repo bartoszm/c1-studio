@@ -455,19 +455,27 @@ impl Library {
         if settings == *self.classes.read().unwrap() {
             return Ok(settings);
         }
-        self.looks.set_settings(&settings)?;
         let before = std::mem::replace(&mut *self.classes.write().unwrap(), settings.clone());
-        let mut changed: HashSet<String> = self
-            .seen
-            .read()
-            .unwrap()
-            .iter()
-            .filter(|(_, l)| classes_of(&l.analysis, &before) != classes_of(&l.analysis, &settings))
-            .map(|(k, _)| k.clone())
-            .collect();
-        changed.extend(self.group_looks()?);
-        let keys: Vec<String> = changed.into_iter().collect();
-        self.reindex_keys(&keys)?;
+        // Kept only once the index follows: were it stored first, a failed re-index would leave
+        // settings the index does not show, and asking for them again would do nothing.
+        let applied = (|| {
+            let mut changed: HashSet<String> = self
+                .seen
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|(_, l)| classes_of(&l.analysis, &before) != classes_of(&l.analysis, &settings))
+                .map(|(k, _)| k.clone())
+                .collect();
+            changed.extend(self.group_looks()?);
+            let keys: Vec<String> = changed.into_iter().collect();
+            self.reindex_keys(&keys)?;
+            self.looks.set_settings(&settings)
+        })();
+        if let Err(e) = applied {
+            *self.classes.write().unwrap() = before;
+            return Err(e);
+        }
         Ok(settings)
     }
 
@@ -638,26 +646,30 @@ impl Library {
     fn grouping(&self, settings: &ClassSettings) -> anyhow::Result<HashMap<String, Groupings>> {
         let mut members: Vec<(u64, String, c1analysis::Taken)> = Vec::new();
         let mut sharpness: Vec<f32> = Vec::new();
-        {
+        // What grouping needs of each analysis, copied out so the lock is not held while the
+        // photos are read from the store (seconds on a big library): that would stall
+        // everything that looks a photo up, and the analysis writer.
+        let looks: HashMap<String, (u64, f32)> = {
             let seen = self.seen.read().unwrap();
-            if seen.is_empty() {
-                return Ok(HashMap::new());
+            seen.iter().map(|(k, l)| (k.clone(), (l.analysis.hash, l.analysis.sharpness))).collect()
+        };
+        if looks.is_empty() {
+            return Ok(HashMap::new());
+        }
+        for (row, key) in self.store.keys()? {
+            let Some(&(hash, sharp)) = looks.get(&key) else { continue };
+            let Some(photo) = self.store.photo(row)? else { continue };
+            if photo.trashed {
+                continue;
             }
-            for (row, key) in self.store.keys()? {
-                let Some(look) = seen.get(&key) else { continue };
-                let Some(photo) = self.store.photo(row)? else { continue };
-                if photo.trashed {
-                    continue;
-                }
-                let taken = c1analysis::Taken {
-                    asset: photo.asset.0.clone(),
-                    camera: photo.exif.camera_model.clone(),
-                    at: photo.captured_at,
-                    hash: look.analysis.hash,
-                };
-                sharpness.push(look.analysis.sharpness);
-                members.push((row, key, taken));
-            }
+            let taken = c1analysis::Taken {
+                asset: photo.asset.0.clone(),
+                camera: photo.exif.camera_model.clone(),
+                at: photo.captured_at,
+                hash,
+            };
+            sharpness.push(sharp);
+            members.push((row, key, taken));
         }
         let taken: Vec<c1analysis::Taken> = members.iter().map(|(_, _, t)| t.clone()).collect();
         let groups = c1analysis::group(&taken, settings);
@@ -999,11 +1011,17 @@ impl Library {
         // fingerprints, so the next sync redoes the work instead of losing it.
         progress(SyncStep::Saving);
         writer.commit()?;
+        // One index writer at a time: the regrouping below makes its own.
+        drop(writer);
         batch.commit()?;
         edits.commit()?;
         self.refresh()?;
         if report.added + report.updated + report.deleted > 0 {
             self.places_changed();
+            // A photo trashed, retimed or added can change who is in a group, and who is
+            // its sharpest (the one that stays when groups are stacked). `writing` is held.
+            let regrouped = self.group_looks()?;
+            self.reindex_keys(&regrouped)?;
         }
         report.millis = started.elapsed().as_millis();
         Ok(report)
@@ -1279,6 +1297,24 @@ impl Library {
     }
 
     pub fn query(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
+        // Stacking leaves out the frames behind the sharpest of their group. Where other
+        // filters narrow the photos, only those whose sharpest frame is among the matches go:
+        // a frame that matches stays when its sharpest does not, so no burst disappears.
+        if filter.stacked && filter.group.is_none() && filter.stacked_in.is_none() {
+            let base = Filter { stacked: false, ..filter.clone() };
+            if base != Filter::default() {
+                let keepers = Filter { stacked: true, ..base.clone() };
+                let counting = QueryOptions { limit: Some(0), facets: vec![Dim::Group], ..QueryOptions::default() };
+                let mut counted = self.query_plain(&keepers, &counting)?;
+                let kept: Vec<String> =
+                    counted.facets.remove(&Dim::Group).unwrap_or_default().into_iter().map(|(id, _)| id).collect();
+                return self.query_plain(&Filter { stacked_in: Some(kept), ..base }, options);
+            }
+        }
+        self.query_plain(filter, options)
+    }
+
+    fn query_plain(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
         let started = Instant::now();
         let distinct = self.distinct.read().unwrap();
         let smart = self.smart.read().unwrap();

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ClassSettings } from "../src/lib/api";
-import { GROUPS, sameSettings, shown, summary, withField } from "../src/lib/classes";
+import { GROUPS, mergeFields, sameSettings, shown, summary, withField } from "../src/lib/classes";
 
 const defaults: ClassSettings = {
   mono_chroma: 4,
@@ -41,6 +41,19 @@ test("typing converts back, stays in range, and ignores what is not a number", (
   assert.equal(withField(defaults, field("duplicate_bits"), 9).duplicate_bits, 3);
   assert.equal(withField(defaults, field("soft_below"), null), defaults);
   assert.equal(withField(defaults, field("soft_below"), NaN), defaults);
+});
+
+test("applying one editor's fields keeps what the other changed meanwhile", () => {
+  const alike = GROUPS.find((g) => g.title === "Alike")!.fields;
+  const others = GROUPS.filter((g) => g.title !== "Alike").flatMap((g) => g.fields);
+  // The dialog was opened with the defaults; since then Alike moved the series gap.
+  const current = { ...defaults, series_gap_ms: 1000 };
+  const draft = { ...defaults, soft_below: 900 };
+  assert.deepEqual(mergeFields(current, draft, others), { ...defaults, series_gap_ms: 1000, soft_below: 900 });
+  // And the other way round: Alike applies only its own.
+  const merged = mergeFields({ ...defaults, soft_below: 900 }, { ...defaults, series_min: 5 }, alike);
+  assert.equal(merged.soft_below, 900);
+  assert.equal(merged.series_min, 5);
 });
 
 test("settings are the same despite float noise", () => {

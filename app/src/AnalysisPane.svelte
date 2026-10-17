@@ -54,9 +54,19 @@
     }
   }
   let part = $state<Part>(rememberedPart());
+  const PARTS: [Part, string][] = [["look", "Look"], ["alike", "Alike"]];
   function show(next: Part) {
     part = next;
     try { localStorage.setItem("analysisPart", next); } catch { /* not remembered */ }
+  }
+  /** Arrow keys move between the tabs, and focus goes with them. */
+  function partKey(e: KeyboardEvent, key: Part) {
+    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!step) return;
+    const next = PARTS[(PARTS.findIndex(([k]) => k === key) + step + PARTS.length) % PARTS.length][0];
+    show(next);
+    e.preventDefault();
+    queueMicrotask(() => document.getElementById(`analysis-tab-${next}`)?.focus());
   }
 </script>
 
@@ -79,13 +89,21 @@
   </header>
 
   <div class="parts" role="tablist" aria-label="Analysis">
-    <button role="tab" aria-selected={part === "look"} class:on={part === "look"} onclick={() => show("look")}>Look</button>
-    <button role="tab" aria-selected={part === "alike"} class:on={part === "alike"} onclick={() => show("alike")}>
-      Alike
-      <span class="n">{(flag("duplicate") + flag("series")).toLocaleString()}</span>
-    </button>
+    {#each PARTS as [key, label] (key)}
+      <button
+        role="tab"
+        id="analysis-tab-{key}"
+        aria-selected={part === key}
+        aria-controls="analysis-panel-{key}"
+        tabindex={part === key ? 0 : -1}
+        class:on={part === key}
+        onclick={() => show(key)}
+        onkeydown={(e) => partKey(e, key)}
+      >{label}</button>
+    {/each}
   </div>
 
+  <div role="tabpanel" id="analysis-panel-{part}" aria-labelledby="analysis-tab-{part}">
   {#if part === "look"}
     <div class="stack">
       <button class="toggle" class:on={stack} aria-pressed={stack} onclick={onstack}>Stack bursts &amp; duplicates</button>
@@ -116,6 +134,9 @@
       {/each}
     </div>
   {:else}
+    {#if stack}
+      <p class="muted stacknote">Stack is on: the photo counts below leave out the stacked frames; the groups are counted whole.</p>
+    {/if}
     <AlikePanel
       {filter}
       {version}
@@ -126,6 +147,7 @@
       {onclasses}
     />
   {/if}
+  </div>
 </div>
 
 <style>
@@ -142,7 +164,7 @@
   .parts button { padding: 5px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .parts button:hover { background: var(--hover, #333); }
   .parts button.on { border-bottom-color: #5b8def; font-weight: 600; }
-  .parts .n { margin-left: 6px; color: var(--muted, #999); font-weight: 400; font-variant-numeric: tabular-nums; }
+  .stacknote { margin: 0 0 8px; }
   .stack { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .toggle { padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
   .toggle:hover { background: var(--hover, #333); }

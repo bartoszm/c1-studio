@@ -86,7 +86,15 @@ export function withField(settings: ClassSettings, f: Field, typed: number | nul
   return { ...settings, [f.key]: f.scale === 0.001 ? Math.round(value) : value };
 }
 
-export const sameSettings = (a: ClassSettings, b: ClassSettings) =>
+/** `current` with just the `fields` taken from `draft`: what one editor applies, so the fields
+ *  another editor (the Alike tab, the Settings dialog) changed since it loaded stay as they are. */
+export function mergeFields(current: ClassSettings, draft: ClassSettings, fields: Field[]): ClassSettings {
+  const out = { ...current };
+  for (const f of fields) out[f.key] = draft[f.key];
+  return out;
+}
+
+export const sameSettings =(a: ClassSettings, b: ClassSettings) =>
   (Object.keys(a) as (keyof ClassSettings)[]).every((k) => round(a[k]) === round(b[k]));
 
 /** "12 blurry · 340 soft": the classes of a group with photos in them, in the group's order. */

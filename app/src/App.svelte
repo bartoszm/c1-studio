@@ -233,6 +233,9 @@
   /** How tall the strip of photos under the map and the analysis is: dragged, remembered. */
   let stripH = $state(storedStrip((() => { try { return localStorage.getItem("strip"); } catch { return null; } })()));
   let paneEl = $state<HTMLDivElement>();
+  let paneH = $state(0);
+  /** The strip as shown: the stored height kept within what this window leaves room for. */
+  let stripShown = $derived(clampStrip(stripH, paneH || 900));
   let splitting = $state(false);
   function setStrip(px: number, keep = true) {
     stripH = clampStrip(px, paneEl?.clientHeight ?? 900);
@@ -241,7 +244,7 @@
   function splitStart(e: PointerEvent) {
     const handle = e.currentTarget as HTMLElement;
     handle.setPointerCapture(e.pointerId);
-    const [startY, start] = [e.clientY, stripH];
+    const [startY, start] = [e.clientY, stripShown];
     splitting = true;
     const move = (ev: PointerEvent) => setStrip(dragged(start, startY, ev.clientY, paneEl?.clientHeight ?? 900), false);
     const end = () => {
@@ -257,8 +260,8 @@
   }
   function splitKey(e: KeyboardEvent) {
     const step = e.shiftKey ? 80 : 20;
-    if (e.key === "ArrowUp") setStrip(stripH + step);
-    else if (e.key === "ArrowDown") setStrip(stripH - step);
+    if (e.key === "ArrowUp") setStrip(stripShown + step);
+    else if (e.key === "ArrowDown") setStrip(stripShown - step);
     else if (e.key === "Home") setStrip(STRIP_DEFAULT);
     else return;
     e.preventDefault();
@@ -279,7 +282,9 @@
   let sortShown = $derived(effectiveField(sortField, filter));
   let sortBy = $derived(toSort(sortShown, sortShown === sortField && sortReversed));
   const rememberSort = () => {
-    try { localStorage.setItem("sortBy", JSON.stringify({ field: sortField, reversed: sortReversed })); } catch { /* not remembered */ }
+    // Best match depends on what is picked, and nothing is picked at the next start.
+    const stored = sortField === "match" ? { field: "date", reversed: false } : { field: sortField, reversed: sortReversed };
+    try { localStorage.setItem("sortBy", JSON.stringify(stored)); } catch { /* not remembered */ }
   };
   /** A new field starts in its usual direction. */
   function setSortField(next: SortField) {
@@ -1766,7 +1771,7 @@
       class="toggle"
       class:on={stack}
       aria-pressed={stack}
-      title="Show one photo per burst or duplicate group (its sharpest). Frames that match a filter can be hidden behind a frame that does not; open the group to see them."
+      title="Show one photo per burst or duplicate group (its sharpest). With a filter on, a frame is hidden only when the sharpest frame of its group matches too; open a group to see all its frames."
       onclick={toggleStack}
     >Stack</button>
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
@@ -2014,7 +2019,7 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} style:--strip="{stripH}px">
+  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
       filter={eff}
@@ -2078,7 +2083,7 @@
       aria-orientation="horizontal"
       aria-label="Height of the photo strip"
       aria-valuemin={STRIP_MIN}
-      aria-valuenow={stripH}
+      aria-valuenow={stripShown}
       tabindex="0"
       title="Drag to resize; arrow keys too, Home resets"
       onpointerdown={splitStart}

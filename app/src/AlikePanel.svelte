@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import type { Filter, GroupPage, GroupSort } from "./lib/api";
-  import { GROUPS, sameSettings, shown, withField } from "./lib/classes";
+  import { GROUPS, mergeFields, sameSettings, shown, withField } from "./lib/classes";
   import { groupBadge, groupCount, moreLabel } from "./lib/analysis";
   import SortControl from "./SortControl.svelte";
 
@@ -80,7 +80,8 @@
         listKey = key;
         listFilter = filterKey;
       })
-      .catch(() => {});
+      // A read that failed is asked again at the next change, not taken as done.
+      .catch(() => { if (key === loadedFor) loadedFor = ""; });
   }
   $effect(() => {
     // Read here so the effect depends on all of them.
@@ -143,8 +144,12 @@
     if (!draft || busy) return;
     busy = true;
     error = "";
+    // A preview still waiting must not show after this.
+    clearTimeout(timer);
+    asked++;
     try {
-      saved = await api.setClassSettings(draft);
+      // Only the lines on this tab: the Settings dialog may have moved its own meanwhile.
+      saved = await api.setClassSettings(mergeFields(await api.classSettings(), draft, FIELDS));
       draft = { ...saved };
       preview = null;
       onclasses();

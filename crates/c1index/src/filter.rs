@@ -201,6 +201,10 @@ pub struct Filter {
     /// One photo per duplicate group or series (its sharpest): the others are left out.
     /// Not while one group is picked: its photos all show.
     pub stacked: bool,
+    /// Made by the library from `stacked` when other filters narrow the photos: the frames
+    /// stacked away in these groups (those whose sharpest frame is among the matches) are
+    /// left out. A frame whose sharpest does not match stays, so no burst vanishes.
+    pub stacked_in: Option<Vec<String>>,
     /// Detail in the sharpest part of the picture (see `c1analysis::Analysis::sharpness`).
     pub sharpness: Option<Range>,
     /// Each of these too.
@@ -558,6 +562,12 @@ impl Filter {
         }
         if self.stacked && self.group.is_none() {
             must_not.push(has(flag::STACKED_AWAY));
+        }
+        if let (Some(groups), None) = (&self.stacked_in, &self.group) {
+            must_not.push(Box::new(BooleanQuery::new(vec![
+                (Occur::Must, has(flag::STACKED_AWAY)),
+                (Occur::Must, any_of(f.dim(Dim::Group), groups.iter().cloned())),
+            ])));
         }
         if self.duplicates {
             must.push(has(flag::DUPLICATE));
