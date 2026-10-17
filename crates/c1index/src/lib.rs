@@ -9,6 +9,7 @@ pub mod geo;
 pub mod gpx;
 pub mod library;
 pub mod looks;
+pub mod matching;
 pub mod places;
 pub mod schema;
 mod store;

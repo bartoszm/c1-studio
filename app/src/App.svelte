@@ -36,6 +36,8 @@
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, sameRows } from "./lib/batch";
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
+  import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
+  import SortControl from "./SortControl.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -262,35 +264,48 @@
   }
 
   /** The order of the grid and of the strip under the map and the analysis. */
-  const SORTS: [api.Sort, string][] = [
-    ["DateDesc", "Newest first"],
-    ["Date", "Oldest first"],
-    ["RatingDesc", "Best rated"],
-    ["ImportedDesc", "Last imported"],
-    ["Filename", "File name"],
-    ["SharpnessDesc", "Sharpest"],
-    ["Sharpness", "Softest"],
-    ["BrightnessDesc", "Brightest"],
-    ["Brightness", "Darkest"],
-  ];
-  function rememberedSort(): api.Sort {
+  const storedSort = (() => {
     try {
-      const s = localStorage.getItem("sort");
-      return SORTS.find(([key]) => key === s)?.[0] ?? "DateDesc";
+      return restore(localStorage.getItem("sortBy"), localStorage.getItem("sort"));
     } catch {
-      return "DateDesc";
+      return restore(null, null);
     }
+  })();
+  let sortField = $state<SortField>(storedSort.field);
+  /** The direction is the other way round from the field's usual one. */
+  let sortReversed = $state(storedSort.reversed);
+  /** What the index sorts by: Best match with nothing picked to match shows as the date. */
+  let sortShown = $derived(effectiveField(sortField, filter));
+  let sortBy = $derived(toSort(sortShown, sortShown === sortField && sortReversed));
+  const rememberSort = () => {
+    try { localStorage.setItem("sortBy", JSON.stringify({ field: sortField, reversed: sortReversed })); } catch { /* not remembered */ }
+  };
+  /** A new field starts in its usual direction. */
+  function setSortField(next: SortField) {
+    sortField = next;
+    sortReversed = false;
+    rememberSort();
+    run();
   }
-  let sortBy = $state<api.Sort>(rememberedSort());
+  function flipSort() {
+    sortReversed = !sortReversed;
+    rememberSort();
+    run();
+  }
+  // Best match with nothing left to match (the picks were cleared): the date takes over for good.
+  $effect(() => {
+    if (sortField === "match" && !matchAvailable(filter)) {
+      untrack(() => {
+        sortField = "date";
+        sortReversed = false;
+        rememberSort();
+      });
+    }
+  });
   /** One photo per burst or duplicate group: its sharpest. */
   let stack = $state((() => { try { return localStorage.getItem("stack") === "1"; } catch { return false; } })());
   /** The filter with Match applied, and the stacking when it is on: what the grid shows. */
   const asking = (f: Filter): Filter => ({ ...compile(f, match), ...(stack ? { stacked: true } : {}) });
-  function setSort(next: api.Sort) {
-    sortBy = next;
-    try { localStorage.setItem("sort", next); } catch { /* not remembered */ }
-    run();
-  }
   function toggleStack() {
     stack = !stack;
     try { localStorage.setItem("stack", stack ? "1" : "0"); } catch { /* not remembered */ }
@@ -1711,11 +1726,21 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
-    <label class="sort" title="The order of the photos in the grid and in the strip under the map and the analysis">
-      <select aria-label="Sort photos" value={sortBy} onchange={(e) => setSort(e.currentTarget.value as api.Sort)}>
-        {#each SORTS as [key, label] (key)}<option value={key}>{label}</option>{/each}
-      </select>
-    </label>
+    <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
+      <SortControl
+        fields={FIELDS.map((f) => ({
+          key: f.key,
+          label: f.label,
+          disabled: f.key === "match" && !matchAvailable(filter),
+          hint: f.key === "match" ? "pick a colour, light or focus filter" : undefined,
+        }))}
+        field={sortShown}
+        words={words(sortShown, sortShown === sortField && sortReversed)}
+        label="Sort photos by"
+        onfield={(key) => setSortField(key as SortField)}
+        onflip={flipSort}
+      />
+    </div>
     <button
       class="toggle"
       class:on={stack}

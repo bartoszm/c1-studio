@@ -146,8 +146,9 @@ export type ThumbsState = {
 };
 
 export type Sort =
-  | "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename"
-  | "SharpnessDesc" | "Sharpness" | "BrightnessDesc" | "Brightness";
+  | "DateDesc" | "Date" | "RatingDesc" | "Rating" | "ImportedDesc" | "Imported" | "Filename" | "FilenameDesc"
+  | "SharpnessDesc" | "Sharpness" | "BrightnessDesc" | "Brightness"
+  | "ColorLabel" | "ColorLabelRev" | "Match" | "MatchWorst";
 
 export type QueryOptions = {
   sort?: Sort;
@@ -407,8 +408,14 @@ export const GROUP_PAGE = 60;
 /** A page of the duplicate groups (or series) among the photos the filter selects, biggest
  *  first, with how many there are in all. */
 export type GroupSort = "Matched" | "Size" | "Newest" | "Oldest" | "Sharpest";
-export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE, sort: GroupSort = "Matched") =>
-  invoke<GroupPage>("groups", { filter, series, sort, offset, limit });
+export const groups = (
+  filter: Filter,
+  series: boolean,
+  offset = 0,
+  limit = GROUP_PAGE,
+  sort: GroupSort = "Matched",
+  reverse = false,
+) => invoke<GroupPage>("groups", { filter, series, sort, reverse, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */

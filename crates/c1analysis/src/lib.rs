@@ -14,7 +14,7 @@ use image::imageops::FilterType;
 use image::{GrayImage, RgbImage};
 use serde::{Deserialize, Serialize};
 
-pub use colour::{MONO, name_of};
+pub use colour::{HUES, MONO, name_of};
 pub use groups::{DUPLICATE_MAX, Groups, Taken, distance, group};
 
 /// Bumped when what [`analyse`] measures changes: stored results of another version are
@@ -309,6 +309,18 @@ impl Analysis {
         out
     }
 
+    /// The share of the picture (0..1) in each of [`HUES`], in that order: what the colours
+    /// are ranked by. Black, white and grey are in none.
+    pub fn hue_shares(&self) -> [f32; HUES.len()] {
+        let mut out = [0.0; HUES.len()];
+        for swatch in &self.palette {
+            if let Some(i) = HUES.iter().position(|h| *h == name_of(swatch.rgb)) {
+                out[i] += swatch.share;
+            }
+        }
+        out
+    }
+
     /// How light the picture is, and what is lost at either end.
     pub fn light(&self, s: &ClassSettings) -> Vec<&'static str> {
         let mut out = vec![if self.brightness < s.dark_below {
@@ -408,6 +420,17 @@ mod tests {
         assert_eq!(a.hues(&ClassSettings { colour_share: 0.9, ..d() }), ["green"]);
         assert_eq!(a.hues(&ClassSettings { colour_share: 0.9, colour_floor: 0.9, ..d() }), ["muted"]);
         assert_eq!(a.hues(&ClassSettings { mono_chroma: 1000.0, ..d() }), ["black & white"]);
+    }
+
+    #[test]
+    fn hue_shares_add_up_per_name() {
+        let two = RgbImage::from_fn(300, 200, |x, _| if x < 100 { Rgb([210, 30, 30]) } else { Rgb([40, 160, 50]) });
+        let shares = analyse(&two).hue_shares();
+        let of = |name: &str| shares[HUES.iter().position(|h| *h == name).unwrap()];
+        assert!((of("red") - 1.0 / 3.0).abs() < 0.05, "{}", of("red"));
+        assert!((of("green") - 2.0 / 3.0).abs() < 0.05, "{}", of("green"));
+        assert_eq!(of("blue"), 0.0);
+        assert!(analyse(&checks(300, 200, 10)).hue_shares().iter().all(|s| *s == 0.0));
     }
 
     #[test]

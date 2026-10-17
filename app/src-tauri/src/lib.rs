@@ -647,10 +647,12 @@ async fn groups(
     filter: Filter,
     series: bool,
     sort: Option<c1index::GroupSort>,
+    reverse: Option<bool>,
     offset: usize,
     limit: usize,
 ) -> Result<c1index::GroupPage, String> {
-    app.session()?.library.groups_sorted(&filter, series, sort.unwrap_or_default(), offset, limit).map_err(text)
+    let (sort, reverse) = (sort.unwrap_or_default(), reverse.unwrap_or(false));
+    app.session()?.library.groups_sorted(&filter, series, sort, reverse, offset, limit).map_err(text)
 }
 
 #[tauri::command]

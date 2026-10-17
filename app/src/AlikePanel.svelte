@@ -4,6 +4,7 @@
   import type { Filter, GroupPage, GroupSort } from "./lib/api";
   import { GROUPS, sameSettings, shown, withField } from "./lib/classes";
   import { groupBadge, groupCount, moreLabel } from "./lib/analysis";
+  import SortControl from "./SortControl.svelte";
 
   // Duplicates and series in one place: the groups of alike photos under the current filter,
   // in the order asked for, and the lines that decide what counts as one (applied on request;
@@ -29,12 +30,12 @@
     ["duplicates", "Duplicates", "The same frame twice: different images taken at the same instant that look alike."],
     ["series", "Series", "Bursts: photos from one camera, seconds apart, looking alike."],
   ];
-  const SORTS: [GroupSort, string][] = [
-    ["Matched", "Most matching"],
-    ["Size", "Biggest"],
-    ["Newest", "Newest"],
-    ["Oldest", "Oldest"],
-    ["Sharpest", "Sharpest"],
+  /** The order of the groups: a field and, reversed, the other way round. */
+  const SORTS: { key: GroupSort; label: string; first: string; second: string }[] = [
+    { key: "Matched", label: "Matching photos", first: "Most first", second: "Fewest first" },
+    { key: "Size", label: "Group size", first: "Biggest first", second: "Smallest first" },
+    { key: "Newest", label: "Date", first: "Newest first", second: "Oldest first" },
+    { key: "Sharpest", label: "Sharpness", first: "Sharpest first", second: "Softest first" },
   ];
   const remembered = <T extends string>(key: string, allowed: readonly T[], fallback: T): T => {
     try {
@@ -48,7 +49,9 @@
     try { localStorage.setItem(key, value); } catch { /* not remembered */ }
   };
   let kind = $state<Kind>(remembered("alikeKind", ["duplicates", "series"], "duplicates"));
-  let sort = $state<GroupSort>(remembered("alikeSort", SORTS.map(([s]) => s), "Matched"));
+  let sort = $state<GroupSort>(remembered("alikeSort", SORTS.map((s) => s.key), "Matched"));
+  let reversed = $state(remembered("alikeReversed", ["1", "0"], "0") === "1");
+  const sortInfo = $derived(SORTS.find((s) => s.key === sort) ?? SORTS[0]);
 
   // The groups, a page at a time: read again from the first page when the filter, the kind or
   // the order changes; "Show more" adds the next. Not state: the newest read asked for, and
@@ -62,14 +65,14 @@
   function read() {
     // Picks of the groups themselves and stacking don't change which groups exist.
     const asked = { ...$state.snapshot(filter), group: undefined, stacked: undefined };
-    const filterKey = JSON.stringify(asked) + ":" + kind + ":" + sort;
+    const filterKey = JSON.stringify(asked) + ":" + kind + ":" + sort + ":" + reversed;
     const key = filterKey + ":" + version + ":" + counts.duplicates + ":" + counts.series;
     if (key === loadedFor) return;
     loadedFor = key;
     // The same read again (an edit, photos measured): as many groups as are shown, so a list
     // opened further stays open. Anything else starts from the first page.
     const count = filterKey === listFilter ? Math.max(api.GROUP_PAGE, untrack(() => list.groups.length)) : api.GROUP_PAGE;
-    api.groups(asked, kind === "series", 0, count, sort)
+    api.groups(asked, kind === "series", 0, count, sort, reversed)
       .then((page) => {
         if (key !== loadedFor) return;
         list = page;
@@ -81,7 +84,7 @@
   }
   $effect(() => {
     // Read here so the effect depends on all of them.
-    void [filter, kind, sort, version, counts.duplicates, counts.series];
+    void [filter, kind, sort, reversed, version, counts.duplicates, counts.series];
     untrack(read);
   });
   async function more() {
@@ -90,7 +93,7 @@
     const key = listKey;
     adding = true;
     try {
-      const page = await api.groups(loaded, kind === "series", list.groups.length, api.GROUP_PAGE, sort);
+      const page = await api.groups(loaded, kind === "series", list.groups.length, api.GROUP_PAGE, sort, reversed);
       if (key !== loadedFor || key !== listKey) return;
       const have = new Set(list.groups.map((g) => g.id));
       list = { total: page.total, groups: [...list.groups, ...page.groups.filter((g) => !have.has(g.id))] };
@@ -172,12 +175,14 @@
         </button>
       {/each}
     </div>
-    <label class="sort">
-      Sort
-      <select value={sort} onchange={(e) => { sort = e.currentTarget.value as GroupSort; remember("alikeSort", sort); }}>
-        {#each SORTS as [key, label] (key)}<option value={key}>{label}</option>{/each}
-      </select>
-    </label>
+    <SortControl
+      fields={SORTS.map((s) => ({ key: s.key, label: s.label }))}
+      field={sort}
+      words={reversed ? sortInfo.second : sortInfo.first}
+      label="Sort groups by"
+      onfield={(key) => { sort = key as GroupSort; reversed = false; remember("alikeSort", sort); remember("alikeReversed", "0"); }}
+      onflip={() => { reversed = !reversed; remember("alikeReversed", reversed ? "1" : "0"); }}
+    />
   </div>
 
   {#if draft}
@@ -251,8 +256,6 @@
   .kinds button { padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
   .kinds button.on { background: var(--on, #2a3a55); border-color: #5b8def; }
   .kinds .n { margin-left: 6px; color: var(--muted, #999); font-variant-numeric: tabular-nums; }
-  .sort { display: flex; align-items: center; gap: 6px; color: var(--muted, #999); font-size: 12px; }
-  .sort select { padding: 2px 4px; background: var(--panel); color: inherit; border: 1px solid var(--line, #444); border-radius: 3px; font: inherit; }
   .lines { border: 1px solid var(--line, #333); border-radius: 4px; padding: 4px 10px; background: rgba(255, 255, 255, 0.03); }
   .lines summary { cursor: pointer; font-size: 12px; padding: 2px 0; }
   .sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 6px 18px; padding: 6px 0; }

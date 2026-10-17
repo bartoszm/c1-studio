@@ -3,7 +3,7 @@
 ## Unreleased
 
 - **Analysis tabs:** the Analysis view has two tabs. *Look* holds the shape, colour, light and focus charts, with a **Stack bursts & duplicates** toggle (also in the header) that shows one photo per group, its sharpest. *Alike* holds duplicates and series in one list, sortable (most matching, biggest, newest, oldest, sharpest), with sliders for what counts as a duplicate or a series; the duplicate and series settings moved there from Settings. Stacking hides the other frames, including ones that match a filter, until you open the group.
-- **Sorting:** a sort box in the header orders the grid and the strip under the map and the analysis: newest, oldest, best rated, last imported, file name, sharpest, softest, brightest, darkest. Photos not measured yet come last. The index is rebuilt once on first start.
+- **Sorting:** the header has a *Sort by* box (Date taken, Rating, Colour label, Imported, File name, Sharpness, Brightness, Best match) and a direction button that says what it does ("Newest first", "Lowest first", "Z to A"; click to reverse). It orders the grid and the strip under the map and the analysis, and every field has both directions. **Best match** ranks photos by how well they fit the colours, light and focus you picked (red + green: the share of the photo in either; dark: how dark; sharp: how sharp), averaged when you pick several; it is offered only while such a filter is picked. Photos not measured yet come last. Groups in Alike sort the same way. The index is rebuilt once on first start.
 - **Splitter:** drag the line between the map (or the charts) and the photo strip to resize it; arrow keys move it, double-click resets. Remembered.
 - **Settings:** a wider dialog with categories (Sidebar, Map & places, Analysis).
 

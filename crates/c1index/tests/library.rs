@@ -1050,6 +1050,79 @@ fn photos_sort_by_what_the_analysis_measured_and_unmeasured_ones_come_last() {
 }
 
 #[test]
+fn best_match_ranks_by_the_picked_colours_and_falls_back_to_date() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let (red, green, blue) = ([210, 30, 30], [40, 160, 50], [40, 80, 210]);
+    let with = |parts: &[([u8; 3], f32)]| {
+        let mut a = look(600, 400, red, 5000.0, 1);
+        a.palette = parts.iter().map(|(rgb, share)| c1analysis::Swatch { rgb: *rgb, share: *share }).collect();
+        a
+    };
+    lib.put_analyses(vec![
+        (key(1), (1, 1), with(&[(red, 0.6), (blue, 0.4)])),
+        (key(2), (1, 1), with(&[(red, 0.2), (green, 0.3), (blue, 0.5)])),
+        (key(3), (1, 1), with(&[(green, 0.9), (blue, 0.1)])),
+        (key(4), (1, 1), with(&[(blue, 1.0)])),
+    ])
+    .unwrap();
+    let picked = Filter { hues: vec!["red".into(), "green".into()], ..Filter::default() };
+    // The share in red or green: 3 (0.9), 1 (0.6), 2 (0.5); 4 is not in either.
+    assert_eq!(ordered(&lib, &picked, Sort::Match), [3, 1, 2]);
+    assert_eq!(ordered(&lib, &picked, Sort::MatchWorst), [2, 1, 3]);
+    // One colour: the red share alone.
+    let red_only = Filter { hues: vec!["red".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &red_only, Sort::Match), [1, 2]);
+    // Pages of the ranking add up to the whole.
+    let page = |offset| {
+        let opts = QueryOptions { sort: Sort::Match, limit: Some(2), offset, ..QueryOptions::default() };
+        let rows = lib.query(&picked, &opts).unwrap().rows;
+        rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse::<u32>().unwrap()).collect::<Vec<_>>()
+    };
+    assert_eq!([page(0), page(2)].concat(), [3, 1, 2]);
+    // Nothing picked to match: the newest first, as the date sort.
+    assert_eq!(ordered(&lib, &Filter::default(), Sort::Match), ordered(&lib, &Filter::default(), Sort::DateDesc));
+    // A shape pick has no measure either.
+    let shape = Filter { shape: vec!["landscape".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &shape, Sort::Match), ordered(&lib, &shape, Sort::DateDesc));
+}
+
+#[test]
+fn best_match_averages_the_dimensions_and_ranks_unmeasured_photos_last() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let red = [210, 30, 30];
+    // All red; 1 is sharp, 2 soft; 3 is sharper than 2 but not red enough to be matched
+    // differently: only sharpness tells them apart.
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, red, 9000.0, 1)),
+        (key(2), (1, 1), look(600, 400, red, 800.0, 2)),
+        (key(3), (1, 1), look(600, 400, red, 3000.0, 3)),
+    ])
+    .unwrap();
+    let both = Filter { hues: vec!["red".into()], focus: vec!["sharp".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &both, Sort::Match), [1, 3, 2]);
+    assert_eq!(ordered(&lib, &both, Sort::MatchWorst), [2, 3, 1]);
+    // Soft or sharp: the better of the two counts, so all three are still matched.
+    let either = Filter { hues: vec!["red".into()], focus: vec!["soft".into(), "sharp".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &either, Sort::Match).len(), 3);
+}
+
+#[test]
+fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
+    let (_d, lib, source) = setup();
+    for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {
+        source.edit_externally(&lib.photo_id(row_of(&lib, n)).unwrap(), |p| p.color = Some(label));
+    }
+    lib.sync(&source).unwrap();
+    // Photo 3 is red from the start.
+    let all = Filter::default();
+    assert_eq!(ordered(&lib, &all, Sort::ColorLabel)[..3], [3, 6, 8]);
+    assert_eq!(ordered(&lib, &all, Sort::ColorLabelRev)[..3], [8, 6, 3]);
+    assert_eq!(ordered(&lib, &all, Sort::ColorLabel).len(), 9, "unlabelled photos follow");
+}
+
+#[test]
 fn stacking_keeps_the_sharpest_of_each_group_and_groups_sort() {
     let (_d, lib, source) = setup();
     let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
@@ -1087,7 +1160,7 @@ fn stacking_keeps_the_sharpest_of_each_group_and_groups_sort() {
     let group = lib.look(row_of(&lib, 3)).unwrap().series.unwrap();
     assert_eq!(ids(&lib, &Filter { group: Some(group), stacked: true, ..Filter::default() }), [1, 3, 5]);
     // The groups themselves are counted whole, stacked or not.
-    let pairs = |sort| lib.groups_sorted(&stacked, false, sort, 0, 10).unwrap().groups;
+    let pairs = |sort| lib.groups_sorted(&stacked, false, sort, false, 0, 10).unwrap().groups;
     assert!(pairs(c1index::GroupSort::Matched).iter().all(|g| g.matched == 2));
 
     // Pairs by age: 6 and 8 were taken later than 2 and 4.

@@ -17,12 +17,15 @@ use tantivy::collector::{Count, DocSetCollector, TopDocs};
 use tantivy::columnar::StrColumn;
 use tantivy::directory::MmapDirectory;
 use tantivy::query::{AllQuery, Query};
-use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Searcher, Term};
+use tantivy::{
+    DocAddress, DocId, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher, SegmentReader, Term,
+};
 
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
 use crate::looks::{Look, Looks, Record};
+use crate::matching::{self, MatchSpec, Measures};
 use crate::places::{Coarse, Guessed, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
@@ -55,6 +58,13 @@ pub enum Sort {
     SharpnessDesc,
     Brightness,
     BrightnessDesc,
+    /// By the colour label: red to purple, and the other way round; unlabelled last.
+    ColorLabel,
+    ColorLabelRev,
+    /// By how well a photo matches the colours, light and focus the filter picks (see
+    /// [`crate::matching`]); the newest first when it picks none. Photos not measured last.
+    Match,
+    MatchWorst,
     Row,
 }
 
@@ -79,6 +89,10 @@ impl Sort {
             "brightness" if text.starts_with('-') => Sort::BrightnessDesc,
             "brightness" => Sort::Brightness,
             "brightness-desc" => Sort::BrightnessDesc,
+            "color" | "colour" | "label" => Sort::ColorLabel,
+            "color-rev" | "colour-rev" | "label-rev" => Sort::ColorLabelRev,
+            "match" => Sort::Match,
+            "match-worst" => Sort::MatchWorst,
             "id" | "row" => Sort::Row,
             other => bail!("unknown sort {other:?}"),
         })
@@ -490,7 +504,7 @@ impl Library {
 
     /// [`Library::groups_sorted`], most matching first.
     pub fn groups(&self, filter: &Filter, series: bool, offset: usize, limit: usize) -> anyhow::Result<GroupPage> {
-        self.groups_sorted(filter, series, GroupSort::default(), offset, limit)
+        self.groups_sorted(filter, series, GroupSort::default(), false, offset, limit)
     }
 
     /// The duplicate groups (or series) among the photos `filter` selects, in `sort` order:
@@ -498,12 +512,14 @@ impl Library {
     /// A group with fewer matching than a group needs (2, [`ClassSettings::series_min`] for a
     /// series) is left out: one red frame of a burst is no series. `limit` groups from
     /// `offset` on, with the number of groups in all. Stacking (see [`Filter::stacked`]) is
-    /// left out of the filter: a group is counted whole.
+    /// left out of the filter: a group is counted whole. `reverse` turns `sort` round
+    /// (smallest first, oldest first); groups that tie keep their order.
     pub fn groups_sorted(
         &self,
         filter: &Filter,
         series: bool,
         sort: GroupSort,
+        reverse: bool,
         offset: usize,
         limit: usize,
     ) -> anyhow::Result<GroupPage> {
@@ -556,15 +572,14 @@ impl Library {
         let mut out: Vec<Group> = by.into_values().collect();
         let most = |a: &Group, b: &Group| b.matched.cmp(&a.matched).then_with(|| b.size.cmp(&a.size));
         out.sort_by(|a, b| {
-            match sort {
+            let primary = match sort {
                 GroupSort::Matched => most(a, b),
                 GroupSort::Size => b.size.cmp(&a.size).then_with(|| b.matched.cmp(&a.matched)),
                 GroupSort::Newest => a.newest.cmp(&b.newest),
                 GroupSort::Oldest => b.oldest.cmp(&a.oldest),
                 GroupSort::Sharpest => b.sharpest.total_cmp(&a.sharpest),
-            }
-            .then_with(|| most(a, b))
-            .then_with(|| a.id.cmp(&b.id))
+            };
+            (if reverse { primary.reverse() } else { primary }).then_with(|| most(a, b)).then_with(|| a.id.cmp(&b.id))
         });
         let total = out.len();
         Ok(GroupPage { total, groups: out.into_iter().skip(offset).take(limit).collect() })
@@ -1270,7 +1285,20 @@ impl Library {
         let compile = |f: &Filter| expand(f, &smart).and_then(|f| f.to_query(&self.index, &self.fields, &distinct));
         let query = compile(filter)?;
         let searcher = self.reader.searcher();
-        let mut result = self.run(&searcher, query.as_ref(), options)?;
+        // Best (or worst) match ranks by the colours, light and focus the filter picks; with
+        // none to rank by, the newest come first.
+        let mut options = options.clone();
+        let spec = if matches!(options.sort, Sort::Match | Sort::MatchWorst) {
+            let lines = self.classes.read().unwrap();
+            let spec = MatchSpec::new(&filter.hues, &filter.light, &filter.focus, &lines);
+            if spec.is_none() {
+                options.sort = Sort::DateDesc;
+            }
+            spec
+        } else {
+            None
+        };
+        let mut result = self.run(&searcher, query.as_ref(), &options, spec)?;
         if options.facets_ignore_own {
             // One more counting pass per group the filter picks from; the rest are
             // already right.
@@ -1506,7 +1534,13 @@ impl Library {
         Ok(out)
     }
 
-    fn run(&self, searcher: &Searcher, query: &dyn Query, options: &QueryOptions) -> anyhow::Result<QueryResult> {
+    fn run(
+        &self,
+        searcher: &Searcher,
+        query: &dyn Query,
+        options: &QueryOptions,
+        spec: Option<MatchSpec>,
+    ) -> anyhow::Result<QueryResult> {
         let facets = FacetCollector::new(&options.facets);
         let limit = options.limit.unwrap_or(searcher.num_docs() as usize);
         if limit == 0 || searcher.num_docs() == 0 {
@@ -1553,6 +1587,53 @@ impl Library {
                 };
                 let (n, hits, f) =
                     searcher.search(query, &(Count, top.order_by_fast_field::<i64>(field, Order::Desc), facets))?;
+                (n, addrs(hits), f)
+            }
+            Sort::ColorLabel | Sort::ColorLabelRev => {
+                let field = if options.sort == Sort::ColorLabel { "color_sort" } else { "color_sort_rev" };
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_fast_field::<i64>(field, Order::Desc), facets))?;
+                (n, addrs(hits), f)
+            }
+            Sort::Match | Sort::MatchWorst => {
+                // `query` only lets these through with something to match.
+                let spec = spec.context("nothing to match")?;
+                let worst = options.sort == Sort::MatchWorst;
+                let scored = top.tweak_score(move |segment: &SegmentReader| {
+                    let fast = segment.fast_fields();
+                    let measure = |name: &str| fast.f64(name).expect(name).first_or_default_col(0.0);
+                    let hues: Vec<_> = c1analysis::HUES
+                        .iter()
+                        .map(|h| fast.u64(&format!("hue_share_{h}")).expect("hue share").first_or_default_col(0))
+                        .collect();
+                    let (chroma, brightness, contrast) =
+                        (measure("chroma"), measure("brightness"), measure("contrast"));
+                    let (highlights, shadows, sharpness) =
+                        (measure("highlights"), measure("shadows"), measure("sharpness"));
+                    let measured = fast.i64("sharpness_sort").expect("sharpness_sort").first_or_default_col(i64::MIN);
+                    let row = fast.u64("row").expect("row").first_or_default_col(0);
+                    let spec = spec.clone();
+                    move |doc: DocId, _: Score| {
+                        // Photos not measured have the lowest sort key (see `measure_key`).
+                        let score = (measured.get_val(doc) >= i64::MIN + (1 << 20)).then(|| {
+                            let mut m = Measures {
+                                chroma: chroma.get_val(doc) as f32,
+                                brightness: brightness.get_val(doc) as f32,
+                                contrast: contrast.get_val(doc) as f32,
+                                highlights: highlights.get_val(doc) as f32,
+                                shadows: shadows.get_val(doc) as f32,
+                                sharpness: sharpness.get_val(doc) as f32,
+                                ..Measures::default()
+                            };
+                            for (share, col) in m.hue_shares.iter_mut().zip(&hues) {
+                                *share = col.get_val(doc) as f32 / 1000.0;
+                            }
+                            spec.score(&m)
+                        });
+                        matching::key(score, row.get_val(doc), worst)
+                    }
+                });
+                let (n, hits, f) = searcher.search(query, &(Count, scored, facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Row => {
