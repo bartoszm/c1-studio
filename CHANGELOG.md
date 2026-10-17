@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Header on the map:** switching to the map squeezed the Photos/Map/Analysis buttons to a sliver. The map's own tools (grid follows map, GPX…, Neighbours…) are now in a row above the map, and on a narrow window the search box shrinks first, then the slider and the count give way.
+
 - **Library open in another window:** a window that could not open its library because another C1 Studio window had it said so and stayed stuck, even after the other window was closed. It now explains it ("This library is open in another C1 Studio window") and has a **Try again** button (in the window and in the source menu).
 
 - **Analysis tabs:** the Analysis view has two tabs. *Look* holds the shape, colour, light and focus charts, with a **Stack bursts & duplicates** toggle (also in the header) that shows one photo per group, its sharpest. *Alike* holds duplicates and series in one list, sortable (most matching, biggest, newest, oldest, sharpest), with sliders for what counts as a duplicate or a series; the duplicate and series settings moved there from Settings. Stacking hides the other frames until you open the group; with a filter on, a frame is hidden only when the sharpest frame of its group matches the filter too, so no burst disappears.

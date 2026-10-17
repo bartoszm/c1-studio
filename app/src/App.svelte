@@ -1813,13 +1813,6 @@
         onclick={openSync}
       >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
     </span>
-    {#if mapOn}
-      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
-        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
-      </label>
-      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
-      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
-    {/if}
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <button class="toggle settings" title="Settings: the sidebar's sections, online map services" aria-label="Settings" onclick={() => (showSettings = true)}>
@@ -2032,6 +2025,14 @@
     />
   {/if}
   {#if mapOn}
+    <!-- The map's own tools, by the map: the header has no room for them beside the rest. -->
+    <div class="map-tools" role="toolbar" aria-label="Map">
+      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
+        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
+      </label>
+      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
+      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
+    </div>
     <MapPane
       filter={eff}
       {version}

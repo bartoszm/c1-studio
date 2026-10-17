@@ -42,9 +42,13 @@ header {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
+/* Controls keep their size when the window narrows: the search box gives way first, then
+   the count; nothing is squeezed into a sliver. */
+header > * { flex-shrink: 0; }
 .brand { font-weight: 600; letter-spacing: 0.02em; }
 .search {
-  flex: 1;
+  flex: 1 1 200px;
+  min-width: 110px;
   max-width: 520px;
   padding: 6px 10px;
   color: var(--text);
@@ -93,7 +97,17 @@ header {
 .toggle.settings:hover { color: var(--text); }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A fixed width: the result's size and time change with every query. */
-header .count { min-width: 15em; text-align: right; }
+header .count {
+  flex: 0 1 15em;
+  min-width: 6em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+/* The map's tools, in a row above it. */
+.map-tools { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
+.map-tools .toggle { padding: 2px 10px; }
 
 aside {
   grid-area: side;
@@ -456,11 +470,17 @@ footer .busy { color: var(--text); }
 /* Room for the sort box and the map's buttons on a narrower window. */
 @media (max-width: 1700px) {
   .tiles input[type="range"] { width: 64px; }
-  header .count { min-width: 0; }
 }
 @media (max-width: 1500px) {
   .tiles input[type="range"] { width: 36px; }
   header { gap: 8px; }
+}
+/* A small window: the tile slider (− and + stay), the result's count and the room kept for
+   "Copy to N selected" go, so the views, the sort and the panels' buttons still fit. */
+@media (max-width: 1400px) {
+  .tiles input[type="range"] { display: none; }
+  header .count { display: none; }
+  .copy-slot { width: auto; }
 }
 .tiles label { display: flex; align-items: center; gap: 4px; margin-left: 4px; white-space: nowrap; }
 .tiles input[type="number"] {
