@@ -49,6 +49,12 @@ pub enum Sort {
     ImportedDesc,
     Filename,
     FilenameDesc,
+    /// By the analysis; photos not measured come last either way. `Sharpness` is the
+    /// softest first, `SharpnessDesc` the sharpest.
+    Sharpness,
+    SharpnessDesc,
+    Brightness,
+    BrightnessDesc,
     Row,
 }
 
@@ -67,6 +73,12 @@ impl Sort {
             "filename" if text.starts_with('-') => Sort::FilenameDesc,
             "filename" => Sort::Filename,
             "filename-desc" => Sort::FilenameDesc,
+            "sharpness" if text.starts_with('-') => Sort::SharpnessDesc,
+            "sharpness" => Sort::Sharpness,
+            "sharpness-desc" => Sort::SharpnessDesc,
+            "brightness" if text.starts_with('-') => Sort::BrightnessDesc,
+            "brightness" => Sort::Brightness,
+            "brightness-desc" => Sort::BrightnessDesc,
             "id" | "row" => Sort::Row,
             other => bail!("unknown sort {other:?}"),
         })
@@ -107,10 +119,33 @@ pub struct Group {
     pub size: usize,
     pub matched: usize,
     pub rows: Vec<u64>,
+    /// Where its newest and its oldest matching photo come among the matches in date
+    /// order, and its sharpest photo's sharpness: for ordering groups.
+    #[serde(skip)]
+    newest: usize,
+    #[serde(skip)]
+    oldest: usize,
+    #[serde(skip)]
+    sharpest: f32,
 }
 
-/// The duplicate group and the series a photo falls in.
-type Groupings = (Option<String>, Option<String>);
+/// How groups are ordered.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GroupSort {
+    /// Most matching photos first.
+    #[default]
+    Matched,
+    /// Biggest group first.
+    Size,
+    Newest,
+    Oldest,
+    /// Sharpest best photo first.
+    Sharpest,
+}
+
+/// The duplicate group and the series a photo falls in, and whether it is stacked away
+/// (not the sharpest of one of them).
+type Groupings = (Option<String>, Option<String>, bool);
 
 /// What a photo's measures come to as classes: shape, colours, light, focus.
 type Classes = (&'static str, Vec<&'static str>, Vec<&'static str>, &'static str);
@@ -328,7 +363,9 @@ impl Library {
         let seen = looks
             .all()?
             .into_iter()
-            .map(|(key, r)| (key, Look { analysis: r.analysis, stamp: r.stamp, duplicates: None, series: None }))
+            .map(|(key, r)| {
+                (key, Look { analysis: r.analysis, stamp: r.stamp, duplicates: None, series: None, stacked: false })
+            })
             .collect();
 
         let library = Self {
@@ -451,21 +488,50 @@ impl Library {
         self.seen.read().unwrap().values().cloned().collect()
     }
 
-    /// The duplicate groups (or series) among the photos `filter` selects, most matching
-    /// first: each with its size, how many of its photos match and a few of those to show.
+    /// [`Library::groups_sorted`], most matching first.
+    pub fn groups(&self, filter: &Filter, series: bool, offset: usize, limit: usize) -> anyhow::Result<GroupPage> {
+        self.groups_sorted(filter, series, GroupSort::default(), offset, limit)
+    }
+
+    /// The duplicate groups (or series) among the photos `filter` selects, in `sort` order:
+    /// each with its size, how many of its photos match and a few of those to show.
     /// A group with fewer matching than a group needs (2, [`ClassSettings::series_min`] for a
     /// series) is left out: one red frame of a burst is no series. `limit` groups from
-    /// `offset` on, with the number of groups in all.
-    pub fn groups(&self, filter: &Filter, series: bool, offset: usize, limit: usize) -> anyhow::Result<GroupPage> {
-        let narrowed =
-            Filter { duplicates: filter.duplicates || !series, series: filter.series || series, ..filter.clone() };
-        let rows = self.query(&narrowed, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+    /// `offset` on, with the number of groups in all. Stacking (see [`Filter::stacked`]) is
+    /// left out of the filter: a group is counted whole.
+    pub fn groups_sorted(
+        &self,
+        filter: &Filter,
+        series: bool,
+        sort: GroupSort,
+        offset: usize,
+        limit: usize,
+    ) -> anyhow::Result<GroupPage> {
+        let narrowed = Filter {
+            duplicates: filter.duplicates || !series,
+            series: filter.series || series,
+            stacked: false,
+            ..filter.clone()
+        };
+        // In date order, a group's place among the matches says how new or old it is.
+        let order = if matches!(sort, GroupSort::Newest | GroupSort::Oldest) { Sort::DateDesc } else { Sort::Row };
+        let rows = self.query(&narrowed, &QueryOptions { sort: order, ..QueryOptions::default() })?.rows;
         let mut by: HashMap<String, Group> = HashMap::new();
-        for row in rows {
+        for (at, row) in rows.into_iter().enumerate() {
             let Some(look) = self.look(row) else { continue };
             let Some(id) = (if series { look.series } else { look.duplicates }) else { continue };
-            let group = by.entry(id.clone()).or_insert_with(|| Group { id, size: 0, matched: 0, rows: Vec::new() });
+            let group = by.entry(id.clone()).or_insert_with(|| Group {
+                id,
+                size: 0,
+                matched: 0,
+                rows: Vec::new(),
+                newest: at,
+                oldest: at,
+                sharpest: f32::MIN,
+            });
             group.matched += 1;
+            group.oldest = at;
+            group.sharpest = group.sharpest.max(look.analysis.sharpness);
             if group.rows.len() < GROUP_SHOWN {
                 group.rows.push(row);
             }
@@ -488,7 +554,18 @@ impl Library {
             g.size = g.size.max(g.matched);
         }
         let mut out: Vec<Group> = by.into_values().collect();
-        out.sort_by(|a, b| b.matched.cmp(&a.matched).then_with(|| b.size.cmp(&a.size)).then_with(|| a.id.cmp(&b.id)));
+        let most = |a: &Group, b: &Group| b.matched.cmp(&a.matched).then_with(|| b.size.cmp(&a.size));
+        out.sort_by(|a, b| {
+            match sort {
+                GroupSort::Matched => most(a, b),
+                GroupSort::Size => b.size.cmp(&a.size).then_with(|| b.matched.cmp(&a.matched)),
+                GroupSort::Newest => a.newest.cmp(&b.newest),
+                GroupSort::Oldest => b.oldest.cmp(&a.oldest),
+                GroupSort::Sharpest => b.sharpest.total_cmp(&a.sharpest),
+            }
+            .then_with(|| most(a, b))
+            .then_with(|| a.id.cmp(&b.id))
+        });
         let total = out.len();
         Ok(GroupPage { total, groups: out.into_iter().skip(offset).take(limit).collect() })
     }
@@ -523,8 +600,9 @@ impl Library {
             let mut seen = self.seen.write().unwrap();
             for (key, stamp, analysis) in batch.iter().cloned() {
                 let old = seen.remove(&key);
-                let (duplicates, series) = old.map(|o| (o.duplicates, o.series)).unwrap_or_default();
-                seen.insert(key, Look { analysis, stamp, duplicates, series });
+                let (duplicates, series, stacked) =
+                    old.map(|o| (o.duplicates, o.series, o.stacked)).unwrap_or_default();
+                seen.insert(key, Look { analysis, stamp, duplicates, series, stacked });
             }
         }
         let keys: Vec<String> = batch.into_iter().map(|(k, _, _)| k).collect();
@@ -544,6 +622,7 @@ impl Library {
     /// falls in under `settings`, by photo key; photos in neither are left out.
     fn grouping(&self, settings: &ClassSettings) -> anyhow::Result<HashMap<String, Groupings>> {
         let mut members: Vec<(u64, String, c1analysis::Taken)> = Vec::new();
+        let mut sharpness: Vec<f32> = Vec::new();
         {
             let seen = self.seen.read().unwrap();
             if seen.is_empty() {
@@ -561,15 +640,20 @@ impl Library {
                     at: photo.captured_at,
                     hash: look.analysis.hash,
                 };
+                sharpness.push(look.analysis.sharpness);
                 members.push((row, key, taken));
             }
         }
         let taken: Vec<c1analysis::Taken> = members.iter().map(|(_, _, t)| t.clone()).collect();
         let groups = c1analysis::group(&taken, settings);
-        let mut wanted: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+        let mut wanted: HashMap<String, Groupings> = HashMap::new();
         for (prefix, list) in [("dup", &groups.duplicates), ("series", &groups.series)] {
             for group in list {
                 let name = format!("{prefix}:{}", group.iter().map(|&i| members[i].0).min().unwrap_or(0));
+                // The sharpest stays on show (the lowest row among equals).
+                let keep = group.iter().copied().max_by(|&a, &b| {
+                    sharpness[a].total_cmp(&sharpness[b]).then_with(|| members[b].0.cmp(&members[a].0))
+                });
                 for &i in group {
                     let slot = wanted.entry(members[i].1.clone()).or_default();
                     if prefix == "dup" {
@@ -577,6 +661,7 @@ impl Library {
                     } else {
                         slot.1 = Some(name.clone());
                     }
+                    slot.2 |= Some(i) != keep;
                 }
             }
         }
@@ -589,10 +674,11 @@ impl Library {
         let mut changed = Vec::new();
         let mut seen = self.seen.write().unwrap();
         for (key, look) in seen.iter_mut() {
-            let (duplicates, series) = wanted.remove(key.as_str()).unwrap_or_default();
-            if look.duplicates != duplicates || look.series != series {
+            let (duplicates, series, stacked) = wanted.remove(key.as_str()).unwrap_or_default();
+            if look.duplicates != duplicates || look.series != series || look.stacked != stacked {
                 look.duplicates = duplicates;
                 look.series = series;
+                look.stacked = stacked;
                 changed.push(key.clone());
             }
         }
@@ -1454,6 +1540,19 @@ impl Library {
                 let order = if options.sort == Sort::Filename { Order::Asc } else { Order::Desc };
                 let (n, hits, f) =
                     searcher.search(query, &(Count, top.order_by_string_fast_field("filename", order), facets))?;
+                (n, addrs(hits), f)
+            }
+            // Descending on the key, which is negated for the ascending sorts, so photos not
+            // measured (the lowest key) come last either way.
+            Sort::Sharpness | Sort::SharpnessDesc | Sort::Brightness | Sort::BrightnessDesc => {
+                let field = match options.sort {
+                    Sort::SharpnessDesc => "sharpness_sort",
+                    Sort::Sharpness => "sharpness_sort_rev",
+                    Sort::BrightnessDesc => "brightness_sort",
+                    _ => "brightness_sort_rev",
+                };
+                let (n, hits, f) =
+                    searcher.search(query, &(Count, top.order_by_fast_field::<i64>(field, Order::Desc), facets))?;
                 (n, addrs(hits), f)
             }
             Sort::Row => {

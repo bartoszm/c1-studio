@@ -1015,6 +1015,94 @@ fn analyses_are_searchable_and_grouped() {
     assert_eq!(lib.analysed().len(), 3);
 }
 
+fn ordered(lib: &Library, filter: &Filter, sort: Sort) -> Vec<u32> {
+    let rows = lib.query(filter, &QueryOptions { sort, ..QueryOptions::default() }).unwrap().rows;
+    rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse().unwrap()).collect()
+}
+
+#[test]
+fn photos_sort_by_what_the_analysis_measured_and_unmeasured_ones_come_last() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let mut dim = look(600, 400, [90; 3], 400.0, 3);
+    dim.brightness = 0.1;
+    let mut bright = look(600, 400, [90; 3], 10.0, 2);
+    bright.brightness = 0.9;
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [90; 3], 5000.0, 1)),
+        (key(2), (1, 1), bright),
+        (key(3), (1, 1), dim),
+    ])
+    .unwrap();
+    let measured = Filter { analysed: Some(true), ..Filter::default() };
+    assert_eq!(ordered(&lib, &measured, Sort::SharpnessDesc), [1, 3, 2]);
+    assert_eq!(ordered(&lib, &measured, Sort::Sharpness), [2, 3, 1]);
+    assert_eq!(ordered(&lib, &measured, Sort::BrightnessDesc)[0], 2);
+    assert_eq!(ordered(&lib, &measured, Sort::Brightness)[2], 2);
+    // The nine photos: the three measured first, in either direction.
+    for sort in [Sort::SharpnessDesc, Sort::Sharpness, Sort::BrightnessDesc, Sort::Brightness] {
+        let all = ordered(&lib, &Filter::default(), sort);
+        assert_eq!(all.len(), 9);
+        let mut first: Vec<u32> = all[..3].to_vec();
+        first.sort();
+        assert_eq!(first, [1, 2, 3], "{sort:?}");
+    }
+}
+
+#[test]
+fn stacking_keeps_the_sharpest_of_each_group_and_groups_sort() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let (a, b) = (0x3333_cccc_5555_aaaau64, 0x5555_0f0f_3333_ccccu64);
+    let c = [90, 90, 90];
+    // A burst of three (1, 3, 5: X-Pro2, seconds apart; 3 is sharpest) and two duplicate
+    // pairs: 2 and 4 (4 is sharper), 6 and 8 (8 is sharper, and the sharpest of all).
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, c, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, c, 900.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, c, 300.0, h ^ 0b1111)),
+        (id(2).key(), (1, 1), look(600, 400, c, 50.0, a)),
+        (id(4).key(), (1, 1), look(600, 400, c, 60.0, a ^ 1)),
+        (id(6).key(), (1, 1), look(600, 400, c, 70.0, b)),
+        (id(8).key(), (1, 1), look(600, 400, c, 9000.0, b ^ 1)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    for (same_as, n) in [(2, 4), (6, 8)] {
+        let when = source.photo(&id(same_as)).unwrap().captured_at;
+        source.edit_externally(&id(n), |p| p.captured_at = when);
+    }
+    lib.sync(&source).unwrap();
+    lib.regroup().unwrap();
+
+    assert_eq!(ids(&lib, &Filter::default()).len(), 9);
+    let stacked = Filter { stacked: true, ..Filter::default() };
+    // Photos 1 and 5 (burst), 2 (pair) and 6 (pair) are stacked away.
+    assert_eq!(ids(&lib, &stacked), [3, 4, 7, 8, 10]);
+    // One group picked: all of its photos show.
+    let group = lib.look(row_of(&lib, 3)).unwrap().series.unwrap();
+    assert_eq!(ids(&lib, &Filter { group: Some(group), stacked: true, ..Filter::default() }), [1, 3, 5]);
+    // The groups themselves are counted whole, stacked or not.
+    let pairs = |sort| lib.groups_sorted(&stacked, false, sort, 0, 10).unwrap().groups;
+    assert!(pairs(c1index::GroupSort::Matched).iter().all(|g| g.matched == 2));
+
+    // Pairs by age: 6 and 8 were taken later than 2 and 4.
+    let first_row =
+        |sort| pairs(sort)[0].rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse::<u32>().unwrap()).min().unwrap();
+    assert_eq!(first_row(c1index::GroupSort::Newest), 6);
+    assert_eq!(first_row(c1index::GroupSort::Oldest), 2);
+    assert_eq!(first_row(c1index::GroupSort::Sharpest), 6, "9000 beats 60");
+
+    // Another line moves the stack: asking for a 1-bit difference leaves 2 and 4 apart.
+    let strict = c1analysis::ClassSettings { duplicate_bits: 0, ..lib.class_settings() };
+    lib.set_class_settings(&strict).unwrap();
+    assert_eq!(ids(&lib, &stacked), [2, 3, 4, 6, 7, 8, 10]);
+}
+
 #[test]
 fn class_settings_reclass_the_measured_photos_and_survive_a_reopen() {
     let (d, lib, _source) = setup();

@@ -201,7 +201,13 @@ aside section { padding: 4px 0; }
 
 .pane { grid-area: main; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .pane > main { flex: 1 1 45%; min-height: 120px; }
-.pane.strip > main { flex: 0 0 190px; min-height: 0; }
+.pane.strip > main { flex: 0 0 var(--strip, 190px); min-height: 0; }
+/* The handle between the map (or the charts) and the strip of photos. */
+.splitter { flex: none; height: 7px; margin: -3px 0; position: relative; z-index: 5; cursor: row-resize; touch-action: none; }
+.splitter::after { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 1px; background: var(--line); }
+.splitter:hover::after, .splitter:focus-visible::after, .pane.splitting .splitter::after { top: 2px; height: 3px; background: var(--queued); }
+.pane.splitting { user-select: none; }
+.pane.splitting iframe, .pane.splitting canvas { pointer-events: none; }
 .pane.strip > .map { flex: 1 1 auto; }
 .pane.strip > .analysis { flex: 1 1 auto; min-height: 0; }
 .tabs { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
@@ -442,7 +448,9 @@ footer .busy { color: var(--text); }
 .copy-to:hover { filter: brightness(1.12); }
 
 /* Tile size in the header. */
-.tiles { margin-left: auto; display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.sort { margin-left: auto; }
+.sort select { max-width: 120px; padding: 2px 4px; background: var(--panel); color: inherit; border: 1px solid var(--line); border-radius: 3px; font: inherit; }
+.tiles { margin-left: 0; display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .tiles button { width: 22px; height: 22px; border-radius: 3px; }
 .tiles button:hover { color: var(--text); background: var(--hover); }
 .tiles input[type="range"] { width: 110px; accent-color: var(--accent); }

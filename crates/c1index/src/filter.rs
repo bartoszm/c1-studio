@@ -198,6 +198,9 @@ pub struct Filter {
     pub series: bool,
     /// Measured by the analysis, or not yet.
     pub analysed: Option<bool>,
+    /// One photo per duplicate group or series (its sharpest): the others are left out.
+    /// Not while one group is picked: its photos all show.
+    pub stacked: bool,
     /// Detail in the sharpest part of the picture (see `c1analysis::Analysis::sharpness`).
     pub sharpness: Option<Range>,
     /// Each of these too.
@@ -552,6 +555,9 @@ impl Filter {
         }
         if let Some(g) = &self.group {
             must.push(term(f.dim(Dim::Group), g));
+        }
+        if self.stacked && self.group.is_none() {
+            must_not.push(has(flag::STACKED_AWAY));
         }
         if self.duplicates {
             must.push(has(flag::DUPLICATE));

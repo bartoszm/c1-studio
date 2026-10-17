@@ -69,6 +69,8 @@ export type Filter = {
   series?: boolean;
   /** Measured by the analysis, or not yet. */
   analysed?: boolean;
+  /** One photo per duplicate group or series (its sharpest), unless one group is picked. */
+  stacked?: boolean;
   /** Only photos with a position inside this area (the map's view). */
   within?: BBox;
 };
@@ -143,7 +145,9 @@ export type ThumbsState = {
   reasons: [string, number][];
 };
 
-export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
+export type Sort =
+  | "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename"
+  | "SharpnessDesc" | "Sharpness" | "BrightnessDesc" | "Brightness";
 
 export type QueryOptions = {
   sort?: Sort;
@@ -402,8 +406,9 @@ export type GroupPage = { total: number; groups: Group[] };
 export const GROUP_PAGE = 60;
 /** A page of the duplicate groups (or series) among the photos the filter selects, biggest
  *  first, with how many there are in all. */
-export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE) =>
-  invoke<GroupPage>("groups", { filter, series, offset, limit });
+export type GroupSort = "Matched" | "Size" | "Newest" | "Oldest" | "Sharpest";
+export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE, sort: GroupSort = "Matched") =>
+  invoke<GroupPage>("groups", { filter, series, sort, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */

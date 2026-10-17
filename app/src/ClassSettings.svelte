@@ -77,7 +77,7 @@
 
 {#if draft}
   <div class="grid">
-  {#each GROUPS as group (group.title)}
+  {#each GROUPS.filter((g) => g.title !== "Alike") as group (group.title)}
     <fieldset>
       <legend>{group.title}</legend>
       {#each group.fields as f (f.key)}

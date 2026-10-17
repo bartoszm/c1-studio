@@ -646,10 +646,11 @@ async fn groups(
     app: State<'_, App>,
     filter: Filter,
     series: bool,
+    sort: Option<c1index::GroupSort>,
     offset: usize,
     limit: usize,
 ) -> Result<c1index::GroupPage, String> {
-    app.session()?.library.groups(&filter, series, offset, limit).map_err(text)
+    app.session()?.library.groups_sorted(&filter, series, sort.unwrap_or_default(), offset, limit).map_err(text)
 }
 
 #[tauri::command]

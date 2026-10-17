@@ -17,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -149,6 +149,8 @@ pub mod flag {
     pub const DUPLICATE: &str = "duplicate";
     /// One of a burst.
     pub const SERIES: &str = "series";
+    /// Not the sharpest of its duplicate group or series: hidden when groups are stacked.
+    pub const STACKED_AWAY: &str = "stacked_away";
 }
 
 /// The place's path and every level above it, down to its last known level:
@@ -196,6 +198,12 @@ pub struct Fields {
     /// From the analysis, for sorting and ranges.
     pub sharpness: Field,
     pub brightness: Field,
+    /// Sort keys of the measures (value, then row; photos not measured last either way),
+    /// and the same negated for the other direction.
+    pub sharpness_sort: Field,
+    pub sharpness_sort_rev: Field,
+    pub brightness_sort: Field,
+    pub brightness_sort_rev: Field,
     dims: Vec<(Dim, Field)>,
 }
 
@@ -238,6 +246,10 @@ pub fn build_schema() -> (Schema, Fields) {
         kw_count: b.add_u64_field("kw_count", num()),
         sharpness: b.add_f64_field("sharpness", num()),
         brightness: b.add_f64_field("brightness", num()),
+        sharpness_sort: b.add_i64_field("sharpness_sort", FAST),
+        sharpness_sort_rev: b.add_i64_field("sharpness_sort_rev", FAST),
+        brightness_sort: b.add_i64_field("brightness_sort", FAST),
+        brightness_sort_rev: b.add_i64_field("brightness_sort_rev", FAST),
         dims,
     };
     (b.build(), fields)
@@ -397,6 +409,7 @@ pub fn document(
         (flag::ANALYSED, look.is_some()),
         (flag::DUPLICATE, look.is_some_and(|l| l.duplicates.is_some())),
         (flag::SERIES, look.is_some_and(|l| l.series.is_some())),
+        (flag::STACKED_AWAY, look.is_some_and(|l| l.stacked)),
     ];
     for (name, set) in flags {
         if set {
@@ -481,11 +494,35 @@ pub fn document(
     }
     doc.add_u64(f.variant_index, u64::from(photo.variant_index));
     doc.add_u64(f.kw_count, photo.keywords.len() as u64);
+    let (sharp, bright) = look.map_or((None, None), |l| (Some(l.analysis.sharpness), Some(l.analysis.brightness)));
+    doc.add_i64(f.sharpness_sort, measure_key(sharp, SHARPNESS_SCALE, row, false));
+    doc.add_i64(f.sharpness_sort_rev, measure_key(sharp, SHARPNESS_SCALE, row, true));
+    doc.add_i64(f.brightness_sort, measure_key(bright, BRIGHTNESS_SCALE, row, false));
+    doc.add_i64(f.brightness_sort_rev, measure_key(bright, BRIGHTNESS_SCALE, row, true));
     if let Some(look) = look {
         doc.add_f64(f.sharpness, f64::from(look.analysis.sharpness));
         doc.add_f64(f.brightness, f64::from(look.analysis.brightness));
     }
     doc
+}
+
+/// Steps per unit when a measure becomes a sort key (sharpness is in the hundreds or
+/// thousands, brightness 0..1).
+const SHARPNESS_SCALE: f64 = 100.0;
+const BRIGHTNESS_SCALE: f64 = 10_000.0;
+
+/// A measure with the row in its low 20 bits, so photos that tie keep their order; `rev`
+/// negates the value, so sorting descending on it is ascending in the measure. A photo not
+/// measured gets the lowest key: it comes last when sorted descending.
+fn measure_key(value: Option<f32>, scale: f64, row: u64, rev: bool) -> i64 {
+    let tie = (row & 0xf_ffff) as i64;
+    match value {
+        Some(v) if v.is_finite() => {
+            let steps = (f64::from(v) * scale).round().clamp(-(1i64 << 40) as f64, (1i64 << 40) as f64) as i64;
+            (if rev { -steps } else { steps }) * (1 << 20) + tie
+        }
+        _ => i64::MIN + tie,
+    }
 }
 
 fn doc_add_str(doc: &mut TantivyDocument, field: Field, value: &str) {

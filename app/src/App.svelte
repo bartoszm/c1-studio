@@ -35,6 +35,7 @@
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, sameRows } from "./lib/batch";
+  import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -225,6 +226,76 @@
   let version = $state(0);
   /** Bumped when the analysis has measured photos again: the panel's Look reads them again. */
   let analysed = $state(0);
+
+  /** How tall the strip of photos under the map and the analysis is: dragged, remembered. */
+  let stripH = $state(storedStrip((() => { try { return localStorage.getItem("strip"); } catch { return null; } })()));
+  let paneEl = $state<HTMLDivElement>();
+  let splitting = $state(false);
+  function setStrip(px: number, keep = true) {
+    stripH = clampStrip(px, paneEl?.clientHeight ?? 900);
+    if (keep) try { localStorage.setItem("strip", String(stripH)); } catch { /* not remembered */ }
+  }
+  function splitStart(e: PointerEvent) {
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
+    const [startY, start] = [e.clientY, stripH];
+    splitting = true;
+    const move = (ev: PointerEvent) => setStrip(dragged(start, startY, ev.clientY, paneEl?.clientHeight ?? 900), false);
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      splitting = false;
+      setStrip(stripH);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+  function splitKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 80 : 20;
+    if (e.key === "ArrowUp") setStrip(stripH + step);
+    else if (e.key === "ArrowDown") setStrip(stripH - step);
+    else if (e.key === "Home") setStrip(STRIP_DEFAULT);
+    else return;
+    e.preventDefault();
+  }
+
+  /** The order of the grid and of the strip under the map and the analysis. */
+  const SORTS: [api.Sort, string][] = [
+    ["DateDesc", "Newest first"],
+    ["Date", "Oldest first"],
+    ["RatingDesc", "Best rated"],
+    ["ImportedDesc", "Last imported"],
+    ["Filename", "File name"],
+    ["SharpnessDesc", "Sharpest"],
+    ["Sharpness", "Softest"],
+    ["BrightnessDesc", "Brightest"],
+    ["Brightness", "Darkest"],
+  ];
+  function rememberedSort(): api.Sort {
+    try {
+      const s = localStorage.getItem("sort");
+      return SORTS.find(([key]) => key === s)?.[0] ?? "DateDesc";
+    } catch {
+      return "DateDesc";
+    }
+  }
+  let sortBy = $state<api.Sort>(rememberedSort());
+  /** One photo per burst or duplicate group: its sharpest. */
+  let stack = $state((() => { try { return localStorage.getItem("stack") === "1"; } catch { return false; } })());
+  /** The filter with Match applied, and the stacking when it is on: what the grid shows. */
+  const asking = (f: Filter): Filter => ({ ...compile(f, match), ...(stack ? { stacked: true } : {}) });
+  function setSort(next: api.Sort) {
+    sortBy = next;
+    try { localStorage.setItem("sort", next); } catch { /* not remembered */ }
+    run();
+  }
+  function toggleStack() {
+    stack = !stack;
+    try { localStorage.setItem("stack", stack ? "1" : "0"); } catch { /* not remembered */ }
+    run();
+  }
   let writing = $state(false);
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
@@ -354,13 +425,13 @@
   async function run(keep = false) {
     const mine = ++generation;
     untrack(() => (filter = following(filter)));
-    const asked = compile($state.snapshot(filter), match);
+    const asked = asking($state.snapshot(filter));
     const groups = dims;
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
       const first = api.query(asked, {
-        sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
+        sort: sortBy, limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
       // In place, the pages on screen and the focused photo's (and the next, for the viewer)
       // are read again alongside the first and swapped in with the result in one go: until
@@ -374,7 +445,7 @@
               return [shown, [at, at + 2]];
             },
             result?.total ?? 0,
-            (page) => api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
           )
         : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
@@ -405,7 +476,7 @@
    */
   async function followPicks(mine: number, asked: Filter) {
     if (picked.size > 1) {
-      const all = new Set((await api.query(asked, { sort: "DateDesc" })).rows);
+      const all = new Set((await api.query(asked, { sort: sortBy })).rows);
       if (mine !== generation) return;
       for (const row of [...picked]) if (!all.has(row)) picked.delete(row);
     }
@@ -433,7 +504,7 @@
     if (pending) return pending;
     const mine = generation;
     const into = pages;
-    const p = api.query(compile($state.snapshot(filter), match), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
+    const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
       .then((r) => { if (mine === generation) into.set(page, r.rows); })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
@@ -847,7 +918,7 @@
 
   async function pickAll() {
     if (!result) return;
-    const all = await api.query(compile($state.snapshot(filter), match), { sort: "DateDesc" });
+    const all = await api.query(asking($state.snapshot(filter)), { sort: sortBy });
     picked.clear();
     for (const r of all.rows) picked.add(r);
   }
@@ -1497,6 +1568,8 @@
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
+    // Set from the header's Stack button, not a filter the user picks.
+    stacked: () => [],
     within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
   };
   function monthText(key: string) {
@@ -1638,6 +1711,18 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
+    <label class="sort" title="The order of the photos in the grid and in the strip under the map and the analysis">
+      <select aria-label="Sort photos" value={sortBy} onchange={(e) => setSort(e.currentTarget.value as api.Sort)}>
+        {#each SORTS as [key, label] (key)}<option value={key}>{label}</option>{/each}
+      </select>
+    </label>
+    <button
+      class="toggle"
+      class:on={stack}
+      aria-pressed={stack}
+      title="Show one photo per burst or duplicate group (its sharpest). Frames that match a filter can be hidden behind a frame that does not; open the group to see them."
+      onclick={toggleStack}
+    >Stack</button>
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
@@ -1883,7 +1968,7 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn || tab === "analysis"}>
+  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} style:--strip="{stripH}px">
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
       filter={eff}
@@ -1929,11 +2014,31 @@
       total={result?.total ?? 0}
       {analysis}
       {version}
+      {stack}
       ontoggle={toggleList}
       onflag={toggleFlag}
       ongroup={showGroup}
       onshow={() => showTab("photos")}
+      onstack={toggleStack}
+      onclasses={() => { version++; analysed++; refresh(true); }}
     />
+  {/if}
+  {#if mapOn || tab === "analysis"}
+    <!-- A window splitter: a separator that can be focused and moved with the arrow keys. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      class="splitter"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Height of the photo strip"
+      aria-valuemin={STRIP_MIN}
+      aria-valuenow={stripH}
+      tabindex="0"
+      title="Drag to resize; arrow keys too, Home resets"
+      onpointerdown={splitStart}
+      onkeydown={splitKey}
+      ondblclick={() => setStrip(STRIP_DEFAULT)}
+    ></div>
   {/if}
   <Grid
     bind:this={grid}

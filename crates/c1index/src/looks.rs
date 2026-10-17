@@ -34,6 +34,9 @@ pub struct Look {
     pub stamp: (u64, u64),
     pub duplicates: Option<String>,
     pub series: Option<String>,
+    /// Not the sharpest of its group (see [`crate::filter::Filter::stacked`]).
+    #[serde(skip)]
+    pub stacked: bool,
 }
 
 pub struct Looks {
