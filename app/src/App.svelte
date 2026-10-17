@@ -38,6 +38,7 @@
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
+  import { LOCK_HELP, isLockError } from "./lib/lock";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -550,6 +551,26 @@
     } catch (e) {
       error = String(e);
       if (!status) choosingSource = true;
+    }
+  }
+
+  /** Opens the catalog this window was started on again: after another window that held its
+   *  library is closed, or whatever else made opening it fail. */
+  let retrying = $state(false);
+  async function retryOpen() {
+    retrying = true;
+    try {
+      const current = (await api.sources()).current;
+      if (!current) {
+        choosingSource = true;
+        return;
+      }
+      await api.openSource(current);
+      location.reload();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      retrying = false;
     }
   }
 
@@ -2082,8 +2103,15 @@
     bind:layout
   >
     {#if error}
-      <p class="error">{error}</p>
-      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button></p>{/if}
+      <p class="error">{isLockError(error) ? LOCK_HELP : error}</p>
+      {#if isLockError(error)}<p class="error small">{error}</p>{/if}
+      {#if !status}
+        <p class="empty">
+          <button class="link" disabled={retrying} onclick={retryOpen}>{retrying ? "Trying…" : "Try again"}</button>
+          ·
+          <button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button>
+        </p>
+      {/if}
     {:else if syncFailed && status?.photos === 0}
       <p class="error">Nothing could be read from this catalog.<br />{syncFailed}</p>
     {:else if result && result.total === 0}

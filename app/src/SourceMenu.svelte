@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
+  import { LOCK_HELP, isLockError } from "./lib/lock";
 
   // What is open, and the way to open something else: a recent source, one of a
   // provider's kind through the system dialog, or a typed path. The window reloads on
@@ -98,7 +99,14 @@
         <button role="menuitem" onclick={() => { open = false; onbackups(); }}>Backups…</button>
       {/if}
     {/if}
-    {#if view.error}<p class="source-note error">{view.error}</p>{/if}
+    {#if view.error}
+      <p class="source-note error">{isLockError(view.error) ? LOCK_HELP : view.error}</p>
+      {#if isLockError(view.error)}<p class="source-note error small">{view.error}</p>{/if}
+      <!-- Opening the same source again: it works once what blocked it is gone. -->
+      {#if view.current}
+        <button role="menuitem" disabled={!!busy} onclick={() => go(view!.current!)}>Try again</button>
+      {/if}
+    {/if}
     {#if view.recent.length}
       <div class="menu-title">Recent</div>
       {#each view.recent as r (r.provider + r.location)}
