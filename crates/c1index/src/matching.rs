@@ -6,12 +6,14 @@
 //! Within one dimension a photo is as good as its best pick, as the filter itself means "any
 //! of these". Pure functions: the index reads the measures from fast fields.
 
-use c1analysis::{ClassSettings, HUES};
+use c1analysis::{ClassSettings, ColourMode, HUES};
 
 /// The measures a score is made of (what the analysis stored for the photo).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Measures {
     pub hue_shares: [f32; HUES.len()],
+    /// Each colour's biggest patch (share of the picture).
+    pub hue_patches: [f32; HUES.len()],
     pub chroma: f32,
     pub brightness: f32,
     pub contrast: f32,
@@ -57,7 +59,15 @@ impl MatchSpec {
     pub fn score(&self, m: &Measures) -> f32 {
         let mut parts: Vec<f32> = Vec::new();
         if !self.colours.is_empty() || self.black_and_white {
-            let colour = unit(self.colours.iter().map(|&i| m.hue_shares[i]).sum());
+            let colour = match self.lines.colour_mode {
+                // How much of the picture is in the picked colours.
+                ColourMode::Covers => unit(self.colours.iter().map(|&i| m.hue_shares[i]).sum()),
+                // How big the biggest patch of one of them is, full marks at four times the line.
+                ColourMode::Patch => {
+                    let line = (self.lines.patch_share * OVER_THE_LINE).max(f32::EPSILON);
+                    self.colours.iter().map(|&i| unit(m.hue_patches[i] / line)).fold(0.0, f32::max)
+                }
+            };
             let mono = if self.black_and_white && self.lines.mono_chroma > 0.0 {
                 unit(1.0 - m.chroma / self.lines.mono_chroma)
             } else {
@@ -200,6 +210,22 @@ mod tests {
         // A soft photo (between the lines) beats both a sharp and a blurry one for "soft".
         assert!(soft.score(&at(450.0)) > soft.score(&at(15_000.0)));
         assert!(soft.score(&at(450.0)) > soft.score(&at(5.0)));
+    }
+
+    #[test]
+    fn in_patch_mode_the_biggest_patch_of_a_picked_colour_counts() {
+        let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let lines = ClassSettings { colour_mode: ColourMode::Patch, patch_share: 0.02, ..lines() };
+        let s = MatchSpec::new(&own(&["red", "green"]), &[], &[], &lines).unwrap();
+        let with_patch = |name: &str, patch: f32| {
+            let mut m = Measures::default();
+            m.hue_patches[HUES.iter().position(|h| *h == name).unwrap()] = patch;
+            m
+        };
+        // Full marks at four times the line (8%), half at 4%; the share covered does not count.
+        assert_eq!(s.score(&with_patch("red", 0.08)), 1.0);
+        assert!((s.score(&with_patch("green", 0.04)) - 0.5).abs() < 1e-6);
+        assert_eq!(s.score(&Measures { ..with_hue("red", 0.9) }), 0.0);
     }
 
     #[test]

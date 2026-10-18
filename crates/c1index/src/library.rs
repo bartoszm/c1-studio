@@ -1326,7 +1326,12 @@ impl Library {
         let mut options = options.clone();
         let spec = if matches!(options.sort, Sort::Match | Sort::MatchWorst) {
             let lines = self.classes.read().unwrap();
-            let spec = MatchSpec::new(&filter.hues, &filter.light, &filter.focus, &lines);
+            // Picks a card asks for all of ("red and blue") come as `all_of` alternatives.
+            let gather = |pick: fn(&Filter) -> &Vec<String>| -> Vec<String> {
+                std::iter::once(filter).chain(&filter.all_of).flat_map(|f| pick(f).iter().cloned()).collect()
+            };
+            let (hues, light, focus) = (gather(|f| &f.hues), gather(|f| &f.light), gather(|f| &f.focus));
+            let spec = MatchSpec::new(&hues, &light, &focus, &lines);
             if spec.is_none() {
                 options.sort = Sort::DateDesc;
             }
@@ -1642,6 +1647,10 @@ impl Library {
                         .iter()
                         .map(|h| fast.u64(&format!("hue_share_{h}")).expect("hue share").first_or_default_col(0))
                         .collect();
+                    let patches: Vec<_> = c1analysis::HUES
+                        .iter()
+                        .map(|h| fast.u64(&format!("hue_patch_{h}")).expect("hue patch").first_or_default_col(0))
+                        .collect();
                     let (chroma, brightness, contrast) =
                         (measure("chroma"), measure("brightness"), measure("contrast"));
                     let (highlights, shadows, sharpness) =
@@ -1663,6 +1672,9 @@ impl Library {
                             };
                             for (share, col) in m.hue_shares.iter_mut().zip(&hues) {
                                 *share = col.get_val(doc) as f32 / 1000.0;
+                            }
+                            for (patch, col) in m.hue_patches.iter_mut().zip(&patches) {
+                                *patch = (col.get_val(doc) as f64 / schema::PATCH_SCALE) as f32;
                             }
                             spec.score(&m)
                         });

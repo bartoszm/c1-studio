@@ -14,12 +14,29 @@ use image::imageops::FilterType;
 use image::{GrayImage, RgbImage};
 use serde::{Deserialize, Serialize};
 
-pub use colour::{HUES, MONO, name_of};
+pub use colour::{HUES, MONO, NEUTRAL, name_of, stats_from_palette};
 pub use groups::{DUPLICATE_MAX, Groups, Taken, distance, group};
 
 /// Bumped when what [`analyse`] measures changes: stored results of another version are
-/// measured again.
-pub const VERSION: u32 = 1;
+/// measured again. 2: per colour, its share of the pixels and its biggest patch.
+pub const VERSION: u32 = 2;
+
+/// One colour name in a picture: its share of the pixels, the share of its biggest single
+/// patch, and how vivid it is (mean Lab chroma of its pixels). All 0 when absent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HueStat {
+    pub share: f32,
+    pub patch: f32,
+    pub chroma: f32,
+}
+
+/// What makes a photo a colour: covering a share of it, or having a vivid patch of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColourMode {
+    #[default]
+    Covers,
+    Patch,
+}
 
 /// Bumped when the classes made of a measure change (colour names, what a class means):
 /// the search index is rebuilt, the photos are not measured again. Moving a threshold is
@@ -56,6 +73,8 @@ pub struct Analysis {
     pub sharpness: f32,
     /// Difference hash: 64 bits, close for pictures that look alike.
     pub hash: u64,
+    /// Per name in [`HUES`], in that order.
+    pub hue_stats: [HueStat; HUES.len()],
 }
 
 /// The longest edge measured. Capture One's thumbnails are about this size already.
@@ -78,6 +97,7 @@ pub fn analyse(image: &RgbImage) -> Analysis {
         shadows,
         sharpness: sharpness(&gray),
         hash: dhash(&gray),
+        hue_stats: colour::hue_stats(&image),
     }
 }
 
@@ -186,6 +206,13 @@ pub struct ClassSettings {
     pub colour_share: f32,
     /// Share its biggest colour needs when none reaches `colour_share`; else `muted`.
     pub colour_floor: f32,
+    /// Covering `colour_share` of the picture, or having a vivid patch of it.
+    pub colour_mode: ColourMode,
+    /// The patch a colour needs in [`ColourMode::Patch`] (share of the picture, 0..1), and
+    /// how vivid it must be (mean Lab chroma). A vivid patch also keeps a photo out of black
+    /// and white in either mode: a red coat on a grey street.
+    pub patch_share: f32,
+    pub patch_chroma: f32,
     /// Mean luminance (0..1) below which a picture is dark, and above which it is bright.
     pub dark_below: f32,
     pub bright_above: f32,
@@ -219,6 +246,9 @@ impl Default for ClassSettings {
             mono_chroma: colour::MONO,
             colour_share: 1.0 / 6.0,
             colour_floor: 0.05,
+            colour_mode: ColourMode::Covers,
+            patch_share: 0.02,
+            patch_chroma: 25.0,
             dark_below: 0.2,
             bright_above: 0.55,
             clipped_share: 0.03,
@@ -251,6 +281,9 @@ impl ClassSettings {
             mono_chroma: fin(self.mono_chroma, d.mono_chroma).max(0.0),
             colour_share: unit(self.colour_share, d.colour_share),
             colour_floor: unit(self.colour_floor, d.colour_floor),
+            colour_mode: self.colour_mode,
+            patch_share: unit(self.patch_share, d.patch_share),
+            patch_chroma: fin(self.patch_chroma, d.patch_chroma).max(0.0),
             dark_below: dark,
             bright_above: unit(self.bright_above, d.bright_above).max(dark),
             clipped_share: unit(self.clipped_share, d.clipped_share),
@@ -282,43 +315,41 @@ impl Analysis {
         }
     }
 
-    /// The colours the picture is made of: black and white, or the colours (not black,
-    /// white or grey) covering [`ClassSettings::colour_share`] of it or more, else its
-    /// biggest colour if it shows at all, else `muted`.
+    /// The colours the picture is made of: black and white, or in [`ColourMode::Covers`] the
+    /// colours (not black, white or grey) covering [`ClassSettings::colour_share`] of its
+    /// pixels or more, in [`ColourMode::Patch`] those with a vivid patch big enough; else its
+    /// biggest colour if it shows at all, else `muted`. Biggest first.
     pub fn hues(&self, s: &ClassSettings) -> Vec<&'static str> {
-        if self.chroma < s.mono_chroma {
+        let vivid = |st: &HueStat| st.patch >= s.patch_share && st.chroma >= s.patch_chroma;
+        // A grey picture with one vivid patch (a red coat) is not black and white.
+        if self.chroma < s.mono_chroma && !self.hue_stats.iter().any(vivid) {
             return vec![colour::BLACK_AND_WHITE];
         }
-        let mut by_name: Vec<(&'static str, f32)> = Vec::new();
-        for swatch in &self.palette {
-            let name = name_of(swatch.rgb);
-            if colour::NEUTRAL.contains(&name) {
-                continue;
-            }
-            match by_name.iter_mut().find(|(n, _)| *n == name) {
-                Some((_, share)) => *share += swatch.share,
-                None => by_name.push((name, swatch.share)),
-            }
-        }
-        by_name.sort_by(|a, b| b.1.total_cmp(&a.1));
-        let mut out: Vec<&'static str> =
-            by_name.iter().filter(|(_, share)| *share >= s.colour_share).map(|(n, _)| *n).collect();
+        let patch = s.colour_mode == ColourMode::Patch;
+        let size = |st: &HueStat| if patch { st.patch } else { st.share };
+        let counts = |st: &HueStat| if patch { vivid(st) } else { st.share >= s.colour_share };
+        let mut named: Vec<(&'static str, &HueStat)> = HUES.iter().copied().zip(&self.hue_stats).collect();
+        named.sort_by(|a, b| size(b.1).total_cmp(&size(a.1)));
+        let mut out: Vec<&'static str> = named.iter().filter(|(_, st)| counts(st)).map(|(n, _)| *n).collect();
+        // Nothing counts: the biggest colour stands for the picture if it shows at all, measured
+        // the way the mode measures (a sky too pale for a vivid patch is still blue; specks
+        // scattered over a wall make no patch).
         if out.is_empty() {
-            out.push(by_name.first().filter(|(_, share)| *share >= s.colour_floor).map_or(colour::MUTED, |(n, _)| n));
+            let biggest = HUES.iter().zip(&self.hue_stats).max_by(|a, b| size(a.1).total_cmp(&size(b.1)));
+            out.push(biggest.filter(|(_, st)| size(st) >= s.colour_floor).map_or(colour::MUTED, |(n, _)| n));
         }
         out
     }
 
-    /// The share of the picture (0..1) in each of [`HUES`], in that order: what the colours
-    /// are ranked by. Black, white and grey are in none.
+    /// The share of the picture's pixels (0..1) in each of [`HUES`], in that order: what the
+    /// colours are ranked by. Black, white and grey are in none.
     pub fn hue_shares(&self) -> [f32; HUES.len()] {
-        let mut out = [0.0; HUES.len()];
-        for swatch in &self.palette {
-            if let Some(i) = HUES.iter().position(|h| *h == name_of(swatch.rgb)) {
-                out[i] += swatch.share;
-            }
-        }
-        out
+        self.hue_stats.map(|st| st.share)
+    }
+
+    /// The share of each colour's biggest patch, in the order of [`HUES`].
+    pub fn hue_patches(&self) -> [f32; HUES.len()] {
+        self.hue_stats.map(|st| st.patch)
     }
 
     /// How light the picture is, and what is lost at either end.
@@ -419,7 +450,58 @@ mod tests {
         // Nothing reaches 90%: the biggest colour stands for the photo if it shows at all.
         assert_eq!(a.hues(&ClassSettings { colour_share: 0.9, ..d() }), ["green"]);
         assert_eq!(a.hues(&ClassSettings { colour_share: 0.9, colour_floor: 0.9, ..d() }), ["muted"]);
-        assert_eq!(a.hues(&ClassSettings { mono_chroma: 1000.0, ..d() }), ["black & white"]);
+        // Low mean chroma alone no longer makes it black and white: its patches are vivid.
+        assert_ne!(a.hues(&ClassSettings { mono_chroma: 1000.0, ..d() }), ["black & white"]);
+        assert_eq!(a.hues(&ClassSettings { mono_chroma: 1000.0, patch_chroma: 1000.0, ..d() }), ["black & white"]);
+    }
+
+    /// Grey, with a red block of `w`×`h` at the centre (a 60 px picture is measured as it is).
+    fn grey_with_red(w: u32, h: u32) -> RgbImage {
+        RgbImage::from_fn(60, 60, |x, y| {
+            if (30 - w / 2..30 + w.div_ceil(2)).contains(&x) && (30 - h / 2..30 + h.div_ceil(2)).contains(&y) {
+                Rgb([210, 30, 30])
+            } else {
+                Rgb([128, 128, 128])
+            }
+        })
+    }
+
+    #[test]
+    fn a_red_coat_on_a_grey_street_is_red_not_black_and_white() {
+        // 6×8 px of 60×60: 1.3% of the picture.
+        let coat = analyse(&grey_with_red(6, 8));
+        let red = coat.hue_stats[HUES.iter().position(|h| *h == "red").unwrap()];
+        assert!((red.patch - 48.0 / 3600.0).abs() < 1e-4, "{red:?}");
+        assert!(red.chroma > 25.0);
+        let patch = ClassSettings { colour_mode: ColourMode::Patch, patch_share: 0.01, ..d() };
+        assert_eq!(coat.hues(&patch), ["red"]);
+        // Covering the picture it does not, and it is too small even for the floor: muted,
+        // but no longer black and white.
+        assert_eq!(coat.hues(&ClassSettings { patch_share: 0.01, ..d() }), ["muted"]);
+        // A patch smaller than asked for: black and white again.
+        assert_eq!(coat.hues(&ClassSettings { patch_share: 0.05, ..d() }), ["black & white"]);
+    }
+
+    #[test]
+    fn scattered_pixels_cover_but_make_no_patch() {
+        // One red pixel in every 4×4: 6% of the picture, no two touching.
+        let dots =
+            RgbImage::from_fn(
+                60,
+                60,
+                |x, y| {
+                    if x % 4 == 0 && y % 4 == 0 { Rgb([210, 30, 30]) } else { Rgb([60, 140, 60]) }
+                },
+            );
+        let a = analyse(&dots);
+        let red = a.hue_stats[HUES.iter().position(|h| *h == "red").unwrap()];
+        assert!((red.share - 225.0 / 3600.0).abs() < 1e-4, "{red:?}");
+        assert!((red.patch - 1.0 / 3600.0).abs() < 1e-6, "{red:?}");
+        let covers = ClassSettings { colour_share: 0.05, ..d() };
+        assert!(a.hues(&covers).contains(&"red"));
+        let patch = ClassSettings { colour_mode: ColourMode::Patch, ..d() };
+        assert!(!a.hues(&patch).contains(&"red"));
+        assert!(a.hues(&patch).contains(&"green"));
     }
 
     #[test]

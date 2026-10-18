@@ -118,3 +118,31 @@ export function criteriaCount(f: Filter): number {
     (f.placed !== undefined ? 1 : 0)
   );
 }
+
+/** Light classes a photo can have several of (the rest, dark/medium/bright, are one each). */
+export const LIGHT_PROBLEMS = ["clipped highlights", "blocked shadows", "low contrast"];
+
+/** Which analysis cards ask for every pick ("red and blue") rather than any of them. */
+export type AllOf = { hues?: boolean; problems?: boolean };
+
+/**
+ * The filter with the picks of the cards set to "all" made into `all_of` alternatives, one
+ * per value: "red and blue" is a photo that is red and is blue. One pick needs no change.
+ * Brightness picks (dark, medium, bright) stay "any": a photo has only one.
+ */
+export function allOfPicks(f: Filter, all: AllOf): Filter {
+  const out: Filter = { ...f };
+  const each: Filter[] = [];
+  if (all.hues && (f.hues?.length ?? 0) > 1) {
+    for (const hue of f.hues!) each.push({ hues: [hue] });
+    delete out.hues;
+  }
+  const problems = (f.light ?? []).filter((l) => LIGHT_PROBLEMS.includes(l));
+  if (all.problems && problems.length > 1) {
+    for (const p of problems) each.push({ light: [p] });
+    const rest = (f.light ?? []).filter((l) => !LIGHT_PROBLEMS.includes(l));
+    if (rest.length) out.light = rest;
+    else delete out.light;
+  }
+  return each.length ? { ...out, all_of: [...(out.all_of ?? []), ...each] } : f;
+}

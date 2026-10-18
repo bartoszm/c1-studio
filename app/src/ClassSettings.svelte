@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
-  import { GROUPS, mergeFields, sameSettings, shown, summary, withField } from "./lib/classes";
+  import { GROUPS, inMode, mergeFields, sameSettings, shown, summary, withField } from "./lib/classes";
 
   // Where the analysis draws the lines between classes (what counts as red, as soft, as a
   // burst). Moving a value previews how many photos each class would get; Apply classes the
@@ -57,7 +57,7 @@
     try {
       // Only this dialog's fields: the Alike tab may have moved its own meanwhile.
       const mine = GROUPS.filter((g) => g.title !== "Alike").flatMap((g) => g.fields);
-      saved = await api.setClassSettings(mergeFields(await api.classSettings(), draft, mine));
+      saved = await api.setClassSettings(mergeFields(await api.classSettings(), draft, mine, true));
       draft = { ...saved };
       preview = await api.previewClasses(saved);
       onapplied();
@@ -87,7 +87,22 @@
   {#each GROUPS.filter((g) => g.title !== "Alike") as group (group.title)}
     <fieldset>
       <legend>{group.title}</legend>
-      {#each group.fields as f (f.key)}
+      {#if group.title === "Colour"}
+        <div class="mode" role="radiogroup" aria-label="What makes a photo a colour">
+          {#each [["Covers", "Covers a share of it"], ["Patch", "Has a vivid patch of it"]] as [mode, label] (mode)}
+            <label>
+              <input
+                type="radio"
+                name="colour-mode"
+                checked={draft.colour_mode === mode}
+                onchange={() => edit({ ...draft!, colour_mode: mode as api.ColourMode })}
+              />
+              {label}
+            </label>
+          {/each}
+        </div>
+      {/if}
+      {#each group.fields.filter((f) => inMode(f, draft!.colour_mode)) as f (f.key)}
         <label class="row">
           <span class="name">{f.label}</span>
           <input
@@ -129,6 +144,8 @@
   legend { padding: 0 4px; font-size: 12px; font-weight: 600; }
   .row { display: grid; grid-template-columns: 1fr 78px 40px; align-items: center; gap: 2px 6px; padding: 3px 0; }
   .row small { grid-column: 1 / -1; }
+  .mode { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 2px 0 6px; font-size: 13px; }
+  .mode label { display: flex; align-items: center; gap: 4px; cursor: pointer; }
   .name { font-size: 13px; }
   .unit { color: var(--muted); font-size: 12px; }
   input[type="number"] { width: 100%; box-sizing: border-box; text-align: right; }

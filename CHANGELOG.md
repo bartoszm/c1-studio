@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Colour by patch (#29):** Settings > Analysis > Colour can count a colour when it *covers* a share of the photo (as before, now measured per pixel, so a small vivid area is no longer swallowed by its neighbours) or when the photo *has a vivid patch* of it (a red coat on a grey street). A grey photo with a vivid patch is no longer black & white. Every photo is measured once more in the background after updating (about 4 minutes per 100,000) to know its patches.
+- **Why a photo is red, dark or soft (#30):** the details panel's Look section names the palette's colours, marks black, white and grey as not counting, and under each class gives the measure and the line: "red 19% · counts from 17%", "brightness 31% (dark below 20%, bright above 55%)", "detail 1,240 (soft below 700, blurry below 300)". An unmeasured photo says "Not measured yet".
+- **Charts that explain themselves (#31):** each Analysis card says what it measures with the current lines, each bar's tooltip gives its rule, and a note says how picks combine. Light is split into *Brightness* (one per photo) and *Light problems*. Main colour and Light problems have an any/all switch: "all" asks for photos that are red **and** blue.
+
 - **Header on the map:** switching to the map squeezed the Photos/Map/Analysis buttons to a sliver. The map's own tools (grid follows map, GPX…, Neighbours…) are now in a row above the map, and on a narrow window the search box shrinks first, then the slider and the count give way.
 
 - **Library open in another window:** a window that could not open its library because another C1 Studio window had it said so and stayed stuck, even after the other window was closed. It now explains it ("This library is open in another C1 Studio window") and has a **Try again** button (in the window and in the source menu).

@@ -1,9 +1,12 @@
 // The analysis settings as the dialog shows them: each a number the user can read
 // (percent, seconds), kept by the backend in its own unit (a share 0..1, milliseconds).
-import type { ClassPreview, ClassSettings } from "./api";
+import type { ClassPreview, ClassSettings, ColourMode } from "./api";
+
+/** The settings that are numbers (the colour mode is a choice of its own). */
+export type NumberKey = { [K in keyof ClassSettings]: ClassSettings[K] extends number ? K : never }[keyof ClassSettings];
 
 export type Field = {
-  key: keyof ClassSettings;
+  key: NumberKey;
   label: string;
   hint: string;
   /** Shown = stored × scale. */
@@ -12,6 +15,8 @@ export type Field = {
   min: number;
   max: number;
   step: number;
+  /** Shown only in these colour modes (all when left out). */
+  modes?: ColourMode[];
 };
 
 export type Group = {
@@ -21,7 +26,7 @@ export type Group = {
   fields: Field[];
 };
 
-const pct = (key: keyof ClassSettings, label: string, hint: string, max = 100): Field => ({
+const pct = (key: NumberKey, label: string, hint: string, max = 100): Field => ({
   key, label, hint, scale: 100, unit: "%", min: 0, max, step: 1,
 });
 
@@ -30,9 +35,11 @@ export const GROUPS: Group[] = [
     title: "Colour",
     classes: ["hue|black & white", "hue|muted"],
     fields: [
-      pct("colour_share", "A colour counts when it covers", "of the photo. Lower it to catch small patches of colour; raise it for photos that are mostly that colour."),
-      pct("colour_floor", "Else the biggest colour counts from", "of the photo; below that the photo is muted."),
-      { key: "mono_chroma", label: "Black & white below chroma", hint: "Mean colourfulness (Lab). Toned prints stay black & white up to here.", scale: 1, unit: "", min: 0, max: 60, step: 0.5 },
+      { ...pct("colour_share", "A colour counts when it covers", "of the photo's pixels. Lower it to catch smaller areas; raise it for photos that are mostly that colour."), modes: ["Covers"] },
+      { ...pct("patch_share", "A colour counts with a patch of", "of the photo in one piece, vivid enough (below). A red coat on a grey street counts; red specks scattered over a wall do not."), step: 0.5, modes: ["Patch"] },
+      { key: "patch_chroma", label: "A patch is vivid from chroma", hint: "Colourfulness (Lab) of the patch's pixels. A vivid patch also keeps a grey photo out of black & white.", scale: 1, unit: "", min: 0, max: 100, step: 1 },
+      pct("colour_floor", "Else the biggest colour counts from", "of the photo (its biggest patch, in patch mode); below that the photo is muted."),
+      { key: "mono_chroma", label: "Black & white below chroma", hint: "Mean colourfulness (Lab). Toned prints stay black & white up to here, unless they have a vivid patch.", scale: 1, unit: "", min: 0, max: 60, step: 0.5 },
     ],
   },
   {
@@ -74,6 +81,9 @@ export const GROUPS: Group[] = [
   },
 ];
 
+/** Whether a field is shown in the current colour mode. */
+export const inMode = (f: Field, mode: ColourMode) => !f.modes || f.modes.includes(mode);
+
 /** Floats from the backend are f32: 0.17 comes back as 0.1666…, so shown values are rounded. */
 const round = (n: number) => Math.round(n * 1000) / 1000;
 
@@ -86,16 +96,21 @@ export function withField(settings: ClassSettings, f: Field, typed: number | nul
   return { ...settings, [f.key]: f.scale === 0.001 ? Math.round(value) : value };
 }
 
-/** `current` with just the `fields` taken from `draft`: what one editor applies, so the fields
- *  another editor (the Alike tab, the Settings dialog) changed since it loaded stay as they are. */
-export function mergeFields(current: ClassSettings, draft: ClassSettings, fields: Field[]): ClassSettings {
+/** `current` with just the `fields` (and, with `mode`, the colour mode) taken from `draft`: what one
+ *  editor applies, so the fields another editor (the Alike tab, the Settings dialog) changed since
+ *  it loaded stay as they are. */
+export function mergeFields(current: ClassSettings, draft: ClassSettings, fields: Field[], mode = false): ClassSettings {
   const out = { ...current };
   for (const f of fields) out[f.key] = draft[f.key];
+  if (mode) out.colour_mode = draft.colour_mode;
   return out;
 }
 
-export const sameSettings =(a: ClassSettings, b: ClassSettings) =>
-  (Object.keys(a) as (keyof ClassSettings)[]).every((k) => round(a[k]) === round(b[k]));
+export const sameSettings = (a: ClassSettings, b: ClassSettings) =>
+  (Object.keys(a) as (keyof ClassSettings)[]).every((k) => {
+    const [x, y] = [a[k], b[k]];
+    return typeof x === "number" && typeof y === "number" ? round(x) === round(y) : x === y;
+  });
 
 /** "12 blurry · 340 soft": the classes of a group with photos in them, in the group's order. */
 export function summary(group: Group, preview: ClassPreview | null): string {

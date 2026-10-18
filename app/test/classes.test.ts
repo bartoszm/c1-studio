@@ -7,6 +7,9 @@ const defaults: ClassSettings = {
   mono_chroma: 4,
   colour_share: 0.16666667,
   colour_floor: 0.05,
+  colour_mode: "Covers",
+  patch_share: 0.02,
+  patch_chroma: 25,
   dark_below: 0.2,
   bright_above: 0.55,
   clipped_share: 0.03,
@@ -25,7 +28,7 @@ const field = (key: keyof ClassSettings) => GROUPS.flatMap((g) => g.fields).find
 
 test("every setting has a field, once", () => {
   const keys = GROUPS.flatMap((g) => g.fields.map((f) => f.key)).sort();
-  assert.deepEqual(keys, Object.keys(defaults).sort());
+  assert.deepEqual(keys, Object.keys(defaults).filter((k) => k !== "colour_mode").sort());
 });
 
 test("shares show as percent and the wait as seconds, without float noise", () => {
