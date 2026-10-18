@@ -61,7 +61,10 @@ export function colourLines(stats: Stat[], l: ClassSettings, classes: string[], 
       const counts = classes.includes(name);
       const measure = patch ? `${name} patch ${pct(st.patch)} (chroma ${num(st.chroma)})` : `${name} ${pct(st.share)}`;
       const line = patch ? `${pct(l.patch_share)}, chroma ${num(l.patch_chroma)}` : pct(l.colour_share);
-      return { name, counts, text: `${measure} · ${counts ? "counts" : "needs"} ${counts ? "from" : ""} ${line}`.replace("  ", " ") };
+      const reaches = patch ? vivid(st, l) : st.share >= l.colour_share;
+      // Counted without reaching the line: no colour did, and this one is the biggest.
+      const why = !counts ? `needs ${line}` : reaches ? `counts from ${line}` : `the biggest colour, counts from ${pct(l.colour_floor)}`;
+      return { name, counts, text: `${measure} · ${why}` };
     });
 }
 

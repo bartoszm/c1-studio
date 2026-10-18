@@ -53,6 +53,9 @@ test("colour lines say each colour's measure and whether it counts", () => {
   assert.deepEqual(out.map((l) => [l.name, l.counts]), [["red", true], ["blue", false]]);
   assert.equal(out[0].text, "red 19% · counts from 17%");
   assert.equal(out[1].text, "blue 9% · needs 17%");
+  // No colour reaches the line: the biggest stands for the photo, and says so.
+  const small = colourLines(stats({ red: [0.052, 0.04, 50] }), lines, ["red"]);
+  assert.equal(small[0].text, "red 5.2% · the biggest colour, counts from 5%");
   const patch = colourLines(s, { ...lines, colour_mode: "Patch" }, ["red", "blue"]);
   assert.equal(patch[0].text, "red patch 10% (chroma 60) · counts from 2%, chroma 25");
 });
