@@ -218,25 +218,39 @@ pub trait PhotoSource: Send + Sync {
     fn image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>>;
 
     /// Makes a tier [`PhotoSource::image`] does not have yet, for a source that renders its
-    /// own (from the original), and returns it. Slow: called off the UI thread, one photo
-    /// at a time. `Ok(None)` when the source does not make images, or cannot for this one.
+    /// own (from the original), and returns it. Slow: called off the UI thread.
+    ///
+    /// Callable from several threads at once, for different photos and also for the same
+    /// one (a thumbnail fill and a tile asking for it); a source makes each image once and
+    /// is safe under that. `Ok(None)`: the source does not make images, or has nothing to
+    /// make one from right now (the original's volume is offline), which is not an error.
+    /// `Err`: it tried and failed. After `Ok(Some(r))`, [`PhotoSource::image`] for the same
+    /// tier returns the image made, until the source drops it.
     fn make_image(&self, _id: &PhotoId, _tier: ImageTier) -> Result<Option<ImageRef>> {
         Ok(None)
     }
 
     /// Looks again for changes the source cannot notice by itself (files added, changed or
     /// removed on disk); the next [`PhotoSource::snapshot`] reports them.
+    ///
+    /// A cheap request: the work, and the time it takes, land in that next `snapshot`
+    /// (minutes for a large folder), which also changes the source's state. Callers ask
+    /// [`Capabilities::rescan`] first; a source with it false returns `Unsupported`.
     fn rescan(&self) -> Result<()> {
         Err(SourceError::Unsupported("rescanning"))
     }
 
-    /// Where a long-running snapshot or rescan has got, while it runs.
+    /// Where a long-running snapshot or rescan has got, while it runs. `None` between runs.
+    ///
+    /// Polled from another thread while `snapshot` runs, so it is cheap and never waits on
+    /// a lock the run holds for long. Advisory: a reading may be a little behind.
     fn progress(&self) -> Option<SourceProgress> {
         None
     }
 
     /// The concrete source, for operations only one kind of source has (a folder source's
-    /// image store). `None` for a source that offers none.
+    /// image store). `None` for a source that offers none. Only the code that manages that
+    /// kind of source downcasts; what every source can tell belongs on this trait.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
     }
@@ -273,7 +287,12 @@ pub trait PhotoSource: Send + Sync {
     }
 
     /// Writes a plan produced by [`PhotoSource::plan`]: its keyword remaps first, then
-    /// its album changes, then its photo changes. Atomic: all or nothing.
+    /// its album changes, then its photo changes. The write to the source's own store is
+    /// atomic: all or nothing. What follows it (a folder source's XMP files) is not: each
+    /// file is written whole or not at all, but a failure does not undo the write. Those
+    /// are listed in [`ApplyReport::warnings`], and are not covered by
+    /// [`PhotoSource::backups`] / [`PhotoSource::restore`], which keep what the source
+    /// holds itself.
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport>;
 
     /// The copies the source kept before writing, newest first. Empty for a source that
@@ -292,7 +311,7 @@ pub trait PhotoSource: Send + Sync {
 /// A copy of a source kept before writing to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackupInfo {
-    /// What [`PhotoSource::restore`] takes: the file name, for Capture One.
+    /// What [`PhotoSource::restore`] takes: what the source names a copy by (the file name, for Capture One).
     pub id: String,
     /// Where it is, for showing.
     pub path: String,

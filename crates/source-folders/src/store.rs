@@ -183,7 +183,13 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let db = Database::create(path).map_err(other)?;
+        let db = Database::create(path).map_err(|e| match e {
+            // The app (or c1cat) has the store: the contract's lock, not a database message.
+            redb::DatabaseError::DatabaseAlreadyOpen => {
+                SourceError::Locked { by: "another C1 Studio window or c1cat".into() }
+            }
+            e => other(e),
+        })?;
         let tx = db.begin_write().map_err(other)?;
         {
             for table in [META, FILES, USER, IMAGES] {

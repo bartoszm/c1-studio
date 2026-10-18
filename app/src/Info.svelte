@@ -341,7 +341,7 @@
       {#if p.trashed}<span class="tag">in trash</span>{/if}
       {#if p.hidden}<span class="tag hidden-tag" title="Hidden in C1 Studio: left out of every view unless Hidden is on">hidden</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
-      {#if p.file.offline}<span class="tag" style:color="#e8b03a" title="The original is not reachable now: its folder or drive is not connected. Everything known about the photo stays.">offline</span>{/if}
+      {#if p.file.offline}<span class="tag offline-tag" title="The original is not reachable now: its folder or drive is not connected. Everything known about the photo stays.">offline</span>{/if}
     {/if}
     {#if onhide}
       <button

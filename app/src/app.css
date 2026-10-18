@@ -390,6 +390,7 @@ footer {
 .info-panel .focused { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .info-panel .tag { padding: 0 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
 .info-panel .hidden-tag { color: var(--text); border-color: var(--queued); }
+.info-panel .offline-tag { color: var(--star); }
 .info-panel .marks .hide { margin-left: auto; padding: 1px 8px; font-size: 12px; border: 1px solid var(--line); border-radius: 3px; }
 .info-panel .marks .hide:hover { background: var(--hover); }
 .info-panel dl { display: grid; grid-template-columns: 82px 1fr; gap: 4px 8px; margin: 10px 0 0; }

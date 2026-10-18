@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use c1index::thumbs::{Failure, Kind, Progress, Thumbs};
@@ -895,15 +895,14 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
 /// the catalog changed.
 fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Result<SyncReport, String> {
     let boot = app.state::<Boot>();
-    let done = AtomicBool::new(false);
+    let done = Finish::default();
     let report = std::thread::scope(|scope| {
         scope.spawn(|| report_progress(app, s, &done));
-        let report = s
-            .library
+        // Ends the poller also if the sync panics, or the scope would wait for it for ever.
+        let _ends = FinishOnDrop(&done);
+        s.library
             .sync_with(s.source.as_ref(), origin, &mut |step| boot.sync_step(app, step))
-            .map_err(|e| format!("{e:#}"));
-        done.store(true, Ordering::SeqCst);
-        report
+            .map_err(|e| format!("{e:#}"))
     });
     let failed = report.as_ref().err().cloned();
     if let Some(e) = &failed
@@ -1706,7 +1705,7 @@ enum AutosaveState {
     Idle,
     /// Edits are queued; it writes once the user pauses.
     Pending,
-    /// Capture One (or another program) has the catalog (Capture One); it writes once it is closed.
+    /// Another program has the source open; it writes once that program lets go.
     Waiting {
         by: String,
     },
@@ -1908,23 +1907,51 @@ fn sync_in_background(app: &AppHandle) {
     });
 }
 
+/// A flag that a thread can sleep on until it is set.
+#[derive(Default)]
+struct Finish {
+    set: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Finish {
+    fn set(&self) {
+        *self.set.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits up to `time` for the flag; whether it is set.
+    fn wait(&self, time: Duration) -> bool {
+        let set = self.set.lock().unwrap_or_else(|e| e.into_inner());
+        let (set, _) = self.changed.wait_timeout_while(set, time, |set| !*set).unwrap_or_else(|e| e.into_inner());
+        *set
+    }
+}
+
+/// Sets the flag when dropped.
+struct FinishOnDrop<'a>(&'a Finish);
+
+impl Drop for FinishOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.set();
+    }
+}
+
 /// How often a running sync is asked how far the source has got.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
 /// Until `done`, tells the window how far the source's work has got (`source-progress`),
 /// then that there is none.
-fn report_progress(app: &AppHandle, s: &Session, done: &AtomicBool) {
+fn report_progress(app: &AppHandle, s: &Session, done: &Finish) {
     let mut last = None;
-    while !done.load(Ordering::SeqCst) {
+    loop {
         let now = s.source.progress();
         if now != last {
             let _ = app.emit("source-progress", &now);
             last = now;
         }
-        // In short steps, so the end of the sync is not waited for.
-        let until = Instant::now() + PROGRESS_EVERY;
-        while Instant::now() < until && !done.load(Ordering::SeqCst) {
-            std::thread::sleep(Duration::from_millis(20));
+        if done.wait(PROGRESS_EVERY) {
+            break;
         }
     }
     if last.is_some() {
