@@ -784,6 +784,12 @@ async fn set_hidden(app: State<'_, App>, rows: Vec<u64>, hidden: bool) -> Result
         .map_err(|e| format!("{e:#}"))
 }
 
+/// Of these photos, the ones that are hidden: what `h` and the Hide button go by.
+#[tauri::command]
+async fn hidden_of(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<u64>, String> {
+    Ok(app.session()?.library.hidden_of(&rows))
+}
+
 /// Of the photos `filter` selects, those that are hidden: for marking their tiles.
 #[tauri::command]
 async fn hidden_rows(app: State<'_, App>, filter: Filter) -> Result<Vec<u64>, String> {
@@ -1989,6 +1995,7 @@ pub fn run() {
             groups,
             set_hidden,
             hidden_rows,
+            hidden_of,
             photo,
             collections,
             sync,

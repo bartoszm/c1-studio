@@ -342,6 +342,7 @@
         title={allHidden
           ? "Show again in every view (h)"
           : "Hide from every view: kept in Capture One, left out here unless Hidden is on in the header (h)"}
+        aria-pressed={allHidden}
         onclick={onhide}
       >{allHidden ? "Unhide" : "Hide"}</button>
     {/if}

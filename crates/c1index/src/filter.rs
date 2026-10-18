@@ -587,13 +587,17 @@ impl Filter {
             must.push(range_u64(f.variant_index, &Range { min: Some(i), max: Some(i), ..Range::default() }));
         }
 
+        // Whether hidden photos are in is the outer filter's to say: a sub-filter left at its
+        // default (Exclude) would otherwise keep them out of a view that shows them, or make
+        // `Hidden::Only` find nothing.
+        let inner = |sub: &Filter| Filter { hidden: Hidden::Include, ..sub.clone() };
         for sub in &self.all_of {
-            must.push(sub.to_query(index, f, distinct)?);
+            must.push(inner(sub).to_query(index, f, distinct)?);
         }
         if !self.any_of.is_empty() {
             let mut either = Vec::new();
             for sub in &self.any_of {
-                either.push((Occur::Should, sub.to_query(index, f, distinct)?));
+                either.push((Occur::Should, inner(sub).to_query(index, f, distinct)?));
             }
             must.push(Box::new(BooleanQuery::new(either)));
         }

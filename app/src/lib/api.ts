@@ -463,6 +463,8 @@ export const photo = (row: number) => invoke<Photo | null>("photo", { row });
 export const setHidden = (rows: number[], hidden: boolean) => invoke<number[]>("set_hidden", { rows, hidden });
 /** Of the photos the filter selects, those that are hidden. */
 export const hiddenRows = (filter: Filter) => invoke<number[]>("hidden_rows", { filter });
+/** Of these photos, the ones that are hidden (whether or not hidden photos are shown). */
+export const hiddenOf = (rows: number[]) => invoke<number[]>("hidden_of", { rows });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */
 export const photoHistory = (row: number) =>

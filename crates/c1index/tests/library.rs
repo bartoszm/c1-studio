@@ -1531,6 +1531,20 @@ fn hidden_photos_leave_every_view_until_shown_and_the_mark_lasts() {
     assert_eq!(ids(&lib, &Filter { hidden: Hidden::Include, ..Filter::default() }), all);
     assert_eq!(ids(&lib, &Filter { hidden: Hidden::Only, ..Filter::default() }), [2, 5]);
     assert_eq!(lib.hidden_rows(&Filter::default()).unwrap().len(), 2);
+    // Alternatives (Match: any) are under the outer filter's say: shown, a hidden photo
+    // matching one of them comes back; asked for alone, it is found.
+    let either = |hidden| Filter {
+        any_of: vec![
+            Filter { ids: vec!["2".into()], ..Filter::default() },
+            Filter { ids: vec!["3".into()], ..Filter::default() },
+        ],
+        hidden,
+        ..Filter::default()
+    };
+    assert_eq!(ids(&lib, &either(Hidden::Exclude)), [3]);
+    assert_eq!(ids(&lib, &either(Hidden::Include)), [2, 3]);
+    assert_eq!(ids(&lib, &either(Hidden::Only)), [2]);
+    assert_eq!(lib.hidden_of(&[row_of(&lib, 2), row_of(&lib, 3)]), [row_of(&lib, 2)]);
     assert!(lib.is_hidden(row_of(&lib, 5)) && !lib.is_hidden(row_of(&lib, 1)));
     // Nothing is queued for the source: the mark is C1 Studio's own.
     assert!(lib.pending().unwrap().is_empty());

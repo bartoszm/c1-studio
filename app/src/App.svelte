@@ -228,7 +228,7 @@
   let analysed = $state(0);
 
   /** Photos the user hid are left out of every view; "Hidden" in the header lets them in. */
-  let showHidden = $state((() => { try { return localStorage.getItem("showHidden") === "1"; } catch { return false; } })());
+  let showHidden = $state(false);
   /** Of the photos shown, the hidden ones (only while they are shown): their tiles are marked. */
   let hiddenHere = $state.raw(new Set<number>());
   /** The filter as the views ask it: Match applied, hidden photos in while shown. */
@@ -812,14 +812,37 @@
       await edited();
     });
   }
-  /** `h`: hides the photos edited here, or shows them again when all of them are hidden. */
-  const toggleHidden = () => {
+  /** `h`: hides the photos edited here, or shows them again when all of them are hidden. Asks
+   *  the library which are hidden: the tiles' marks are only known while hidden ones are shown,
+   *  and may still be on their way. */
+  let hiding = false;
+  async function toggleHidden() {
+    if (hiding) return;
+    hiding = true;
+    try {
+      const rows = targets();
+      const hidden = new Set(await api.hiddenOf(rows));
+      await setHidden(hides(rows, hidden), rows);
+    } catch (e) {
+      editError = String(e);
+    } finally {
+      hiding = false;
+    }
+  }
+  /** Whether every photo edited here is hidden: what the Hide button offers. */
+  let targetsHidden = $state(false);
+  $effect(() => {
     const rows = targets();
-    return setHidden(hides(rows, hiddenHere), rows);
-  };
+    void version;
+    if (!rows.length) {
+      targetsHidden = false;
+      return;
+    }
+    api.hiddenOf(rows).then((h) => { if (targets().join() === rows.join()) targetsHidden = h.length === rows.length; }).catch(() => {});
+  });
+  /** Not remembered across starts: hidden photos are out again whenever the app opens. */
   function toggleShowHidden() {
     showHidden = !showHidden;
-    try { localStorage.setItem("showHidden", showHidden ? "1" : "0"); } catch { /* not remembered */ }
     run();
   }
 
@@ -1408,7 +1431,7 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
-    else if (e.key === "h" && !e.altKey) toggleHidden();
+    else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing) {
       const album = shownAlbum;
       const n = targets().length;
@@ -1684,7 +1707,7 @@
     onpaste={pasteClip}
     onpastechoose={() => { if (clipboard) pasting = targets(); }}
     onsync={openSync}
-    allHidden={targets().length > 0 && !hides(targets(), hiddenHere)}
+    allHidden={targetsHidden}
     onhide={toggleHidden}
   />
 {/snippet}

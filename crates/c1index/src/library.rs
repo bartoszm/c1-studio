@@ -539,18 +539,29 @@ impl Library {
             return Ok(Vec::new());
         }
         let keys: Vec<String> = changed.iter().map(|(_, k)| k.clone()).collect();
-        self.hidden_book.set(&keys, hidden, now_ms())?;
-        {
+        let mark = |on: bool| {
             let mut marked = self.hidden.write().unwrap();
             for key in &keys {
-                if hidden {
+                if on {
                     marked.insert(key.clone());
                 } else {
                     marked.remove(key);
                 }
             }
+        };
+        // Stored only once the index follows: a failed re-index puts the marks back, so the
+        // book never says hidden while the index still shows the photo.
+        mark(hidden);
+        if let Err(e) = self.reindex_keys(&keys) {
+            mark(!hidden);
+            return Err(e);
         }
-        self.reindex_keys(&keys)?;
+        if let Err(e) = self.hidden_book.set(&keys, hidden, now_ms()) {
+            // Not kept: the index goes back to what the book says.
+            mark(!hidden);
+            let _ = self.reindex_keys(&keys);
+            return Err(e);
+        }
         Ok(changed.into_iter().map(|(row, _)| row).collect())
     }
 
@@ -558,6 +569,11 @@ impl Library {
     pub fn is_hidden(&self, row: u64) -> bool {
         let keys = self.keys.read().unwrap();
         keys.get(row as usize).and_then(|k| k.as_ref()).is_some_and(|k| self.hidden.read().unwrap().contains(k))
+    }
+
+    /// Of these photos, the ones the user hid.
+    pub fn hidden_of(&self, rows: &[u64]) -> Vec<u64> {
+        rows.iter().copied().filter(|&r| self.is_hidden(r)).collect()
     }
 
     /// Of the photos `filter` selects (hidden ones included), those the user hid: for
