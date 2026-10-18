@@ -214,6 +214,12 @@ const d = {
     const on = (text) => evaluate(`${finder("header button.toggle", text)}[0]?.classList.contains("on")`);
     if ((await on(/^Timeline$/)) !== timeline) await d.press("header button.toggle", /^Timeline$/);
     if (!(await on(/^Details$/))) await d.press("header button.toggle", /^Details$/);
+    // Stacking and hidden photos off, newest first: what a clip starts from.
+    if (await on(/^Stack$/)) await d.press("header button.toggle", /^Stack$/);
+    if (await on(/^Hidden$/)) await d.press("header button.toggle", /^Hidden$/);
+    const sort = 'header select[aria-label="Sort photos by"]';
+    if ((await evaluate(`document.querySelector(${JSON.stringify(sort)})?.value`)) !== "date") await d.choose(sort, "date");
+    if (await locate("header .sort .dir", /Oldest first/)) await d.press("header .sort .dir");
     await d.key("0", { modifiers: 2 });
     await d.caption("");
     await d.settle();

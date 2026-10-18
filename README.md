@@ -23,7 +23,9 @@ Each feature in motion: [docs/FEATURES.md](docs/FEATURES.md).
 
 Combine albums, dates, folders, keywords, rating, colour tag, camera, lens and place with
 free-text search over keywords, captions, places and file names. Every count in the
-sidebar updates as you narrow down: below, 796 of 100,000 photos found in 12 ms.
+sidebar updates as you narrow down: below, 796 of 100,000 photos found in 12 ms. Sort by
+date, rating, colour label, import, name, sharpness or brightness, either way, or put the
+**best match** for the colours, light and focus you picked first.
 
 ![Searching "hong kong street": 796 photos in 12 ms, with counts per album, year and place](docs/media/search.jpg)
 
@@ -32,7 +34,8 @@ sidebar updates as you narrow down: below, 796 of 100,000 photos found in 12 ms.
 A resizable grid, a details panel and a full-screen viewer, showing each photo as
 Capture One renders it. Edit ratings, colour tags, keywords and
 the keyword tree (rename, join, group), albums and smart albums, location, GPS and IPTC
-fields, or copy fields from one photo to many.
+fields, or copy fields from one photo to many. Press `h` to hide sensitive photos from
+every view and count; Capture One never sees the mark.
 
 ![The portfolio album in the grid](docs/media/library.jpg)
 
@@ -42,9 +45,11 @@ fields, or copy fields from one photo to many.
 
 ### See what your photos look like
 
-Every photo is measured once: shape, main colours, light (dark, bright, clipped
-highlights, blocked shadows) and focus. Filter by them, and find duplicates (the same
-moment shot twice) and series (bursts) across the library.
+Every photo is measured once: shape, main colours (by share, or by a vivid patch such as
+a red coat on a grey street), brightness, clipped highlights, blocked shadows and focus.
+Filter by them (any or all of a card's picks), see why a photo is in each class, and move
+the lines in Settings with a live preview. Duplicates (the same moment shot twice) and
+series (bursts) are found across the library, and **Stack** shows one photo per burst.
 
 ![Analysis of the search results: colour, light, focus, duplicates and series](docs/media/analysis.jpg)
 

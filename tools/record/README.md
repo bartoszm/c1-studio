@@ -60,8 +60,10 @@ A scenario is a module in `scenarios\` whose default export is `{ name, title, r
 | `reset({ timeline })` | the whole library, Photos view, details on, nothing open |
 | `evaluate(js)`, `send(method, params)`, `shot(file)` | anything else over CDP |
 
-Scenarios that edit undo their edits at the end, so the copy stays as it was. Only
-`history` writes, to the copy.
+Scenarios that edit undo their edits at the end, so the copy stays as it was (`hidden`
+shows again what it hid). Only `history` writes, to the copy. `reset()` also puts the
+sort back to *Date taken, newest first* and turns *Stack* and *Hidden* off, so each clip
+starts from the same view.
 
 `text` is a substring, or a RegExp tested against the element's trimmed text. Run a
 scenario without recording while writing it: `node tools\record\drive.mjs

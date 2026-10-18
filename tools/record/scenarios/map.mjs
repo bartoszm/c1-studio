@@ -33,7 +33,7 @@ export default {
     await d.reset();
     await d.press(".tabs button", /^Map$/);
     await d.waitFor(".map .find input", null, { timeout: 30000 });
-    await d.evaluate(`(() => { const f = document.querySelector("header .follow input"); if (f && !f.checked) f.click(); })()`);
+    await d.evaluate(`(() => { const f = document.querySelector(".map-tools .follow input"); if (f && !f.checked) f.click(); })()`);
     await find(d, "Poland", 0);
     await d.sleep(4000);
     await d.evaluate(`(() => { const i = document.querySelector(".map .find input"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); i.blur(); })()`);
