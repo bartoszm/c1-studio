@@ -5,10 +5,14 @@ real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
 - [Find anything, instantly](#find-anything-instantly)
 - [Browse](#browse)
+- [Sort](#sort)
+- [The best match first](#the-best-match-first)
 - [Edit, then write](#edit-then-write)
+- [Hide sensitive photos](#hide-sensitive-photos)
 - [The keyword tree](#the-keyword-tree)
 - [Albums and smart albums](#albums-and-smart-albums)
 - [See what your photos look like](#see-what-your-photos-look-like)
+- [Duplicates, bursts and stacking](#duplicates-bursts-and-stacking)
 - [On the map](#on-the-map)
 - [Trips and the timeline](#trips-and-the-timeline)
 - [Write, history and backups](#write-history-and-backups)
@@ -34,6 +38,26 @@ your edits and crop.
 
 [In the guide: Browsing](GUIDE.md#browsing)
 
+## Sort
+
+Sort by date taken, rating, colour label, import, file name, sharpness or brightness,
+with a button that says which way ("Newest first", "Lowest first") and turns it round.
+
+![Sorting by rating, either way, then by sharpness and brightness](media/features/sort.gif)
+
+[In the guide: Sorting](GUIDE.md#sorting)
+
+## The best match first
+
+Pick colours, light or focus and **Best match** puts the photos that fit them best
+first: the reddest and bluest, the darkest, the sharpest. With picks in several cards the
+scores are averaged; *worst match first* turns it round. The ranking is part of the
+search, so it is as fast as any other order.
+
+![Best match for red and blue, then red, blue, dark and sharp, then the worst match](media/features/match.gif)
+
+[In the guide: Sorting](GUIDE.md#sorting)
+
 ## Edit, then write
 
 Rate, colour-tag and keyword one photo or many, with a key or in the details panel.
@@ -44,6 +68,16 @@ Autosave does. Ctrl+Z undoes any of them.
 ![Four photos rated, tagged green and given a keyword; the queue before writing](media/features/edit.gif)
 
 [In the guide: Editing](GUIDE.md#editing)
+
+## Hide sensitive photos
+
+Press `h` to keep photos out of every view and every count: the grid, the map, the
+timeline, trips and the analysis. *Hidden* in the header shows them again, marked, and
+`h` brings them back. The mark is C1 Studio's own: Capture One never sees it.
+
+![Hiding two photos, showing hidden photos, and bringing them back](media/features/hidden.gif)
+
+[In the guide: Hidden photos](GUIDE.md#hidden-photos)
 
 ## The keyword tree
 
@@ -66,11 +100,26 @@ later, and is counted by it.
 
 ## See what your photos look like
 
-Every photo is measured once, from its thumbnail: its shape, main colours, light (dark,
-bright, clipped highlights, blocked shadows) and focus. Each value is a filter. Duplicates
-(one moment saved twice) and series (bursts) are found across the whole library.
+Every photo is measured once, from its thumbnail: its shape, main colours, brightness,
+light problems (clipped highlights, blocked shadows, low contrast) and focus. Each value
+is a filter, and each card says what it measures. Picks in a card mean any of them, or,
+switched to *all*, every one: red **and** blue. A colour counts when it covers a share of
+the photo, or when the photo has a vivid patch of it (a red coat on a grey street), as
+you choose in Settings, where every line can be moved and the counts preview as you go.
+The details panel says why a photo is red, bright or sharp.
 
-![The Analysis view: red photos with blocked shadows](media/features/analysis.gif)
+![The Look tab: red and blue, any or all, and why one photo is red](media/features/analysis.gif)
+
+[In the guide: Look](GUIDE.md#look)
+
+## Duplicates, bursts and stacking
+
+Duplicates (one moment saved twice) and series (bursts) are found across the whole
+library and listed together, sorted by size, date or sharpness. **Stack** shows one photo
+per burst in the grid, its sharpest, without ever hiding a frame that matches your
+filter when its sharpest does not.
+
+![Duplicates and series by size, then stacking the grid](media/features/alike.gif)
 
 [In the guide: Look](GUIDE.md#look)
 
@@ -80,7 +129,7 @@ Photos with GPS are clustered on a map that works as a filter: pan and zoom, and
 shows what is in view, or Shift+drag a box. Find places by name or coordinates. Photos
 with only a city or country show at that place, marked ≈. Drag photos onto the map to
 place them, import a GPX track, or take positions from the photos shot just before and
-after.
+after. Drag the line under the map to give the photo strip more room.
 
 ![Finding Kraków, opening a cluster and picking an area](media/features/map.gif)
 
