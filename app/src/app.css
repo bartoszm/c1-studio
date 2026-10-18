@@ -453,6 +453,11 @@ footer .busy { color: var(--text); }
 .subhead { padding: 6px 8px 2px 26px; font-size: 11px; color: #777; }
 .info-panel .palette { display: flex; height: 18px; margin: 4px 0 8px; border-radius: 3px; overflow: hidden; }
 .info-panel .palette i { min-width: 3px; }
+/* Black, white and grey: in the palette, never a colour of the photo. */
+.info-panel .palette i.neutral { background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgb(0 0 0 / 22%) 3px 5px); }
+/* Why a photo is in a class: the measure and the line, under it. */
+.info-panel .look .why { display: block; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.info-panel .look .why.counts { color: var(--text); }
 .info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
 .copy-slot { flex: none; width: 16em; display: flex; justify-content: flex-end; }

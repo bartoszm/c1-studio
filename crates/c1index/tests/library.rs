@@ -973,6 +973,7 @@ fn look(w: u32, h: u32, rgb: [u8; 3], sharpness: f32, hash: u64) -> c1analysis::
         shadows: 0.0,
         sharpness,
         hash,
+        hue_stats: c1analysis::stats_from_palette(&[c1analysis::Swatch { rgb, share: 1.0 }], 40.0),
     }
 }
 
@@ -1057,6 +1058,7 @@ fn best_match_ranks_by_the_picked_colours_and_falls_back_to_date() {
     let with = |parts: &[([u8; 3], f32)]| {
         let mut a = look(600, 400, red, 5000.0, 1);
         a.palette = parts.iter().map(|(rgb, share)| c1analysis::Swatch { rgb: *rgb, share: *share }).collect();
+        a.hue_stats = c1analysis::stats_from_palette(&a.palette, 40.0);
         a
     };
     lib.put_analyses(vec![
@@ -1082,6 +1084,15 @@ fn best_match_ranks_by_the_picked_colours_and_falls_back_to_date() {
     assert_eq!([page(0), page(2)].concat(), [3, 1, 2]);
     // Nothing picked to match: the newest first, as the date sort.
     assert_eq!(ordered(&lib, &Filter::default(), Sort::Match), ordered(&lib, &Filter::default(), Sort::DateDesc));
+    // Picks asked for all at once (as `all_of` alternatives) rank the same way.
+    let both = Filter {
+        all_of: vec![
+            Filter { hues: vec!["red".into()], ..Filter::default() },
+            Filter { hues: vec!["blue".into()], ..Filter::default() },
+        ],
+        ..Filter::default()
+    };
+    assert_eq!(ordered(&lib, &both, Sort::Match), [1, 2], "red and blue: 1 (60% red) before 2 (20%)");
     // A shape pick has no measure either.
     let shape = Filter { shape: vec!["landscape".into()], ..Filter::default() };
     assert_eq!(ordered(&lib, &shape, Sort::Match), ordered(&lib, &shape, Sort::DateDesc));
@@ -1212,6 +1223,33 @@ fn stacking_keeps_the_sharpest_of_each_group_and_groups_sort() {
     let strict = c1analysis::ClassSettings { duplicate_bits: 0, ..lib.class_settings() };
     lib.set_class_settings(&strict).unwrap();
     assert_eq!(ids(&lib, &stacked), [2, 3, 4, 6, 7, 8, 10]);
+}
+
+#[test]
+fn the_colour_mode_reclasses_by_patch_or_by_cover_without_measuring_again() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let red = c1analysis::HUES.iter().position(|h| *h == "red").unwrap();
+    let grey = [128, 128, 128];
+    // 1: a vivid red coat (3% in one patch) on grey. 2: red specks over 30%, none bigger
+    // than a pixel or two.
+    let mut coat = look(600, 400, grey, 5000.0, 1);
+    coat.chroma = 3.0;
+    coat.hue_stats[red] = c1analysis::HueStat { share: 0.03, patch: 0.03, chroma: 60.0 };
+    let mut specks = look(600, 400, grey, 5000.0, 2);
+    specks.hue_stats[red] = c1analysis::HueStat { share: 0.30, patch: 0.001, chroma: 50.0 };
+    lib.put_analyses(vec![(key(1), (1, 1), coat), (key(2), (1, 1), specks)]).unwrap();
+    let reds = Filter { hues: vec!["red".into()], ..Filter::default() };
+    let bw = Filter { hues: vec!["black & white".into()], ..Filter::default() };
+    // Covering a sixth of the picture: the specks are red; the coat is not black and white.
+    assert_eq!(ids(&lib, &reds), [2]);
+    assert!(ids(&lib, &bw).is_empty());
+    let patch = c1analysis::ClassSettings { colour_mode: c1analysis::ColourMode::Patch, ..lib.class_settings() };
+    lib.set_class_settings(&patch).unwrap();
+    assert_eq!(ids(&lib, &reds), [1]);
+    assert_eq!(lib.analysed().len(), 2, "nothing measured again");
+    // Best match in patch mode: the coat first.
+    assert_eq!(ordered(&lib, &Filter { hues: vec!["red".into()], ..Filter::default() }, Sort::Match), [1]);
 }
 
 #[test]

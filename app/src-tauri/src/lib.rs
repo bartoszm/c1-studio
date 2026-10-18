@@ -466,6 +466,8 @@ fn start_analysis(app: &AppHandle) {
 #[derive(Serialize)]
 struct LookView {
     analysis: c1analysis::Analysis,
+    /// The lines the classes below were drawn with, for saying why.
+    lines: c1analysis::ClassSettings,
     shape: &'static str,
     hues: Vec<&'static str>,
     light: Vec<&'static str>,
@@ -493,6 +495,7 @@ async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String>
         focus: a.focus(&classes),
         duplicates: size(look.duplicates.clone())?,
         series: size(look.series.clone())?,
+        lines: classes.clone(),
         analysis: look.analysis,
     }))
 }

@@ -10,8 +10,8 @@
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import {
-    RATING_OPS, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
-    type Match, type Pick, type RatingOp,
+    LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
+    type AllOf, type Match, type Pick, type RatingOp,
   } from "./lib/criteria";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
@@ -311,7 +311,7 @@
   /** One photo per burst or duplicate group: its sharpest. */
   let stack = $state((() => { try { return localStorage.getItem("stack") === "1"; } catch { return false; } })());
   /** The filter with Match applied, and the stacking when it is on: what the grid shows. */
-  const asking = (f: Filter): Filter => ({ ...compile(f, match), ...(stack ? { stacked: true } : {}) });
+  const asking = (f: Filter): Filter => ({ ...compiled(f), ...(stack ? { stacked: true } : {}) });
   function toggleStack() {
     stack = !stack;
     try { localStorage.setItem("stack", stack ? "1" : "0"); } catch { /* not remembered */ }
@@ -1036,8 +1036,28 @@
 
   let match = $state<Match>("all");
   let ratingOp = $state<RatingOp>("≥");
+  /** Analysis cards asking for every pick ("red and blue") instead of any. */
+  let allOf = $state<AllOf>({});
+  /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
+  function compiled(f: Filter): Filter {
+    return allOfPicks(compile(f, match), allOf);
+  }
+  function toggleAllOf(card: keyof AllOf) {
+    allOf = { ...allOf, [card]: !allOf[card] };
+    run();
+  }
+  // A card's picks all cleared: it goes back to "any", so the next picks are not silently "all".
+  $effect(() => {
+    const hues = !!filter.hues?.length;
+    const problems = !!filter.light?.some((l) => LIGHT_PROBLEMS.includes(l));
+    untrack(() => {
+      if ((allOf.hues && !hues) || (allOf.problems && !problems)) {
+        allOf = { hues: allOf.hues && hues, problems: allOf.problems && problems };
+      }
+    });
+  });
   /** What the rest of the app asks the index: the filter with Match applied. */
-  let eff = $derived(compile(filter, match));
+  let eff = $derived(compiled(filter));
   function setMatch(m: Match) {
     match = m;
     run();
@@ -1166,7 +1186,7 @@
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
     try {
-      const undo = await api.promotePlaces({ ...compile($state.snapshot(filter), match), within: undefined }, paths);
+      const undo = await api.promotePlaces({ ...compiled($state.snapshot(filter)), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1275,7 +1295,7 @@
   async function refreshTrips(): Promise<api.TripList | null> {
     const mine = ++tripsAsked;
     try {
-      const got = await api.trips(compile($state.snapshot(filter), match));
+      const got = await api.trips(compiled($state.snapshot(filter)));
       if (mine === tripsAsked) tripList = got;
     } catch (e) {
       if (mine === tripsAsked) editError = String(e);
@@ -1602,8 +1622,8 @@
     approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
-    hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
-    light: (v) => v.map((x) => ({ what: "Light", text: x, rest: without(v, x) })),
+    hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
@@ -2067,12 +2087,15 @@
       {analysis}
       {version}
       {stack}
+      {allOf}
+      picked={filter}
       ontoggle={toggleList}
       onflag={toggleFlag}
       ongroup={showGroup}
       onshow={() => showTab("photos")}
       onstack={toggleStack}
       onclasses={() => { version++; analysed++; refresh(true); }}
+      onallof={toggleAllOf}
     />
   {/if}
   {#if mapOn || tab === "analysis"}

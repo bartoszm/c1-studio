@@ -1,6 +1,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { compile, criteriaCount, cycle, ratingFor, ratingParts, ratingText } from "../src/lib/criteria.ts";
+import { allOfPicks, compile, criteriaCount, cycle, ratingFor, ratingParts, ratingText } from "../src/lib/criteria.ts";
+
+test("cards set to all ask for every pick; any is left as it is", () => {
+  const f = { hues: ["red", "blue"], light: ["dark", "clipped highlights", "low contrast"] };
+  assert.deepEqual(allOfPicks(f, {}), f);
+  assert.deepEqual(allOfPicks(f, { hues: true }), {
+    light: ["dark", "clipped highlights", "low contrast"],
+    all_of: [{ hues: ["red"] }, { hues: ["blue"] }],
+  });
+  assert.deepEqual(allOfPicks(f, { problems: true }), {
+    hues: ["red", "blue"],
+    light: ["dark"],
+    all_of: [{ light: ["clipped highlights"] }, { light: ["low contrast"] }],
+  });
+  // One pick: nothing to combine.
+  assert.deepEqual(allOfPicks({ hues: ["red"] }, { hues: true }), { hues: ["red"] });
+  // Alternatives made earlier (Match: any) are kept.
+  const any = { hues: ["red", "blue"], all_of: [{ any_of: [{ rating: "Any" as const }] }] };
+  assert.equal(allOfPicks(any, { hues: true }).all_of?.length, 3);
+});
 
 test("a value cycles through included, excluded and off", () => {
   let s = cycle(undefined, undefined, "a");

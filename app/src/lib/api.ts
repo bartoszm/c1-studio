@@ -124,7 +124,11 @@ export type LookView = {
     highlights: number;
     shadows: number;
     sharpness: number;
+    /** Per name in `HUE_NAMES`: share of the pixels, biggest patch, mean chroma. */
+    hue_stats: { share: number; patch: number; chroma: number }[];
   };
+  /** The lines the classes were drawn with. */
+  lines: ClassSettings;
   shape: string;
   hues: string[];
   light: string[];
@@ -579,10 +583,17 @@ export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
 
 /** Where the analysis draws the lines between classes (shares are 0..1). */
+/** The colour names the analysis measures, in the order of `hue_stats` (`c1analysis::HUES`). */
+export const HUE_NAMES = ["brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"] as const;
+/** What makes a photo a colour: covering a share of it, or a vivid patch of it. */
+export type ColourMode = "Covers" | "Patch";
 export type ClassSettings = {
   mono_chroma: number;
   colour_share: number;
   colour_floor: number;
+  colour_mode: ColourMode;
+  patch_share: number;
+  patch_chroma: number;
   dark_below: number;
   bright_above: number;
   clipped_share: number;

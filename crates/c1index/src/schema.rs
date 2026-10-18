@@ -17,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -208,6 +208,9 @@ pub struct Fields {
     /// [`crate::matching`]): each colour's share of the picture, in the order of
     /// `c1analysis::HUES` (permille), and the other measures.
     pub hue_shares: Vec<Field>,
+    /// Each colour's biggest patch, in the same order, in [`PATCH_SCALE`] steps: patches can
+    /// be a few pixels of the measured copy.
+    pub hue_patches: Vec<Field>,
     pub chroma: Field,
     pub contrast: Field,
     pub highlights: Field,
@@ -262,6 +265,7 @@ pub fn build_schema() -> (Schema, Fields) {
         brightness_sort: b.add_i64_field("brightness_sort", FAST),
         brightness_sort_rev: b.add_i64_field("brightness_sort_rev", FAST),
         hue_shares: c1analysis::HUES.iter().map(|h| b.add_u64_field(&format!("hue_share_{h}"), FAST)).collect(),
+        hue_patches: c1analysis::HUES.iter().map(|h| b.add_u64_field(&format!("hue_patch_{h}"), FAST)).collect(),
         chroma: b.add_f64_field("chroma", FAST),
         contrast: b.add_f64_field("contrast", FAST),
         highlights: b.add_f64_field("highlights", FAST),
@@ -534,9 +538,15 @@ pub fn document(
         for (field, share) in f.hue_shares.iter().zip(a.hue_shares()) {
             doc.add_u64(*field, (share.clamp(0.0, 1.0) * 1000.0).round() as u64);
         }
+        for (field, patch) in f.hue_patches.iter().zip(a.hue_patches()) {
+            doc.add_u64(*field, (f64::from(patch.clamp(0.0, 1.0)) * PATCH_SCALE).round() as u64);
+        }
     }
     doc
 }
+
+/// Steps per unit of a stored patch share.
+pub const PATCH_SCALE: f64 = 100_000.0;
 
 /// Steps per unit when a measure becomes a sort key (sharpness is in the hundreds or
 /// thousands, brightness 0..1).
