@@ -4,15 +4,17 @@
 use image::RgbImage;
 use image::imageops::FilterType;
 
-use crate::Swatch;
+use crate::{HueStat, Swatch};
 
 /// Mean Lab chroma below which a picture is black and white (toned prints included).
 pub const MONO: f32 = 4.0;
 pub const BLACK_AND_WHITE: &str = "black & white";
 /// A colour photo with no colour to speak of.
 pub const MUTED: &str = "muted";
-/// Names that are not colours, for [`crate::Analysis::hues`].
+/// Names that are not colours.
 pub const NEUTRAL: [&str; 3] = ["black", "white", "grey"];
+/// Every name [`name_of`] gives that is a colour, in the order of [`crate::Analysis::hue_shares`].
+pub const HUES: [&str; 9] = ["brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"];
 
 const K: usize = 5;
 const ITERATIONS: usize = 10;
@@ -30,6 +32,90 @@ fn lab(rgb: [u8; 3]) -> [f32; 3] {
     let f = |t: f32| if t > 0.008856 { t.cbrt() } else { 7.787 * t + 16.0 / 116.0 };
     let (fx, fy, fz) = (f(x), f(y), f(z));
     [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+}
+
+/// Per colour name, on a small copy of the picture: how much of it has that name, the
+/// biggest single patch of it, and how vivid those pixels are. A red coat on a grey street
+/// is a patch; red pixels scattered through a brown wall are not.
+pub(crate) fn hue_stats(image: &RgbImage) -> [HueStat; HUES.len()] {
+    let small = crate::fit_to(image, 64, FilterType::Triangle);
+    let (w, h) = small.dimensions();
+    let n = (w * h) as usize;
+    let mut out = [HueStat::default(); HUES.len()];
+    if n == 0 {
+        return out;
+    }
+    let name: Vec<Option<usize>> = small.pixels().map(|p| HUES.iter().position(|hue| *hue == name_of(p.0))).collect();
+    let chroma: Vec<f32> = small
+        .pixels()
+        .map(|p| {
+            let l = lab(p.0);
+            (l[1] * l[1] + l[2] * l[2]).sqrt()
+        })
+        .collect();
+    for named in name.iter().flatten() {
+        out[*named].share += 1.0;
+    }
+    // The biggest 4-connected patch of each name, and how vivid that patch is: a big pale
+    // area does not borrow the vividness of a few bright specks elsewhere.
+    let mut seen = vec![false; n];
+    let mut stack = Vec::new();
+    for start in 0..n {
+        let Some(i) = name[start] else { continue };
+        if seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start);
+        let (mut size, mut vividness) = (0usize, 0f32);
+        while let Some(at) = stack.pop() {
+            size += 1;
+            vividness += chroma[at];
+            let (x, y) = ((at % w as usize) as u32, (at / w as usize) as u32);
+            let mut visit = |nx: u32, ny: u32| {
+                let next = (ny * w + nx) as usize;
+                if !seen[next] && name[next] == Some(i) {
+                    seen[next] = true;
+                    stack.push(next);
+                }
+            };
+            if x > 0 {
+                visit(x - 1, y);
+            }
+            if x + 1 < w {
+                visit(x + 1, y);
+            }
+            if y > 0 {
+                visit(x, y - 1);
+            }
+            if y + 1 < h {
+                visit(x, y + 1);
+            }
+        }
+        if size as f32 > out[i].patch {
+            out[i].patch = size as f32;
+            out[i].chroma = vividness / size as f32;
+        }
+    }
+    for stat in &mut out {
+        stat.share /= n as f32;
+        stat.patch /= n as f32;
+    }
+    out
+}
+
+/// What [`hue_stats`] would say of a palette alone (every swatch one patch): for analyses
+/// made up in tests.
+pub fn stats_from_palette(palette: &[Swatch], chroma: f32) -> [HueStat; HUES.len()] {
+    let mut out = [HueStat::default(); HUES.len()];
+    for swatch in palette {
+        if let Some(i) = HUES.iter().position(|h| *h == name_of(swatch.rgb)) {
+            out[i].share += swatch.share;
+            out[i].patch = out[i].patch.max(swatch.share);
+            out[i].chroma = chroma;
+        }
+    }
+    out
 }
 
 /// The main colours, biggest first, and the mean chroma.

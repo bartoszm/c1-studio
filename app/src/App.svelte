@@ -10,8 +10,8 @@
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import {
-    RATING_OPS, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
-    type Match, type Pick, type RatingOp,
+    LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
+    type AllOf, type Match, type Pick, type RatingOp,
   } from "./lib/criteria";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
@@ -36,6 +36,10 @@
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, sameRows } from "./lib/batch";
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
+  import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
+  import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
+  import SortControl from "./SortControl.svelte";
+  import { LOCK_HELP, isLockError } from "./lib/lock";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -231,9 +235,92 @@
   let showHidden = $state(false);
   /** Of the photos shown, the hidden ones (only while they are shown): their tiles are marked. */
   let hiddenHere = $state.raw(new Set<number>());
-  /** The filter as the views ask it: Match applied, hidden photos in while shown. */
-  function compiled(f: Filter): Filter {
-    return withHidden(compile(f, match), showHidden);
+  /** How tall the strip of photos under the map and the analysis is: dragged, remembered. */
+  let stripH = $state(storedStrip((() => { try { return localStorage.getItem("strip"); } catch { return null; } })()));
+  let paneEl = $state<HTMLDivElement>();
+  let paneH = $state(0);
+  /** The strip as shown: the stored height kept within what this window leaves room for. */
+  let stripShown = $derived(clampStrip(stripH, paneH || 900));
+  let splitting = $state(false);
+  function setStrip(px: number, keep = true) {
+    stripH = clampStrip(px, paneEl?.clientHeight ?? 900);
+    if (keep) try { localStorage.setItem("strip", String(stripH)); } catch { /* not remembered */ }
+  }
+  function splitStart(e: PointerEvent) {
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
+    const [startY, start] = [e.clientY, stripShown];
+    splitting = true;
+    const move = (ev: PointerEvent) => setStrip(dragged(start, startY, ev.clientY, paneEl?.clientHeight ?? 900), false);
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      splitting = false;
+      setStrip(stripH);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+  function splitKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 80 : 20;
+    if (e.key === "ArrowUp") setStrip(stripShown + step);
+    else if (e.key === "ArrowDown") setStrip(stripShown - step);
+    else if (e.key === "Home") setStrip(STRIP_DEFAULT);
+    else return;
+    e.preventDefault();
+  }
+
+  /** The order of the grid and of the strip under the map and the analysis. */
+  const storedSort = (() => {
+    try {
+      return restore(localStorage.getItem("sortBy"), localStorage.getItem("sort"));
+    } catch {
+      return restore(null, null);
+    }
+  })();
+  let sortField = $state<SortField>(storedSort.field);
+  /** The direction is the other way round from the field's usual one. */
+  let sortReversed = $state(storedSort.reversed);
+  /** What the index sorts by: Best match with nothing picked to match shows as the date. */
+  let sortShown = $derived(effectiveField(sortField, filter));
+  let sortBy = $derived(toSort(sortShown, sortShown === sortField && sortReversed));
+  const rememberSort = () => {
+    // Best match depends on what is picked, and nothing is picked at the next start.
+    const stored = sortField === "match" ? { field: "date", reversed: false } : { field: sortField, reversed: sortReversed };
+    try { localStorage.setItem("sortBy", JSON.stringify(stored)); } catch { /* not remembered */ }
+  };
+  /** A new field starts in its usual direction. */
+  function setSortField(next: SortField) {
+    sortField = next;
+    sortReversed = false;
+    rememberSort();
+    run();
+  }
+  function flipSort() {
+    sortReversed = !sortReversed;
+    rememberSort();
+    run();
+  }
+  // Best match with nothing left to match (the picks were cleared): the date takes over for good.
+  $effect(() => {
+    if (sortField === "match" && !matchAvailable(filter)) {
+      untrack(() => {
+        sortField = "date";
+        sortReversed = false;
+        rememberSort();
+      });
+    }
+  });
+  /** One photo per burst or duplicate group: its sharpest. */
+  let stack = $state((() => { try { return localStorage.getItem("stack") === "1"; } catch { return false; } })());
+  /** The filter with Match applied, and the stacking when it is on: what the grid shows. */
+  const asking = (f: Filter): Filter => ({ ...compiled(f), ...(stack ? { stacked: true } : {}) });
+  function toggleStack() {
+    stack = !stack;
+    try { localStorage.setItem("stack", stack ? "1" : "0"); } catch { /* not remembered */ }
+    run();
   }
   let writing = $state(false);
   let showBackups = $state(false);
@@ -369,7 +456,7 @@
   async function run(keep = false) {
     const mine = ++generation;
     untrack(() => (filter = following(filter)));
-    const asked = compiled($state.snapshot(filter));
+    const asked = asking($state.snapshot(filter));
     const groups = dims;
     // Which of the photos shown are hidden, to mark their tiles: none are while hidden.
     if (showHidden) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
@@ -378,7 +465,7 @@
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
       const first = api.query(asked, {
-        sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
+        sort: sortBy, limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
       // In place, the pages on screen and the focused photo's (and the next, for the viewer)
       // are read again alongside the first and swapped in with the result in one go: until
@@ -392,7 +479,7 @@
               return [shown, [at, at + 2]];
             },
             result?.total ?? 0,
-            (page) => api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
           )
         : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
@@ -423,7 +510,7 @@
    */
   async function followPicks(mine: number, asked: Filter) {
     if (picked.size > 1) {
-      const all = new Set((await api.query(asked, { sort: "DateDesc" })).rows);
+      const all = new Set((await api.query(asked, { sort: sortBy })).rows);
       if (mine !== generation) return;
       for (const row of [...picked]) if (!all.has(row)) picked.delete(row);
     }
@@ -451,7 +538,7 @@
     if (pending) return pending;
     const mine = generation;
     const into = pages;
-    const p = api.query(compiled($state.snapshot(filter)), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
+    const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
       .then((r) => { if (mine === generation) into.set(page, r.rows); })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
@@ -482,6 +569,26 @@
     } catch (e) {
       error = String(e);
       if (!status) choosingSource = true;
+    }
+  }
+
+  /** Opens the catalog this window was started on again: after another window that held its
+   *  library is closed, or whatever else made opening it fail. */
+  let retrying = $state(false);
+  async function retryOpen() {
+    retrying = true;
+    try {
+      const current = (await api.sources()).current;
+      if (!current) {
+        choosingSource = true;
+        return;
+      }
+      await api.openSource(current);
+      location.reload();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      retrying = false;
     }
   }
 
@@ -927,7 +1034,7 @@
 
   async function pickAll() {
     if (!result) return;
-    const all = await api.query(compiled($state.snapshot(filter)), { sort: "DateDesc" });
+    const all = await api.query(asking($state.snapshot(filter)), { sort: sortBy });
     picked.clear();
     for (const r of all.rows) picked.add(r);
   }
@@ -1004,6 +1111,26 @@
 
   let match = $state<Match>("all");
   let ratingOp = $state<RatingOp>("≥");
+  /** Analysis cards asking for every pick ("red and blue") instead of any. */
+  let allOf = $state<AllOf>({});
+  /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
+  function compiled(f: Filter): Filter {
+    return withHidden(allOfPicks(compile(f, match), allOf), showHidden);
+  }
+  function toggleAllOf(card: keyof AllOf) {
+    allOf = { ...allOf, [card]: !allOf[card] };
+    run();
+  }
+  // A card's picks all cleared: it goes back to "any", so the next picks are not silently "all".
+  $effect(() => {
+    const hues = !!filter.hues?.length;
+    const problems = !!filter.light?.some((l) => LIGHT_PROBLEMS.includes(l));
+    untrack(() => {
+      if ((allOf.hues && !hues) || (allOf.problems && !problems)) {
+        allOf = { hues: allOf.hues && hues, problems: allOf.problems && problems };
+      }
+    });
+  });
   /** What the rest of the app asks the index: the filter with Match applied. */
   let eff = $derived(compiled(filter));
   function setMatch(m: Match) {
@@ -1571,8 +1698,8 @@
     approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
-    hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
-    light: (v) => v.map((x) => ({ what: "Light", text: x, rest: without(v, x) })),
+    hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
@@ -1580,6 +1707,8 @@
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
     // Set by the header's Hidden button, not a filter the user picks.
     hidden: () => [],
+    // Set from the header's Stack button, not a filter the user picks.
+    stacked: () => [],
     within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
   };
   function monthText(key: string) {
@@ -1723,6 +1852,28 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
+    <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
+      <SortControl
+        fields={FIELDS.map((f) => ({
+          key: f.key,
+          label: f.label,
+          disabled: f.key === "match" && !matchAvailable(filter),
+          hint: f.key === "match" ? "pick a colour, light or focus filter" : undefined,
+        }))}
+        field={sortShown}
+        words={words(sortShown, sortShown === sortField && sortReversed)}
+        label="Sort photos by"
+        onfield={(key) => setSortField(key as SortField)}
+        onflip={flipSort}
+      />
+    </div>
+    <button
+      class="toggle"
+      class:on={stack}
+      aria-pressed={stack}
+      title="Show one photo per burst or duplicate group (its sharpest). With a filter on, a frame is hidden only when the sharpest frame of its group matches too; open a group to see all its frames."
+      onclick={toggleStack}
+    >Stack</button>
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
@@ -1762,13 +1913,6 @@
         onclick={openSync}
       >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
     </span>
-    {#if mapOn}
-      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
-        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
-      </label>
-      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
-      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
-    {/if}
     <button
       class="toggle"
       class:on={showHidden}
@@ -1975,7 +2119,7 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn || tab === "analysis"}>
+  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
       filter={eff}
@@ -1988,6 +2132,14 @@
     />
   {/if}
   {#if mapOn}
+    <!-- The map's own tools, by the map: the header has no room for them beside the rest. -->
+    <div class="map-tools" role="toolbar" aria-label="Map">
+      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
+        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
+      </label>
+      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
+      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
+    </div>
     <MapPane
       filter={eff}
       {version}
@@ -2021,11 +2173,34 @@
       total={result?.total ?? 0}
       {analysis}
       {version}
+      {stack}
+      {allOf}
+      picked={filter}
       ontoggle={toggleList}
       onflag={toggleFlag}
       ongroup={showGroup}
       onshow={() => showTab("photos")}
+      onstack={toggleStack}
+      onclasses={() => { version++; analysed++; refresh(true); }}
+      onallof={toggleAllOf}
     />
+  {/if}
+  {#if mapOn || tab === "analysis"}
+    <!-- A window splitter: a separator that can be focused and moved with the arrow keys. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      class="splitter"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Height of the photo strip"
+      aria-valuemin={STRIP_MIN}
+      aria-valuenow={stripShown}
+      tabindex="0"
+      title="Drag to resize; arrow keys too, Home resets"
+      onpointerdown={splitStart}
+      onkeydown={splitKey}
+      ondblclick={() => setStrip(STRIP_DEFAULT)}
+    ></div>
   {/if}
   <Grid
     bind:this={grid}
@@ -2045,8 +2220,15 @@
     bind:layout
   >
     {#if error}
-      <p class="error">{error}</p>
-      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button></p>{/if}
+      <p class="error">{isLockError(error) ? LOCK_HELP : error}</p>
+      {#if isLockError(error)}<p class="error small">{error}</p>{/if}
+      {#if !status}
+        <p class="empty">
+          <button class="link" disabled={retrying} onclick={retryOpen}>{retrying ? "Trying…" : "Try again"}</button>
+          ·
+          <button class="link" onclick={() => (choosingSource = true)}>Open a catalog…</button>
+        </p>
+      {/if}
     {:else if syncFailed && status?.photos === 0}
       <p class="error">Nothing could be read from this catalog.<br />{syncFailed}</p>
     {:else if result && result.total === 0}
@@ -2304,7 +2486,11 @@
 {/if}
 
 {#if showSettings}
-  <SettingsDialog titles={TITLES} onclose={() => (showSettings = false)} />
+  <SettingsDialog
+    titles={TITLES}
+    onclose={() => (showSettings = false)}
+    onclasses={() => { version++; analysed++; refresh(true); }}
+  />
 {/if}
 
 {#if showBackups}

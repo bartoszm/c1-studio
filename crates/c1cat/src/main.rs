@@ -769,15 +769,16 @@ fn print_stats(library: &Library) {
     spread("chroma", looks.iter().map(|l| l.analysis.chroma).collect());
     spread("highlights", looks.iter().map(|l| l.analysis.highlights).collect());
     spread("shadows", looks.iter().map(|l| l.analysis.shadows).collect());
+    let settings = library.class_settings();
     let mut classes: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for l in &looks {
         let a = &l.analysis;
-        *classes.entry(format!("shape  {}", a.shape())).or_default() += 1;
-        *classes.entry(format!("focus  {}", a.focus())).or_default() += 1;
-        for h in a.hues() {
+        *classes.entry(format!("shape  {}", a.shape(&settings))).or_default() += 1;
+        *classes.entry(format!("focus  {}", a.focus(&settings))).or_default() += 1;
+        for h in a.hues(&settings) {
             *classes.entry(format!("hue    {h}")).or_default() += 1;
         }
-        for v in a.light() {
+        for v in a.light(&settings) {
             *classes.entry(format!("light  {v}")).or_default() += 1;
         }
     }
