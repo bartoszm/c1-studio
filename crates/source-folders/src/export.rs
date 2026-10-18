@@ -87,7 +87,11 @@ fn embed_in(photo: &Photo, path: &Path, kind: FileKind) -> Result<Option<Written
     let bytes = fs::read(path).map_err(|e| format!("reading: {e}"))?;
     let jpeg = kind == FileKind::Jpeg;
     let existing = if jpeg { xmp::packet_from_jpeg(&bytes) } else { xmp::packet_from_tiff(&bytes) };
-    let xml = xmp::render(photo, existing.as_deref());
+    // a packet that cannot be edited is left alone: it may hold other programs' data
+    let xml = match existing.as_deref() {
+        Some(x) => xmp::try_render(photo, x).map_err(|e| format!("embedded XMP: {e}"))?,
+        None => xmp::render(photo, None),
+    };
     let out = if jpeg { embed::embed_jpeg(&bytes, &xml)? } else { embed::embed_tiff(&bytes, &xml)? };
     if out == bytes {
         return Ok(None);

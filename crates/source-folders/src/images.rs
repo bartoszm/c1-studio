@@ -696,9 +696,17 @@ impl Images {
         let mut records: Vec<(String, ImageTier, Option<PathBuf>)> = Vec::new();
         let mut gone: Vec<PathBuf> = Vec::new();
         let mut arrived: Vec<PathBuf> = Vec::new();
+        // Images about to move away: a path one of them leaves is free once it has.
+        let leaving: HashSet<PathBuf> =
+            plan.iter().filter(|(_, _, f, t)| t.as_ref() != Some(f)).map(|(_, _, f, _)| f.clone()).collect();
         for (ext, tier, from, to) in plan {
             match to {
                 Some(to) if to == from => {}
+                // Never over a file that is not one of these images: an original, a file
+                // not in the store, another image of this run that has not moved yet.
+                Some(to) if from.exists() && to.exists() && !leaving.contains(&to) => {
+                    report.failed.push(format!("{}: not moved, a file is already at {}", from.display(), to.display()));
+                }
                 Some(to) if from.exists() => match move_file(&from, &to) {
                     Ok(()) => {
                         tidy(&from);

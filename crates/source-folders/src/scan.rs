@@ -122,9 +122,16 @@ struct Walked {
     /// under them stays as it is. An empty relpath is the whole root.
     unreadable: Vec<(String, String)>,
     problems: Vec<String>,
+    /// The definition's excludes, to tell a file now excluded from one that is gone.
+    excludes: GlobSet,
 }
 
 impl Walked {
+    /// The record's file lies under an exclude: not listed, but not gone either.
+    fn excluded(&self, rec: &FileRec) -> bool {
+        self.excludes.is_match(&rec.relpath)
+    }
+
     fn kept(&self, rec: &FileRec) -> bool {
         self.unreadable.iter().any(|(root, dir)| {
             *root == rec.root
@@ -272,6 +279,12 @@ fn sort_out(src: &FolderSource, walked: &mut Walked, plan: &mut Plan) -> Sorted 
                 }
             }
             Some(true) if walked.kept(rec) => continue,
+            // Now excluded: detached like a root taken out, so its edits come back with it.
+            Some(true) if walked.excluded(rec) => {
+                if rec.state != FileState::Detached {
+                    plan.detach.push((ext.clone(), FileRec { state: FileState::Detached, ..rec.clone() }));
+                }
+            }
             Some(true) => {}
         }
         sorted.candidates.push(Candidate { ext: ext.clone(), rec: rec.clone() });
@@ -354,7 +367,10 @@ fn settle(
     plan.detach.retain(|(ext, _)| !matched.contains(ext.as_str()));
     plan.offline.retain(|(ext, _)| !matched.contains(ext.as_str()));
     for cand in candidates {
-        if !matched.contains(cand.ext.as_str()) && walked.reachable.get(&cand.rec.root) == Some(&true) {
+        if !matched.contains(cand.ext.as_str())
+            && walked.reachable.get(&cand.rec.root) == Some(&true)
+            && !walked.excluded(&cand.rec)
+        {
             plan.removes.push(cand.ext.clone());
         }
     }
@@ -366,6 +382,7 @@ fn settle(
 fn walk(src: &FolderSource, def: &Definition) -> Walked {
     let mut walked = Walked::default();
     let excludes = excludes(def, &mut walked.problems);
+    walked.excludes = excludes.clone();
     // Folder → its XMP files, by lower-case name.
     let mut xmps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
     let mut listed: Vec<(String, String, PathBuf, FileKind)> = Vec::new();
@@ -430,10 +447,11 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
     }
 
     let none = HashMap::new();
-    let stats: Vec<std::result::Result<Found, String>> = listed
+    let stats: Vec<std::result::Result<Found, (String, String, String)>> = listed
         .into_par_iter()
         .map(|(root, relpath, path, kind)| {
-            let meta = std::fs::metadata(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let meta = std::fs::metadata(&path)
+                .map_err(|e| (root.clone(), relpath.clone(), format!("{}: {e}", path.display())))?;
             let dir = path.parent().and_then(|d| xmps.get(d)).unwrap_or(&none);
             let sidecar = sidecar(&path, dir, def.sidecar);
             Ok(Found { root, relpath, kind, size: meta.len(), mtime_ns: mtime_ns(&meta), sidecar, path })
@@ -442,7 +460,11 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
     for stat in stats {
         match stat {
             Ok(found) => walked.found.push(found),
-            Err(problem) => walked.problems.push(problem),
+            // A file that cannot be read now is not a file that is gone: its record stays.
+            Err((root, relpath, problem)) => {
+                walked.problems.push(problem);
+                walked.unreadable.push((root, relpath));
+            }
         }
     }
     walked
@@ -922,6 +944,36 @@ mod tests {
         assert_eq!(state.files[&ext].state, FileState::Offline);
         assert!(!state.tombs.contains_key(&ext), "no longer deleted");
         assert_eq!(state.changed[&ext], state.generation, "sent again");
+    }
+
+    #[test]
+    fn a_new_exclude_detaches_instead_of_deleting() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("photos");
+        std::fs::create_dir_all(root.join("skip")).unwrap();
+        std::fs::write(root.join("skip").join("a.jpg"), b"\xFF\xD8 a photo").unwrap();
+        // So the root is not taken for an empty mount point.
+        std::fs::write(root.join("b.jpg"), b"\xFF\xD8 another photo").unwrap();
+        let location = dir.path().join("t.c1folders");
+        let def = Definition::new("t", std::slice::from_ref(&root));
+        def.save(&location).unwrap();
+        let src = FolderSource::open(&location, &dir.path().join("work")).unwrap();
+        scan(&src).unwrap();
+        let ext = src.store().read().at_path(&def.roots[0].id, "skip/a.jpg").unwrap().to_owned();
+
+        let mut excluding = def.clone();
+        excluding.excludes.push("skip/**".into());
+        excluding.save(&location).unwrap();
+        src.reload_definition(None).unwrap();
+        scan(&src).unwrap();
+        assert_eq!(src.store().read().files[&ext].state, FileState::Detached, "kept, not removed");
+
+        def.save(&location).unwrap();
+        src.reload_definition(None).unwrap();
+        scan(&src).unwrap();
+        let state = src.store().read();
+        assert_eq!(state.at_path(&def.roots[0].id, "skip/a.jpg"), Some(ext.as_str()), "same id back");
+        assert_eq!(state.files[&ext].state, FileState::Present);
     }
 
     #[test]

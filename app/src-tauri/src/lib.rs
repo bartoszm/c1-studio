@@ -2003,6 +2003,15 @@ async fn folders_save(
 ) -> Result<String, String> {
     let path = location.map_or_else(|| def.default_path(), PathBuf::from);
     tauri::async_runtime::spawn_blocking(move || {
+        // Not trusting the dialog's own (debounced) check: a store that would write over a
+        // photo is refused here, before anything is saved.
+        if is_open_definition(&app, &path)
+            && let Ok(s) = app.state::<App>().session()
+            && let Some(source) = folder_source(s.source.as_ref())
+            && let Some(problem) = source.check_image_store(&def.images)
+        {
+            return Err(format!("Image store: {problem}"));
+        }
         def.save(&path).map_err(text)?;
         if is_open_definition(&app, &path) {
             let s = app.state::<App>().session()?;

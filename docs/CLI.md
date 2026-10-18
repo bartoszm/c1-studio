@@ -26,10 +26,14 @@ The source is the first of:
 
 1. `--source PATH`
 2. `C1_CATALOG` (a Capture One catalog)
-3. the source the app opened last (`%APPDATA%\c1studio\sources.json`)
-4. the old Capture One search: `%APPDATA%\c1studio\config.json`
+3. the old Capture One search: `%APPDATA%\c1studio\config.json`
    (`{"catalog": "C:\\c1_catalogs\\fuji\\fiuji.cocatalogdb"}`), then the only
    `*.cocatalogdb` under `C:\c1_catalogs\*\`
+4. the source the app opened last (`%APPDATA%\c1studio\sources.json`)
+
+So a bare command still opens the Capture One catalog it always did; to use a photo
+folders source, pass `--source` or `--provider folders` (which takes the app's last
+folders source).
 
 A source that was asked for and cannot be opened is an error; the next step is not tried
 in its place. When none is found, the error lists what was tried.

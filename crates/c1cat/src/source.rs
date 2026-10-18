@@ -50,10 +50,10 @@ impl Places {
     }
 }
 
-/// The source to open: `--source`, else `$C1_CATALOG`, else the app's most recent source,
-/// else the Capture One catalog the old search finds. A source that was asked for and is
-/// not usable is an error, not a reason to open another. `--provider` limits every step to
-/// that provider.
+/// The source to open: `--source`, else `$C1_CATALOG`, else the Capture One catalog the old
+/// search finds (as before sources other than Capture One existed), else the app's most
+/// recent source. A source that was asked for and is not usable is an error, not a reason
+/// to open another. `--provider` limits every step to that provider.
 pub fn choose(args: &SourceArgs, places: Places) -> anyhow::Result<SourceSpec> {
     let only = args.provider.as_deref();
     if let Some(id) = only {
@@ -76,15 +76,15 @@ pub fn choose(args: &SourceArgs, places: Places) -> anyhow::Result<SourceSpec> {
             None => tried.push("$C1_CATALOG (not set)".into()),
         }
     }
-    match places.recent.into_iter().find(|s| only.is_none_or(|id| s.provider == id)) {
-        Some(last) => return Ok(last),
-        None => tried.push("the app's recent sources (none)".into()),
-    }
     if capture_one {
         match (places.legacy)() {
             Ok(path) => return spec_for(&path, Some(CAPTURE_ONE)).map_err(anyhow::Error::msg),
             Err(e) => tried.push(format!("the Capture One catalog search ({e})")),
         }
+    }
+    match places.recent.into_iter().find(|s| only.is_none_or(|id| s.provider == id)) {
+        Some(last) => return Ok(last),
+        None => tried.push("the app's recent sources (none)".into()),
     }
     anyhow::bail!("no source to open; pass --source PATH. Tried: {}", tried.join("; "))
 }
@@ -193,10 +193,15 @@ mod tests {
         };
         let other = tempfile::tempdir().unwrap();
         let other_catalog = catalog(other.path());
-        // $C1_CATALOG beats the recent list, which beats the old search.
+        // $C1_CATALOG beats the old search, which beats the recent list: a bare command keeps
+        // opening the catalog it always did.
         let spec = choose(&args(None, None), places(Some(&file), Some(&other_catalog))).unwrap();
         assert_eq!((spec.provider.as_str(), spec.location.ends_with("Trip.cocatalogdb")), ("capture-one", true));
-        assert_eq!(choose(&args(None, None), places(None, Some(&other_catalog))).unwrap(), recent[0]);
+        let spec = choose(&args(None, None), places(None, Some(&other_catalog))).unwrap();
+        assert_eq!(spec.provider, "capture-one");
+        assert_ne!(spec, recent[0]);
+        // With no catalog found, the app's most recent source.
+        assert_eq!(choose(&args(None, None), places(None, None)).unwrap(), recent[0]);
         // --provider capture-one skips the folders source in the recent list.
         let spec = choose(&args(None, Some("capture-one")), places(None, Some(&other_catalog))).unwrap();
         assert_eq!(spec.provider, "capture-one");
@@ -205,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn the_old_search_is_the_last_resort_and_the_error_lists_what_was_tried() {
+    fn the_error_lists_what_was_tried_lists_what_was_tried() {
         let dir = tempfile::tempdir().unwrap();
         let file = catalog(dir.path());
         let found = Places {

@@ -116,6 +116,11 @@ impl FolderSource {
         if new.id != self.def.read().unwrap().id {
             return Err(SourceError::Other("the definition file now describes another source".into()));
         }
+        if new.images != self.def.read().unwrap().images
+            && let Some(problem) = self.images.check(self, &new.images)
+        {
+            return Err(SourceError::Other(format!("image store: {problem}")));
+        }
         let old = std::mem::replace(&mut *self.def.write().unwrap(), new.clone());
         self.scan_due.store(true, Ordering::SeqCst);
         match how {
