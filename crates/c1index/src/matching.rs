@@ -35,6 +35,8 @@ pub struct MatchSpec {
     light: Vec<String>,
     focus: Vec<String>,
     lines: ClassSettings,
+    /// All of the colours are asked for, not any.
+    every_colour: bool,
 }
 
 fn unit(v: f32) -> f32 {
@@ -52,20 +54,34 @@ impl MatchSpec {
         let focus: Vec<String> =
             focus.iter().filter(|f| ["sharp", "soft", "blurry"].contains(&f.as_str())).cloned().collect();
         let any = !colours.is_empty() || black_and_white || !light.is_empty() || !focus.is_empty();
-        any.then(|| Self { colours, black_and_white, light, focus, lines: lines.clone() })
+        any.then(|| Self { colours, black_and_white, light, focus, lines: lines.clone(), every_colour: false })
+    }
+
+    /// The colours were asked for all at once ("red and blue"), not any of them.
+    pub fn every_colour(self, every: bool) -> Self {
+        Self { every_colour: every && self.colours.len() > 1, ..self }
     }
 
     /// 0..1: how well the measures match the picks (1 is a perfect match).
     pub fn score(&self, m: &Measures) -> f32 {
         let mut parts: Vec<f32> = Vec::new();
         if !self.colours.is_empty() || self.black_and_white {
-            let colour = match self.lines.colour_mode {
-                // How much of the picture is in the picked colours.
-                ColourMode::Covers => unit(self.colours.iter().map(|&i| m.hue_shares[i]).sum()),
-                // How big the biggest patch of one of them is, full marks at four times the line.
-                ColourMode::Patch => {
-                    let line = (self.lines.patch_share * OVER_THE_LINE).max(f32::EPSILON);
-                    self.colours.iter().map(|&i| unit(m.hue_patches[i] / line)).fold(0.0, f32::max)
+            let line = (self.lines.patch_share * OVER_THE_LINE).max(f32::EPSILON);
+            // One picked colour's measure: its share, or its biggest patch with full marks at
+            // four times the line.
+            let one = |i: usize| match self.lines.colour_mode {
+                ColourMode::Covers => unit(m.hue_shares[i]),
+                ColourMode::Patch => unit(m.hue_patches[i] / line),
+            };
+            let colour = if self.every_colour {
+                // Asked for all of them (red and blue): as good as the weakest.
+                self.colours.iter().map(|&i| one(i)).fold(1.0, f32::min)
+            } else {
+                match self.lines.colour_mode {
+                    // How much of the picture is in any of the picked colours.
+                    ColourMode::Covers => unit(self.colours.iter().map(|&i| m.hue_shares[i]).sum()),
+                    // The biggest patch of any of them.
+                    ColourMode::Patch => self.colours.iter().map(|&i| one(i)).fold(0.0, f32::max),
                 }
             };
             let mono = if self.black_and_white && self.lines.mono_chroma > 0.0 {
@@ -226,6 +242,20 @@ mod tests {
         assert_eq!(s.score(&with_patch("red", 0.08)), 1.0);
         assert!((s.score(&with_patch("green", 0.04)) - 0.5).abs() < 1e-6);
         assert_eq!(s.score(&Measures { ..with_hue("red", 0.9) }), 0.0);
+    }
+
+    #[test]
+    fn asking_for_every_colour_ranks_by_the_weakest() {
+        let mut big_red_small_blue = with_hue("red", 0.55);
+        big_red_small_blue.hue_shares[HUES.iter().position(|h| *h == "blue").unwrap()] = 0.05;
+        let mut both = with_hue("red", 0.3);
+        both.hue_shares[HUES.iter().position(|h| *h == "blue").unwrap()] = 0.3;
+        let any = spec(&["red", "blue"], &[], &[]);
+        let every = spec(&["red", "blue"], &[], &[]).every_colour(true);
+        // Any of them: both cover 60%. Every one: the photo with plenty of each wins.
+        assert!((any.score(&big_red_small_blue) - any.score(&both)).abs() < 1e-6);
+        assert!(every.score(&both) > every.score(&big_red_small_blue));
+        assert!((every.score(&big_red_small_blue) - 0.05).abs() < 1e-6);
     }
 
     #[test]

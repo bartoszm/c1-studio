@@ -4,11 +4,12 @@ import { HUE_NAMES, type ClassSettings, type LookView } from "./api";
 
 type Stat = { share: number; patch: number; chroma: number };
 
-/** A share as a percent: whole above 10%, one decimal below, "<0.1%" for a trace. */
+/** A share as a percent: whole from 20%, one decimal below (so 16.6% is not shown as the 16.7%
+ *  line it misses), "<0.1%" for a trace. */
 export function pct(x: number): string {
   const p = x * 100;
   if (p > 0 && p < 0.1) return "<0.1%";
-  return `${p >= 10 || p === 0 ? Math.round(p) : Math.round(p * 10) / 10}%`;
+  return `${p >= 20 || p === 0 ? Math.round(p) : Math.round(p * 10) / 10}%`;
 }
 const num = (n: number) => Math.round(n).toLocaleString("en-US");
 
@@ -52,20 +53,28 @@ export type ColourLine = { name: string; counts: boolean; text: string };
  *  "red 19% · counts from 17%", "red patch 4% (chroma 62) · counts from 2%". */
 export function colourLines(stats: Stat[], l: ClassSettings, classes: string[], top = 5): ColourLine[] {
   const patch = l.colour_mode === "Patch";
+  const mono = classes.includes("black & white");
   const size = (st: Stat) => (patch ? st.patch : st.share);
-  return HUE_NAMES.map((name, i) => ({ name, st: stats[i] ?? { share: 0, patch: 0, chroma: 0 } }))
+  const all = HUE_NAMES.map((name, i) => ({ name, st: stats[i] ?? { share: 0, patch: 0, chroma: 0 } }))
     .filter(({ st }) => size(st) >= 0.001)
-    .sort((a, b) => size(b.st) - size(a.st))
-    .slice(0, top)
-    .map(({ name, st }) => {
-      const counts = classes.includes(name);
-      const measure = patch ? `${name} patch ${pct(st.patch)} (chroma ${num(st.chroma)})` : `${name} ${pct(st.share)}`;
-      const line = patch ? `${pct(l.patch_share)}, chroma ${num(l.patch_chroma)}` : pct(l.colour_share);
-      const reaches = patch ? vivid(st, l) : st.share >= l.colour_share;
-      // Counted without reaching the line: no colour did, and this one is the biggest.
-      const why = !counts ? `needs ${line}` : reaches ? `counts from ${line}` : `the biggest colour, counts from ${pct(l.colour_floor)}`;
-      return { name, counts, text: `${measure} · ${why}` };
-    });
+    .sort((a, b) => size(b.st) - size(a.st));
+  // The biggest few, and every colour that counts whatever its size, so each class has its line.
+  const shown = all.filter((c, i) => i < top || classes.includes(c.name));
+  return shown.map(({ name, st }) => {
+    const counts = classes.includes(name);
+    const measure = patch ? `${name} patch ${pct(st.patch)} (chroma ${num(st.chroma)})` : `${name} ${pct(st.share)}`;
+    const line = patch ? `${pct(l.patch_share)}, chroma ${num(l.patch_chroma)}` : pct(l.colour_share);
+    const reaches = patch ? vivid(st, l) : st.share >= l.colour_share;
+    // Counted without reaching the line: no colour did, and this one is the biggest.
+    const why = mono
+      ? "not counted: the photo is black & white"
+      : !counts
+        ? `needs ${line}`
+        : reaches
+          ? `counts from ${line}`
+          : `the biggest colour, counts from ${pct(l.colour_floor)}`;
+    return { name, counts, text: `${measure} · ${why}` };
+  });
 }
 
 /** Why the photo is (or is not) black and white. */
@@ -103,7 +112,7 @@ export function cardHint(card: Card, l: ClassSettings): string {
     case "shape":
       return `Width ÷ height: square within ${l.square_ratio}, panorama from ${l.panorama_ratio}.`;
     case "hue":
-      return `A photo can have several colours: ${colourRule(l)}. Black & white below chroma ${l.mono_chroma}.`;
+      return `A photo can have several colours: ${colourRule(l)}. Black & white below chroma ${l.mono_chroma}, unless it has a vivid patch.`;
     case "brightness":
       return `Mean brightness: dark below ${pct(l.dark_below)}, bright above ${pct(l.bright_above)}. One per photo.`;
     case "problems":
@@ -121,7 +130,10 @@ export function barRule(card: Card, value: string, l: ClassSettings): string {
     square: `width ÷ height within ${l.square_ratio}`,
     panorama: `${l.panorama_ratio}:1 or longer, either way`,
     "black & white": `mean chroma below ${l.mono_chroma} and no vivid patch`,
-    muted: `no colour reaches ${pct(l.colour_mode === "Patch" ? l.patch_share : l.colour_share)}, nor ${pct(l.colour_floor)} for the biggest`,
+    muted:
+      l.colour_mode === "Patch"
+        ? `no colour has a vivid patch (${pct(l.patch_share)}, chroma ${num(l.patch_chroma)}), and the biggest patch is under ${pct(l.colour_floor)}`
+        : `no colour covers ${pct(l.colour_share)}, and the biggest covers less than ${pct(l.colour_floor)}`,
     dark: `mean brightness below ${pct(l.dark_below)}`,
     medium: `mean brightness ${pct(l.dark_below)} to ${pct(l.bright_above)}`,
     bright: `mean brightness above ${pct(l.bright_above)}`,

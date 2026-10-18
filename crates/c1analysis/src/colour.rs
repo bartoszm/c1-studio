@@ -46,15 +46,18 @@ pub(crate) fn hue_stats(image: &RgbImage) -> [HueStat; HUES.len()] {
         return out;
     }
     let name: Vec<Option<usize>> = small.pixels().map(|p| HUES.iter().position(|hue| *hue == name_of(p.0))).collect();
-    let mut chroma_sum = [0f32; HUES.len()];
-    for (p, named) in small.pixels().zip(&name) {
-        if let Some(i) = *named {
+    let chroma: Vec<f32> = small
+        .pixels()
+        .map(|p| {
             let l = lab(p.0);
-            out[i].share += 1.0;
-            chroma_sum[i] += (l[1] * l[1] + l[2] * l[2]).sqrt();
-        }
+            (l[1] * l[1] + l[2] * l[2]).sqrt()
+        })
+        .collect();
+    for named in name.iter().flatten() {
+        out[*named].share += 1.0;
     }
-    // The biggest 4-connected patch of each name.
+    // The biggest 4-connected patch of each name, and how vivid that patch is: a big pale
+    // area does not borrow the vividness of a few bright specks elsewhere.
     let mut seen = vec![false; n];
     let mut stack = Vec::new();
     for start in 0..n {
@@ -64,9 +67,10 @@ pub(crate) fn hue_stats(image: &RgbImage) -> [HueStat; HUES.len()] {
         }
         seen[start] = true;
         stack.push(start);
-        let mut size = 0usize;
+        let (mut size, mut vividness) = (0usize, 0f32);
         while let Some(at) = stack.pop() {
             size += 1;
+            vividness += chroma[at];
             let (x, y) = ((at % w as usize) as u32, (at / w as usize) as u32);
             let mut visit = |nx: u32, ny: u32| {
                 let next = (ny * w + nx) as usize;
@@ -88,12 +92,12 @@ pub(crate) fn hue_stats(image: &RgbImage) -> [HueStat; HUES.len()] {
                 visit(x, y + 1);
             }
         }
-        out[i].patch = out[i].patch.max(size as f32);
-    }
-    for (stat, sum) in out.iter_mut().zip(chroma_sum) {
-        if stat.share > 0.0 {
-            stat.chroma = sum / stat.share;
+        if size as f32 > out[i].patch {
+            out[i].patch = size as f32;
+            out[i].chroma = vividness / size as f32;
         }
+    }
+    for stat in &mut out {
         stat.share /= n as f32;
         stat.patch /= n as f32;
     }

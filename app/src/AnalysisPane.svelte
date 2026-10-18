@@ -55,9 +55,14 @@
 
   // The lines the classes are drawn with, for the hints: read again when they may have moved.
   let lines = $state<api.ClassSettings | null>(null);
+  // Only the newest answer counts: an older one arriving late must not put back old lines.
+  let linesAsked = 0;
   $effect(() => {
     void version;
-    api.classSettings().then((l) => (lines = l)).catch(() => {});
+    const mine = ++linesAsked;
+    api.classSettings()
+      .then((l) => { if (mine === linesAsked) lines = l; })
+      .catch((e) => console.warn("analysis lines", e));
   });
   const flag = (name: string) => facets.flag?.find(([v]) => v === name)?.[1] ?? 0;
   let measured = $derived(flag("analysed"));
@@ -135,8 +140,9 @@
         {@const list = values(dim, order)}
         {@const max = Math.max(1, ...list.map(([, n]) => n))}
         <section class="card">
-          <h3>
-            {title}
+          <!-- The heading is the title alone; the any/all switch sits beside it, not in it. -->
+          <div class="head">
+            <h3 id="card-{card}">{title}</h3>
             {#if all}
               <!-- How this card's picks combine: any of them, or every one. -->
               <span class="combine" role="group" aria-label="{title}: picks combine">
@@ -144,13 +150,17 @@
                 <button class:on={!!allOf[all]} aria-pressed={!!allOf[all]} title="Photos with every picked value" onclick={() => !allOf[all] && onallof(all)}>all</button>
               </span>
             {/if}
-          </h3>
-          {#if lines}<p class="hint">{cardHint(card, lines)}</p>{/if}
+          </div>
+          {#if lines}<p class="hint" id="hint-{card}">{cardHint(card, lines)}</p>{/if}
           {#each list as [value, n] (value)}
+            {@const rule = lines ? barRule(card, value, lines) : ""}
+            <!-- The rule is in the accessible name too: a tooltip alone never reaches the keyboard. -->
             <button
               class="bar-row"
               class:on={picked[key]?.includes(value)}
-              title={lines ? `${value}: ${barRule(card, value, lines)}` : value}
+              title={rule ? `${value}: ${rule}` : value}
+              aria-label="{value}, {n.toLocaleString()} photos{rule ? `: ${rule}` : ''}"
+              aria-pressed={!!picked[key]?.includes(value)}
               onclick={() => ontoggle(key, value)}
             >
               <span class="name">
@@ -205,7 +215,8 @@
   .muted { color: var(--muted, #999); font-size: 12px; }
   .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
   .card { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line, #333); border-radius: 4px; padding: 8px 10px; }
-  h3 { margin: 0 0 4px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #999; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 0 0 4px; }
+  h3 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #999; }
   .hint { margin: 0 0 6px; font-size: 11px; line-height: 1.35; color: var(--muted, #999); }
   .note { margin: 10px 0 0; }
   .combine { display: inline-flex; border: 1px solid var(--line, #444); border-radius: 3px; overflow: hidden; text-transform: none; letter-spacing: 0; font-weight: 400; }

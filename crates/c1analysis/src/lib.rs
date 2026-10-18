@@ -22,7 +22,7 @@ pub use groups::{DUPLICATE_MAX, Groups, Taken, distance, group};
 pub const VERSION: u32 = 2;
 
 /// One colour name in a picture: its share of the pixels, the share of its biggest single
-/// patch, and how vivid it is (mean Lab chroma of its pixels). All 0 when absent.
+/// patch, and how vivid that patch is (mean Lab chroma of its pixels). All 0 when absent.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct HueStat {
     pub share: f32,
@@ -336,7 +336,11 @@ impl Analysis {
         // scattered over a wall make no patch).
         if out.is_empty() {
             let biggest = HUES.iter().zip(&self.hue_stats).max_by(|a, b| size(a.1).total_cmp(&size(b.1)));
-            out.push(biggest.filter(|(_, st)| size(st) >= s.colour_floor).map_or(colour::MUTED, |(n, _)| n));
+            out.push(
+                biggest
+                    .filter(|(_, st)| size(st) > 0.0 && size(st) >= s.colour_floor)
+                    .map_or(colour::MUTED, |(n, _)| n),
+            );
         }
         out
     }
@@ -480,6 +484,31 @@ mod tests {
         assert_eq!(coat.hues(&ClassSettings { patch_share: 0.01, ..d() }), ["muted"]);
         // A patch smaller than asked for: black and white again.
         assert_eq!(coat.hues(&ClassSettings { patch_share: 0.05, ..d() }), ["black & white"]);
+    }
+
+    #[test]
+    fn a_floor_of_zero_names_no_colour_that_is_not_there() {
+        // Only grey, and not black and white (its mean chroma is asked to be below 0).
+        let grey = analyse(&RgbImage::from_pixel(60, 60, Rgb([128, 128, 128])));
+        assert_eq!(grey.hues(&ClassSettings { colour_floor: 0.0, mono_chroma: 0.0, ..d() }), ["muted"]);
+    }
+
+    #[test]
+    fn a_patch_is_as_vivid_as_its_own_pixels() {
+        // A big pale-red block and, apart from it, a few vivid red pixels: the patch is the
+        // pale block, and its chroma is the block's, not raised by the specks.
+        let img = RgbImage::from_fn(60, 60, |x, y| {
+            if x < 30 && y < 30 {
+                Rgb([200, 150, 150])
+            } else if x > 40 && y > 40 && (x + y) % 7 == 0 {
+                Rgb([220, 20, 20])
+            } else {
+                Rgb([128, 128, 128])
+            }
+        });
+        let st = analyse(&img).hue_stats[HUES.iter().position(|h| *h == "red").unwrap()];
+        assert!((st.patch - 900.0 / 3600.0).abs() < 1e-4, "{st:?}");
+        assert!(st.chroma < 25.0, "{st:?}");
     }
 
     #[test]

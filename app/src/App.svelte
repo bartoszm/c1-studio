@@ -1046,6 +1046,16 @@
     allOf = { ...allOf, [card]: !allOf[card] };
     run();
   }
+  // A card's picks all cleared: it goes back to "any", so the next picks are not silently "all".
+  $effect(() => {
+    const hues = !!filter.hues?.length;
+    const problems = !!filter.light?.some((l) => LIGHT_PROBLEMS.includes(l));
+    untrack(() => {
+      if ((allOf.hues && !hues) || (allOf.problems && !problems)) {
+        allOf = { hues: allOf.hues && hues, problems: allOf.problems && problems };
+      }
+    });
+  });
   /** What the rest of the app asks the index: the filter with Match applied. */
   let eff = $derived(compiled(filter));
   function setMatch(m: Match) {
@@ -1613,7 +1623,7 @@
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
     hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
-    light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),

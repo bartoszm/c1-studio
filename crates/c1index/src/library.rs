@@ -1331,7 +1331,8 @@ impl Library {
                 std::iter::once(filter).chain(&filter.all_of).flat_map(|f| pick(f).iter().cloned()).collect()
             };
             let (hues, light, focus) = (gather(|f| &f.hues), gather(|f| &f.light), gather(|f| &f.focus));
-            let spec = MatchSpec::new(&hues, &light, &focus, &lines);
+            let every = filter.all_of.iter().filter(|f| !f.hues.is_empty()).count() > 1;
+            let spec = MatchSpec::new(&hues, &light, &focus, &lines).map(|s| s.every_colour(every));
             if spec.is_none() {
                 options.sort = Sort::DateDesc;
             }

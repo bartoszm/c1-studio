@@ -512,7 +512,7 @@
     {/if}
   {:else if row !== undefined && lookRead === row}
     <h3>Look</h3>
-    <p class="hint">Not measured yet: the analysis gets to it in the background (see the footer).</p>
+    <p class="hint">Not measured: the analysis measures photos in the background (see the footer), from their thumbnails. A photo without a thumbnail waits until one is made.</p>
   {/if}
 {/snippet}
 

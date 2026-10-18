@@ -51,8 +51,15 @@ test("colour lines say each colour's measure and whether it counts", () => {
   const s = stats({ red: [0.19, 0.1, 60], blue: [0.09, 0.09, 40] });
   const out = colourLines(s, lines, ["red"]);
   assert.deepEqual(out.map((l) => [l.name, l.counts]), [["red", true], ["blue", false]]);
-  assert.equal(out[0].text, "red 19% · counts from 17%");
-  assert.equal(out[1].text, "blue 9% · needs 17%");
+  assert.equal(out[0].text, "red 19% · counts from 16.7%");
+  assert.equal(out[1].text, "blue 9% · needs 16.7%");
+  // A black & white photo (a sepia print): its colours do not count, whatever their share.
+  const sepia = colourLines(stats({ brown: [0.9, 0.9, 3] }), lines, ["black & white"]);
+  assert.equal(sepia[0].text, "brown 90% · not counted: the photo is black & white");
+  // A colour that counts is listed even when five bigger ones come first.
+  const many = stats({ brown: [0.3, 0.3, 30], orange: [0.25, 0.2, 30], yellow: [0.2, 0.2, 30], teal: [0.18, 0.1, 30], blue: [0.17, 0.1, 30], pink: [0.05, 0.05, 80] });
+  const patchy = colourLines(many, { ...lines, colour_mode: "Patch" }, ["pink"]);
+  assert.ok(patchy.some((c) => c.name === "pink" && c.counts));
   // No colour reaches the line: the biggest stands for the photo, and says so.
   const small = colourLines(stats({ red: [0.052, 0.04, 50] }), lines, ["red"]);
   assert.equal(small[0].text, "red 5.2% · the biggest colour, counts from 5%");
@@ -72,8 +79,8 @@ test("light, focus and the card hints follow the lines", () => {
     "brightness 31% (dark below 20%, bright above 55%) · clipped 4% (from 3%) · blocked 1% (from 20%) · contrast 0.18 (low below 0.12)",
   );
   assert.equal(focusLine(1240.4, lines), "detail 1,240 (soft below 700, blurry below 300)");
-  assert.match(cardHint("hue", lines), /covers 17%/);
+  assert.match(cardHint("hue", lines), /covers 16.7%/);
   assert.match(cardHint("hue", { ...lines, colour_mode: "Patch" }), /vivid patch of 2%/);
   assert.equal(barRule("focus", "soft", lines), "detail 300 to 700");
-  assert.equal(barRule("hue", "red", lines), "red counts when it covers 17% of the photo or more");
+  assert.equal(barRule("hue", "red", lines), "red counts when it covers 16.7% of the photo or more");
 });
