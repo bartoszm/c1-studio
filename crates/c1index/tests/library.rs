@@ -993,12 +993,12 @@ fn analyses_are_searchable_and_grouped() {
     assert_eq!(ids(&lib, &Filter { analysed: Some(false), ..Filter::default() }), [4, 5, 6, 7, 8, 10]);
     // 1 and 2 look the same, but were taken a day apart: not duplicates.
     assert_eq!(lib.regroup().unwrap(), 0);
-    // Taken at the same instant (imported twice), they are; groups come with regroup.
+    // Taken at the same instant (imported twice), they are; the sync that brings the new
+    // time works the groups out again.
     let one = source.photo(&lib.photo_id(row_of(&lib, 1)).unwrap()).unwrap().captured_at;
     source.edit_externally(&lib.photo_id(row_of(&lib, 2)).unwrap(), |p| p.captured_at = one);
     lib.sync(&source).unwrap();
-    assert!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }).is_empty());
-    assert_eq!(lib.regroup().unwrap(), 2);
+    assert_eq!(lib.regroup().unwrap(), 0, "the sync already grouped them");
     assert_eq!(ids(&lib, &Filter { duplicates: true, ..Filter::default() }), [1, 2]);
     let group = lib.look(row_of(&lib, 2)).unwrap().duplicates.unwrap();
     assert_eq!(ids(&lib, &Filter { group: Some(group), ..Filter::default() }), [1, 2]);
@@ -1013,6 +1013,250 @@ fn analyses_are_searchable_and_grouped() {
         .unwrap();
     assert!(r.facets[&Dim::Shape].contains(&("landscape".into(), 2)));
     assert_eq!(lib.analysed().len(), 3);
+}
+
+fn ordered(lib: &Library, filter: &Filter, sort: Sort) -> Vec<u32> {
+    let rows = lib.query(filter, &QueryOptions { sort, ..QueryOptions::default() }).unwrap().rows;
+    rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse().unwrap()).collect()
+}
+
+#[test]
+fn photos_sort_by_what_the_analysis_measured_and_unmeasured_ones_come_last() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let mut dim = look(600, 400, [90; 3], 400.0, 3);
+    dim.brightness = 0.1;
+    let mut bright = look(600, 400, [90; 3], 10.0, 2);
+    bright.brightness = 0.9;
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [90; 3], 5000.0, 1)),
+        (key(2), (1, 1), bright),
+        (key(3), (1, 1), dim),
+    ])
+    .unwrap();
+    let measured = Filter { analysed: Some(true), ..Filter::default() };
+    assert_eq!(ordered(&lib, &measured, Sort::SharpnessDesc), [1, 3, 2]);
+    assert_eq!(ordered(&lib, &measured, Sort::Sharpness), [2, 3, 1]);
+    assert_eq!(ordered(&lib, &measured, Sort::BrightnessDesc)[0], 2);
+    assert_eq!(ordered(&lib, &measured, Sort::Brightness)[2], 2);
+    // The nine photos: the three measured first, in either direction.
+    for sort in [Sort::SharpnessDesc, Sort::Sharpness, Sort::BrightnessDesc, Sort::Brightness] {
+        let all = ordered(&lib, &Filter::default(), sort);
+        assert_eq!(all.len(), 9);
+        let mut first: Vec<u32> = all[..3].to_vec();
+        first.sort();
+        assert_eq!(first, [1, 2, 3], "{sort:?}");
+    }
+}
+
+#[test]
+fn best_match_ranks_by_the_picked_colours_and_falls_back_to_date() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let (red, green, blue) = ([210, 30, 30], [40, 160, 50], [40, 80, 210]);
+    let with = |parts: &[([u8; 3], f32)]| {
+        let mut a = look(600, 400, red, 5000.0, 1);
+        a.palette = parts.iter().map(|(rgb, share)| c1analysis::Swatch { rgb: *rgb, share: *share }).collect();
+        a
+    };
+    lib.put_analyses(vec![
+        (key(1), (1, 1), with(&[(red, 0.6), (blue, 0.4)])),
+        (key(2), (1, 1), with(&[(red, 0.2), (green, 0.3), (blue, 0.5)])),
+        (key(3), (1, 1), with(&[(green, 0.9), (blue, 0.1)])),
+        (key(4), (1, 1), with(&[(blue, 1.0)])),
+    ])
+    .unwrap();
+    let picked = Filter { hues: vec!["red".into(), "green".into()], ..Filter::default() };
+    // The share in red or green: 3 (0.9), 1 (0.6), 2 (0.5); 4 is not in either.
+    assert_eq!(ordered(&lib, &picked, Sort::Match), [3, 1, 2]);
+    assert_eq!(ordered(&lib, &picked, Sort::MatchWorst), [2, 1, 3]);
+    // One colour: the red share alone.
+    let red_only = Filter { hues: vec!["red".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &red_only, Sort::Match), [1, 2]);
+    // Pages of the ranking add up to the whole.
+    let page = |offset| {
+        let opts = QueryOptions { sort: Sort::Match, limit: Some(2), offset, ..QueryOptions::default() };
+        let rows = lib.query(&picked, &opts).unwrap().rows;
+        rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse::<u32>().unwrap()).collect::<Vec<_>>()
+    };
+    assert_eq!([page(0), page(2)].concat(), [3, 1, 2]);
+    // Nothing picked to match: the newest first, as the date sort.
+    assert_eq!(ordered(&lib, &Filter::default(), Sort::Match), ordered(&lib, &Filter::default(), Sort::DateDesc));
+    // A shape pick has no measure either.
+    let shape = Filter { shape: vec!["landscape".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &shape, Sort::Match), ordered(&lib, &shape, Sort::DateDesc));
+}
+
+#[test]
+fn best_match_averages_the_dimensions_and_ranks_unmeasured_photos_last() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let red = [210, 30, 30];
+    // All red; 1 is sharp, 2 soft; 3 is sharper than 2 but not red enough to be matched
+    // differently: only sharpness tells them apart.
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, red, 9000.0, 1)),
+        (key(2), (1, 1), look(600, 400, red, 800.0, 2)),
+        (key(3), (1, 1), look(600, 400, red, 3000.0, 3)),
+    ])
+    .unwrap();
+    let both = Filter { hues: vec!["red".into()], focus: vec!["sharp".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &both, Sort::Match), [1, 3, 2]);
+    assert_eq!(ordered(&lib, &both, Sort::MatchWorst), [2, 3, 1]);
+    // Soft or sharp: the better of the two counts, so all three are still matched.
+    let either = Filter { hues: vec!["red".into()], focus: vec!["soft".into(), "sharp".into()], ..Filter::default() };
+    assert_eq!(ordered(&lib, &either, Sort::Match).len(), 3);
+}
+
+#[test]
+fn stacking_under_a_filter_hides_only_frames_whose_sharpest_matches_and_follows_the_sync() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let (red, blue) = ([210, 30, 30], [40, 80, 210]);
+    // A burst of three, seconds apart (1, 3, 5): 3 is the sharpest and the only blue one.
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, red, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, blue, 900.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, red, 300.0, h ^ 0b1111)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    lib.sync(&source).unwrap();
+
+    let stacked = |f: Filter| ids(&lib, &Filter { stacked: true, ..f });
+    // Nothing else picked: only the sharpest of the burst shows.
+    assert_eq!(stacked(Filter::default()), [2, 3, 4, 6, 7, 8, 10]);
+    // Red picks 1 and 5, but their sharpest (3) is blue: both stay, the burst does not vanish.
+    assert_eq!(stacked(Filter { hues: vec!["red".into()], ..Filter::default() }), [1, 5]);
+    // Blue picks only the sharpest.
+    assert_eq!(stacked(Filter { hues: vec!["blue".into()], ..Filter::default() }), [3]);
+    // Measured (all three): the sharpest matches, so the others are stacked away.
+    assert_eq!(stacked(Filter { analysed: Some(true), ..Filter::default() }), [3]);
+    // One group picked: all its frames show.
+    let group = lib.look(row_of(&lib, 3)).unwrap().series.unwrap();
+    assert_eq!(stacked(Filter { group: Some(group), ..Filter::default() }), [1, 3, 5]);
+
+    // The sharpest is trashed in the source: two frames are no burst, so none stays hidden.
+    source.edit_externally(&id(3), |p| p.trashed = true);
+    lib.sync(&source).unwrap();
+    assert_eq!(stacked(Filter { analysed: Some(true), ..Filter::default() }), [1, 5]);
+}
+
+#[test]
+fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
+    let (_d, lib, source) = setup();
+    for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {
+        source.edit_externally(&lib.photo_id(row_of(&lib, n)).unwrap(), |p| p.color = Some(label));
+    }
+    lib.sync(&source).unwrap();
+    // Photo 3 is red from the start.
+    let all = Filter::default();
+    assert_eq!(ordered(&lib, &all, Sort::ColorLabel)[..3], [3, 6, 8]);
+    assert_eq!(ordered(&lib, &all, Sort::ColorLabelRev)[..3], [8, 6, 3]);
+    assert_eq!(ordered(&lib, &all, Sort::ColorLabel).len(), 9, "unlabelled photos follow");
+}
+
+#[test]
+fn stacking_keeps_the_sharpest_of_each_group_and_groups_sort() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let (a, b) = (0x3333_cccc_5555_aaaau64, 0x5555_0f0f_3333_ccccu64);
+    let c = [90, 90, 90];
+    // A burst of three (1, 3, 5: X-Pro2, seconds apart; 3 is sharpest) and two duplicate
+    // pairs: 2 and 4 (4 is sharper), 6 and 8 (8 is sharper, and the sharpest of all).
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, c, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, c, 900.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, c, 300.0, h ^ 0b1111)),
+        (id(2).key(), (1, 1), look(600, 400, c, 50.0, a)),
+        (id(4).key(), (1, 1), look(600, 400, c, 60.0, a ^ 1)),
+        (id(6).key(), (1, 1), look(600, 400, c, 70.0, b)),
+        (id(8).key(), (1, 1), look(600, 400, c, 9000.0, b ^ 1)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    for (same_as, n) in [(2, 4), (6, 8)] {
+        let when = source.photo(&id(same_as)).unwrap().captured_at;
+        source.edit_externally(&id(n), |p| p.captured_at = when);
+    }
+    lib.sync(&source).unwrap();
+    lib.regroup().unwrap();
+
+    assert_eq!(ids(&lib, &Filter::default()).len(), 9);
+    let stacked = Filter { stacked: true, ..Filter::default() };
+    // Photos 1 and 5 (burst), 2 (pair) and 6 (pair) are stacked away.
+    assert_eq!(ids(&lib, &stacked), [3, 4, 7, 8, 10]);
+    // One group picked: all of its photos show.
+    let group = lib.look(row_of(&lib, 3)).unwrap().series.unwrap();
+    assert_eq!(ids(&lib, &Filter { group: Some(group), stacked: true, ..Filter::default() }), [1, 3, 5]);
+    // The groups themselves are counted whole, stacked or not.
+    let pairs = |sort| lib.groups_sorted(&stacked, false, sort, false, 0, 10).unwrap().groups;
+    assert!(pairs(c1index::GroupSort::Matched).iter().all(|g| g.matched == 2));
+
+    // Pairs by age: 6 and 8 were taken later than 2 and 4.
+    let first_row =
+        |sort| pairs(sort)[0].rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse::<u32>().unwrap()).min().unwrap();
+    assert_eq!(first_row(c1index::GroupSort::Newest), 6);
+    assert_eq!(first_row(c1index::GroupSort::Oldest), 2);
+    assert_eq!(first_row(c1index::GroupSort::Sharpest), 6, "9000 beats 60");
+
+    // Another line moves the stack: asking for a 1-bit difference leaves 2 and 4 apart.
+    let strict = c1analysis::ClassSettings { duplicate_bits: 0, ..lib.class_settings() };
+    lib.set_class_settings(&strict).unwrap();
+    assert_eq!(ids(&lib, &stacked), [2, 3, 4, 6, 7, 8, 10]);
+}
+
+#[test]
+fn class_settings_reclass_the_measured_photos_and_survive_a_reopen() {
+    let (d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [40, 80, 210], 5000.0, 1)),
+        (key(2), (1, 1), look(400, 600, [40, 80, 210], 500.0, 2)),
+        (key(3), (1, 1), look(600, 400, [200, 30, 30], 100.0, 3)),
+    ])
+    .unwrap();
+    let soft = Filter { focus: vec!["soft".into()], ..Filter::default() };
+    let blurry = Filter { focus: vec!["blurry".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &soft), [2]);
+    assert_eq!(ids(&lib, &blurry), [3]);
+
+    // Asked first, nothing changes.
+    let stricter = c1analysis::ClassSettings { soft_below: 6000.0, blurry_below: 400.0, ..lib.class_settings() };
+    let preview = lib.preview_classes(&stricter).unwrap();
+    assert_eq!(preview.measured, 3);
+    assert_eq!((preview.counts["focus|soft"], preview.counts["focus|blurry"]), (2, 1));
+    assert!(!preview.counts.contains_key("focus|sharp"));
+    assert_eq!(ids(&lib, &soft), [2]);
+
+    lib.set_class_settings(&stricter).unwrap();
+    assert_eq!(ids(&lib, &soft), [1, 2]);
+    assert_eq!(ids(&lib, &blurry), [3]);
+    // Nothing was measured again.
+    assert_eq!(lib.analysed().len(), 3);
+
+    // Out-of-order values are brought into range.
+    let kept = lib
+        .set_class_settings(&c1analysis::ClassSettings { soft_below: 100.0, blurry_below: 900.0, ..stricter.clone() })
+        .unwrap();
+    assert!(kept.blurry_below <= kept.soft_below);
+
+    // Kept for the library: a reopened one classes by it.
+    lib.set_class_settings(&stricter).unwrap();
+    drop(lib);
+    let lib = Library::open(d.path()).unwrap();
+    assert_eq!(lib.class_settings(), stricter);
+    assert_eq!(ids(&lib, &soft), [1, 2]);
+    lib.set_class_settings(&c1analysis::ClassSettings::default()).unwrap();
+    assert_eq!(ids(&lib, &soft), [2]);
 }
 
 #[test]
@@ -1040,7 +1284,7 @@ fn groups_split_by_a_filter_count_whole_and_drop_what_is_no_group() {
     let two = source.photo(&id(2)).unwrap().captured_at;
     source.edit_externally(&id(4), |p| p.captured_at = two);
     lib.sync(&source).unwrap();
-    assert_eq!(lib.regroup().unwrap(), 6);
+    assert_eq!(lib.regroup().unwrap(), 0, "the sync already grouped them");
     let size = |g: &c1index::Group| (g.size, g.matched, g.rows.len());
 
     // Unfiltered: the whole burst and the whole pair.
@@ -1089,7 +1333,7 @@ fn groups_page_with_an_exact_total() {
     }
     lib.put_analyses(analyses).unwrap();
     lib.sync(&source).unwrap();
-    assert_eq!(lib.regroup().unwrap(), 9);
+    assert_eq!(lib.regroup().unwrap(), 0, "the sync already grouped them");
 
     let all = lib.groups(&Filter::default(), false, 0, 100).unwrap();
     assert_eq!(all.total, 4);

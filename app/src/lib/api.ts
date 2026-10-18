@@ -69,6 +69,8 @@ export type Filter = {
   series?: boolean;
   /** Measured by the analysis, or not yet. */
   analysed?: boolean;
+  /** One photo per duplicate group or series (its sharpest), unless one group is picked. */
+  stacked?: boolean;
   /** Only photos with a position inside this area (the map's view). */
   within?: BBox;
 };
@@ -143,7 +145,10 @@ export type ThumbsState = {
   reasons: [string, number][];
 };
 
-export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
+export type Sort =
+  | "DateDesc" | "Date" | "RatingDesc" | "Rating" | "ImportedDesc" | "Imported" | "Filename" | "FilenameDesc"
+  | "SharpnessDesc" | "Sharpness" | "BrightnessDesc" | "Brightness"
+  | "ColorLabel" | "ColorLabelRev" | "Match" | "MatchWorst";
 
 export type QueryOptions = {
   sort?: Sort;
@@ -402,8 +407,15 @@ export type GroupPage = { total: number; groups: Group[] };
 export const GROUP_PAGE = 60;
 /** A page of the duplicate groups (or series) among the photos the filter selects, biggest
  *  first, with how many there are in all. */
-export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE) =>
-  invoke<GroupPage>("groups", { filter, series, offset, limit });
+export type GroupSort = "Matched" | "Size" | "Newest" | "Oldest" | "Sharpest";
+export const groups = (
+  filter: Filter,
+  series: boolean,
+  offset = 0,
+  limit = GROUP_PAGE,
+  sort: GroupSort = "Matched",
+  reverse = false,
+) => invoke<GroupPage>("groups", { filter, series, sort, reverse, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */
@@ -565,3 +577,37 @@ export const writeApply = () => invoke<{ written: number; backup: string | null 
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
+
+/** Where the analysis draws the lines between classes (shares are 0..1). */
+export type ClassSettings = {
+  mono_chroma: number;
+  colour_share: number;
+  colour_floor: number;
+  dark_below: number;
+  bright_above: number;
+  clipped_share: number;
+  blocked_share: number;
+  flat_below: number;
+  soft_below: number;
+  blurry_below: number;
+  square_ratio: number;
+  panorama_ratio: number;
+  duplicate_bits: number;
+  series_bits: number;
+  series_gap_ms: number;
+  series_min: number;
+};
+/** What some settings would give: `<dimension>|<class>` → photos, and photos in groups. */
+export type ClassPreview = {
+  measured: number;
+  counts: Record<string, number>;
+  duplicates: number;
+  series: number;
+};
+export const classSettings = () => invoke<ClassSettings>("class_settings");
+export const defaultClassSettings = () => invoke<ClassSettings>("default_class_settings");
+/** Classes the measured photos again; returns the settings kept (brought into range). */
+export const setClassSettings = (settings: ClassSettings) =>
+  invoke<ClassSettings>("set_class_settings", { settings });
+export const previewClasses = (settings: ClassSettings) =>
+  invoke<ClassPreview>("preview_classes", { settings });

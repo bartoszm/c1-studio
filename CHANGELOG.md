@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Header on the map:** switching to the map squeezed the Photos/Map/Analysis buttons to a sliver. The map's own tools (grid follows map, GPX…, Neighbours…) are now in a row above the map, and on a narrow window the search box shrinks first, then the slider and the count give way.
+
+- **Library open in another window:** a window that could not open its library because another C1 Studio window had it said so and stayed stuck, even after the other window was closed. It now explains it ("This library is open in another C1 Studio window") and has a **Try again** button (in the window and in the source menu).
+
+- **Analysis tabs:** the Analysis view has two tabs. *Look* holds the shape, colour, light and focus charts, with a **Stack bursts & duplicates** toggle (also in the header) that shows one photo per group, its sharpest. *Alike* holds duplicates and series in one list, sortable (most matching, biggest, newest, oldest, sharpest), with sliders for what counts as a duplicate or a series; the duplicate and series settings moved there from Settings. Stacking hides the other frames until you open the group; with a filter on, a frame is hidden only when the sharpest frame of its group matches the filter too, so no burst disappears.
+- **Sorting:** the header has a *Sort by* box (Date taken, Rating, Colour label, Imported, File name, Sharpness, Brightness, Best match) and a direction button that says what it does ("Newest first", "Lowest first", "Z to A"; click to reverse). It orders the grid and the strip under the map and the analysis, and every field has both directions. **Best match** ranks photos by how well they fit the colours, light and focus you picked (red + green: the share of the photo in either; dark: how dark; sharp: how sharp), averaged when you pick several; it is offered only while such a filter is picked. Photos not measured yet come last. Groups in Alike sort the same way. The index is rebuilt once on first start.
+- **Splitter:** drag the line between the map (or the charts) and the photo strip to resize it; arrow keys move it, double-click resets. Remembered.
+- **Settings:** a wider dialog with categories (Sidebar, Map & places, Analysis).
+
+- **Analysis settings:** Settings now has an Analysis section where you set when a photo counts as a colour (share of the photo, floor for the biggest colour, black & white chroma), as dark, bright, clipped or low contrast, as soft or blurry, as square or panorama, and what makes a duplicate or a series. The numbers beside each group show how many photos each class would get; Apply sorts the measured photos again without measuring them. Kept per library (#29). Not yet: a "has a distinct patch of red" colour mode, which needs the photos measured again.
+
 - **Start-up dialog:** while a catalog opens, a dialog shows the step (opening the library, reading the catalog, indexing N of M photos, saving the index) and the time so far, instead of an empty window. The window is no longer blocked while the library opens.
 
 ## 0.2.0 — 2026-10-15

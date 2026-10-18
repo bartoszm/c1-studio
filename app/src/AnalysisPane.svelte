@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { untrack } from "svelte";
   import * as api from "./lib/api";
-  import type { AnalysisState, Dim, Filter, GroupPage } from "./lib/api";
+  import type { AnalysisState, Dim, Filter } from "./lib/api";
   import { HUES } from "./lib/format";
-  import { emptyNote, groupBadge, groupCount, moreLabel } from "./lib/analysis";
+  import { emptyNote } from "./lib/analysis";
+  import AlikePanel from "./AlikePanel.svelte";
 
   type Key = "shape" | "hues" | "light" | "focus";
   let {
-    filter, facets, total, analysis, version, ontoggle, onflag, ongroup, onshow,
+    filter, facets, total, analysis, version, stack, ontoggle, onflag, ongroup, onshow, onstack, onclasses,
   }: {
     filter: Filter;
     /** Counts over the photos the filter selects. */
@@ -16,11 +16,16 @@
     analysis: AnalysisState | null;
     /** Bumped when photos were edited or measured again. */
     version: number;
+    /** One photo per burst or duplicate group is shown (the counts follow). */
+    stack: boolean;
     ontoggle: (key: Key, value: string) => void;
     onflag: (flag: "duplicates" | "series" | "analysed") => void;
     /** Show one group's photos in the grid. */
     ongroup: (id: string) => void;
     onshow: () => void;
+    onstack: () => void;
+    /** The lines between classes moved. */
+    onclasses: () => void;
   } = $props();
 
   /** Each chart: dimension, title, filter field, value order (empty: by count). */
@@ -40,59 +45,28 @@
   const flag = (name: string) => facets.flag?.find(([v]) => v === name)?.[1] ?? 0;
   let measured = $derived(flag("analysed"));
 
-  // The groups of alike photos under the current filter, a page at a time: fetched again
-  // from the first page when it changes, "Show more" adds the next.
-  type Field = "duplicates" | "series";
-  let lists = $state<Record<Field, GroupPage>>({
-    duplicates: { total: 0, groups: [] },
-    series: { total: 0, groups: [] },
-  });
-  let adding = $state<Record<Field, boolean>>({ duplicates: false, series: false });
-  // Not state: the newest read asked for, and what `lists` hold (the filter and the read).
-  let loadedFor = "";
-  let listKey = "";
-  let listFilter = "";
-  let loaded: Filter = {};
-  $effect(() => {
-    // The area, picks of the groups themselves and the alike flags don't change which groups exist
-    // enough to refetch for; everything else does.
-    const asked = $state.snapshot(filter);
-    const all = { ...asked, group: undefined };
-    const filterKey = JSON.stringify(all);
-    const key = filterKey + ":" + version + ":" + measured;
-    if (key === loadedFor) return;
-    loadedFor = key;
-    // The same filter read again (an edit, photos measured): as many groups as are shown, so
-    // lists opened further stay open. Another filter starts from the first page.
-    const same = filterKey === listFilter;
-    const count = (f: Field) => (same ? Math.max(api.GROUP_PAGE, untrack(() => lists[f].groups.length)) : api.GROUP_PAGE);
-    Promise.all([api.groups(all, false, 0, count("duplicates")), api.groups(all, true, 0, count("series"))])
-      .then(([duplicates, series]) => {
-        if (key === loadedFor) {
-          lists = { duplicates, series };
-          loaded = all;
-          listKey = key;
-          listFilter = filterKey;
-        }
-      })
-      .catch(() => {});
-  });
-  async function more(field: Field) {
-    // Not while the lists are being read again: the next page would be the old filter's.
-    if (adding[field] || listKey !== loadedFor) return;
-    const key = listKey;
-    adding[field] = true;
+  type Part = "look" | "alike";
+  function rememberedPart(): Part {
     try {
-      const page = await api.groups(loaded, field === "series", lists[field].groups.length);
-      // Dropped when the lists were read again meanwhile.
-      if (key !== loadedFor || key !== listKey) return;
-      const shown = new Set(lists[field].groups.map((g) => g.id));
-      lists[field] = { total: page.total, groups: [...lists[field].groups, ...page.groups.filter((g) => !shown.has(g.id))] };
+      return localStorage.getItem("analysisPart") === "alike" ? "alike" : "look";
     } catch {
-      // The button stays for another try.
-    } finally {
-      adding[field] = false;
+      return "look";
     }
+  }
+  let part = $state<Part>(rememberedPart());
+  const PARTS: [Part, string][] = [["look", "Look"], ["alike", "Alike"]];
+  function show(next: Part) {
+    part = next;
+    try { localStorage.setItem("analysisPart", next); } catch { /* not remembered */ }
+  }
+  /** Arrow keys move between the tabs, and focus goes with them. */
+  function partKey(e: KeyboardEvent, key: Part) {
+    const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1 : 0;
+    if (!step) return;
+    const next = PARTS[(PARTS.findIndex(([k]) => k === key) + step + PARTS.length) % PARTS.length][0];
+    show(next);
+    e.preventDefault();
+    queueMicrotask(() => document.getElementById(`analysis-tab-${next}`)?.focus());
   }
 </script>
 
@@ -114,75 +88,71 @@
     <button class="show" onclick={onshow}>Show {total.toLocaleString()} photos</button>
   </header>
 
-  <div class="charts">
-    {#each CHARTS as [dim, title, key, order] (dim)}
-      {@const list = values(dim, order)}
-      {@const max = Math.max(1, ...list.map(([, n]) => n))}
-      <section class="card">
-        <h3>{title}</h3>
-        {#each list as [value, n] (value)}
-          <button class="bar-row" class:on={filter[key]?.includes(value)} onclick={() => ontoggle(key, value)}>
-            <span class="name">
-              {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? "#888"}></i>{/if}{value}
-            </span>
-            <span class="track"><span class="fill" style:width="{(100 * n) / max}%" style:background={dim === "hue" ? (HUES[value] ?? "#888") : null}></span></span>
-            <span class="n">{n.toLocaleString()}</span>
-          </button>
-        {:else}
-          <p class="none">{emptyNote(total, measured)}</p>
-        {/each}
-      </section>
+  <div class="parts" role="tablist" aria-label="Analysis">
+    {#each PARTS as [key, label] (key)}
+      <button
+        role="tab"
+        id="analysis-tab-{key}"
+        aria-selected={part === key}
+        aria-controls="analysis-panel-{key}"
+        tabindex={part === key ? 0 : -1}
+        class:on={part === key}
+        onclick={() => show(key)}
+        onkeydown={(e) => partKey(e, key)}
+      >{label}</button>
     {/each}
   </div>
 
-  {#each [
-    ["Duplicates", "The same frame twice: different images taken at the same instant that look alike.", "duplicates", flag("duplicate")],
-    ["Series", "Bursts: three or more photos from one camera, seconds apart, looking alike.", "series", flag("series")],
-  ] as const as [title, hint, field, count] (title)}
-    {@const { total: groupTotal, groups } = lists[field]}
-    <section class="alike">
-      <h3>
-        {title}
-        <span class="totals">
-          <!-- Every photo the filter picks that is in one, also where it picks too few of a group to list. -->
-          <button class="link" class:on={filter[field]} title="Only these photos in the grid" onclick={() => onflag(field)}>
-            {count.toLocaleString()} photo{count === 1 ? "" : "s"}
-          </button>
-          · <span class="group-total">{groupCount(groupTotal)}</span>
-        </span>
-      </h3>
-      <p class="hint">{hint}</p>
-      <div class="groups">
-        {#each groups as g (g.id)}
-          <button
-            class="group"
-            class:on={filter.group === g.id}
-            title={g.matched < g.size
-              ? `Show the ${g.matched} of these ${g.size} photos the filter picks in the grid`
-              : `Show these ${g.size} photos in the grid`}
-            onclick={() => ongroup(g.id)}
-          >
-            <span class="thumbs">
-              {#each g.rows as row (row)}<img src={api.thumbUrl(row)} alt="" loading="lazy" decoding="async" />{/each}
-            </span>
-            <span class="size">{groupBadge(g)}</span>
-          </button>
-        {:else}
-          <p class="none">None{filter.group || total === 0 ? "" : " found"}.</p>
-        {/each}
-      </div>
-      {#if groupTotal > groups.length}
-        <button class="more" disabled={adding[field]} onclick={() => more(field)}>
-          {moreLabel(groupTotal, groups.length)}
-        </button>
-      {/if}
-    </section>
-  {/each}
+  <div role="tabpanel" id="analysis-panel-{part}" aria-labelledby="analysis-tab-{part}">
+  {#if part === "look"}
+    <div class="stack">
+      <button class="toggle" class:on={stack} aria-pressed={stack} onclick={onstack}>Stack bursts &amp; duplicates</button>
+      <span class="muted">
+        {stack
+          ? "One photo per group, its sharpest: the counts below leave the others out."
+          : "Every photo counts. Stack to show one photo per burst or duplicate group."}
+      </span>
+    </div>
+    <div class="charts">
+      {#each CHARTS as [dim, title, key, order] (dim)}
+        {@const list = values(dim, order)}
+        {@const max = Math.max(1, ...list.map(([, n]) => n))}
+        <section class="card">
+          <h3>{title}</h3>
+          {#each list as [value, n] (value)}
+            <button class="bar-row" class:on={filter[key]?.includes(value)} onclick={() => ontoggle(key, value)}>
+              <span class="name">
+                {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? "#888"}></i>{/if}{value}
+              </span>
+              <span class="track"><span class="fill" style:width="{(100 * n) / max}%" style:background={dim === "hue" ? (HUES[value] ?? "#888") : null}></span></span>
+              <span class="n">{n.toLocaleString()}</span>
+            </button>
+          {:else}
+            <p class="none">{emptyNote(total, measured)}</p>
+          {/each}
+        </section>
+      {/each}
+    </div>
+  {:else}
+    {#if stack}
+      <p class="muted stacknote">Stack is on: the photo counts below leave out the stacked frames; the groups are counted whole.</p>
+    {/if}
+    <AlikePanel
+      {filter}
+      {version}
+      {total}
+      counts={{ duplicates: flag("duplicate"), series: flag("series") }}
+      onflag={onflag}
+      {ongroup}
+      {onclasses}
+    />
+  {/if}
+  </div>
 </div>
 
 <style>
   .analysis { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px 24px; }
-  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
   .progress { display: flex; align-items: center; gap: 10px; color: var(--muted, #999); }
   progress { width: 160px; }
   .link { color: #e8b03a; font-size: 12px; }
@@ -190,10 +160,19 @@
   .link.on { font-weight: 600; }
   .show { padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
   .show:hover { background: var(--hover, #333); }
+  .parts { display: flex; gap: 2px; margin-bottom: 10px; border-bottom: 1px solid var(--line, #333); }
+  .parts button { padding: 5px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+  .parts button:hover { background: var(--hover, #333); }
+  .parts button.on { border-bottom-color: #5b8def; font-weight: 600; }
+  .stacknote { margin: 0 0 8px; }
+  .stack { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .toggle { padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
+  .toggle:hover { background: var(--hover, #333); }
+  .toggle.on { background: var(--on, #2a3a55); border-color: #5b8def; }
+  .muted { color: var(--muted, #999); font-size: 12px; }
   .charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-  .card, .alike { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line, #333); border-radius: 4px; padding: 8px 10px; }
-  h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #999; display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-  h3 .link, h3 .totals { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .card { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line, #333); border-radius: 4px; padding: 8px 10px; }
+  h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #999; }
   .bar-row { display: grid; grid-template-columns: 110px 1fr 48px; gap: 8px; align-items: center; width: 100%; padding: 2px 4px; border-radius: 3px; text-align: left; }
   .bar-row:hover { background: var(--hover, #333); }
   .bar-row.on { background: var(--on, #2a3a55); }
@@ -202,15 +181,5 @@
   .track { height: 8px; background: rgba(255, 255, 255, 0.07); border-radius: 4px; overflow: hidden; }
   .fill { display: block; height: 100%; background: #5b8def; border-radius: 4px; }
   .n { text-align: right; color: var(--muted, #999); font-variant-numeric: tabular-nums; }
-  .alike { margin-top: 12px; }
-  .hint, .none { margin: 0 0 8px; font-size: 12px; color: #888; }
-  .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
-  .group { display: block; width: 100%; min-width: 0; overflow: hidden; position: relative; padding: 4px; border: 1px solid var(--line, #333); border-radius: 3px; text-align: left; }
-  .group:hover { background: var(--hover, #333); }
-  .group.on { border-color: #5b8def; }
-  .more { margin-top: 8px; padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
-  .more:hover { background: var(--hover, #333); }
-  .thumbs { display: flex; gap: 3px; height: 72px; width: 100%; }
-  .thumbs img { flex: 1 1 0; width: 0; min-width: 0; height: 100%; object-fit: cover; border-radius: 2px; background: #222; }
-  .size { position: absolute; right: 2px; top: 2px; min-width: 20px; padding: 0 6px; border-radius: 10px; background: #e5484d; color: #fff; font-size: 11px; font-weight: 600; line-height: 18px; text-align: center; }
+  .none { margin: 0 0 8px; font-size: 12px; color: #888; }
 </style>
