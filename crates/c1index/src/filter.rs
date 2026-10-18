@@ -77,6 +77,15 @@ pub enum Trashed {
     Only,
 }
 
+/// Photos the user hid (see [`crate::hidden`]): left out unless asked for, like the trash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Hidden {
+    #[default]
+    Exclude,
+    Include,
+    Only,
+}
+
 /// Inclusive millisecond bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
@@ -181,6 +190,7 @@ pub struct Filter {
     pub style: Option<String>,
     pub has_local_layers: bool,
     pub trashed: Trashed,
+    pub hidden: Hidden,
     pub variant_index: Option<u32>,
     /// From the analysis, each any of its values: `landscape`, `portrait`, ...
     pub shape: Vec<String>,
@@ -542,6 +552,11 @@ impl Filter {
             Trashed::Exclude => must_not.push(has(flag::TRASHED)),
             Trashed::Include => {}
             Trashed::Only => must.push(has(flag::TRASHED)),
+        }
+        match self.hidden {
+            Hidden::Exclude => must_not.push(has(flag::HIDDEN)),
+            Hidden::Include => {}
+            Hidden::Only => must.push(has(flag::HIDDEN)),
         }
         for (dim, values) in
             [(Dim::Shape, &self.shape), (Dim::Hue, &self.hues), (Dim::Light, &self.light), (Dim::Focus, &self.focus)]

@@ -20,7 +20,8 @@ use tantivy::{DocAddress, Index, IndexReader, IndexWriter, Order, ReloadPolicy, 
 
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
-use crate::filter::{Distinct, Filter, Presence, Range, Trashed};
+use crate::filter::{Distinct, Filter, Hidden, Presence, Range, Trashed};
+use crate::hidden::HiddenBook;
 use crate::looks::{Look, Looks, Record};
 use crate::places::{Coarse, Guessed, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
@@ -192,6 +193,10 @@ pub struct Library {
     /// Photos given a position from their neighbours in time, by photo key (also in
     /// `place_book`).
     guessed: RwLock<HashMap<String, Guessed>>,
+    /// Photos the user hid, by photo key (also in `hidden_book`): read when their documents
+    /// are made, so the index can leave them out.
+    hidden_book: HiddenBook,
+    hidden: RwLock<HashSet<String>>,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -283,6 +288,8 @@ impl Library {
         let looks = Looks::open(&dir.join("analysis.redb"))?;
         let trip_book = TripBook::open(&dir.join("trips.redb"))?;
         let place_book = PlaceBook::open(&dir.join("places.redb"))?;
+        let hidden_book = HiddenBook::open(&dir.join("hidden.redb"))?;
+        let hidden = RwLock::new(hidden_book.all()?);
         // A photo moved since it was given its place's position is placed for real: its
         // mark goes. (One with no position keeps it: an undo can be redone.)
         let mut marks = place_book.coarse()?;
@@ -325,6 +332,8 @@ impl Library {
             place_cache: Mutex::default(),
             coarse,
             guessed,
+            hidden_book,
+            hidden,
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -360,7 +369,8 @@ impl Library {
         let key = photo.id.key();
         let coarse =
             photo.geo.is_some_and(|g| self.coarse.read().unwrap().get(&key).is_some_and(|c| c.holds(g.lat, g.lon)));
-        schema::document(&self.fields, row, photo, seen.get(&key), coarse)
+        let hidden = self.hidden.read().unwrap().contains(&key);
+        schema::document(&self.fields, row, photo, seen.get(&key), coarse, hidden)
     }
 
     /// Every measured photo's analysis and groups.
@@ -507,6 +517,57 @@ impl Library {
             }
         }
         Ok(changed)
+    }
+
+    /// Hides (`true`) these photos from every view, or shows them again (`false`). A mark of
+    /// C1 Studio's own: nothing is queued for the source. Returns the rows whose mark
+    /// changed, for undo.
+    pub fn set_hidden(&self, rows: &[u64], hidden: bool) -> anyhow::Result<Vec<u64>> {
+        let _writing = self.writing.lock().unwrap();
+        let mut changed: Vec<(u64, String)> = Vec::new();
+        {
+            let marked = self.hidden.read().unwrap();
+            let keys = self.keys.read().unwrap();
+            for &row in rows {
+                let Some(Some(key)) = keys.get(row as usize) else { continue };
+                if marked.contains(key) != hidden && !changed.iter().any(|(r, _)| *r == row) {
+                    changed.push((row, key.clone()));
+                }
+            }
+        }
+        if changed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let keys: Vec<String> = changed.iter().map(|(_, k)| k.clone()).collect();
+        self.hidden_book.set(&keys, hidden, now_ms())?;
+        {
+            let mut marked = self.hidden.write().unwrap();
+            for key in &keys {
+                if hidden {
+                    marked.insert(key.clone());
+                } else {
+                    marked.remove(key);
+                }
+            }
+        }
+        self.reindex_keys(&keys)?;
+        Ok(changed.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// Whether the user hid this photo.
+    pub fn is_hidden(&self, row: u64) -> bool {
+        let keys = self.keys.read().unwrap();
+        keys.get(row as usize).and_then(|k| k.as_ref()).is_some_and(|k| self.hidden.read().unwrap().contains(k))
+    }
+
+    /// Of the photos `filter` selects (hidden ones included), those the user hid: for
+    /// marking their tiles while hidden photos are shown.
+    pub fn hidden_rows(&self, filter: &Filter) -> anyhow::Result<Vec<u64>> {
+        if self.hidden.read().unwrap().is_empty() {
+            return Ok(Vec::new());
+        }
+        let only = Filter { hidden: Hidden::Only, ..filter.clone() };
+        Ok(self.query(&only, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows)
     }
 
     /// Writes the documents of these photos again. The caller holds `writing`.
@@ -1556,6 +1617,7 @@ impl Library {
         let carrying = Filter {
             keywords_under: remap.map.iter().map(|(from, _)| from.to_pipe()).collect(),
             trashed: Trashed::Include,
+            hidden: Hidden::Include,
             ..Filter::default()
         };
         let rows = self.query(&carrying, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
@@ -1614,7 +1676,8 @@ impl Library {
         let what = What::Undone { label: queued.remap.label.clone() };
         edits.log(&Event { at: now_ms(), origin: Origin::App, what })?;
         let moved: Vec<String> = queued.remap.map.iter().map(|(_, to)| to.to_pipe()).collect();
-        let carrying = Filter { keywords_under: moved, trashed: Trashed::Include, ..Filter::default() };
+        let carrying =
+            Filter { keywords_under: moved, trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
         let rows = self.query(&carrying, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
         let mut batch = self.store.batch()?;
         for row in rows {
@@ -1758,7 +1821,7 @@ fn expand(filter: &Filter, smart: &HashMap<String, SmartRule>) -> anyhow::Result
 pub fn smart_filter(rule: &SmartRule) -> anyhow::Result<Filter> {
     let mut parts = Vec::new();
     for condition in &rule.conditions {
-        let mut f = Filter { trashed: Trashed::Include, ..Filter::default() };
+        let mut f = Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
         match condition {
             Condition::KeywordContains(text) => f.keywords_containing = vec![text.clone()],
             Condition::Rating { min, max } => {
@@ -1770,7 +1833,7 @@ pub fn smart_filter(rule: &SmartRule) -> anyhow::Result<Filter> {
         }
         parts.push(f);
     }
-    let mut f = Filter { trashed: Trashed::Include, ..Filter::default() };
+    let mut f = Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
     if rule.match_all {
         f.all_of = parts;
     } else {

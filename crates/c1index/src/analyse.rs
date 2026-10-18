@@ -8,7 +8,7 @@ use std::time::{Instant, UNIX_EPOCH};
 use c1model::{ImageRef, PhotoSource};
 use serde::Serialize;
 
-use crate::filter::{Filter, Trashed};
+use crate::filter::{Filter, Hidden, Trashed};
 use crate::library::{Library, QueryOptions, Sort};
 use crate::thumbs::Thumbs;
 
@@ -44,7 +44,7 @@ pub fn run(
 ) -> anyhow::Result<Progress> {
     let started = Instant::now();
     let analysed = library.analysed();
-    let all = Filter { trashed: Trashed::Include, ..Filter::default() };
+    let all = Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
     let rows = library.query(&all, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
     let mut todo: Vec<(String, ImageRef, (u64, u64))> = Vec::new();
     for row in rows {

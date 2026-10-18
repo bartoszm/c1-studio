@@ -1,6 +1,6 @@
 use c1index::{
-    Dim, Filter, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed, What,
-    parse_rating,
+    Dim, Filter, Hidden, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed,
+    What, parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
@@ -455,7 +455,10 @@ fn filters_nest() {
 // ---------------------------------------------------------------------------------------
 
 fn row_of(library: &Library, n: u32) -> u64 {
-    let all = library.query(&Filter { trashed: Trashed::Include, ..Filter::default() }, &QueryOptions::default());
+    let all = library.query(
+        &Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() },
+        &QueryOptions::default(),
+    );
     all.unwrap().rows.into_iter().find(|r| library.photo_id(*r).unwrap().ext == n.to_string()).unwrap()
 }
 
@@ -1505,4 +1508,72 @@ fn a_selection_counts_and_merges_what_its_photos_have() {
     assert_eq!(s.keywords, [("best|best2018".to_owned(), 1), ("street".to_owned(), 2)]);
     // Rows that don't exist are left out.
     assert_eq!(lib.selection(&[9_999]).unwrap().places, []);
+}
+
+#[test]
+fn hidden_photos_leave_every_view_until_shown_and_the_mark_lasts() {
+    let (d, lib, source) = setup();
+    let all = ids(&lib, &Filter::default());
+    assert_eq!(all, [1, 2, 3, 4, 5, 6, 7, 8, 10]);
+    let changed = lib.set_hidden(&[row_of(&lib, 2), row_of(&lib, 5)], true).unwrap();
+    assert_eq!(changed.len(), 2);
+    // Hiding them again changes nothing (so an undo knows what to show again).
+    assert!(lib.set_hidden(&[row_of(&lib, 2)], true).unwrap().is_empty());
+
+    // Gone from the grid and from the counts beside it.
+    assert_eq!(ids(&lib, &Filter::default()), [1, 3, 4, 6, 7, 8, 10]);
+    let counted = |f: &Filter| {
+        let options = QueryOptions { limit: Some(0), facets: vec![Dim::Year], ..QueryOptions::default() };
+        lib.query(f, &options).unwrap().facets[&Dim::Year].iter().map(|(_, n)| *n).sum::<u64>()
+    };
+    assert_eq!(counted(&Filter::default()), 7);
+    // Shown on request, or alone.
+    assert_eq!(ids(&lib, &Filter { hidden: Hidden::Include, ..Filter::default() }), all);
+    assert_eq!(ids(&lib, &Filter { hidden: Hidden::Only, ..Filter::default() }), [2, 5]);
+    assert_eq!(lib.hidden_rows(&Filter::default()).unwrap().len(), 2);
+    assert!(lib.is_hidden(row_of(&lib, 5)) && !lib.is_hidden(row_of(&lib, 1)));
+    // Nothing is queued for the source: the mark is C1 Studio's own.
+    assert!(lib.pending().unwrap().is_empty());
+
+    // An edit or a sync rewrites the photo's document: it stays hidden.
+    lib.edit(&[(row_of(&lib, 2), Op::SetRating { base: None, value: Some(4) })]).unwrap();
+    source.edit_externally(&lib.photo_id(row_of(&lib, 5)).unwrap(), |p| p.rating = Some(1));
+    lib.sync(&source).unwrap();
+    assert_eq!(ids(&lib, &Filter { hidden: Hidden::Only, ..Filter::default() }), [2, 5]);
+
+    // A rebuilt index and a reopened library keep it.
+    lib.reindex().unwrap();
+    assert_eq!(ids(&lib, &Filter::default()), [1, 3, 4, 6, 7, 8, 10]);
+    drop(lib);
+    let lib = Library::open(d.path()).unwrap();
+    assert_eq!(ids(&lib, &Filter { hidden: Hidden::Only, ..Filter::default() }), [2, 5]);
+
+    // Shown again (an undo).
+    assert_eq!(lib.set_hidden(&[row_of(&lib, 2), row_of(&lib, 5)], false).unwrap().len(), 2);
+    assert_eq!(ids(&lib, &Filter::default()), all);
+    assert!(lib.hidden_rows(&Filter::default()).unwrap().is_empty());
+}
+
+#[test]
+fn hidden_photos_are_left_out_of_duplicate_groups_shown_but_still_measured() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, [40, 80, 210], 5000.0, h)),
+        (id(2).key(), (1, 1), look(600, 400, [40, 80, 210], 5000.0, h ^ 1)),
+    ])
+    .unwrap();
+    let one = source.photo(&id(1)).unwrap().captured_at;
+    source.edit_externally(&id(2), |p| p.captured_at = one);
+    lib.sync(&source).unwrap();
+    lib.regroup().unwrap();
+    assert_eq!(lib.groups(&Filter::default(), false, 0, 10).unwrap().groups.len(), 1);
+    lib.set_hidden(&[row_of(&lib, 2)], true).unwrap();
+    // One of the pair is hidden: no pair is left to show.
+    assert!(lib.groups(&Filter::default(), false, 0, 10).unwrap().groups.is_empty());
+    let shown = Filter { hidden: Hidden::Include, ..Filter::default() };
+    assert_eq!(lib.groups(&shown, false, 0, 10).unwrap().groups.len(), 1);
+    // The analysis still knows it.
+    assert!(lib.look(row_of(&lib, 2)).is_some());
 }

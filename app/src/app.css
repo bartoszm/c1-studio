@@ -224,6 +224,21 @@ main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps t
 .cell:hover { outline-color: #555; }
 .cell.picked { outline: 2px solid #777; background: var(--on); }
 .cell.sel { outline: 2px solid var(--accent); background: var(--on); }
+/* A hidden photo, shown while Hidden is on: dimmed, with a label. */
+.cell:has(.hidden-mark) img { opacity: 0.45; }
+.cell .hidden-mark {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+  color: #fff;
+  background: rgb(0 0 0 / 65%);
+  border: 1px solid var(--queued);
+  border-radius: 3px;
+  pointer-events: none;
+}
 .cell .queued {
   position: absolute;
   top: 7px;
@@ -352,6 +367,9 @@ footer {
 .info-panel .more { margin: 2px 0 0; font-size: 12px; }
 .info-panel .focused { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .info-panel .tag { padding: 0 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
+.info-panel .hidden-tag { color: var(--text); border-color: var(--queued); }
+.info-panel .marks .hide { margin-left: auto; padding: 1px 8px; font-size: 12px; border: 1px solid var(--line); border-radius: 3px; }
+.info-panel .marks .hide:hover { background: var(--hover); }
 .info-panel dl { display: grid; grid-template-columns: 82px 1fr; gap: 4px 8px; margin: 10px 0 0; }
 .info-panel dt { color: var(--muted); }
 .info-panel dd { margin: 0; overflow-wrap: anywhere; }

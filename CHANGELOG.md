@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Hidden photos:** press **h**, or **Hide** in the details panel, to keep photos (sensitive, private) out of every view: the grid, the map, the timeline, trips, the analysis and every count. **Hidden** in the header shows them again, dimmed and labelled on their tiles, and **h** or **Unhide** brings them back for good; undo works. The mark is C1 Studio's own: nothing is written to Capture One, and it survives a rebuilt library. It is not encryption: the photos stay in the catalog and in the thumbnail cache (#51).
+
 - **Start-up dialog:** while a catalog opens, a dialog shows the step (opening the library, reading the catalog, indexing N of M photos, saving the index) and the time so far, instead of an empty window. The window is no longer blocked while the library opens.
 
 ## 0.2.0 — 2026-10-15

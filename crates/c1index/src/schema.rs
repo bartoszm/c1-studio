@@ -140,6 +140,8 @@ pub mod flag {
     pub const EDITED: &str = "edited";
     pub const LOCAL_LAYERS: &str = "local_layers";
     pub const TRASHED: &str = "trashed";
+    /// Hidden by the user in C1 Studio (see [`crate::hidden`]): left out unless shown.
+    pub const HIDDEN: &str = "hidden";
     /// A country without its ISO code.
     pub const NO_COUNTRY_CODE: &str = "no_country_code";
     /// Measured by the analysis (stage 3).
@@ -334,7 +336,15 @@ fn sort_key(ms: Option<i64>, row: u64) -> i64 {
 }
 
 /// `coarse`: its position was given from its place's name (see [`flag::COARSE_GPS`]).
-pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse: bool) -> TantivyDocument {
+/// `hidden`: the user hid it (see [`flag::HIDDEN`]).
+pub fn document(
+    f: &Fields,
+    row: u64,
+    photo: &Photo,
+    look: Option<&Look>,
+    coarse: bool,
+    hidden: bool,
+) -> TantivyDocument {
     let mut doc = TantivyDocument::default();
     let mut dim = |d: Dim, value: &str| doc_add_str(&mut doc, f.dim(d), value);
     dim(Dim::Source, &photo.id.source.0);
@@ -384,6 +394,7 @@ pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse
         (flag::EDITED, photo.edit.edited),
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),
+        (flag::HIDDEN, hidden),
         (flag::NO_COUNTRY_CODE, photo.place.country.is_some() && photo.place.country_code.is_none()),
         (flag::ANALYSED, look.is_some()),
         (flag::DUPLICATE, look.is_some_and(|l| l.duplicates.is_some())),

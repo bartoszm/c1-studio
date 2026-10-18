@@ -69,6 +69,8 @@ export type Filter = {
   series?: boolean;
   /** Measured by the analysis, or not yet. */
   analysed?: boolean;
+  /** Photos the user hid: left out unless "Include" (or "Only"). */
+  hidden?: "Exclude" | "Include" | "Only";
   /** Only photos with a position inside this area (the map's view). */
   within?: BBox;
 };
@@ -235,6 +237,8 @@ export type Photo = {
   collections: string[];
   edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number };
   trashed: boolean;
+  /** Hidden by the user in C1 Studio (not a Capture One field). */
+  hidden?: boolean;
 };
 
 export type CollectionKind = "Album" | "Smart" | "Group" | "Project" | "Folder" | "Other";
@@ -455,6 +459,10 @@ export const setTripSettings = (settings: TripSettings) => invoke<void>("set_tri
 /** Returns the trip to select afterwards, if any. */
 export const editTrips = (edit: TripEdit) => invoke<number | null>("edit_trips", { edit });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
+/** Hides photos from every view (or shows them again); returns the rows whose mark changed. */
+export const setHidden = (rows: number[], hidden: boolean) => invoke<number[]>("set_hidden", { rows, hidden });
+/** Of the photos the filter selects, those that are hidden. */
+export const hiddenRows = (filter: Filter) => invoke<number[]>("hidden_rows", { filter });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */
 export const photoHistory = (row: number) =>

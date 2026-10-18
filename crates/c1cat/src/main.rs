@@ -610,7 +610,12 @@ fn remap(
         anyhow::bail!("{}: {why}", remap.label);
     }
     let froms: Vec<String> = remap.map.iter().map(|(f, _)| f.to_pipe()).collect();
-    let carrying = Filter { keywords_under: froms, trashed: c1index::Trashed::Include, ..Filter::default() };
+    let carrying = Filter {
+        keywords_under: froms,
+        trashed: c1index::Trashed::Include,
+        hidden: c1index::Hidden::Include,
+        ..Filter::default()
+    };
     let photos = session.library.query(&carrying, &QueryOptions { limit: Some(0), ..QueryOptions::default() })?.total;
     let report = if flags.apply {
         let plan = ApplyPlan { remaps: vec![remap.clone()], ..ApplyPlan::default() };
