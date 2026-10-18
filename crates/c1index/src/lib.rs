@@ -7,6 +7,7 @@ pub mod facets;
 pub mod filter;
 pub mod geo;
 pub mod gpx;
+pub mod hidden;
 pub mod library;
 pub mod looks;
 pub mod matching;
@@ -18,7 +19,7 @@ pub mod trips;
 
 pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
-pub use filter::{BBox, Filter, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
+pub use filter::{BBox, Filter, Hidden, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
 pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
 pub use library::{ClassPreview, GroupSort};
 pub use library::{

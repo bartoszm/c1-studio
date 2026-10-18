@@ -35,6 +35,7 @@
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, sameRows } from "./lib/batch";
+  import { hiddenNote, hides, withHidden } from "./lib/hidden";
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
@@ -230,6 +231,10 @@
   /** Bumped when the analysis has measured photos again: the panel's Look reads them again. */
   let analysed = $state(0);
 
+  /** Photos the user hid are left out of every view; "Hidden" in the header lets them in. */
+  let showHidden = $state(false);
+  /** Of the photos shown, the hidden ones (only while they are shown): their tiles are marked. */
+  let hiddenHere = $state.raw(new Set<number>());
   /** How tall the strip of photos under the map and the analysis is: dragged, remembered. */
   let stripH = $state(storedStrip((() => { try { return localStorage.getItem("strip"); } catch { return null; } })()));
   let paneEl = $state<HTMLDivElement>();
@@ -342,8 +347,13 @@
   type Done =
     | { ops: [number, api.Op][] }
     | { remap: number; request: api.RemapRequest }
-    | { collection: number; change: api.CollectionChange };
-  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest } | { change: api.CollectionChange };
+    | { collection: number; change: api.CollectionChange }
+    | { hidden: number[]; on: boolean };
+  type Undone =
+    | { ops: [number, api.Op][] }
+    | { request: api.RemapRequest }
+    | { change: api.CollectionChange }
+    | { hidden: number[]; on: boolean };
   let undoStack: Done[] = [];
   let redoStack: Undone[] = [];
 
@@ -448,6 +458,9 @@
     untrack(() => (filter = following(filter)));
     const asked = asking($state.snapshot(filter));
     const groups = dims;
+    // Which of the photos shown are hidden, to mark their tiles: none are while hidden.
+    if (showHidden) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
+    else hiddenHere = new Set();
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
@@ -874,21 +887,80 @@
     });
   }
 
+  /** How many photos an undo or redo touches, when it is about photos. */
+  const doneRows = (d: Done | Undone) => ("ops" in d ? opRows(d.ops) : "hidden" in d ? d.hidden.length : null);
+
   function undo() {
     const last = undoStack.at(-1);
-    if (last) return working(editingNote("undo", "ops" in last ? opRows(last.ops) : null), undoNow);
+    if (last) return working(editingNote("undo", doneRows(last)), undoNow);
   }
 
   function redo() {
     const last = redoStack.at(-1);
-    if (last) return working(editingNote("redo", "ops" in last ? opRows(last.ops) : null), redoNow);
+    if (last) return working(editingNote("redo", doneRows(last)), redoNow);
+  }
+
+  /** Hides the photos edited here from every view (`on`), or shows them again. A mark of
+   *  C1 Studio's own: nothing is queued for Capture One. */
+  async function setHidden(on: boolean, rows = targets()) {
+    if (!rows.length) return;
+    await working(on ? `hiding ${rows.length.toLocaleString()}…` : `showing ${rows.length.toLocaleString()}…`, async () => {
+      try {
+        const changed = await api.setHidden(rows, on);
+        if (changed.length) {
+          undoStack.push({ hidden: changed, on });
+          redoStack = [];
+          syncNote = hiddenNote(changed.length, on);
+        }
+        editError = null;
+      } catch (e) {
+        editError = String(e);
+      }
+      await edited();
+    });
+  }
+  /** `h`: hides the photos edited here, or shows them again when all of them are hidden. Asks
+   *  the library which are hidden: the tiles' marks are only known while hidden ones are shown,
+   *  and may still be on their way. */
+  let hiding = false;
+  async function toggleHidden() {
+    if (hiding) return;
+    hiding = true;
+    try {
+      const rows = targets();
+      const hidden = new Set(await api.hiddenOf(rows));
+      await setHidden(hides(rows, hidden), rows);
+    } catch (e) {
+      editError = String(e);
+    } finally {
+      hiding = false;
+    }
+  }
+  /** Whether every photo edited here is hidden: what the Hide button offers. */
+  let targetsHidden = $state(false);
+  $effect(() => {
+    const rows = targets();
+    void version;
+    if (!rows.length) {
+      targetsHidden = false;
+      return;
+    }
+    api.hiddenOf(rows).then((h) => { if (targets().join() === rows.join()) targetsHidden = h.length === rows.length; }).catch(() => {});
+  });
+  /** Not remembered across starts: hidden photos are out again whenever the app opens. */
+  function toggleShowHidden() {
+    showHidden = !showHidden;
+    run();
   }
 
   async function undoNow() {
     const last = undoStack.pop();
     if (!last) return;
     try {
-      if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
+      if ("hidden" in last) {
+        await api.setHidden(last.hidden, !last.on);
+        redoStack.push(last);
+      } else if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
       else if ("collection" in last) {
         await api.undoCollection(last.collection);
         redoStack.push({ change: last.change });
@@ -915,7 +987,10 @@
     const last = redoStack.pop();
     if (!last) return;
     try {
-      if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
+      if ("hidden" in last) {
+        await api.setHidden(last.hidden, last.on);
+        undoStack.push(last);
+      } else if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
       else if ("change" in last) {
         // The same id as before, so photo edits redone after it still find the album.
         const [seq, change] = await api.changeCollection(last.change);
@@ -1040,7 +1115,7 @@
   let allOf = $state<AllOf>({});
   /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
   function compiled(f: Filter): Filter {
-    return allOfPicks(compile(f, match), allOf);
+    return withHidden(allOfPicks(compile(f, match), allOf), showHidden);
   }
   function toggleAllOf(card: keyof AllOf) {
     allOf = { ...allOf, [card]: !allOf[card] };
@@ -1483,6 +1558,7 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
+    else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing) {
       const album = shownAlbum;
       const n = targets().length;
@@ -1629,6 +1705,8 @@
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
+    // Set by the header's Hidden button, not a filter the user picks.
+    hidden: () => [],
     // Set from the header's Stack button, not a filter the user picks.
     stacked: () => [],
     within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
@@ -1758,6 +1836,8 @@
     onpaste={pasteClip}
     onpastechoose={() => { if (clipboard) pasting = targets(); }}
     onsync={openSync}
+    allHidden={targetsHidden}
+    onhide={toggleHidden}
   />
 {/snippet}
 
@@ -1833,6 +1913,13 @@
         onclick={openSync}
       >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
     </span>
+    <button
+      class="toggle"
+      class:on={showHidden}
+      aria-pressed={showHidden}
+      title={showHidden ? "Hidden photos are shown, marked on their tiles: click to leave them out again" : "Show the photos hidden with Hide (h); they are left out of every view and count until then"}
+      onclick={toggleShowHidden}
+    >Hidden</button>
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <button class="toggle settings" title="Settings: the sidebar's sections, online map services" aria-label="Settings" onclick={() => (showSettings = true)}>
@@ -2123,6 +2210,7 @@
     {selected}
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
+    hidden={(i) => hiddenHere.has(rowAt(i) ?? -1)}
     onselect={pick}
     ondragcell={dragCell}
     onopen={(i) => { pick(i); viewing = true; }}

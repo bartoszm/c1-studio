@@ -17,6 +17,7 @@
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, ongroup,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
+    allHidden = false, onhide,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -71,6 +72,10 @@
     onpastechoose: () => void;
     /** Opens the choice of fields to take from this photo onto the other selected ones. */
     onsync: () => void;
+    /** Every photo edited here is hidden (so the button shows them again). */
+    allHidden?: boolean;
+    /** Hides the photos edited here from every view, or shows them again (h). */
+    onhide?: () => void;
   } = $props();
 
   let photo = $state<api.Photo | null>(null);
@@ -333,7 +338,18 @@
     </span>
     {#if !batch}
       {#if p.trashed}<span class="tag">in trash</span>{/if}
+      {#if p.hidden}<span class="tag hidden-tag" title="Hidden in C1 Studio: left out of every view unless Hidden is on">hidden</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
+    {/if}
+    {#if onhide}
+      <button
+        class="hide"
+        title={allHidden
+          ? "Show again in every view (h)"
+          : "Hide from every view: kept in Capture One, left out here unless Hidden is on in the header (h)"}
+        aria-pressed={allHidden}
+        onclick={onhide}
+      >{allHidden ? "Unhide" : "Hide"}</button>
     {/if}
   </div>
   <div class="colors" role="group" aria-label="Colour tag">

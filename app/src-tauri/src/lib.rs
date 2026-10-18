@@ -802,9 +802,43 @@ async fn edit_trips(app: State<'_, App>, edit: c1index::trips::TripEdit) -> Resu
     app.session()?.library.edit_trips(edit).map_err(|e| format!("{e:#}"))
 }
 
+/// A photo as the details panel shows it: what its source holds, and whether it is hidden
+/// here.
+#[derive(Serialize)]
+struct PhotoView {
+    #[serde(flatten)]
+    photo: Photo,
+    hidden: bool,
+}
+
 #[tauri::command]
-async fn photo(app: State<'_, App>, row: u64) -> Result<Option<Photo>, String> {
-    app.session()?.library.photo(row).map_err(text)
+async fn photo(app: State<'_, App>, row: u64) -> Result<Option<PhotoView>, String> {
+    let s = app.session()?;
+    let photo = s.library.photo(row).map_err(text)?;
+    Ok(photo.map(|photo| PhotoView { photo, hidden: s.library.is_hidden(row) }))
+}
+
+/// Hides photos from every view (`hidden`), or shows them again; returns the rows whose
+/// mark changed, for undo. A mark of C1 Studio's own: nothing is written to the source.
+#[tauri::command]
+async fn set_hidden(app: State<'_, App>, rows: Vec<u64>, hidden: bool) -> Result<Vec<u64>, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.set_hidden(&rows, hidden))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Of these photos, the ones that are hidden: what `h` and the Hide button go by.
+#[tauri::command]
+async fn hidden_of(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<u64>, String> {
+    Ok(app.session()?.library.hidden_of(&rows))
+}
+
+/// Of the photos `filter` selects, those that are hidden: for marking their tiles.
+#[tauri::command]
+async fn hidden_rows(app: State<'_, App>, filter: Filter) -> Result<Vec<u64>, String> {
+    app.session()?.library.hidden_rows(&filter).map_err(text)
 }
 
 #[tauri::command]
@@ -1159,7 +1193,12 @@ async fn move_place(
     if target.last().is_none_or(|l| l.is_none()) {
         return Err("the new name cannot be empty".into());
     }
-    let filter = Filter { place_under: Some(from), trashed: c1index::Trashed::Include, ..Filter::default() };
+    let filter = Filter {
+        place_under: Some(from),
+        trashed: c1index::Trashed::Include,
+        hidden: c1index::Hidden::Include,
+        ..Filter::default()
+    };
     let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
     let rows = s.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.rows;
     s.touched();
@@ -1379,7 +1418,12 @@ async fn collection_changes(app: State<'_, App>) -> Result<Vec<(u64, String, Str
 /// How many photos carry any of these keywords (or keywords under them).
 #[tauri::command]
 async fn keyword_users(app: State<'_, App>, paths: Vec<String>) -> Result<usize, String> {
-    let filter = Filter { keywords_under: paths, trashed: c1index::Trashed::Include, ..Filter::default() };
+    let filter = Filter {
+        keywords_under: paths,
+        trashed: c1index::Trashed::Include,
+        hidden: c1index::Hidden::Include,
+        ..Filter::default()
+    };
     let options = QueryOptions { limit: Some(0), ..QueryOptions::default() };
     Ok(app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.total)
 }
@@ -1998,6 +2042,9 @@ pub fn run() {
             gpx_plan,
             gpx_apply,
             groups,
+            set_hidden,
+            hidden_rows,
+            hidden_of,
             photo,
             collections,
             sync,
