@@ -69,6 +69,10 @@ export type Filter = {
   series?: boolean;
   /** Measured by the analysis, or not yet. */
   analysed?: boolean;
+  /** Photos the user hid: left out unless "Include" (or "Only"). */
+  hidden?: "Exclude" | "Include" | "Only";
+  /** One photo per duplicate group or series (its sharpest), unless one group is picked. */
+  stacked?: boolean;
   /** Only photos whose original cannot be reached now, or only those that can. */
   offline?: boolean;
   /** Only photos with a position inside this area (the map's view). */
@@ -124,7 +128,11 @@ export type LookView = {
     highlights: number;
     shadows: number;
     sharpness: number;
+    /** Per name in `HUE_NAMES`: share of the pixels, biggest patch, mean chroma. */
+    hue_stats: { share: number; patch: number; chroma: number }[];
   };
+  /** The lines the classes were drawn with. */
+  lines: ClassSettings;
   shape: string;
   hues: string[];
   light: string[];
@@ -145,7 +153,10 @@ export type ThumbsState = {
   reasons: [string, number][];
 };
 
-export type Sort = "DateDesc" | "Date" | "RatingDesc" | "ImportedDesc" | "Filename";
+export type Sort =
+  | "DateDesc" | "Date" | "RatingDesc" | "Rating" | "ImportedDesc" | "Imported" | "Filename" | "FilenameDesc"
+  | "SharpnessDesc" | "Sharpness" | "BrightnessDesc" | "Brightness"
+  | "ColorLabel" | "ColorLabelRev" | "Match" | "MatchWorst";
 
 export type QueryOptions = {
   sort?: Sort;
@@ -248,6 +259,8 @@ export type Photo = {
   collections: string[];
   edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number };
   trashed: boolean;
+  /** Hidden by the user in C1 Studio (not a Capture One field). */
+  hidden?: boolean;
 };
 
 export type CollectionKind = "Album" | "Smart" | "Group" | "Project" | "Folder" | "Other";
@@ -349,6 +362,10 @@ export type CaptionField =
 export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | PlaceField | "geo" | CaptionField;
 
 export const status = () => invoke<Status>("status");
+/** How far opening a source has got; null once it is ready to use. Also sent as the
+ *  `startup-progress` event. */
+export type Startup = { step: "opening" | "reading" | "indexing" | "saving"; done: number; total: number };
+export const startupProgress = () => invoke<Startup | null>("startup_progress");
 export const sources = () => invoke<SourcesView>("sources");
 /** The system dialog for a provider's kind of source; null if cancelled. */
 export const pickSource = (provider: string) => invoke<string | null>("pick_source", { provider });
@@ -446,8 +463,15 @@ export type GroupPage = { total: number; groups: Group[] };
 export const GROUP_PAGE = 60;
 /** A page of the duplicate groups (or series) among the photos the filter selects, biggest
  *  first, with how many there are in all. */
-export const groups = (filter: Filter, series: boolean, offset = 0, limit = GROUP_PAGE) =>
-  invoke<GroupPage>("groups", { filter, series, offset, limit });
+export type GroupSort = "Matched" | "Size" | "Newest" | "Oldest" | "Sharpest";
+export const groups = (
+  filter: Filter,
+  series: boolean,
+  offset = 0,
+  limit = GROUP_PAGE,
+  sort: GroupSort = "Matched",
+  reverse = false,
+) => invoke<GroupPage>("groups", { filter, series, sort, reverse, offset, limit });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */
@@ -499,6 +523,12 @@ export const setTripSettings = (settings: TripSettings) => invoke<void>("set_tri
 /** Returns the trip to select afterwards, if any. */
 export const editTrips = (edit: TripEdit) => invoke<number | null>("edit_trips", { edit });
 export const photo = (row: number) => invoke<Photo | null>("photo", { row });
+/** Hides photos from every view (or shows them again); returns the rows whose mark changed. */
+export const setHidden = (rows: number[], hidden: boolean) => invoke<number[]>("set_hidden", { rows, hidden });
+/** Of the photos the filter selects, those that are hidden. */
+export const hiddenRows = (filter: Filter) => invoke<number[]>("hidden_rows", { filter });
+/** Of these photos, the ones that are hidden (whether or not hidden photos are shown). */
+export const hiddenOf = (rows: number[]) => invoke<number[]>("hidden_of", { rows });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */
 export const photoHistory = (row: number) =>
@@ -610,3 +640,44 @@ export const writeApply = () => invoke<WriteReport>("write_apply");
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
+
+/** Where the analysis draws the lines between classes (shares are 0..1). */
+/** The colour names the analysis measures, in the order of `hue_stats` (`c1analysis::HUES`). */
+export const HUE_NAMES = ["brown", "red", "orange", "yellow", "green", "teal", "blue", "purple", "pink"] as const;
+/** What makes a photo a colour: covering a share of it, or a vivid patch of it. */
+export type ColourMode = "Covers" | "Patch";
+export type ClassSettings = {
+  mono_chroma: number;
+  colour_share: number;
+  colour_floor: number;
+  colour_mode: ColourMode;
+  patch_share: number;
+  patch_chroma: number;
+  dark_below: number;
+  bright_above: number;
+  clipped_share: number;
+  blocked_share: number;
+  flat_below: number;
+  soft_below: number;
+  blurry_below: number;
+  square_ratio: number;
+  panorama_ratio: number;
+  duplicate_bits: number;
+  series_bits: number;
+  series_gap_ms: number;
+  series_min: number;
+};
+/** What some settings would give: `<dimension>|<class>` → photos, and photos in groups. */
+export type ClassPreview = {
+  measured: number;
+  counts: Record<string, number>;
+  duplicates: number;
+  series: number;
+};
+export const classSettings = () => invoke<ClassSettings>("class_settings");
+export const defaultClassSettings = () => invoke<ClassSettings>("default_class_settings");
+/** Classes the measured photos again; returns the settings kept (brought into range). */
+export const setClassSettings = (settings: ClassSettings) =>
+  invoke<ClassSettings>("set_class_settings", { settings });
+export const previewClasses = (settings: ClassSettings) =>
+  invoke<ClassPreview>("preview_classes", { settings });

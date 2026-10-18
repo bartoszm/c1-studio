@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Photo folders:** open plain folders of JPEG, PNG, TIFF and raw files as a source, the same way as a Capture One catalog (**Source > New photo folders…**). EXIF, XMP and IPTC are read; your edits are kept in C1 Studio's own store and written to the files only if XMP export is on. A photo keeps its id and edits when its file is moved or renamed. A drive that is not connected marks its photos offline instead of losing them; **Rescan** looks at the folders again. `c1cat` opens folders too (`--source`, `rescan`, `folders …`) (#14).
+
+### Install
+
+On first start the search index is rebuilt once. Edits, trips, places and hidden photos are kept.
+
+## 0.3.0 — 2026-10-18
+
+### New
+
+- **Hidden photos:** press **h**, or **Hide** in the details panel, to keep photos (sensitive, private) out of every view: the grid, the map, the timeline, trips, the analysis and every count. **Hidden** in the header shows them again, dimmed and labelled on their tiles, and **h** or **Unhide** brings them back for good; undo works. The mark is C1 Studio's own: nothing is written to Capture One, and it survives a rebuilt library. It is not encryption: the photos stay in the catalog and in the thumbnail cache (#51).
+- **Analysis settings:** Settings > Analysis sets when a photo counts as a colour, as dark, bright, clipped or low contrast, as soft or blurry, as square or panorama. The numbers beside each group show how many photos each class would get; Apply sorts the measured photos again without measuring them. Kept per library (#29).
+- **Colour by patch:** a colour can count when it *covers* a share of the photo (now measured per pixel, so a small vivid area is no longer swallowed by its neighbours) or when the photo *has a vivid patch* of it (a red coat on a grey street). A grey photo with a vivid patch is no longer black & white (#29).
+- **Why a photo is red, dark or soft:** the details panel's Look section names the palette's colours, marks black, white and grey as not counting, and under each class gives the measure and the line: "red 19% · counts from 16.7%", "brightness 31% (dark below 20%, bright above 55%)", "detail 1,240 (soft below 700, blurry below 300)" (#30).
+- **Charts that explain themselves:** each Analysis card says what it measures, each bar gives its rule, and a note says how picks combine. Light is split into *Brightness* and *Light problems*. Main colour and Light problems have an any/all switch: "all" asks for photos that are red **and** blue (#31).
+- **Analysis tabs:** *Look* holds the charts and a **Stack bursts & duplicates** toggle (also in the header) that shows one photo per group, its sharpest; with a filter on, a frame is hidden only when the sharpest frame of its group matches too, so no burst disappears. *Alike* holds duplicates and series in one sortable list, with sliders for what counts as a duplicate or a series.
+- **Sorting:** a *Sort by* box (Date taken, Rating, Colour label, Imported, File name, Sharpness, Brightness, Best match) and a direction button that says what it does ("Newest first", "Lowest first", "Z to A"). **Best match** ranks photos by how well they fit the colours, light and focus you picked; it is offered only while such a filter is picked. Photos not measured yet come last.
+- **Splitter:** drag the line between the map (or the charts) and the photo strip to resize it; arrow keys move it, double-click resets.
+
+### Improved
+
+- **Settings:** a wider dialog with categories (Sidebar, Map & places, Analysis).
+- **Start-up dialog:** while a catalog opens, a dialog shows the step and the time so far, instead of an empty window; the window is no longer blocked while the library opens.
+- **Header:** the map's own tools (grid follows map, GPX…, Neighbours…) are in a row above the map, and on a narrow window the search box shrinks first, so the view buttons are never squeezed.
+- **Library open in another window:** the window says so and has a **Try again** button, instead of staying stuck after the other window is closed.
+
+### Install
+
+Run `C1.Studio_0.3.0_x64-setup.exe`. It installs over 0.2.x for the current user and keeps your settings. On first start the search index is rebuilt and every photo is measured once more in the background (about 4 minutes per 100,000 photos) to know its colour patches.
+
 ## 0.2.0 — 2026-10-15
 
 ### New

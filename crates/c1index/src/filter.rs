@@ -77,6 +77,15 @@ pub enum Trashed {
     Only,
 }
 
+/// Photos the user hid (see [`crate::hidden`]): left out unless asked for, like the trash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Hidden {
+    #[default]
+    Exclude,
+    Include,
+    Only,
+}
+
 /// Inclusive millisecond bounds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {
@@ -183,6 +192,7 @@ pub struct Filter {
     pub style: Option<String>,
     pub has_local_layers: bool,
     pub trashed: Trashed,
+    pub hidden: Hidden,
     pub variant_index: Option<u32>,
     /// From the analysis, each any of its values: `landscape`, `portrait`, ...
     pub shape: Vec<String>,
@@ -200,6 +210,13 @@ pub struct Filter {
     pub series: bool,
     /// Measured by the analysis, or not yet.
     pub analysed: Option<bool>,
+    /// One photo per duplicate group or series (its sharpest): the others are left out.
+    /// Not while one group is picked: its photos all show.
+    pub stacked: bool,
+    /// Made by the library from `stacked` when other filters narrow the photos: the frames
+    /// stacked away in these groups (those whose sharpest frame is among the matches) are
+    /// left out. A frame whose sharpest does not match stays, so no burst vanishes.
+    pub stacked_in: Option<Vec<String>>,
     /// Detail in the sharpest part of the picture (see `c1analysis::Analysis::sharpness`).
     pub sharpness: Option<Range>,
     /// Each of these too.
@@ -550,6 +567,11 @@ impl Filter {
             Trashed::Include => {}
             Trashed::Only => must.push(has(flag::TRASHED)),
         }
+        match self.hidden {
+            Hidden::Exclude => must_not.push(has(flag::HIDDEN)),
+            Hidden::Include => {}
+            Hidden::Only => must.push(has(flag::HIDDEN)),
+        }
         for (dim, values) in
             [(Dim::Shape, &self.shape), (Dim::Hue, &self.hues), (Dim::Light, &self.light), (Dim::Focus, &self.focus)]
         {
@@ -559,6 +581,15 @@ impl Filter {
         }
         if let Some(g) = &self.group {
             must.push(term(f.dim(Dim::Group), g));
+        }
+        if self.stacked && self.group.is_none() {
+            must_not.push(has(flag::STACKED_AWAY));
+        }
+        if let (Some(groups), None) = (&self.stacked_in, &self.group) {
+            must_not.push(Box::new(BooleanQuery::new(vec![
+                (Occur::Must, has(flag::STACKED_AWAY)),
+                (Occur::Must, any_of(f.dim(Dim::Group), groups.iter().cloned())),
+            ])));
         }
         if self.duplicates {
             must.push(has(flag::DUPLICATE));
@@ -579,13 +610,17 @@ impl Filter {
             must.push(range_u64(f.variant_index, &Range { min: Some(i), max: Some(i), ..Range::default() }));
         }
 
+        // Whether hidden photos are in is the outer filter's to say: a sub-filter left at its
+        // default (Exclude) would otherwise keep them out of a view that shows them, or make
+        // `Hidden::Only` find nothing.
+        let inner = |sub: &Filter| Filter { hidden: Hidden::Include, ..sub.clone() };
         for sub in &self.all_of {
-            must.push(sub.to_query(index, f, distinct)?);
+            must.push(inner(sub).to_query(index, f, distinct)?);
         }
         if !self.any_of.is_empty() {
             let mut either = Vec::new();
             for sub in &self.any_of {
-                either.push((Occur::Should, sub.to_query(index, f, distinct)?));
+                either.push((Occur::Should, inner(sub).to_query(index, f, distinct)?));
             }
             must.push(Box::new(BooleanQuery::new(either)));
         }

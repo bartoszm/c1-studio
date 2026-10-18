@@ -7,6 +7,7 @@
   import PlaceInput from "./PlaceInput.svelte";
   import { tick } from "svelte";
   import { collapse, mergedField, scrollFix } from "./lib/batch";
+  import { NEUTRAL, colourLines, colourRule, focusLine, lightLine, monoLine, nameOf, pct, shapeLine } from "./lib/explain";
 
   const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 
@@ -17,6 +18,7 @@
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, ongroup,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
+    allHidden = false, onhide,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -71,6 +73,10 @@
     onpastechoose: () => void;
     /** Opens the choice of fields to take from this photo onto the other selected ones. */
     onsync: () => void;
+    /** Every photo edited here is hidden (so the button shows them again). */
+    allHidden?: boolean;
+    /** Hides the photos edited here from every view, or shows them again (h). */
+    onhide?: () => void;
   } = $props();
 
   let photo = $state<api.Photo | null>(null);
@@ -95,14 +101,18 @@
   // Not state: which photo `look` is about. Edits don't change it: only another photo, or
   // the analysis measuring again, reads it again; the same photo keeps it until then.
   let lookOf: number | undefined;
+  /** The photo whose answer came, so "not measured yet" is told from still asking. */
+  let lookRead = $state<number | undefined>(undefined);
   $effect(() => {
     const current = row;
     void analysed;
     if (current !== lookOf) {
       lookOf = current;
       look = null;
+      lookRead = undefined;
     }
-    if (current !== undefined) api.look(current).then((l) => { if (current === row) look = l; }).catch(() => {});
+    if (current !== undefined)
+      api.look(current).then((l) => { if (current === row) { look = l; lookRead = current; } }).catch(() => {});
   });
   const hex = (rgb: number[]) => "#" + rgb.map((c) => c.toString(16).padStart(2, "0")).join("");
 
@@ -329,8 +339,19 @@
     </span>
     {#if !batch}
       {#if p.trashed}<span class="tag">in trash</span>{/if}
+      {#if p.hidden}<span class="tag hidden-tag" title="Hidden in C1 Studio: left out of every view unless Hidden is on">hidden</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
       {#if p.file.offline}<span class="tag" style:color="#e8b03a" title="The original is not reachable now: its folder or drive is not connected. Everything known about the photo stays.">offline</span>{/if}
+    {/if}
+    {#if onhide}
+      <button
+        class="hide"
+        title={allHidden
+          ? "Show again in every view (h)"
+          : "Hide from every view: kept in Capture One, left out here unless Hidden is on in the header (h)"}
+        aria-pressed={allHidden}
+        onclick={onhide}
+      >{allHidden ? "Unhide" : "Hide"}</button>
     {/if}
   </div>
   <div class="colors" role="group" aria-label="Colour tag">
@@ -471,17 +492,33 @@
 {#snippet lookSection()}
   {#if look}
     {@const a = look.analysis}
+    {@const l = look.lines}
+    {@const colours = colourLines(a.hue_stats, l, look.hues)}
     <h3>Look</h3>
-    <div class="palette" title="The main colours, by share of the picture">
+    <div class="palette" title="The main colours, by share of the picture (black, white and grey never count as a colour)">
       {#each a.palette as s}
-        <i style:background={hex(s.rgb)} style:flex-grow={s.share} title="{hex(s.rgb)} · {Math.round(s.share * 100)}%"></i>
+        {@const name = nameOf(s.rgb)}
+        <i
+          class:neutral={NEUTRAL.includes(name)}
+          style:background={hex(s.rgb)}
+          style:flex-grow={s.share}
+          title="{name} · {pct(s.share)}{NEUTRAL.includes(name) ? ' · not a colour' : ''}"
+        ></i>
       {/each}
     </div>
     <dl class="fields look">
-      <dt>Shape</dt><dd>{look.shape}</dd>
-      <dt>Colour</dt><dd>{look.hues.join(", ")}</dd>
-      <dt>Light</dt><dd title="Mean brightness {Math.round(a.brightness * 100)}%, contrast {Math.round(a.contrast * 100)}%">{look.light.join(", ")}</dd>
-      <dt>Focus</dt><dd title="Detail in the sharpest part: {Math.round(a.sharpness)}">{look.focus}</dd>
+      <dt>Shape</dt><dd>{look.shape}<small class="why">{shapeLine(a.width, a.height, l)}</small></dd>
+      <dt>Colour</dt>
+      <dd>
+        {look.hues.join(", ")}
+        <small class="why">{colourRule(l)}</small>
+        {#each colours as c (c.name)}<small class="why" class:counts={c.counts}>{c.text}</small>{/each}
+        {#if look.hues.includes("black & white") || a.chroma < l.mono_chroma}
+          <small class="why">{monoLine(a.chroma, a.hue_stats, l)}</small>
+        {/if}
+      </dd>
+      <dt>Light</dt><dd>{look.light.join(", ")}<small class="why">{lightLine(a, l)}</small></dd>
+      <dt>Focus</dt><dd>{look.focus}<small class="why">{focusLine(a.sharpness, l)}</small></dd>
     </dl>
     {#if look.duplicates}
       {@const [group, n] = look.duplicates}
@@ -491,6 +528,9 @@
       {@const [group, n] = look.series}
       <button class="link look-link" title="In the grid, within the other filters" onclick={() => ongroup(group)}>One of a series of {n}: show it</button>
     {/if}
+  {:else if row !== undefined && lookRead === row}
+    <h3>Look</h3>
+    <p class="hint">Not measured: the analysis measures photos in the background (see the footer), from their thumbnails. A photo without a thumbnail waits until one is made.</p>
   {/if}
 {/snippet}
 

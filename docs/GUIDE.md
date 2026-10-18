@@ -51,6 +51,10 @@ read-only or untested catalog shows a badge in the footer ("read-only · 16.5");
 still edit, and the edits stay queued in the app. When a catalog cannot be read at all,
 the grid says why.
 
+**One window per catalog.** A second C1 Studio window cannot open a library another
+window has open: it says so ("This library is open in another C1 Studio window"). Close
+the other window and press *Try again* (in the window, or in the source menu).
+
 ## Syncing
 
 On start the app reads what changed in the catalog since last time. The first start
@@ -65,14 +69,20 @@ up at the next of these, or on the next start.
 
 ## The window
 
-- **Header:** the source menu, the search box, tile size controls, the *Details* toggle and the number
-  of matching photos with how long the query took.
+- **Header:** the source menu, the search box, the *Photos*, *Map* and *Analysis* tabs, the
+  sort box (see [Sorting](#sorting)), *Stack* (see [Look](#look)), tile size controls,
+  *Hidden* (see [Hidden photos](#hidden-photos)), the *Timeline* and *Details* toggles, ⚙
+  Settings, and the number of matching photos with how long the query took. On a narrow
+  window the search box gives way first; the map's own tools sit in a row above the map.
+- **Settings** (⚙): *Sidebar* (which sections show, in what order), *Map & places*
+  (online map services, places by name) and *Analysis* (the lines between classes; see
+  [Look](#look)).
 - **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera and
   Country. Click a section's title to fold it. Which sections are folded and which
   branches are open is remembered.
 - **Filter bar:** above the grid while anything is filtered, a chip per filter value.
   × on a chip drops that value; *Clear filters* drops them all.
-- **Grid:** the matching photos, newest first.
+- **Grid:** the matching photos, newest first unless the sort box says otherwise.
 - **Details panel** (right): everything about the focused photo. `i` or *Details*
   shows and hides it.
 - **Footer:** the catalog (with a badge if it is read-only or untested), how many photos the library holds, whether Capture One is
@@ -112,7 +122,8 @@ the Date tree still shows every year.
   photos without a state one.
 - **Look:** what each photo looks like, measured from its thumbnail: see the
   **Analysis** tab and [Look](#look).
-  Several values in one group show photos with any of them.
+  Several values in one group show photos with any of them (the Analysis tab's *all*
+  switch asks for every one).
 - **Folders:** the folder tree; a folder includes everything below it.
 - **Keywords:** the keyword tree; a keyword includes the keywords below it. The *Find a
   keyword* box above it shows only matching keywords, with their branches open. Esc
@@ -144,6 +155,28 @@ the sharp preview once scrolling stops.
 
 For a Capture One catalog the app shows Capture One's thumbnails and previews, never the
 original files. A photo folders source makes its own; see [Photo folders](#photo-folders).
+
+### Sorting
+
+The sort box in the header picks what the photos are ordered by: *Date taken*,
+*Rating*, *Colour label*, *Imported*, *File name*, *Sharpness*, *Brightness* or *Best
+match*. The button beside it says which way in words that fit the field (*Newest
+first*, *Highest first*, *A to Z*, *Sharpest first*…); click it to turn the order round.
+A new field starts the usual way. Photos not measured yet (see [Look](#look)) and photos
+without a colour label come last either way. The order applies to the grid and to the
+strip under the map and the analysis, and is remembered.
+
+**Best match** is offered while you pick a colour, light or focus value (in the
+Analysis tab or the sidebar's Look). It puts first the photos that fit the picks best:
+for *red* and *blue*, the photo with the most red or blue in it; for *dark*, the darkest;
+for *sharp*, the sharpest; with picks in several cards, the scores are averaged. With a
+card set to *all* (red **and** blue), a photo is as good as its weakest colour. *Worst
+match first* turns it round. Without such a pick it is not offered, and clearing the
+picks goes back to *Date taken*.
+
+**The strip's height.** On the Map and Analysis tabs, drag the line between the map (or
+the charts) and the photo strip under it; the arrow keys move it once it has focus,
+Shift for bigger steps, and a double-click or Home resets it. Remembered.
 
 ## Editing
 
@@ -198,6 +231,21 @@ What *Copy to N selected* copied also lands on the clipboard, for pasting elsewh
 **Undo.** Ctrl+Z undoes the last edit, however many photos it touched; Ctrl+Y or
 Ctrl+Shift+Z redoes it. Editing a field back to what Capture One holds takes it out of
 the queue.
+
+## Hidden photos
+
+Photos you would rather not show (sensitive, private) can be hidden: press `h`, or
+*Hide* in the details panel (for the picked photos too). They leave every view and every
+count at once: the grid, the sidebar, the map, the timeline, trips, the analysis and its
+groups. Nothing is written to Capture One and nothing is queued: the mark is C1 Studio's
+own, kept with the library (it survives a rebuilt index), and not in the change log.
+
+*Hidden* in the header shows them again, marked *hidden* on their tiles and in the
+details panel; it is off whenever the app starts. With them shown, `h` or *Unhide* on
+hidden photos brings them back for good. Ctrl+Z undoes a hide or an unhide.
+
+Hiding is not encryption: the photos stay in the catalog, in Capture One and in its
+thumbnail cache.
 
 ## Keyword tree
 
@@ -352,42 +400,71 @@ The app measures every photo from Capture One's thumbnail (which carries your ed
 crop) in the background: after a sync, the footer says *measuring photos N / M*. The
 first time takes a few minutes for a big catalog (about four for 100,000 photos here);
 after that only new photos, and photos whose thumbnail Capture One rendered again, are
-measured. The results stay with the library and are never written to the catalog.
+measured. Updating to a version that measures something new measures every photo once
+more. The results stay with the library and are never written to the catalog.
 
-What the **Analysis** tab offers (the tabs above the grid are *Photos*, *Map* and *Analysis*; all three share one filter):
+The **Analysis** tab (beside *Photos* and *Map*; all three share one filter) has two
+tabs of its own, **Look** and **Alike**. Under them, a strip shows the photos the filter
+picks, as the map's does: pick a bar and see its photos without leaving the tab. Click
+one to see it in the details panel; the arrow keys move through them, while Page Up and
+Page Down scroll the charts and groups.
 
-- **Shape:** landscape, portrait, square, or panorama (2:1 and longer), as cropped.
-- **Main colour:** *black & white*; else the colours making up a sixth of the picture
-  or more (red, orange, brown, yellow, green, teal, blue, purple, pink); else the one
-  that shows most, or *muted* when none really does. Black, white and grey are not
-  listed as colours.
-- **Light:** dark, medium or bright by mean brightness, plus *clipped highlights*,
-  *blocked shadows* and *low contrast*.
+**Look** has a card per measure. Each card says what it measures and where its lines
+are; each bar's tooltip gives its rule. Clicking a bar filters by it.
+
+- **Shape:** landscape, portrait, square (width ÷ height within 1.1) or panorama (2:1 and
+  longer), as cropped.
+- **Main colour:** a photo can have several colours (red, orange, brown, yellow, green,
+  teal, blue, purple, pink). A colour counts when it *covers* a share of the photo (a
+  sixth by default), or, set to *has a vivid patch* in Settings, when the photo has one
+  vivid patch of it big enough (2% by default): a red coat on a grey street. When no
+  colour counts, the biggest stands for the photo if it shows at all, else it is
+  *muted*. *Black & white* is a photo with almost no colour and no vivid patch, so a
+  grey photo with one red coat is not black and white. Black, white and grey are never
+  colours.
+- **Brightness:** dark, medium or bright by mean brightness; one per photo.
+- **Light problems:** *clipped highlights* (pure white pixels), *blocked shadows* (pure
+  black pixels) and *low contrast*; a photo can have several.
 - **Focus:** sharp, soft or blurry, by the detail in the sharpest part of the picture
   (so a sharp subject on a soft background is sharp). Fog and plain walls have little
   detail too, and show as soft.
-- **Alike:** *duplicates* are one picture twice: taken at the same instant and looking
-  the same (imported twice, or saved again; variants of one image do not count).
-  *In a series* are bursts: three or more photos from one camera, seconds apart, each
-  looking much like the one before. Each group's badge is its size; under a filter
-  that picks only part of it, *2 of 7*. A group the filter leaves too little of (one
-  photo of a pair, two of a burst) is not listed. Each list's header gives the number
-  of groups in all; the first 60 show, and *Show more (N left)* adds the next 60.
-- *N not measured yet*, while the analysis is still going. A chart with nothing to show
-  says *Nothing matches the filter* or *Not measured yet*.
 
-Under the charts and groups, a strip shows the photos the filter picks, as the map's does:
-pick a bar and see its photos without leaving the tab. They are the same photos as on the
-*Photos* tab, so the counts agree. Click one to see it in the details panel; the arrow
-keys move through them, while Page Up and Page Down scroll the charts and groups.
+A photo can count in several bars of a card. Picks in one card mean *any of them*;
+picks in different cards, *all of them*. *Main colour* and *Light problems* have an
+*any / all* switch: *all* asks for photos that are red **and** blue. The chips say so
+("Main colour, all of"). A card goes back to *any* when its picks are cleared.
 
-The details panel's **Look** shows the photo's main colours as a bar, its classes, and
-for a duplicate or a burst a link to the others (*Looks like 1 other photo: show them*,
-*One of a series of 7: show it*). The link and a group's card on the Analysis tab do the
-same: the grid shows the group's photos within the other filters, which stay (with
-*red* picked, the red ones of the burst); drop a filter's chip to see the whole group.
-On the Analysis tab both stay there and show the photos in its strip (the card shown is
-outlined); from another tab the link opens *Photos*.
+**Stack** (on the Look tab, and in the header) shows one photo per duplicate group or
+series in the grid: its sharpest. With a filter on, a frame is hidden only when the
+sharpest frame of its group matches the filter too, so a burst never disappears; the
+counts follow. Picking a group shows all of its photos.
+
+**Alike** lists the groups of photos that look alike, *Duplicates* or *Series*:
+
+- *Duplicates* are one picture twice: taken at the same instant and looking the same
+  (imported twice, or saved again; variants of one image do not count).
+- A *series* is a burst: three or more photos from one camera, seconds apart, each
+  looking much like the one before.
+
+Each group's badge is its size; under a filter that picks only part of it, *2 of 7*. A
+group the filter leaves too little of is not listed. The sort box above the list orders
+the groups by matching photos, size, date or sharpness, either way. The first 60 show,
+and *Show more (N left)* adds the next 60. *Lines* opens sliders for what counts as a
+duplicate or a series (how alike, how far apart, how many photos); the line under them
+says how many photos they would group, and *Apply* groups them again without measuring.
+
+**Settings › Analysis** (⚙ in the header) moves the lines for shape, colour, light and
+focus, per library: each group shows how many photos each class would get, and *Apply*
+classes the measured photos again without measuring them. *Defaults* puts the lines back.
+
+The details panel's **Look** says why the photo is in its classes: the palette's colours
+by name (black, white and grey marked as not counting); under each class the measure and
+the line ("red 19% · counts from 16.7%", "brightness 31% (dark below 20%, bright above
+55%)", "detail 1,240 (soft below 700, blurry below 300)"); and for a duplicate or a
+burst a link to the others (*Looks like 1 other photo: show them*, *One of a series of 7:
+show it*). The link and a group's card on the Alike tab show the group's photos within
+the other filters, which stay; drop a filter's chip to see the whole group. A photo not
+measured yet says so.
 
 ## Writing to Capture One
 
@@ -561,6 +638,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Enter, double-click | Open the viewer |
 | ← → (viewer) | Previous, next photo |
 | `i` | Show or hide the details panel |
+| `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
 | `-` `+` `*` | Red, green, yellow tag |
 | Ctrl+K | Add a keyword (details panel shown) |
@@ -575,10 +653,11 @@ Keys do not act while you type in a field.
 
 ## Where things are kept
 
-- The library, the edit queue, the analysis (`library\analysis.redb`), trips and
-  their settings (`library\trips.redb`), the autosave setting and backups:
-  `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+- The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
+  hidden photos (`library\hidden.redb`), trips and their settings (`library\trips.redb`),
+  the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is
   the first eight characters of the source's `id` in its `.c1folders` file.
-- The sidebar layout, tile size and the copy clipboard: the app's own browser storage.
+- The sidebar layout, tile size, sort order, stacking, the strip's height and the copy
+  clipboard: the app's own browser storage.

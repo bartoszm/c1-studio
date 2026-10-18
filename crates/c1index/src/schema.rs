@@ -5,6 +5,7 @@
 //! filters and fast for sorting. A value that is missing is simply not added, so a range
 //! filter never matches a photo without that value — the same as SQL `NULL`.
 
+use c1analysis::ClassSettings;
 use c1model::Photo;
 
 use crate::looks::Look;
@@ -16,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -140,6 +141,8 @@ pub mod flag {
     pub const EDITED: &str = "edited";
     pub const LOCAL_LAYERS: &str = "local_layers";
     pub const TRASHED: &str = "trashed";
+    /// Hidden by the user in C1 Studio (see [`crate::hidden`]): left out unless shown.
+    pub const HIDDEN: &str = "hidden";
     /// The original's folder or volume is not reachable now (`FileInfo::offline`).
     pub const OFFLINE: &str = "offline";
     /// A country without its ISO code.
@@ -150,6 +153,8 @@ pub mod flag {
     pub const DUPLICATE: &str = "duplicate";
     /// One of a burst.
     pub const SERIES: &str = "series";
+    /// Not the sharpest of its duplicate group or series: hidden when groups are stacked.
+    pub const STACKED_AWAY: &str = "stacked_away";
 }
 
 /// The place's path and every level above it, down to its last known level:
@@ -197,6 +202,26 @@ pub struct Fields {
     /// From the analysis, for sorting and ranges.
     pub sharpness: Field,
     pub brightness: Field,
+    /// Sort keys of the measures (value, then row; photos not measured last either way),
+    /// and the same negated for the other direction.
+    pub sharpness_sort: Field,
+    pub sharpness_sort_rev: Field,
+    pub brightness_sort: Field,
+    pub brightness_sort_rev: Field,
+    /// For ranking by how well a photo matches the picked colours, light and focus (see
+    /// [`crate::matching`]): each colour's share of the picture, in the order of
+    /// `c1analysis::HUES` (permille), and the other measures.
+    pub hue_shares: Vec<Field>,
+    /// Each colour's biggest patch, in the same order, in [`PATCH_SCALE`] steps: patches can
+    /// be a few pixels of the measured copy.
+    pub hue_patches: Vec<Field>,
+    pub chroma: Field,
+    pub contrast: Field,
+    pub highlights: Field,
+    pub shadows: Field,
+    /// The colour label's place (red first), then the row; photos without one last either way.
+    pub color_sort: Field,
+    pub color_sort_rev: Field,
     dims: Vec<(Dim, Field)>,
 }
 
@@ -239,6 +264,18 @@ pub fn build_schema() -> (Schema, Fields) {
         kw_count: b.add_u64_field("kw_count", num()),
         sharpness: b.add_f64_field("sharpness", num()),
         brightness: b.add_f64_field("brightness", num()),
+        sharpness_sort: b.add_i64_field("sharpness_sort", FAST),
+        sharpness_sort_rev: b.add_i64_field("sharpness_sort_rev", FAST),
+        brightness_sort: b.add_i64_field("brightness_sort", FAST),
+        brightness_sort_rev: b.add_i64_field("brightness_sort_rev", FAST),
+        hue_shares: c1analysis::HUES.iter().map(|h| b.add_u64_field(&format!("hue_share_{h}"), FAST)).collect(),
+        hue_patches: c1analysis::HUES.iter().map(|h| b.add_u64_field(&format!("hue_patch_{h}"), FAST)).collect(),
+        chroma: b.add_f64_field("chroma", FAST),
+        contrast: b.add_f64_field("contrast", FAST),
+        highlights: b.add_f64_field("highlights", FAST),
+        shadows: b.add_f64_field("shadows", FAST),
+        color_sort: b.add_i64_field("color_sort", FAST),
+        color_sort_rev: b.add_i64_field("color_sort_rev", FAST),
         dims,
     };
     (b.build(), fields)
@@ -336,7 +373,17 @@ fn sort_key(ms: Option<i64>, row: u64) -> i64 {
 }
 
 /// `coarse`: its position was given from its place's name (see [`flag::COARSE_GPS`]).
-pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse: bool) -> TantivyDocument {
+/// `hidden`: the user hid it (see [`flag::HIDDEN`]).
+/// `classes`: where the analysis draws the lines between classes.
+pub fn document(
+    f: &Fields,
+    row: u64,
+    photo: &Photo,
+    look: Option<&Look>,
+    coarse: bool,
+    hidden: bool,
+    classes: &ClassSettings,
+) -> TantivyDocument {
     let mut doc = TantivyDocument::default();
     let mut dim = |d: Dim, value: &str| doc_add_str(&mut doc, f.dim(d), value);
     dim(Dim::Source, &photo.id.source.0);
@@ -386,11 +433,13 @@ pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse
         (flag::EDITED, photo.edit.edited),
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),
+        (flag::HIDDEN, hidden),
         (flag::OFFLINE, photo.file.offline),
         (flag::NO_COUNTRY_CODE, photo.place.country.is_some() && photo.place.country_code.is_none()),
         (flag::ANALYSED, look.is_some()),
         (flag::DUPLICATE, look.is_some_and(|l| l.duplicates.is_some())),
         (flag::SERIES, look.is_some_and(|l| l.series.is_some())),
+        (flag::STACKED_AWAY, look.is_some_and(|l| l.stacked)),
     ];
     for (name, set) in flags {
         if set {
@@ -399,14 +448,14 @@ pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse
     }
     if let Some(look) = look {
         let a = &look.analysis;
-        dim(Dim::Shape, a.shape());
-        for hue in a.hues() {
+        dim(Dim::Shape, a.shape(classes));
+        for hue in a.hues(classes) {
             dim(Dim::Hue, hue);
         }
-        for light in a.light() {
+        for light in a.light(classes) {
             dim(Dim::Light, light);
         }
-        dim(Dim::Focus, a.focus());
+        dim(Dim::Focus, a.focus(classes));
         for group in [&look.duplicates, &look.series].into_iter().flatten() {
             dim(Dim::Group, group);
         }
@@ -475,11 +524,55 @@ pub fn document(f: &Fields, row: u64, photo: &Photo, look: Option<&Look>, coarse
     }
     doc.add_u64(f.variant_index, u64::from(photo.variant_index));
     doc.add_u64(f.kw_count, photo.keywords.len() as u64);
+    let (sharp, bright) = look.map_or((None, None), |l| (Some(l.analysis.sharpness), Some(l.analysis.brightness)));
+    doc.add_i64(f.sharpness_sort, measure_key(sharp, SHARPNESS_SCALE, row, false));
+    doc.add_i64(f.sharpness_sort_rev, measure_key(sharp, SHARPNESS_SCALE, row, true));
+    doc.add_i64(f.brightness_sort, measure_key(bright, BRIGHTNESS_SCALE, row, false));
+    doc.add_i64(f.brightness_sort_rev, measure_key(bright, BRIGHTNESS_SCALE, row, true));
+    // Where the label comes in the list of labels (0: none, which sorts last either way).
+    let label = photo.color.and_then(|c| c1model::ColorLabel::ALL.iter().position(|l| *l == c));
+    let place = label.map_or(0, |i| i as i64 + 1);
+    let tie = (row & 0xf_ffff) as i64;
+    doc.add_i64(f.color_sort, if place > 0 { (8 - place) * (1 << 20) + tie } else { i64::MIN + tie });
+    doc.add_i64(f.color_sort_rev, if place > 0 { place * (1 << 20) + tie } else { i64::MIN + tie });
     if let Some(look) = look {
-        doc.add_f64(f.sharpness, f64::from(look.analysis.sharpness));
-        doc.add_f64(f.brightness, f64::from(look.analysis.brightness));
+        let a = &look.analysis;
+        doc.add_f64(f.sharpness, f64::from(a.sharpness));
+        doc.add_f64(f.brightness, f64::from(a.brightness));
+        doc.add_f64(f.chroma, f64::from(a.chroma));
+        doc.add_f64(f.contrast, f64::from(a.contrast));
+        doc.add_f64(f.highlights, f64::from(a.highlights));
+        doc.add_f64(f.shadows, f64::from(a.shadows));
+        for (field, share) in f.hue_shares.iter().zip(a.hue_shares()) {
+            doc.add_u64(*field, (share.clamp(0.0, 1.0) * 1000.0).round() as u64);
+        }
+        for (field, patch) in f.hue_patches.iter().zip(a.hue_patches()) {
+            doc.add_u64(*field, (f64::from(patch.clamp(0.0, 1.0)) * PATCH_SCALE).round() as u64);
+        }
     }
     doc
+}
+
+/// Steps per unit of a stored patch share.
+pub const PATCH_SCALE: f64 = 100_000.0;
+
+/// Steps per unit when a measure becomes a sort key (sharpness is in the hundreds or
+/// thousands, brightness 0..1).
+const SHARPNESS_SCALE: f64 = 100.0;
+const BRIGHTNESS_SCALE: f64 = 10_000.0;
+
+/// A measure with the row in its low 20 bits, so photos that tie keep their order; `rev`
+/// negates the value, so sorting descending on it is ascending in the measure. A photo not
+/// measured gets the lowest key: it comes last when sorted descending.
+fn measure_key(value: Option<f32>, scale: f64, row: u64, rev: bool) -> i64 {
+    let tie = (row & 0xf_ffff) as i64;
+    match value {
+        Some(v) if v.is_finite() => {
+            let steps = (f64::from(v) * scale).round().clamp(-(1i64 << 40) as f64, (1i64 << 40) as f64) as i64;
+            (if rev { -steps } else { steps }) * (1 << 20) + tie
+        }
+        _ => i64::MIN + tie,
+    }
 }
 
 fn doc_add_str(doc: &mut TantivyDocument, field: Field, value: &str) {

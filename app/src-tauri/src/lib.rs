@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use c1index::thumbs::{Failure, Kind, Progress, Thumbs};
-use c1index::{Filter, Library, Origin, PendingEdit, QueryOptions, QueryResult, SyncReport};
+use c1index::{Filter, Library, Origin, PendingEdit, QueryOptions, QueryResult, SyncReport, SyncStep};
 use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
@@ -163,6 +163,70 @@ struct Current {
 }
 
 struct App(RwLock<Current>);
+
+/// What `Current::session` says while the first source is still being opened.
+const STARTING: &str = "starting";
+
+/// How far opening a source has got, for the window's start-up dialog.
+#[derive(Clone, Serialize)]
+struct Startup {
+    /// "opening", "reading", "indexing" or "saving".
+    step: &'static str,
+    done: u64,
+    total: u64,
+}
+
+/// The start-up dialog's state: set from when a source starts opening until it is ready
+/// to use (for a library with no photos yet, until its first fill is in). Syncs outside
+/// that, such as the periodic look at Capture One, are not reported.
+#[derive(Default)]
+struct Boot {
+    shown: Mutex<Option<Startup>>,
+    active: AtomicBool,
+    last_emit: Mutex<Option<Instant>>,
+}
+
+impl Boot {
+    fn begin(&self, app: &AppHandle) {
+        self.active.store(true, Ordering::SeqCst);
+        self.set(app, Some(Startup { step: "opening", done: 0, total: 0 }), true);
+    }
+
+    fn finish(&self, app: &AppHandle) {
+        self.active.store(false, Ordering::SeqCst);
+        self.set(app, None, true);
+    }
+
+    /// The sync reached `step`. Counts come often, so they reach the window a few times a second.
+    fn sync_step(&self, app: &AppHandle, step: SyncStep) {
+        if !self.active.load(Ordering::SeqCst) {
+            return;
+        }
+        let (shown, counting) = match step {
+            SyncStep::Reading => (Startup { step: "reading", done: 0, total: 0 }, false),
+            SyncStep::Indexing { done, total } => {
+                (Startup { step: "indexing", done: done as u64, total: total as u64 }, true)
+            }
+            SyncStep::Saving => (Startup { step: "saving", done: 0, total: 0 }, false),
+        };
+        self.set(app, Some(shown), !counting);
+    }
+
+    fn set(&self, app: &AppHandle, shown: Option<Startup>, always: bool) {
+        *self.shown.lock().unwrap() = shown.clone();
+        let mut last = self.last_emit.lock().unwrap();
+        if always || last.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
+            *last = Some(Instant::now());
+            let _ = app.emit("startup-progress", shown);
+        }
+    }
+}
+
+/// The start-up dialog's state, for a window that asks after the events went by.
+#[tauri::command]
+async fn startup_progress(boot: State<'_, Boot>) -> Result<Option<Startup>, String> {
+    Ok(boot.shown.lock().unwrap().clone())
+}
 
 impl App {
     fn session(&self) -> Result<Arc<Session>, String> {
@@ -414,6 +478,8 @@ fn start_analysis(app: &AppHandle) {
 #[derive(Serialize)]
 struct LookView {
     analysis: c1analysis::Analysis,
+    /// The lines the classes below were drawn with, for saying why.
+    lines: c1analysis::ClassSettings,
     shape: &'static str,
     hues: Vec<&'static str>,
     light: Vec<&'static str>,
@@ -433,15 +499,55 @@ async fn look(app: State<'_, App>, row: u64) -> Result<Option<LookView>, String>
         Ok(Some((group, s.library.query(&filter, &options).map_err(text)?.total)))
     };
     let a = &look.analysis;
+    let classes = s.library.class_settings();
     Ok(Some(LookView {
-        shape: a.shape(),
-        hues: a.hues(),
-        light: a.light(),
-        focus: a.focus(),
+        shape: a.shape(&classes),
+        hues: a.hues(&classes),
+        light: a.light(&classes),
+        focus: a.focus(&classes),
         duplicates: size(look.duplicates.clone())?,
         series: size(look.series.clone())?,
+        lines: classes.clone(),
         analysis: look.analysis,
     }))
+}
+
+/// Where this library draws the lines between analysis classes.
+#[tauri::command]
+async fn class_settings(app: State<'_, App>) -> Result<c1analysis::ClassSettings, String> {
+    Ok(app.session()?.library.class_settings())
+}
+
+/// The lines the app draws until the user moves them.
+#[tauri::command]
+fn default_class_settings() -> c1analysis::ClassSettings {
+    c1analysis::ClassSettings::default()
+}
+
+/// Classes the measured photos again by these settings; returns what was kept.
+#[tauri::command]
+async fn set_class_settings(
+    app: State<'_, App>,
+    settings: c1analysis::ClassSettings,
+) -> Result<c1analysis::ClassSettings, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.set_class_settings(&settings))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// How many photos these settings would put in each class, without applying them.
+#[tauri::command]
+async fn preview_classes(
+    app: State<'_, App>,
+    settings: c1analysis::ClassSettings,
+) -> Result<c1index::ClassPreview, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.preview_classes(&settings))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
 }
 
 /// The system dialog for a GPX track; None if cancelled.
@@ -555,10 +661,13 @@ async fn groups(
     app: State<'_, App>,
     filter: Filter,
     series: bool,
+    sort: Option<c1index::GroupSort>,
+    reverse: Option<bool>,
     offset: usize,
     limit: usize,
 ) -> Result<c1index::GroupPage, String> {
-    app.session()?.library.groups(&filter, series, offset, limit).map_err(text)
+    let (sort, reverse) = (sort.unwrap_or_default(), reverse.unwrap_or(false));
+    app.session()?.library.groups_sorted(&filter, series, sort, reverse, offset, limit).map_err(text)
 }
 
 #[tauri::command]
@@ -725,9 +834,43 @@ async fn edit_trips(app: State<'_, App>, edit: c1index::trips::TripEdit) -> Resu
     app.session()?.library.edit_trips(edit).map_err(|e| format!("{e:#}"))
 }
 
+/// A photo as the details panel shows it: what its source holds, and whether it is hidden
+/// here.
+#[derive(Serialize)]
+struct PhotoView {
+    #[serde(flatten)]
+    photo: Photo,
+    hidden: bool,
+}
+
 #[tauri::command]
-async fn photo(app: State<'_, App>, row: u64) -> Result<Option<Photo>, String> {
-    app.session()?.library.photo(row).map_err(text)
+async fn photo(app: State<'_, App>, row: u64) -> Result<Option<PhotoView>, String> {
+    let s = app.session()?;
+    let photo = s.library.photo(row).map_err(text)?;
+    Ok(photo.map(|photo| PhotoView { photo, hidden: s.library.is_hidden(row) }))
+}
+
+/// Hides photos from every view (`hidden`), or shows them again; returns the rows whose
+/// mark changed, for undo. A mark of C1 Studio's own: nothing is written to the source.
+#[tauri::command]
+async fn set_hidden(app: State<'_, App>, rows: Vec<u64>, hidden: bool) -> Result<Vec<u64>, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.set_hidden(&rows, hidden))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// Of these photos, the ones that are hidden: what `h` and the Hide button go by.
+#[tauri::command]
+async fn hidden_of(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<u64>, String> {
+    Ok(app.session()?.library.hidden_of(&rows))
+}
+
+/// Of the photos `filter` selects, those that are hidden: for marking their tiles.
+#[tauri::command]
+async fn hidden_rows(app: State<'_, App>, filter: Filter) -> Result<Vec<u64>, String> {
+    app.session()?.library.hidden_rows(&filter).map_err(text)
 }
 
 #[tauri::command]
@@ -751,10 +894,14 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
 /// `origin`. With `recheck` false, thumbnails and analysis are looked at again only when
 /// the catalog changed.
 fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Result<SyncReport, String> {
+    let boot = app.state::<Boot>();
     let done = AtomicBool::new(false);
     let report = std::thread::scope(|scope| {
         scope.spawn(|| report_progress(app, s, &done));
-        let report = s.library.sync_as(s.source.as_ref(), origin).map_err(|e| format!("{e:#}"));
+        let report = s
+            .library
+            .sync_with(s.source.as_ref(), origin, &mut |step| boot.sync_step(app, step))
+            .map_err(|e| format!("{e:#}"));
         done.store(true, Ordering::SeqCst);
         report
     });
@@ -1094,7 +1241,12 @@ async fn move_place(
     if target.last().is_none_or(|l| l.is_none()) {
         return Err("the new name cannot be empty".into());
     }
-    let filter = Filter { place_under: Some(from), trashed: c1index::Trashed::Include, ..Filter::default() };
+    let filter = Filter {
+        place_under: Some(from),
+        trashed: c1index::Trashed::Include,
+        hidden: c1index::Hidden::Include,
+        ..Filter::default()
+    };
     let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
     let rows = s.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.rows;
     s.touched();
@@ -1314,7 +1466,12 @@ async fn collection_changes(app: State<'_, App>) -> Result<Vec<(u64, String, Str
 /// How many photos carry any of these keywords (or keywords under them).
 #[tauri::command]
 async fn keyword_users(app: State<'_, App>, paths: Vec<String>) -> Result<usize, String> {
-    let filter = Filter { keywords_under: paths, trashed: c1index::Trashed::Include, ..Filter::default() };
+    let filter = Filter {
+        keywords_under: paths,
+        trashed: c1index::Trashed::Include,
+        hidden: c1index::Hidden::Include,
+        ..Filter::default()
+    };
     let options = QueryOptions { limit: Some(0), ..QueryOptions::default() };
     Ok(app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))?.total)
 }
@@ -1707,6 +1864,41 @@ fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
 }
 
 /// Reads the source in the background, telling the window if that fails.
+/// Opens the source the app was started with, then [`finish_opening`].
+fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let session = std::panic::catch_unwind(|| open(&spec).map(Arc::new).map_err(|e| format!("{e:#}")))
+            .unwrap_or_else(|_| Err("opening the library crashed".into()));
+        let ready = session.is_ok();
+        if ready && remember {
+            let _ = Recent::remember(&spec);
+        }
+        *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec), session };
+        if ready {
+            finish_opening(&app);
+        } else {
+            app.state::<Boot>().finish(&app);
+        }
+    });
+}
+
+/// Reads the source just opened. A library with no photos has nothing to use until its
+/// first fill is in, so that is waited for under the start-up dialog; any other is
+/// usable at once, and reads in the background.
+fn finish_opening(app: &AppHandle) {
+    let boot = app.state::<Boot>();
+    if app.state::<App>().session().is_ok_and(|s| s.library.is_empty()) {
+        if let Err(e) = run_sync(app) {
+            let _ = app.emit("sync-failed", e);
+        }
+        boot.finish(app);
+    } else {
+        boot.finish(app);
+        sync_in_background(app);
+    }
+}
+
 fn sync_in_background(app: &AppHandle) {
     let handle = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -1945,11 +2137,21 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
             return Ok(());
         }
     }
+    let boot = app.state::<Boot>();
+    boot.begin(&app);
     let opened = {
         let spec = spec.clone();
         tauri::async_runtime::spawn_blocking(move || open(&spec).map_err(|e| format!("{e:#}")))
             .await
-            .map_err(text)??
+            .map_err(text)
+            .and_then(|r| r)
+    };
+    let opened = match opened {
+        Ok(opened) => opened,
+        Err(e) => {
+            boot.finish(&app);
+            return Err(e);
+        }
     };
     // The old session closes once the last task using it is done with it; its analysis
     // stops after the batch it is on.
@@ -1958,9 +2160,10 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
         old.fill_stop.store(true, Ordering::SeqCst);
     }
     *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
-    Recent::remember(&spec)?;
-    sync_in_background(&app);
-    Ok(())
+    let remembered = Recent::remember(&spec);
+    let handle = app.clone();
+    tauri::async_runtime::spawn_blocking(move || finish_opening(&handle));
+    remembered
 }
 
 /// Takes a source off the recent list.
@@ -1974,20 +2177,18 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let args: Vec<String> = std::env::args().skip(1).collect();
-            let current = match sources::startup(&args) {
+            app.manage(Boot::default());
+            // Opening can take a while (an index to rebuild, a first fill to read): the
+            // window is up meanwhile, and says how far it is.
+            match sources::startup(&args) {
                 Ok((spec, remember)) => {
-                    let session = open(&spec).map(Arc::new).map_err(|e| format!("{e:#}"));
-                    if session.is_ok() && remember {
-                        let _ = Recent::remember(&spec);
-                    }
-                    Current { spec: Some(spec), session }
+                    app.manage(App(RwLock::new(Current { spec: Some(spec.clone()), session: Err(STARTING.into()) })));
+                    app.state::<Boot>().begin(app.handle());
+                    open_in_background(app.handle(), spec, remember);
                 }
-                Err(e) => Current { spec: None, session: Err(e) },
-            };
-            let ready = current.session.is_ok();
-            app.manage(App(RwLock::new(current)));
-            if ready {
-                sync_in_background(app.handle());
+                Err(e) => {
+                    app.manage(App(RwLock::new(Current { spec: None, session: Err(e) })));
+                }
             }
             let handle = app.handle().clone();
             std::thread::spawn(move || autosave_loop(handle));
@@ -2019,6 +2220,7 @@ pub fn run() {
             open_source,
             forget_source,
             status,
+            startup_progress,
             query,
             smart_counts,
             trips,
@@ -2033,12 +2235,19 @@ pub fn run() {
             neighbour_plan,
             neighbour_apply,
             set_trip_settings,
+            class_settings,
+            default_class_settings,
+            set_class_settings,
+            preview_classes,
             edit_trips,
             map,
             pick_gpx,
             gpx_plan,
             gpx_apply,
             groups,
+            set_hidden,
+            hidden_rows,
+            hidden_of,
             photo,
             collections,
             sync,

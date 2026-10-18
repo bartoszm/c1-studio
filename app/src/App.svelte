@@ -10,13 +10,14 @@
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import {
-    RATING_OPS, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
-    type Match, type Pick, type RatingOp,
+    LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
+    type AllOf, type Match, type Pick, type RatingOp,
   } from "./lib/criteria";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
   import BackupsDialog from "./BackupsDialog.svelte";
+  import StartupDialog from "./StartupDialog.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
   import PlaceDialog from "./PlaceDialog.svelte";
@@ -36,6 +37,11 @@
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, sameRows } from "./lib/batch";
+  import { hiddenNote, hides, withHidden } from "./lib/hidden";
+  import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
+  import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
+  import SortControl from "./SortControl.svelte";
+  import { LOCK_HELP, isLockError } from "./lib/lock";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -55,6 +61,10 @@
   let offlineRows = $state.raw(new Set<number>());
   /** The source menu in the header; open by itself when nothing could be opened. */
   let choosingSource = $state(false);
+  /** How far opening a source has got, while it is under way. */
+  let startup = $state<api.Startup | null>(null);
+  /** The window has read the source the app started with. It may start before it is open. */
+  let loaded = false;
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
@@ -226,6 +236,98 @@
   let version = $state(0);
   /** Bumped when the analysis has measured photos again: the panel's Look reads them again. */
   let analysed = $state(0);
+
+  /** Photos the user hid are left out of every view; "Hidden" in the header lets them in. */
+  let showHidden = $state(false);
+  /** Of the photos shown, the hidden ones (only while they are shown): their tiles are marked. */
+  let hiddenHere = $state.raw(new Set<number>());
+  /** How tall the strip of photos under the map and the analysis is: dragged, remembered. */
+  let stripH = $state(storedStrip((() => { try { return localStorage.getItem("strip"); } catch { return null; } })()));
+  let paneEl = $state<HTMLDivElement>();
+  let paneH = $state(0);
+  /** The strip as shown: the stored height kept within what this window leaves room for. */
+  let stripShown = $derived(clampStrip(stripH, paneH || 900));
+  let splitting = $state(false);
+  function setStrip(px: number, keep = true) {
+    stripH = clampStrip(px, paneEl?.clientHeight ?? 900);
+    if (keep) try { localStorage.setItem("strip", String(stripH)); } catch { /* not remembered */ }
+  }
+  function splitStart(e: PointerEvent) {
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
+    const [startY, start] = [e.clientY, stripShown];
+    splitting = true;
+    const move = (ev: PointerEvent) => setStrip(dragged(start, startY, ev.clientY, paneEl?.clientHeight ?? 900), false);
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", end);
+      handle.removeEventListener("pointercancel", end);
+      splitting = false;
+      setStrip(stripH);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", end);
+    handle.addEventListener("pointercancel", end);
+  }
+  function splitKey(e: KeyboardEvent) {
+    const step = e.shiftKey ? 80 : 20;
+    if (e.key === "ArrowUp") setStrip(stripShown + step);
+    else if (e.key === "ArrowDown") setStrip(stripShown - step);
+    else if (e.key === "Home") setStrip(STRIP_DEFAULT);
+    else return;
+    e.preventDefault();
+  }
+
+  /** The order of the grid and of the strip under the map and the analysis. */
+  const storedSort = (() => {
+    try {
+      return restore(localStorage.getItem("sortBy"), localStorage.getItem("sort"));
+    } catch {
+      return restore(null, null);
+    }
+  })();
+  let sortField = $state<SortField>(storedSort.field);
+  /** The direction is the other way round from the field's usual one. */
+  let sortReversed = $state(storedSort.reversed);
+  /** What the index sorts by: Best match with nothing picked to match shows as the date. */
+  let sortShown = $derived(effectiveField(sortField, filter));
+  let sortBy = $derived(toSort(sortShown, sortShown === sortField && sortReversed));
+  const rememberSort = () => {
+    // Best match depends on what is picked, and nothing is picked at the next start.
+    const stored = sortField === "match" ? { field: "date", reversed: false } : { field: sortField, reversed: sortReversed };
+    try { localStorage.setItem("sortBy", JSON.stringify(stored)); } catch { /* not remembered */ }
+  };
+  /** A new field starts in its usual direction. */
+  function setSortField(next: SortField) {
+    sortField = next;
+    sortReversed = false;
+    rememberSort();
+    run();
+  }
+  function flipSort() {
+    sortReversed = !sortReversed;
+    rememberSort();
+    run();
+  }
+  // Best match with nothing left to match (the picks were cleared): the date takes over for good.
+  $effect(() => {
+    if (sortField === "match" && !matchAvailable(filter)) {
+      untrack(() => {
+        sortField = "date";
+        sortReversed = false;
+        rememberSort();
+      });
+    }
+  });
+  /** One photo per burst or duplicate group: its sharpest. */
+  let stack = $state((() => { try { return localStorage.getItem("stack") === "1"; } catch { return false; } })());
+  /** The filter with Match applied, and the stacking when it is on: what the grid shows. */
+  const asking = (f: Filter): Filter => ({ ...compiled(f), ...(stack ? { stacked: true } : {}) });
+  function toggleStack() {
+    stack = !stack;
+    try { localStorage.setItem("stack", stack ? "1" : "0"); } catch { /* not remembered */ }
+    run();
+  }
   let writing = $state(false);
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
@@ -251,8 +353,13 @@
   type Done =
     | { ops: [number, api.Op][] }
     | { remap: number; request: api.RemapRequest }
-    | { collection: number; change: api.CollectionChange };
-  type Undone = { ops: [number, api.Op][] } | { request: api.RemapRequest } | { change: api.CollectionChange };
+    | { collection: number; change: api.CollectionChange }
+    | { hidden: number[]; on: boolean };
+  type Undone =
+    | { ops: [number, api.Op][] }
+    | { request: api.RemapRequest }
+    | { change: api.CollectionChange }
+    | { hidden: number[]; on: boolean };
   let undoStack: Done[] = [];
   let redoStack: Undone[] = [];
 
@@ -355,13 +462,16 @@
   async function run(keep = false) {
     const mine = ++generation;
     untrack(() => (filter = following(filter)));
-    const asked = compile($state.snapshot(filter), match);
+    const asked = asking($state.snapshot(filter));
     const groups = dims;
+    // Which of the photos shown are hidden, to mark their tiles: none are while hidden.
+    if (showHidden) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
+    else hiddenHere = new Set();
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
     try {
       const first = api.query(asked, {
-        sort: "DateDesc", limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
+        sort: sortBy, limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
       // In place, the pages on screen and the focused photo's (and the next, for the viewer)
       // are read again alongside the first and swapped in with the result in one go: until
@@ -375,7 +485,7 @@
               return [shown, [at, at + 2]];
             },
             result?.total ?? 0,
-            (page) => api.query(asked, { sort: "DateDesc", limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
           )
         : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
@@ -418,7 +528,7 @@
    */
   async function followPicks(mine: number, asked: Filter) {
     if (picked.size > 1) {
-      const all = new Set((await api.query(asked, { sort: "DateDesc" })).rows);
+      const all = new Set((await api.query(asked, { sort: sortBy })).rows);
       if (mine !== generation) return;
       for (const row of [...picked]) if (!all.has(row)) picked.delete(row);
     }
@@ -446,7 +556,7 @@
     if (pending) return pending;
     const mine = generation;
     const into = pages;
-    const p = api.query(compile($state.snapshot(filter), match), { sort: "DateDesc", limit: PAGE, offset: page * PAGE })
+    const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
       .then((r) => { if (mine === generation) into.set(page, r.rows); })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
@@ -482,13 +592,44 @@
     }
   }
 
-  onMount(() => {
+  /** Opens the catalog this window was started on again: after another window that held its
+   *  library is closed, or whatever else made opening it fail. */
+  let retrying = $state(false);
+  async function retryOpen() {
+    retrying = true;
+    try {
+      const current = (await api.sources()).current;
+      if (!current) {
+        choosingSource = true;
+        return;
+      }
+      await api.openSource(current);
+      location.reload();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      retrying = false;
+    }
+  }
+
+  /** Reads what the open source holds; at start, once it is open. */
+  function loadSource() {
+    loaded = true;
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
+  }
+
+  onMount(() => {
     const unwatch = api.watchBrokenImages();
     const off = [
+      // The dialog while a source opens. The one the app started with has no session yet:
+      // the window reads it when it is ready.
+      listen<api.Startup | null>("startup-progress", (e) => {
+        startup = e.payload;
+        if (!e.payload && !loaded) loadSource();
+      }),
       listen<api.ThumbsState>("thumbs", (e) => {
         thumbs = e.payload;
         // While a run makes them, tiles that showed nothing pick up their new thumbnails
@@ -515,6 +656,14 @@
       }),
       listen("analysis-done", () => { version++; analysed++; refresh(true); }),
     ];
+    // Listening first, so the end of start-up is not missed between the question and the answer.
+    Promise.all(off)
+      .then(() => api.startupProgress())
+      .then((p) => {
+        if (!p) loadSource();
+        else if (!loaded) startup = p;
+      })
+      .catch(() => loadSource());
     // The startup sync reports only changes; an unchanged catalog says nothing.
     const quiet = setTimeout(() => { if (syncNote === "syncing…") syncNote = ""; }, 3000);
     return () => { clearTimeout(quiet); unwatch(); off.forEach((p) => p.then((f) => f())); };
@@ -759,21 +908,80 @@
     });
   }
 
+  /** How many photos an undo or redo touches, when it is about photos. */
+  const doneRows = (d: Done | Undone) => ("ops" in d ? opRows(d.ops) : "hidden" in d ? d.hidden.length : null);
+
   function undo() {
     const last = undoStack.at(-1);
-    if (last) return working(editingNote("undo", "ops" in last ? opRows(last.ops) : null), undoNow);
+    if (last) return working(editingNote("undo", doneRows(last)), undoNow);
   }
 
   function redo() {
     const last = redoStack.at(-1);
-    if (last) return working(editingNote("redo", "ops" in last ? opRows(last.ops) : null), redoNow);
+    if (last) return working(editingNote("redo", doneRows(last)), redoNow);
+  }
+
+  /** Hides the photos edited here from every view (`on`), or shows them again. A mark of
+   *  C1 Studio's own: nothing is queued for Capture One. */
+  async function setHidden(on: boolean, rows = targets()) {
+    if (!rows.length) return;
+    await working(on ? `hiding ${rows.length.toLocaleString()}…` : `showing ${rows.length.toLocaleString()}…`, async () => {
+      try {
+        const changed = await api.setHidden(rows, on);
+        if (changed.length) {
+          undoStack.push({ hidden: changed, on });
+          redoStack = [];
+          syncNote = hiddenNote(changed.length, on);
+        }
+        editError = null;
+      } catch (e) {
+        editError = String(e);
+      }
+      await edited();
+    });
+  }
+  /** `h`: hides the photos edited here, or shows them again when all of them are hidden. Asks
+   *  the library which are hidden: the tiles' marks are only known while hidden ones are shown,
+   *  and may still be on their way. */
+  let hiding = false;
+  async function toggleHidden() {
+    if (hiding) return;
+    hiding = true;
+    try {
+      const rows = targets();
+      const hidden = new Set(await api.hiddenOf(rows));
+      await setHidden(hides(rows, hidden), rows);
+    } catch (e) {
+      editError = String(e);
+    } finally {
+      hiding = false;
+    }
+  }
+  /** Whether every photo edited here is hidden: what the Hide button offers. */
+  let targetsHidden = $state(false);
+  $effect(() => {
+    const rows = targets();
+    void version;
+    if (!rows.length) {
+      targetsHidden = false;
+      return;
+    }
+    api.hiddenOf(rows).then((h) => { if (targets().join() === rows.join()) targetsHidden = h.length === rows.length; }).catch(() => {});
+  });
+  /** Not remembered across starts: hidden photos are out again whenever the app opens. */
+  function toggleShowHidden() {
+    showHidden = !showHidden;
+    run();
   }
 
   async function undoNow() {
     const last = undoStack.pop();
     if (!last) return;
     try {
-      if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
+      if ("hidden" in last) {
+        await api.setHidden(last.hidden, !last.on);
+        redoStack.push(last);
+      } else if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
       else if ("collection" in last) {
         await api.undoCollection(last.collection);
         redoStack.push({ change: last.change });
@@ -800,7 +1008,10 @@
     const last = redoStack.pop();
     if (!last) return;
     try {
-      if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
+      if ("hidden" in last) {
+        await api.setHidden(last.hidden, last.on);
+        undoStack.push(last);
+      } else if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
       else if ("change" in last) {
         // The same id as before, so photo edits redone after it still find the album.
         const [seq, change] = await api.changeCollection(last.change);
@@ -844,7 +1055,7 @@
 
   async function pickAll() {
     if (!result) return;
-    const all = await api.query(compile($state.snapshot(filter), match), { sort: "DateDesc" });
+    const all = await api.query(asking($state.snapshot(filter)), { sort: sortBy });
     picked.clear();
     for (const r of all.rows) picked.add(r);
   }
@@ -921,8 +1132,28 @@
 
   let match = $state<Match>("all");
   let ratingOp = $state<RatingOp>("≥");
+  /** Analysis cards asking for every pick ("red and blue") instead of any. */
+  let allOf = $state<AllOf>({});
+  /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
+  function compiled(f: Filter): Filter {
+    return withHidden(allOfPicks(compile(f, match), allOf), showHidden);
+  }
+  function toggleAllOf(card: keyof AllOf) {
+    allOf = { ...allOf, [card]: !allOf[card] };
+    run();
+  }
+  // A card's picks all cleared: it goes back to "any", so the next picks are not silently "all".
+  $effect(() => {
+    const hues = !!filter.hues?.length;
+    const problems = !!filter.light?.some((l) => LIGHT_PROBLEMS.includes(l));
+    untrack(() => {
+      if ((allOf.hues && !hues) || (allOf.problems && !problems)) {
+        allOf = { hues: allOf.hues && hues, problems: allOf.problems && problems };
+      }
+    });
+  });
   /** What the rest of the app asks the index: the filter with Match applied. */
-  let eff = $derived(compile(filter, match));
+  let eff = $derived(compiled(filter));
   function setMatch(m: Match) {
     match = m;
     run();
@@ -1051,7 +1282,7 @@
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
     try {
-      const undo = await api.promotePlaces({ ...compile($state.snapshot(filter), match), within: undefined }, paths);
+      const undo = await api.promotePlaces({ ...compiled($state.snapshot(filter)), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1160,7 +1391,7 @@
   async function refreshTrips(): Promise<api.TripList | null> {
     const mine = ++tripsAsked;
     try {
-      const got = await api.trips(compile($state.snapshot(filter), match));
+      const got = await api.trips(compiled($state.snapshot(filter)));
       if (mine === tripsAsked) tripList = got;
     } catch (e) {
       if (mine === tripsAsked) editError = String(e);
@@ -1305,6 +1536,13 @@
     }
   }
 
+  /** Keys typed into a text field belong to the field, not to the shortcuts. */
+  function typingIn(e: KeyboardEvent) {
+    const t = e.target;
+    if (t instanceof HTMLInputElement) return t.type !== "checkbox";
+    return t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
+  }
+
   function onkey(e: KeyboardEvent) {
     if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu || sectionMenu)) {
       keywordMenu = null;
@@ -1313,7 +1551,7 @@
       sectionMenu = null;
       return;
     }
-    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing || (e.target instanceof HTMLInputElement && e.target.type !== "checkbox")) return;
+    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing || typingIn(e) || e.defaultPrevented) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -1341,6 +1579,7 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
+    else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing) {
       const album = shownAlbum;
       const n = targets().length;
@@ -1480,13 +1719,17 @@
     approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
-    hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
-    light: (v) => v.map((x) => ({ what: "Light", text: x, rest: without(v, x) })),
+    hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
+    // Set by the header's Hidden button, not a filter the user picks.
+    hidden: () => [],
+    // Set from the header's Stack button, not a filter the user picks.
+    stacked: () => [],
     offline: (v) => [{ text: v ? "offline" : "online" }],
     within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
   };
@@ -1615,6 +1858,8 @@
     onpaste={pasteClip}
     onpastechoose={() => { if (clipboard) pasting = targets(); }}
     onsync={openSync}
+    allHidden={targetsHidden}
+    onhide={toggleHidden}
   />
 {/snippet}
 
@@ -1629,6 +1874,28 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
     </nav>
+    <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
+      <SortControl
+        fields={FIELDS.map((f) => ({
+          key: f.key,
+          label: f.label,
+          disabled: f.key === "match" && !matchAvailable(filter),
+          hint: f.key === "match" ? "pick a colour, light or focus filter" : undefined,
+        }))}
+        field={sortShown}
+        words={words(sortShown, sortShown === sortField && sortReversed)}
+        label="Sort photos by"
+        onfield={(key) => setSortField(key as SortField)}
+        onflip={flipSort}
+      />
+    </div>
+    <button
+      class="toggle"
+      class:on={stack}
+      aria-pressed={stack}
+      title="Show one photo per burst or duplicate group (its sharpest). With a filter on, a frame is hidden only when the sharpest frame of its group matches too; open a group to see all its frames."
+      onclick={toggleStack}
+    >Stack</button>
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
@@ -1668,13 +1935,13 @@
         onclick={openSync}
       >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
     </span>
-    {#if mapOn}
-      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
-        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
-      </label>
-      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
-      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
-    {/if}
+    <button
+      class="toggle"
+      class:on={showHidden}
+      aria-pressed={showHidden}
+      title={showHidden ? "Hidden photos are shown, marked on their tiles: click to leave them out again" : "Show the photos hidden with Hide (h); they are left out of every view and count until then"}
+      onclick={toggleShowHidden}
+    >Hidden</button>
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
     <button class="toggle settings" title="Settings: the sidebar's sections, online map services" aria-label="Settings" onclick={() => (showSettings = true)}>
@@ -1874,7 +2141,7 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn || tab === "analysis"}>
+  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
   {#if showTimeline && tab !== "analysis" && status}
     <Timeline
       filter={eff}
@@ -1887,6 +2154,14 @@
     />
   {/if}
   {#if mapOn}
+    <!-- The map's own tools, by the map: the header has no room for them beside the rest. -->
+    <div class="map-tools" role="toolbar" aria-label="Map">
+      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
+        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
+      </label>
+      <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
+      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
+    </div>
     <MapPane
       filter={eff}
       {version}
@@ -1920,11 +2195,34 @@
       total={result?.total ?? 0}
       {analysis}
       {version}
+      {stack}
+      {allOf}
+      picked={filter}
       ontoggle={toggleList}
       onflag={toggleFlag}
       ongroup={showGroup}
       onshow={() => showTab("photos")}
+      onstack={toggleStack}
+      onclasses={() => { version++; analysed++; refresh(true); }}
+      onallof={toggleAllOf}
     />
+  {/if}
+  {#if mapOn || tab === "analysis"}
+    <!-- A window splitter: a separator that can be focused and moved with the arrow keys. -->
+    <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+    <div
+      class="splitter"
+      role="separator"
+      aria-orientation="horizontal"
+      aria-label="Height of the photo strip"
+      aria-valuemin={STRIP_MIN}
+      aria-valuenow={stripShown}
+      tabindex="0"
+      title="Drag to resize; arrow keys too, Home resets"
+      onpointerdown={splitStart}
+      onkeydown={splitKey}
+      ondblclick={() => setStrip(STRIP_DEFAULT)}
+    ></div>
   {/if}
   <Grid
     bind:this={grid}
@@ -1934,6 +2232,7 @@
     {selected}
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
+    hidden={(i) => hiddenHere.has(rowAt(i) ?? -1)}
     offline={(i) => offlineRows.has(rowAt(i) ?? -1)}
     onselect={pick}
     ondragcell={dragCell}
@@ -1944,8 +2243,15 @@
     bind:layout
   >
     {#if error}
-      <p class="error">{error}</p>
-      {#if !status}<p class="empty"><button class="link" onclick={() => (choosingSource = true)}>Open a catalog or photo folders…</button></p>{/if}
+      <p class="error">{isLockError(error) ? LOCK_HELP : error}</p>
+      {#if isLockError(error)}<p class="error small">{error}</p>{/if}
+      {#if !status}
+        <p class="empty">
+          <button class="link" disabled={retrying} onclick={retryOpen}>{retrying ? "Trying…" : "Try again"}</button>
+          ·
+          <button class="link" onclick={() => (choosingSource = true)}>Open a catalog or photo folders…</button>
+        </p>
+      {/if}
     {:else if syncFailed && status?.photos === 0}
       <p class="error">Nothing could be read from this source.<br />{syncFailed}</p>
     {:else if result && result.total === 0}
@@ -2199,6 +2505,10 @@
   />
 {/if}
 
+{#if startup}
+  <StartupDialog progress={startup} />
+{/if}
+
 {#if pasting && clipboard}
   {@const rows = pasting}
   <CopyDialog
@@ -2211,7 +2521,11 @@
 {/if}
 
 {#if showSettings}
-  <SettingsDialog titles={TITLES} onclose={() => (showSettings = false)} />
+  <SettingsDialog
+    titles={TITLES}
+    onclose={() => (showSettings = false)}
+    onclasses={() => { version++; analysed++; refresh(true); }}
+  />
 {/if}
 
 {#if showBackups}

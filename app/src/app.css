@@ -42,9 +42,13 @@ header {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
+/* Controls keep their size when the window narrows: the search box gives way first, then
+   the count; nothing is squeezed into a sliver. */
+header > * { flex-shrink: 0; }
 .brand { font-weight: 600; letter-spacing: 0.02em; }
 .search {
-  flex: 1;
+  flex: 1 1 200px;
+  min-width: 110px;
   max-width: 520px;
   padding: 6px 10px;
   color: var(--text);
@@ -93,7 +97,17 @@ header {
 .toggle.settings:hover { color: var(--text); }
 .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A fixed width: the result's size and time change with every query. */
-header .count { min-width: 15em; text-align: right; }
+header .count {
+  flex: 0 1 15em;
+  min-width: 6em;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: right;
+}
+/* The map's tools, in a row above it. */
+.map-tools { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
+.map-tools .toggle { padding: 2px 10px; }
 
 aside {
   grid-area: side;
@@ -201,7 +215,13 @@ aside section { padding: 4px 0; }
 
 .pane { grid-area: main; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .pane > main { flex: 1 1 45%; min-height: 120px; }
-.pane.strip > main { flex: 0 0 190px; min-height: 0; }
+.pane.strip > main { flex: 0 0 var(--strip, 190px); min-height: 0; }
+/* The handle between the map (or the charts) and the strip of photos. */
+.splitter { flex: none; height: 7px; margin: -3px 0; position: relative; z-index: 5; cursor: row-resize; touch-action: none; }
+.splitter::after { content: ""; position: absolute; left: 0; right: 0; top: 3px; height: 1px; background: var(--line); }
+.splitter:hover::after, .splitter:focus-visible::after, .pane.splitting .splitter::after { top: 2px; height: 3px; background: var(--queued); }
+.pane.splitting { user-select: none; }
+.pane.splitting iframe, .pane.splitting canvas { pointer-events: none; }
 .pane.strip > .map { flex: 1 1 auto; }
 .pane.strip > .analysis { flex: 1 1 auto; min-height: 0; }
 .tabs { display: flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
@@ -224,6 +244,21 @@ main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps t
 .cell:hover { outline-color: #555; }
 .cell.picked { outline: 2px solid #777; background: var(--on); }
 .cell.sel { outline: 2px solid var(--accent); background: var(--on); }
+/* A hidden photo, shown while Hidden is on: dimmed, with a label. */
+.cell:has(.hidden-mark) img { opacity: 0.45; }
+.cell .hidden-mark {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 15px;
+  color: #fff;
+  background: rgb(0 0 0 / 65%);
+  border: 1px solid var(--queued);
+  border-radius: 3px;
+  pointer-events: none;
+}
 .cell .queued {
   position: absolute;
   top: 7px;
@@ -354,6 +389,9 @@ footer {
 .info-panel .more { margin: 2px 0 0; font-size: 12px; }
 .info-panel .focused { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .info-panel .tag { padding: 0 6px; font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
+.info-panel .hidden-tag { color: var(--text); border-color: var(--queued); }
+.info-panel .marks .hide { margin-left: auto; padding: 1px 8px; font-size: 12px; border: 1px solid var(--line); border-radius: 3px; }
+.info-panel .marks .hide:hover { background: var(--hover); }
 .info-panel dl { display: grid; grid-template-columns: 82px 1fr; gap: 4px 8px; margin: 10px 0 0; }
 .info-panel dt { color: var(--muted); }
 .info-panel dd { margin: 0; overflow-wrap: anywhere; }
@@ -438,6 +476,11 @@ footer .busy { color: var(--text); }
 .subhead { padding: 6px 8px 2px 26px; font-size: 11px; color: #777; }
 .info-panel .palette { display: flex; height: 18px; margin: 4px 0 8px; border-radius: 3px; overflow: hidden; }
 .info-panel .palette i { min-width: 3px; }
+/* Black, white and grey: in the palette, never a colour of the photo. */
+.info-panel .palette i.neutral { background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgb(0 0 0 / 22%) 3px 5px); }
+/* Why a photo is in a class: the measure and the line, under it. */
+.info-panel .look .why { display: block; color: var(--muted); font-size: 11px; line-height: 1.35; }
+.info-panel .look .why.counts { color: var(--text); }
 .info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
 .copy-slot { flex: none; width: 16em; display: flex; justify-content: flex-end; }
@@ -447,10 +490,26 @@ footer .busy { color: var(--text); }
 .copy-to:hover { filter: brightness(1.12); }
 
 /* Tile size in the header. */
-.tiles { margin-left: auto; display: flex; align-items: center; gap: 4px; color: var(--muted); }
+.sort-slot { margin-left: auto; }
+.tiles { margin-left: 0; display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .tiles button { width: 22px; height: 22px; border-radius: 3px; }
 .tiles button:hover { color: var(--text); background: var(--hover); }
 .tiles input[type="range"] { width: 110px; accent-color: var(--accent); }
+/* Room for the sort box and the map's buttons on a narrower window. */
+@media (max-width: 1700px) {
+  .tiles input[type="range"] { width: 64px; }
+}
+@media (max-width: 1500px) {
+  .tiles input[type="range"] { width: 36px; }
+  header { gap: 8px; }
+}
+/* A small window: the tile slider (− and + stay), the result's count and the room kept for
+   "Copy to N selected" go, so the views, the sort and the panels' buttons still fit. */
+@media (max-width: 1400px) {
+  .tiles input[type="range"] { display: none; }
+  header .count { display: none; }
+  .copy-slot { width: auto; }
+}
 .tiles label { display: flex; align-items: center; gap: 4px; margin-left: 4px; white-space: nowrap; }
 .tiles input[type="number"] {
   width: 42px;
