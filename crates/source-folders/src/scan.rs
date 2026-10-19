@@ -699,7 +699,7 @@ fn hash_whole(
 fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome> {
     let Plan { puts, removes, detach, offline, fulls, mut outcome } = plan;
     let any = !(puts.is_empty() && removes.is_empty() && detach.is_empty() && offline.is_empty() && fulls.is_empty());
-    src.store().write(|w| {
+    let written = src.store().write(|w| {
         let (roots, mut moves) = roots_changed(w, def)?;
         for ext in &removes {
             // Before the record goes: the images are found through it.
@@ -752,7 +752,10 @@ fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome
             w.folders_changed()?;
         }
         Ok(outcome)
-    })
+    });
+    // The images it dropped are deleted now, outside the store's lock.
+    src.images.sweep(src, written.is_ok());
+    written
 }
 
 /// Compares the roots with those of the last walk. A root whose path changed has every

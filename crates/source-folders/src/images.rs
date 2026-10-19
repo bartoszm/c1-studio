@@ -255,6 +255,9 @@ pub(crate) struct Images {
     /// One maker per photo: two threads making the same photo would write the same files.
     making: Making,
     made: AtomicU32,
+    /// Images whose records a store write is dropping, deleted by [`Images::sweep`] once it
+    /// has committed: no file I/O under the store's lock, and none for a write that fails.
+    doomed: Mutex<Vec<PathBuf>>,
 }
 
 impl Images {
@@ -264,6 +267,7 @@ impl Images {
             generated: Mutex::new(None),
             making: Making { busy: Mutex::new(HashSet::new()), free: Condvar::new() },
             made: AtomicU32::new(0),
+            doomed: Mutex::new(Vec::new()),
         }
     }
 
@@ -526,20 +530,40 @@ impl Images {
         generated.get_or_insert_with(|| state.images.values().map(|i| i.path.clone()).collect());
     }
 
-    /// Deletes one image of photo `ext` and its record. Called inside a store write.
+    /// Drops the record of one image of photo `ext`, its file to be deleted by
+    /// [`Images::sweep`]. Called inside a store write.
     fn drop_image(&self, w: &mut Writer, ext: &str, tier: ImageTier, image: &ImageRec) -> Result<()> {
-        // A file that cannot be deleted stays on the list: the scan must not take it for a photo.
-        if remove_file(&image.path).is_ok() {
-            self.generated_update(|set| {
-                set.remove(&image.path);
-            });
-            tidy(&image.path);
-        }
+        self.doomed.lock().unwrap().push(image.path.clone());
         w.put_image(ext, tier, None)
     }
 
-    /// The file of photo `ext` changed or is gone: deletes the images made of it and their
-    /// records. Called inside a store write: use `w.state()`, never `src.store()`.
+    /// After a store write that dropped images ([`Images::invalidate`], [`Images::relocate`]):
+    /// deletes their files if it `committed`, else forgets them. A path recorded again
+    /// meanwhile (made anew) is kept.
+    pub fn sweep(&self, src: &FolderSource, committed: bool) {
+        let doomed = std::mem::take(&mut *self.doomed.lock().unwrap());
+        if doomed.is_empty() || !committed {
+            return;
+        }
+        let recorded: HashSet<PathBuf> = {
+            let state = src.store().read();
+            let doomed: HashSet<&PathBuf> = doomed.iter().collect();
+            state.images.values().filter(|i| doomed.contains(&i.path)).map(|i| i.path.clone()).collect()
+        };
+        for path in doomed.iter().filter(|p| !recorded.contains(*p)) {
+            // A file that cannot be deleted stays on the list: the scan must not take it for a photo.
+            if remove_file(path).is_ok() {
+                self.generated_update(|set| {
+                    set.remove(path);
+                });
+                tidy(path);
+            }
+        }
+    }
+
+    /// The file of photo `ext` changed or is gone: drops the records of the images made of
+    /// it, their files deleted by [`Images::sweep`] after the write. Called inside a store
+    /// write: use `w.state()`, never `src.store()`.
     pub fn invalidate(&self, w: &mut Writer, _src: &FolderSource, ext: &str) -> Result<()> {
         for spec in SPECS {
             let Some(image) = w.state().images.get(&(ext.to_owned(), spec.tier)).cloned() else { continue };
@@ -552,9 +576,9 @@ impl Images {
     /// Photos at a new place (moved or renamed, or under a root whose path changed): where
     /// `def`'s patterns follow the photo's place, its images are no longer where they
     /// belong. An image that travelled with the photo (a folder renamed with its `.previews`
-    /// in it) is found at its new path, the same size, and kept there; any other is deleted
-    /// with its record, to be made again when asked for. Returns the new paths of the images
-    /// kept. Called inside a store write.
+    /// in it) is found at its new path, the same size, and kept there; any other has its
+    /// record dropped (its file deleted by [`Images::sweep`]), to be made again when asked
+    /// for. Returns the new paths of the images kept. Called inside a store write.
     pub(crate) fn relocate(
         &self,
         w: &mut Writer,
@@ -1293,6 +1317,8 @@ mod tests {
         let b = fx.make(B, ImageTier::Thumb).unwrap();
         assert!(fx.src.images.is_generated(&fx.src, &a.path));
         fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, A)).unwrap();
+        assert!(a.path.exists(), "deleted only once the write is done");
+        fx.src.images.sweep(&fx.src, true);
         assert!(!a.path.exists() && !a_preview.path.exists());
         assert!(fx.recorded(A, ImageTier::Thumb).is_none() && fx.recorded(A, ImageTier::Preview).is_none());
         assert!(b.path.is_file() && fx.recorded(B, ImageTier::Thumb).is_some());
@@ -1303,6 +1329,22 @@ mod tests {
         fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, "ffffffffffffffff")).unwrap();
         // The images are made again afterwards.
         assert!(fx.make(A, ImageTier::Thumb).unwrap().path.is_file());
+    }
+
+    #[test]
+    fn a_failed_write_deletes_no_image() {
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        let a = fx.make(A, ImageTier::Thumb).unwrap();
+        let failed: Result<()> = fx.src.store().write(|w| {
+            fx.src.images.invalidate(w, &fx.src, A)?;
+            Err(SourceError::Other("no".into()))
+        });
+        assert!(failed.is_err());
+        fx.src.images.sweep(&fx.src, false);
+        assert!(a.path.is_file() && fx.recorded(A, ImageTier::Thumb).is_some(), "record and file both kept");
+        fx.src.images.sweep(&fx.src, true);
+        assert!(a.path.is_file(), "forgotten, not left for the next sweep");
     }
 
     #[test]
