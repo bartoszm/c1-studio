@@ -1463,7 +1463,7 @@ country) and 68k have neither.
   catalogs and Photo folders, and writes the choice to `%APPDATA%\c1studio\providers.json`
   (`c1sources::Offered`). Everything stays built in. No file offers every kind, so dev
   builds, upgrades and `c1cat` are unchanged. On a reinstall the page starts from the
-  file there. Passive and silent installs skip the page. `/PROVIDERS=` sets the choice
+  file there. Passive and silent installs skip the page. `/KINDS=` sets the choice
   for them, and without it the file is kept.
 - The app's source menu, its recent list and the source opened at start only use the
   kinds offered. *Kinds of source…* in the menu turns them on and off (`set_providers`).

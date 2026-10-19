@@ -4,8 +4,10 @@
 ; choice to %APPDATA%\c1studio\providers.json, which c1sources::Offered reads. Without the
 ; file the app offers every kind. On a reinstall the page starts from the file there.
 ;
-; Silent and passive installs skip the page: /PROVIDERS=capture-one,folders sets the list,
+; Silent and passive installs skip the page: /KINDS=capture-one,folders sets the list,
 ; and without it a file already there is kept.
+; (Not /PROVIDERS=: GetOptions matches by prefix, so it would also read as the passive
+; flag /P.)
 ;
 ; The ids must match the providers' (c1sources checks every one is in this file).
 
@@ -109,10 +111,10 @@ Function C1OfferLeave
   StrCpy $C1OfferChosen 1
 FunctionEnd
 
-; /PROVIDERS=capture-one,folders, when given and naming at least one.
+; /KINDS=capture-one,folders, when given and naming at least one.
 Function C1OfferFromCommandLine
   ClearErrors
-  ${GetOptions} $CMDLINE "/PROVIDERS=" $R0
+  ${GetOptions} $CMDLINE "/KINDS=" $R0
   ${If} ${Errors}
     Return
   ${EndIf}
@@ -120,7 +122,7 @@ Function C1OfferFromCommandLine
   ${StrLoc} $R2 ",$R0," ",folders," ">"
   ${If} $R1 == ""
   ${AndIf} $R2 == ""
-    DetailPrint "/PROVIDERS=$R0 names no kind of photo source: left as it was"
+    DetailPrint "/KINDS=$R0 names no kind of photo source: left as it was"
     Return
   ${EndIf}
   StrCpy $C1OfferCaptureOne 0

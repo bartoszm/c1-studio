@@ -2079,7 +2079,11 @@ async fn pick_source(app: AppHandle, provider: String) -> Result<Option<String>,
 #[tauri::command]
 async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
     let named = Some(spec.provider.as_str()).filter(|p| !p.is_empty());
-    let spec = sources::spec_among(&sources::offered_providers(), &spec.location, named)?;
+    // The source that is open (or failed to) opens again whatever kinds are offered: Try
+    // again after a lock, say. Another one must be of a kind offered.
+    let again = app.state::<App>().0.read().unwrap().spec.as_ref() == Some(&spec);
+    let among = if again { sources::providers() } else { sources::offered_providers() };
+    let spec = sources::spec_among(&among, &spec.location, named)?;
     {
         let state = app.state::<App>();
         let current = state.0.read().unwrap();

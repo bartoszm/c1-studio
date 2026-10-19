@@ -21,7 +21,7 @@ folders*, or both. The source menu then offers only those. Change the choice lat
 under *Kinds of source…* at the bottom of the source menu, where at least one kind stays
 on. Turning a kind off leaves the source that is open as it is, and hides that kind's
 recent sources from the menu. A silent install (`/S`) keeps the choice made before.
-`/PROVIDERS=capture-one,folders` sets the choice instead. The choice is kept in
+`/KINDS=capture-one,folders` sets the choice instead. The choice is kept in
 `%APPDATA%\c1studio\providers.json`. Without that file every kind is offered. `c1cat`
 always opens every kind.
 

@@ -81,14 +81,16 @@
     await load();
   }
 
-  async function offer(id: string, on: boolean) {
+  async function offer(id: string, box: HTMLInputElement) {
     if (!view) return;
-    const ids = view.kinds.filter((k) => (k.id === id ? on : k.offered)).map((k) => k.id);
+    const ids = view.kinds.filter((k) => (k.id === id ? box.checked : k.offered)).map((k) => k.id);
     failed = null;
     try {
       await api.setProviders(ids);
     } catch (e) {
       failed = String(e);
+      // Nothing was saved: the box goes back.
+      box.checked = !box.checked;
     }
     await load();
   }
@@ -181,7 +183,7 @@
         {#each view.kinds as k (k.id)}
           {@const last = k.offered && view.kinds.filter((x) => x.offered).length === 1}
           <label title={last ? "At least one kind stays on" : `Offer ${k.name} in this menu`}>
-            <input type="checkbox" checked={k.offered} disabled={last} onchange={(e) => offer(k.id, e.currentTarget.checked)} />
+            <input type="checkbox" checked={k.offered} disabled={last} onchange={(e) => offer(k.id, e.currentTarget)} />
             {k.name}
           </label>
         {/each}
