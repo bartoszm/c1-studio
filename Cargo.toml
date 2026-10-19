@@ -19,7 +19,9 @@ c1analysis = { path = "crates/c1analysis" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# Queued edits and the app's calls carry coordinates as JSON: without exact parsing, one
+# in fourteen camera positions reads back a hair off and no longer matches the catalog.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 postcard = { version = "1", features = ["use-std"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

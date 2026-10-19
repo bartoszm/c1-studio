@@ -426,6 +426,32 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_position_reads_back_exactly() {
+        use c1model::{GeoOrigin, GeoPoint};
+        let dir = tempfile::tempdir().unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        // A camera's `19,56.5857667E`: the default float parsing reads it one step off,
+        // and the edit then no longer matches the catalog it was made against.
+        let camera = GeoPoint {
+            lat: 50.0 + 3.0607333 / 60.0,
+            lon: 19.0 + 56.5857667 / 60.0,
+            alt: None,
+            origin: GeoOrigin::Exif,
+        };
+        let moved = GeoPoint { lat: 50.050445, lon: 19.943949, alt: None, origin: GeoOrigin::Manual };
+        let photo = PhotoId::new(&c1model::SourceId("c1".into()), "7".to_string());
+        let pending = Pending {
+            change: Change { photo: photo.clone(), op: Op::SetGeo { base: Some(camera), value: Some(moved) } },
+            at: 5,
+            theirs: None,
+        };
+        let mut batch = edits.batch().unwrap();
+        batch.put(&pending_key(&photo, "geo"), &pending).unwrap();
+        batch.commit().unwrap();
+        assert_eq!(edits.pending().unwrap(), [(pending_key(&photo, "geo"), pending)]);
+    }
+
+    #[test]
     fn entries_another_build_wrote_are_looked_up_or_skipped() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edits.redb");
