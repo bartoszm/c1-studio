@@ -17,7 +17,7 @@ use c1model::{
 };
 use events::Log;
 use serde::{Deserialize, Serialize};
-use sources::Recent;
+use sources::{Offered, Recent};
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -2020,6 +2020,14 @@ struct ProviderView {
     pick: Pick,
 }
 
+/// A kind of source, and whether the app offers it.
+#[derive(Serialize)]
+struct KindView {
+    id: &'static str,
+    name: &'static str,
+    offered: bool,
+}
+
 #[derive(Serialize)]
 struct SourcesView {
     current: Option<SourceEntry>,
@@ -2028,29 +2036,52 @@ struct SourcesView {
     /// Why nothing is open, when nothing is.
     error: Option<String>,
     recent: Vec<SourceEntry>,
+    /// The kinds offered, to open.
     providers: Vec<ProviderView>,
+    /// Every kind there is, to turn on or off.
+    kinds: Vec<KindView>,
 }
 
 /// What is open, what was open before, and what kinds of source can be opened.
 #[tauri::command]
 async fn sources(app: State<'_, App>) -> Result<SourcesView, String> {
     let current = app.0.read().unwrap();
+    let offered = Offered::load();
     Ok(SourcesView {
         current: current.spec.as_ref().and_then(entry),
         compatibility: current.session.as_ref().ok().map(|s| s.source.info().compatibility),
         error: current.session.as_ref().err().cloned(),
-        recent: Recent::load().list.iter().filter(|s| Some(*s) != current.spec.as_ref()).filter_map(entry).collect(),
+        recent: Recent::load()
+            .list
+            .iter()
+            .filter(|s| Some(*s) != current.spec.as_ref() && offered.allows(&s.provider))
+            .filter_map(entry)
+            .collect(),
         providers: sources::providers()
             .iter()
+            .filter(|p| offered.allows(p.id()))
             .map(|p| ProviderView { id: p.id(), name: p.name(), pick: p.pick() })
             .collect(),
+        kinds: sources::providers()
+            .iter()
+            .map(|p| KindView { id: p.id(), name: p.name(), offered: offered.allows(p.id()) })
+            .collect(),
     })
+}
+
+/// Offers these kinds of source from now on (at least one); the source open stays open.
+#[tauri::command]
+async fn set_providers(ids: Vec<String>) -> Result<(), String> {
+    Offered::save(&ids)
 }
 
 /// Asks for a source of a provider's kind with the system's file or folder dialog.
 #[tauri::command]
 async fn pick_source(app: AppHandle, provider: String) -> Result<Option<String>, String> {
-    let provider = sources::provider(&provider)?;
+    let provider = sources::offered_providers()
+        .into_iter()
+        .find(|p| p.id() == provider)
+        .ok_or_else(|| format!("{provider:?} sources are turned off"))?;
     let pick = provider.pick();
     tauri::async_runtime::spawn_blocking(move || {
         let dialog = app.dialog().file().set_title(provider.name());
@@ -2068,7 +2099,11 @@ async fn pick_source(app: AppHandle, provider: String) -> Result<Option<String>,
 #[tauri::command]
 async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
     let named = Some(spec.provider.as_str()).filter(|p| !p.is_empty());
-    let spec = sources::spec_for(&spec.location, named)?;
+    // The source that is open (or failed to) opens again whatever kinds are offered: Try
+    // again after a lock, say. Another one must be of a kind offered.
+    let again = app.state::<App>().0.read().unwrap().spec.as_ref() == Some(&spec);
+    let among = if again { sources::providers() } else { sources::offered_providers() };
+    let spec = sources::spec_among(&among, &spec.location, named)?;
     {
         let state = app.state::<App>();
         let current = state.0.read().unwrap();
@@ -2158,6 +2193,7 @@ pub fn run() {
             rescan,
             open_source,
             forget_source,
+            set_providers,
             status,
             startup_progress,
             query,

@@ -583,6 +583,8 @@ footer .busy { color: var(--text); }
 .source-path input:focus { outline: none; border-color: var(--queued); }
 .source-note { margin: 4px 12px 6px; color: var(--muted); overflow-wrap: anywhere; }
 .source-note.error { color: var(--error); }
+.source-kinds { display: flex; flex-direction: column; gap: 4px; padding: 2px 12px 6px 24px; }
+.source-kinds label { display: flex; align-items: center; gap: 6px; }
 
 /* Which version a source is, when the app is not fully checked against it. */
 footer .compat { padding: 0 6px; border: 1px solid #6b5a2a; border-radius: 3px; color: #e8b03a; font-size: 11px; }

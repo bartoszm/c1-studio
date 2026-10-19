@@ -1,13 +1,13 @@
 //! Which source the app opens at start: the command line, `$C1_CATALOG`, else the source
-//! opened last. The providers and the recent list are `c1sources`'.
+//! opened last. The providers, the ones offered and the recent list are `c1sources`'.
 
 use c1model::SourceSpec;
-pub use c1sources::{Recent, provider, providers, spec_for};
+pub use c1sources::{Offered, Recent, offered_providers, provider, providers, spec_among, spec_for};
 
 /// What to open at start, and whether to put it on the recent list:
 /// 1. the command line, `c1studio <path> [--provider <id>]`;
 /// 2. `$C1_CATALOG` (scripts and test instances: not remembered);
-/// 3. the source opened last.
+/// 3. the source opened last of a kind still offered.
 ///
 /// Nothing is looked for beyond these: a first start opens nothing and asks.
 pub fn startup(args: &[String]) -> Result<(SourceSpec, bool), String> {
@@ -27,7 +27,8 @@ pub fn startup(args: &[String]) -> Result<(SourceSpec, bool), String> {
     if let Some(catalog) = std::env::var_os("C1_CATALOG") {
         return spec_for(&catalog.to_string_lossy(), Some("capture-one")).map(|s| (s, false));
     }
-    if let Some(last) = Recent::load().list.into_iter().next() {
+    let offered = Offered::load();
+    if let Some(last) = Recent::load().list.into_iter().find(|s| offered.allows(&s.provider)) {
         return Ok((last, false));
     }
     Err("no catalog open yet: choose one".into())
