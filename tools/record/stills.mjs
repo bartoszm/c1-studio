@@ -7,9 +7,10 @@
 // back to the catalog.
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { showFolder } from "./scenarios/folders.mjs";
 
-const media = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..", "..", "docs", "media");
+const media = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "docs", "media");
 
 /** A JPEG of the window, or of `clip` ({ x, y, width, height }), the pointer hidden. */
 async function jpeg(d, name, clip) {

@@ -66,8 +66,9 @@ and camera raw files, from a disk, a NAS or a cloud drive, with the same search,
 analysis and editing. EXIF, XMP and IPTC are read from the files; your edits are kept in
 C1 Studio and written to the files only if you turn XMP export on. Photos keep their
 edits when files are moved or renamed, and a drive that is not connected marks its photos
-offline instead of losing them. Thumbnails go where you choose: one central folder, beside
-each folder, or a pattern of your own.
+offline instead of losing them. Thumbnails go where you choose: one central folder, a
+folder under each root (so they travel with an external drive), beside each photo, or a
+pattern of your own.
 
 ![A photo folders source on Google Drive, with a photo's details read from its file](docs/media/folders.jpg)
 
