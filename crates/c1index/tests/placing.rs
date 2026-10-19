@@ -317,3 +317,16 @@ fn a_position_outside_the_photos_place_refines_nothing() {
     let wider = RefineSettings { position_gap_minutes: 10, ..RefineSettings::default() };
     assert_eq!(lib.refine_plan(&Filter::default(), &wider).unwrap().positions, 0, "Berlin is not in Kraków");
 }
+
+#[test]
+fn a_position_for_a_city_the_gazetteer_lacks_is_not_refined() {
+    let (_d, lib) = setup();
+    let four = row(&lib, 4);
+    let unknown = place("Poland", "Malopolska", "Xyzzyville");
+    lib.edit(&[(four, Op::SetPlace { base: krakow(), value: unknown })]).unwrap();
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Xyzzyville".to_owned()]).unwrap();
+    lib.edit(&[(row(&lib, 8), by_hand(50.054, 19.9354))]).unwrap();
+    let wider = RefineSettings { position_gap_minutes: 10, ..RefineSettings::default() };
+    let plan = lib.refine_plan(&Filter::default(), &wider).unwrap();
+    assert_eq!((plan.approx, plan.positions), (1, 0), "Kraków is in Malopolska, but is it Xyzzyville?");
+}

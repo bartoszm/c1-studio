@@ -161,6 +161,19 @@ enum Suggestion {
     Place(Arc<str>, u64),
 }
 
+/// One photo's refining from its neighbours.
+enum Refinement {
+    Position(f64, f64),
+    /// The photo's place path `from` made `to`, from the neighbour's at `path` (its `row`,
+    /// to read the whole place, code and all).
+    Place {
+        from: Arc<str>,
+        to: String,
+        path: Arc<str>,
+        row: u64,
+    },
+}
+
 /// Faster than this between two photos, they were taken from a plane: no line between them.
 const MAX_KMH: f64 = 150.0;
 
@@ -262,15 +275,15 @@ fn between(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
     Some((prev.lat + (next.lat - prev.lat) * t, wrapped(lon)))
 }
 
-/// Where a photo taken at `at` was: [`between`] the fixes either side, or, at the end of a
-/// stretch, at the nearest fix if within half of `gap`.
-fn position_at(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
+/// Where a photo taken at `at` was: [`between`] the fixes either side (at most `gap`
+/// apart), or, failing that, at the nearest fix if within `near`.
+fn position_at(fixes: &[Fix], at: i64, gap: i64, near: i64) -> Option<(f64, f64)> {
     between(fixes, at, gap).or_else(|| {
         let i = fixes.partition_point(|f| f.at < at);
         [i.checked_sub(1).and_then(|i| fixes.get(i)), fixes.get(i)]
             .into_iter()
             .flatten()
-            .filter(|f| (f.at - at).abs() <= gap / 2)
+            .filter(|f| (f.at - at).abs() <= near)
             .min_by_key(|f| (f.at - at).abs())
             .map(|f| (f.lat, f.lon))
     })
@@ -698,9 +711,6 @@ impl Library {
         self.edit(&changes)
     }
 
-    /// For each photo `filter` selects that has no position, what the photos taken just
-    /// before and after it say: a position between theirs, or, failing that and if it has
-    /// no place, their place. Positions given from a place or from neighbours are not used.
     /// The catalog's positions of their own, by time: none given from a place's name or
     /// from neighbours.
     fn fixes(&self, searcher: &Searcher) -> anyhow::Result<Vec<Fix>> {
@@ -730,6 +740,9 @@ impl Library {
         Ok(placed)
     }
 
+    /// For each photo `filter` selects that has no position, what the photos taken just
+    /// before and after it say: a position between theirs, or, failing that and if it has
+    /// no place, their place. Positions given from a place or from neighbours are not used.
     fn neighbours(&self, filter: &Filter, settings: &NeighbourSettings) -> anyhow::Result<Vec<(u64, Suggestion)>> {
         let searcher = self.reader.searcher();
         let gap = settings.max_gap_minutes.clamp(1, 2880) * 60_000;
@@ -740,7 +753,7 @@ impl Library {
         for s in self.seen(&searcher, &wanted, settings.places)? {
             let Some(at) = s.at else { continue };
             if settings.positions
-                && let Some((lat, lon)) = position_at(&fixes, at, gap)
+                && let Some((lat, lon)) = position_at(&fixes, at, gap, gap / 2)
             {
                 out.push((s.row, Suggestion::Position(lat, lon)));
                 continue;
@@ -819,15 +832,9 @@ impl Library {
 
     /// For each photo `filter` selects with a place, the place of the photo taken just
     /// before or after it if that goes deeper and says nothing else (both doing so, they
-    /// must agree); with the photo's place path now and after. For each with a position
-    /// given from its place's name, a position from the photos taken just before and
-    /// after it that lies in its place.
-    #[allow(clippy::type_complexity)]
-    fn refinements(
-        &self,
-        filter: &Filter,
-        settings: &RefineSettings,
-    ) -> anyhow::Result<Vec<(u64, Option<(Arc<str>, String)>, Suggestion)>> {
+    /// must agree). For each with a position given from its place's name, a position from
+    /// the photos taken around it that lies in its place.
+    fn refinements(&self, filter: &Filter, settings: &RefineSettings) -> anyhow::Result<Vec<(u64, Refinement)>> {
         let searcher = self.reader.searcher();
         let mut out = Vec::new();
         if settings.places {
@@ -852,7 +859,7 @@ impl Library {
                     (None, None) => None,
                 };
                 if let Some((to, path, row)) = pick {
-                    out.push((s.row, Some((own.clone(), to)), Suggestion::Place(path, row)));
+                    out.push((s.row, Refinement::Place { from: own.clone(), to, path, row }));
                 }
             }
         }
@@ -862,13 +869,18 @@ impl Library {
             let wanted = Filter { within: None, gps: Some(true), approx: Some(true), ..filter.clone() };
             for s in self.seen(&searcher, &wanted, false)? {
                 let Some(at) = s.at else { continue };
-                let Some((lat, lon)) = position_at(&fixes, at, gap) else { continue };
+                // Within the gap of one fix, or between two at most the gap apart.
+                let Some((lat, lon)) = position_at(&fixes, at, gap, gap) else { continue };
                 if s.geo.is_some_and(|g| same_spot(g, (lat, lon))) {
                     continue;
                 }
                 let Some(photo) = self.photo(s.row)? else { continue };
+                // A city the gazetteer lacks could be anywhere: the position is not moved.
+                if named(&photo.place.city) && self.resolve_place(&photo.place).city.is_none() {
+                    continue;
+                }
                 if gazetteer().reverse(lat, lon).is_some_and(|found| self.agrees(&photo.place, &found)) {
-                    out.push((s.row, None, Suggestion::Position(lat, lon)));
+                    out.push((s.row, Refinement::Position(lat, lon)));
                 }
             }
         }
@@ -884,12 +896,12 @@ impl Library {
             ..RefinePlan::default()
         };
         let mut counts: HashMap<(Arc<str>, String), usize> = HashMap::new();
-        for (_, paths, s) in self.refinements(filter, settings)? {
-            match (s, paths) {
-                (Suggestion::Position(..), _) => plan.positions += 1,
-                (Suggestion::Place(..), paths) => {
+        for (_, r) in self.refinements(filter, settings)? {
+            match r {
+                Refinement::Position(..) => plan.positions += 1,
+                Refinement::Place { from, to, .. } => {
                     plan.places += 1;
-                    *counts.entry(paths.unwrap_or_default()).or_default() += 1;
+                    *counts.entry((from, to)).or_default() += 1;
                 }
             }
         }
@@ -906,10 +918,10 @@ impl Library {
         let mut changes = Vec::new();
         let mut guesses = Vec::new();
         let mut seen = HashSet::new();
-        for (row, _, s) in self.refinements(filter, settings)? {
+        for (row, r) in self.refinements(filter, settings)? {
             let Some(photo) = self.photo(row)? else { continue };
-            match s {
-                Suggestion::Position(lat, lon) => {
+            match r {
+                Refinement::Position(lat, lon) => {
                     if !seen.insert((row, "geo")) {
                         continue;
                     }
@@ -917,11 +929,11 @@ impl Library {
                     let value = GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual };
                     changes.push((row, Op::SetGeo { base: photo.geo, value: Some(value) }));
                 }
-                Suggestion::Place(path, from) => {
+                Refinement::Place { path, row: at, .. } => {
                     if !seen.insert((row, "place")) {
                         continue;
                     }
-                    let theirs = places.entry(path.clone()).or_insert_with(|| self.place_at(&path, from));
+                    let theirs = places.entry(path.clone()).or_insert_with(|| self.place_at(&path, at));
                     let mut value = photo.place.clone();
                     for (slot, given) in [
                         (&mut value.country, &theirs.country),

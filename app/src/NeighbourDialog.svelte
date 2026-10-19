@@ -64,18 +64,27 @@
       .catch((e) => { if (mine === asked) { refined = null; error = String(e); } });
   });
 
+  // An error from the other mode is not this one's.
+  $effect(() => {
+    void mode;
+    error = null;
+  });
+
+  // With a gap not valid (emptied, say), the counts are of settings no longer there.
   let count = $derived(
+    !(mode === "fill" ? settings : refineSettings) ? 0 :
     mode === "fill"
       ? plan ? (positions ? plan.positions : 0) + (places ? plan.places : 0) : 0
       : refined ? (refinePlaces ? refined.places : 0) + (refinePositions ? refined.positions : 0) : 0,
   );
 
   async function apply() {
-    if (!count || busy) return;
+    const s = mode === "fill" ? settings : refineSettings;
+    if (!s || !count || busy) return;
     busy = true;
     try {
       if (mode === "fill" && settings) await ondone(await api.neighbourApply(shown(), settings));
-      else if (mode === "refine" && refineSettings) await ondone(await api.refineApply(shown(), refineSettings));
+      if (mode === "refine" && refineSettings) await ondone(await api.refineApply(shown(), refineSettings));
       onclose();
     } catch (e) {
       error = String(e);
@@ -126,7 +135,7 @@
       </p>
     {/if}
     {#if error}<p class="error">{error}</p>{/if}
-    {#if mode === "fill" && plan}
+    {#if mode === "fill" && plan && settings}
       <p class="result">
         Of {plan.candidates.toLocaleString()} photos with no position,
         {#if positions}<b>{plan.positions.toLocaleString()}</b> get a position{/if}{#if positions && places}{" "}and{/if}
@@ -139,7 +148,7 @@
         </ul>
       {/if}
       <p class="muted small">Positions given this way are queued like any edit: check them on the map, undo with Ctrl+Z.</p>
-    {:else if mode === "refine" && refined}
+    {:else if mode === "refine" && refined && refineSettings}
       {#if refinePlaces}
         <p class="result">Of {refined.placed.toLocaleString()} photos with a place, <b>{refined.places.toLocaleString()}</b> get a more specific one.</p>
       {/if}
