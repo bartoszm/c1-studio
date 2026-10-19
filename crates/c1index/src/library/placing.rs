@@ -17,7 +17,7 @@ use crate::edits::now_ms;
 use crate::filter::Filter;
 use crate::geo::{self, Located, MapResult, MapView, PlacePoint};
 use crate::gpx::Fix;
-use crate::places::{Coarse, Guessed, Looked};
+use crate::places::{Coarse, Guessed, Looked, same_spot};
 use crate::schema::{self, Dim, NO_PLACE};
 
 /// What places' names were found as, remembered: the gazetteer's answers do not change,
@@ -120,11 +120,58 @@ pub struct NeighbourPlan {
     pub place_counts: Vec<(String, usize)>,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RefineSettings {
+    /// A place from a neighbour taken at most this far apart (1 to 2880: two days).
+    pub place_gap_minutes: i64,
+    /// A position from neighbours taken at most this far apart (1 to 2880).
+    pub position_gap_minutes: i64,
+    /// Give photos with a place their neighbour's, where it says the same and more.
+    pub places: bool,
+    /// Give photos with a position from their place's name their neighbours' position.
+    pub positions: bool,
+}
+
+impl Default for RefineSettings {
+    fn default() -> Self {
+        Self { place_gap_minutes: 15, position_gap_minutes: 2, places: true, positions: true }
+    }
+}
+
+/// What refining photos' places and positions from their neighbours would do.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RefinePlan {
+    /// Photos the filter selects that have a place.
+    pub placed: usize,
+    /// Of them, those given a more specific one.
+    pub places: usize,
+    /// Photos the filter selects whose position is their place's (approximate).
+    pub approx: usize,
+    /// Of them, those given their neighbours' position.
+    pub positions: usize,
+    /// The places refined: from, to, how many photos; most photos first.
+    pub place_counts: Vec<(String, String, usize)>,
+}
+
 /// One photo's placing from its neighbours.
 enum Suggestion {
     Position(f64, f64),
     /// A place path, with a row of a photo at it (to read the whole place, code and all).
     Place(Arc<str>, u64),
+}
+
+/// One photo's refining from its neighbours.
+enum Refinement {
+    Position(f64, f64),
+    /// The photo's place path `from` made `to`, from the neighbour's at `path` (its `row`,
+    /// to read the whole place, code and all).
+    Place {
+        from: Arc<str>,
+        to: String,
+        path: Arc<str>,
+        row: u64,
+    },
 }
 
 /// Faster than this between two photos, they were taken from a plane: no line between them.
@@ -140,6 +187,34 @@ pub fn place_of_path(path: &str) -> Place {
         location: levels.next().flatten(),
         country_code: None,
     }
+}
+
+/// The place at path `own` made more specific by the one at `other`, as a path: when they
+/// differ at no level both name and `other` goes deeper. `Poland|—|Kraków` refined by
+/// `Poland|Malopolska|Kraków|Wawel` is the latter; not by itself or `Poland|—|Wieliczka`.
+fn refined(own: &str, other: &str) -> Option<String> {
+    let levels = |path: &str| -> Vec<Option<String>> {
+        path.split('|').map(|l| Some(l.trim().to_owned()).filter(|l| !l.is_empty() && l != NO_PLACE)).collect()
+    };
+    let (own, other) = (levels(own), levels(other));
+    let deepest = |levels: &[Option<String>]| levels.iter().rposition(Option::is_some);
+    if deepest(&other) <= deepest(&own) {
+        return None;
+    }
+    let mut merged = Vec::new();
+    for i in 0..own.len().max(other.len()) {
+        let (mine, theirs) = (own.get(i).cloned().flatten(), other.get(i).cloned().flatten());
+        match (mine, theirs) {
+            (Some(m), Some(t)) if m != t => return None,
+            (Some(l), _) | (None, Some(l)) => merged.push(l),
+            (None, None) => merged.push(NO_PLACE.to_owned()),
+        }
+    }
+    Some(merged.join("|"))
+}
+
+fn named(v: &Option<String>) -> bool {
+    v.as_deref().is_some_and(|s| !s.trim().is_empty())
 }
 
 /// The deepest of a document's place tree values: its whole place.
@@ -198,6 +273,20 @@ fn between(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
     let t = (at - prev.at) as f64 / span as f64;
     let lon = prev.lon + wrapped(next.lon - prev.lon) * t;
     Some((prev.lat + (next.lat - prev.lat) * t, wrapped(lon)))
+}
+
+/// Where a photo taken at `at` was: [`between`] the fixes either side (at most `gap`
+/// apart), or, failing that, at the nearest fix if within `near`.
+fn position_at(fixes: &[Fix], at: i64, gap: i64, near: i64) -> Option<(f64, f64)> {
+    between(fixes, at, gap).or_else(|| {
+        let i = fixes.partition_point(|f| f.at < at);
+        [i.checked_sub(1).and_then(|i| fixes.get(i)), fixes.get(i)]
+            .into_iter()
+            .flatten()
+            .filter(|f| (f.at - at).abs() <= near)
+            .min_by_key(|f| (f.at - at).abs())
+            .map(|f| (f.lat, f.lon))
+    })
 }
 
 impl Library {
@@ -563,27 +652,30 @@ impl Library {
         Ok(groups)
     }
 
+    /// Whether the place a position was found in agrees with a photo's: no level the
+    /// photo names is another there. A country or state typed but not found in the
+    /// gazetteer is not its to judge: they do not agree.
+    fn agrees(&self, place: &Place, found: &c1geo::Found) -> bool {
+        let own = self.resolve_place(place);
+        let same = |mine: Option<u32>, theirs: Option<u32>| mine.is_none() || mine == theirs;
+        same(own.country, found.ids.country)
+            && same(own.state, found.ids.state)
+            && same(own.city, found.ids.city)
+            && !(named(&place.country) && own.country.is_none())
+            && !(named(&place.state) && own.state.is_none())
+    }
+
     /// A photo's place with what its position says filled in where it is empty; `None`
     /// when there is nothing to fill or the two disagree. The catalog's spellings are
     /// worked out only once something is to be filled.
     fn filled(&self, photo: &c1model::Photo, spellings: &mut Option<Arc<Spellings>>) -> anyhow::Result<Option<Place>> {
-        let named = |v: &Option<String>| v.as_deref().is_some_and(|s| !s.trim().is_empty());
         let p = &photo.place;
         if named(&p.country) && named(&p.country_code) && named(&p.state) && named(&p.city) {
             return Ok(None);
         }
         let Some(geo) = photo.geo else { return Ok(None) };
         let Some(found) = gazetteer().reverse(geo.lat, geo.lon) else { return Ok(None) };
-        let own = self.resolve_place(p);
-        let agrees = |mine: Option<u32>, theirs: Option<u32>| mine.is_none() || mine == theirs;
-        if !(agrees(own.country, found.ids.country)
-            && agrees(own.state, found.ids.state)
-            && agrees(own.city, found.ids.city))
-        {
-            return Ok(None);
-        }
-        // A country or state typed but not found: it is not the gazetteer's to judge.
-        if (named(&p.country) && own.country.is_none()) || (named(&p.state) && own.state.is_none()) {
+        if !self.agrees(p, &found) {
             return Ok(None);
         }
         let s = match spellings {
@@ -619,53 +711,52 @@ impl Library {
         self.edit(&changes)
     }
 
+    /// The catalog's positions of their own, by time: none given from a place's name or
+    /// from neighbours.
+    fn fixes(&self, searcher: &Searcher) -> anyhow::Result<Vec<Fix>> {
+        let mut fixes = Vec::new();
+        let own = self.seen(searcher, &Filter { approx: Some(false), ..Filter::default() }, false)?;
+        let (guessed, keys) = (self.guessed.read().unwrap(), self.keys.read().unwrap());
+        for s in own {
+            let (Some(at), Some((lat, lon))) = (s.at, s.geo) else { continue };
+            let guess = || keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| guessed.get(k));
+            if guessed.is_empty() || !guess().is_some_and(|g| g.holds(lat, lon)) {
+                fixes.push(Fix { at, lat, lon });
+            }
+        }
+        fixes.sort_by_key(|f| f.at);
+        Ok(fixes)
+    }
+
+    /// The catalog's photos with a place, by time: when, the place's path, the row.
+    fn placed(&self, searcher: &Searcher) -> anyhow::Result<Vec<(i64, Arc<str>, u64)>> {
+        let mut placed = Vec::new();
+        for s in self.seen(searcher, &Filter { placed: Some(true), ..Filter::default() }, true)? {
+            if let (Some(at), Some(path)) = (s.at, s.path) {
+                placed.push((at, path, s.row));
+            }
+        }
+        placed.sort();
+        Ok(placed)
+    }
+
     /// For each photo `filter` selects that has no position, what the photos taken just
     /// before and after it say: a position between theirs, or, failing that and if it has
     /// no place, their place. Positions given from a place or from neighbours are not used.
     fn neighbours(&self, filter: &Filter, settings: &NeighbourSettings) -> anyhow::Result<Vec<(u64, Suggestion)>> {
         let searcher = self.reader.searcher();
         let gap = settings.max_gap_minutes.clamp(1, 2880) * 60_000;
-        let mut fixes: Vec<Fix> = Vec::new();
-        let mut placed: Vec<(i64, Arc<str>, u64)> = Vec::new();
-        if settings.positions {
-            let own = self.seen(&searcher, &Filter { approx: Some(false), ..Filter::default() }, false)?;
-            let (guessed, keys) = (self.guessed.read().unwrap(), self.keys.read().unwrap());
-            for s in own {
-                let (Some(at), Some((lat, lon))) = (s.at, s.geo) else { continue };
-                let guess = || keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| guessed.get(k));
-                if guessed.is_empty() || !guess().is_some_and(|g| g.holds(lat, lon)) {
-                    fixes.push(Fix { at, lat, lon });
-                }
-            }
-            fixes.sort_by_key(|f| f.at);
-        }
-        if settings.places {
-            for s in self.seen(&searcher, &Filter { placed: Some(true), ..Filter::default() }, true)? {
-                if let (Some(at), Some(path)) = (s.at, s.path) {
-                    placed.push((at, path, s.row));
-                }
-            }
-            placed.sort();
-        }
+        let fixes = if settings.positions { self.fixes(&searcher)? } else { Vec::new() };
+        let placed = if settings.places { self.placed(&searcher)? } else { Vec::new() };
         let wanted = Filter { within: None, gps: Some(false), ..filter.clone() };
         let mut out = Vec::new();
         for s in self.seen(&searcher, &wanted, settings.places)? {
             let Some(at) = s.at else { continue };
-            if settings.positions {
-                // At the end of a stretch: the nearest fix, if close.
-                let nearest = || {
-                    let i = fixes.partition_point(|f| f.at < at);
-                    [i.checked_sub(1).and_then(|i| fixes.get(i)), fixes.get(i)]
-                        .into_iter()
-                        .flatten()
-                        .filter(|f| (f.at - at).abs() <= gap / 2)
-                        .min_by_key(|f| (f.at - at).abs())
-                        .map(|f| (f.lat, f.lon))
-                };
-                if let Some((lat, lon)) = between(&fixes, at, gap).or_else(nearest) {
-                    out.push((s.row, Suggestion::Position(lat, lon)));
-                    continue;
-                }
+            if settings.positions
+                && let Some((lat, lon)) = position_at(&fixes, at, gap, gap / 2)
+            {
+                out.push((s.row, Suggestion::Position(lat, lon)));
+                continue;
             }
             if settings.places && s.path.is_none() {
                 let i = placed.partition_point(|p| p.0 < at);
@@ -738,6 +829,134 @@ impl Library {
         self.guessed.write().unwrap().extend(guesses.into_iter().filter_map(|(k, g)| Some((k, g?))));
         self.edit(&changes)
     }
+
+    /// For each photo `filter` selects with a place, the place of the photo taken just
+    /// before or after it if that goes deeper and says nothing else (both doing so, they
+    /// must agree). For each with a position given from its place's name, a position from
+    /// the photos taken around it that lies in its place.
+    fn refinements(&self, filter: &Filter, settings: &RefineSettings) -> anyhow::Result<Vec<(u64, Refinement)>> {
+        let searcher = self.reader.searcher();
+        let mut out = Vec::new();
+        if settings.places {
+            let gap = settings.place_gap_minutes.clamp(1, 2880) * 60_000;
+            let placed = self.placed(&searcher)?;
+            let wanted = Filter { within: None, placed: Some(true), ..filter.clone() };
+            for s in self.seen(&searcher, &wanted, true)? {
+                let (Some(at), Some(own)) = (s.at, s.path) else { continue };
+                // The nearest other photo with a place each side; one taken at the same
+                // time counts as after.
+                let i = placed.partition_point(|p| p.0 < at);
+                let near = |p: &&(i64, Arc<str>, u64)| p.2 != s.row;
+                let before = placed[..i].iter().rev().find(near);
+                let after = placed[i..].iter().find(near);
+                let offer = |p: Option<&(i64, Arc<str>, u64)>| {
+                    let p = p.filter(|p| (p.0 - at).abs() <= gap)?;
+                    Some((refined(&own, &p.1)?, p.1.clone(), p.2))
+                };
+                let pick = match (offer(before), offer(after)) {
+                    (Some(b), Some(a)) if a.0 != b.0 => None,
+                    (Some(p), _) | (None, Some(p)) => Some(p),
+                    (None, None) => None,
+                };
+                if let Some((to, path, row)) = pick {
+                    out.push((s.row, Refinement::Place { from: own.clone(), to, path, row }));
+                }
+            }
+        }
+        if settings.positions {
+            let gap = settings.position_gap_minutes.clamp(1, 2880) * 60_000;
+            let fixes = self.fixes(&searcher)?;
+            let wanted = Filter { within: None, gps: Some(true), approx: Some(true), ..filter.clone() };
+            for s in self.seen(&searcher, &wanted, false)? {
+                let Some(at) = s.at else { continue };
+                // Within the gap of one fix, or between two at most the gap apart.
+                let Some((lat, lon)) = position_at(&fixes, at, gap, gap) else { continue };
+                if s.geo.is_some_and(|g| same_spot(g, (lat, lon))) {
+                    continue;
+                }
+                let Some(photo) = self.photo(s.row)? else { continue };
+                // A city the gazetteer lacks could be anywhere: the position is not moved.
+                if named(&photo.place.city) && self.resolve_place(&photo.place).city.is_none() {
+                    continue;
+                }
+                if gazetteer().reverse(lat, lon).is_some_and(|found| self.agrees(&photo.place, &found)) {
+                    out.push((s.row, Refinement::Position(lat, lon)));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn refine_plan(&self, filter: &Filter, settings: &RefineSettings) -> anyhow::Result<RefinePlan> {
+        let searcher = self.reader.searcher();
+        let count = |f: Filter| -> anyhow::Result<usize> { Ok(searcher.search(self.compile(&f)?.as_ref(), &Count)?) };
+        let mut plan = RefinePlan {
+            placed: count(Filter { within: None, placed: Some(true), ..filter.clone() })?,
+            approx: count(Filter { within: None, gps: Some(true), approx: Some(true), ..filter.clone() })?,
+            ..RefinePlan::default()
+        };
+        let mut counts: HashMap<(Arc<str>, String), usize> = HashMap::new();
+        for (_, r) in self.refinements(filter, settings)? {
+            match r {
+                Refinement::Position(..) => plan.positions += 1,
+                Refinement::Place { from, to, .. } => {
+                    plan.places += 1;
+                    *counts.entry((from, to)).or_default() += 1;
+                }
+            }
+        }
+        plan.place_counts = counts.into_iter().map(|((from, to), n)| (from.to_string(), to.to_string(), n)).collect();
+        plan.place_counts.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| (&a.0, &a.1).cmp(&(&b.0, &b.1))));
+        Ok(plan)
+    }
+
+    /// Refines the photos' places and positions as [`Library::refine_plan`] showed: a
+    /// place keeps what it says and gains the rest; a position is marked as a guess.
+    /// Returns the ops that undo it.
+    pub fn refine_apply(&self, filter: &Filter, settings: &RefineSettings) -> anyhow::Result<Vec<(u64, Op)>> {
+        let mut places: HashMap<Arc<str>, Place> = HashMap::new();
+        let mut changes = Vec::new();
+        let mut guesses = Vec::new();
+        let mut seen = HashSet::new();
+        for (row, r) in self.refinements(filter, settings)? {
+            let Some(photo) = self.photo(row)? else { continue };
+            match r {
+                Refinement::Position(lat, lon) => {
+                    if !seen.insert((row, "geo")) {
+                        continue;
+                    }
+                    guesses.push((photo.id.key(), Some(Guessed { lat, lon })));
+                    let value = GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual };
+                    changes.push((row, Op::SetGeo { base: photo.geo, value: Some(value) }));
+                }
+                Refinement::Place { path, row: at, .. } => {
+                    if !seen.insert((row, "place")) {
+                        continue;
+                    }
+                    let theirs = places.entry(path.clone()).or_insert_with(|| self.place_at(&path, at));
+                    let mut value = photo.place.clone();
+                    for (slot, given) in [
+                        (&mut value.country, &theirs.country),
+                        (&mut value.country_code, &theirs.country_code),
+                        (&mut value.state, &theirs.state),
+                        (&mut value.city, &theirs.city),
+                        (&mut value.location, &theirs.location),
+                    ] {
+                        if !named(slot) {
+                            *slot = given.clone();
+                        }
+                    }
+                    if value != photo.place {
+                        changes.push((row, Op::SetPlace { base: photo.place, value }));
+                    }
+                }
+            }
+        }
+        // Marks first, as for neighbours: a mark on a photo not (yet) at its point is ignored.
+        self.place_book.set_guessed(&guesses)?;
+        self.guessed.write().unwrap().extend(guesses.into_iter().filter_map(|(k, g)| Some((k, g?))));
+        self.edit(&changes)
+    }
 }
 
 #[cfg(test)]
@@ -752,5 +971,24 @@ mod tests {
         // Kraków to Lisbon in 20 minutes: a flight.
         assert_eq!(between(&[fix(0, 50.06, 19.94), fix(20, 38.72, -9.13)], 10 * 60_000, 30 * 60_000), None);
         assert!(between(&[fix(0, 50.06, 19.94), fix(20, 50.08, 19.95)], 10 * 60_000, 30 * 60_000).is_some());
+    }
+
+    #[test]
+    fn a_place_is_refined_by_one_saying_the_same_and_more() {
+        let r = |own, other| refined(own, other);
+        assert_eq!(
+            r("Poland|—|Kraków", "Poland|Malopolska|Kraków|Wawel").as_deref(),
+            Some("Poland|Malopolska|Kraków|Wawel")
+        );
+        assert_eq!(r("Poland", "Poland|Malopolska").as_deref(), Some("Poland|Malopolska"));
+        // What the photo says is kept where the neighbour says nothing.
+        assert_eq!(
+            r("Poland|Malopolska|Kraków", "Poland|—|Kraków|Wawel").as_deref(),
+            Some("Poland|Malopolska|Kraków|Wawel")
+        );
+        assert_eq!(r("Poland|Malopolska|Kraków", "Poland|Malopolska|Kraków"), None, "the same place");
+        assert_eq!(r("Poland|—|Kraków", "Poland|Malopolska|Wieliczka|Mine"), None, "another city");
+        assert_eq!(r("Poland|Malopolska|Kraków", "Poland|Malopolska"), None, "less");
+        assert_eq!(r("Poland|—|Kraków", "Poland|Malopolska|Kraków"), None, "only a gap above filled: not deeper");
     }
 }

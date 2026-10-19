@@ -1,7 +1,7 @@
 //! Photos without a position on the map: by their place's name, from their neighbours in
 //! time, and places filled in from a position.
 
-use c1index::{BBox, Filter, Library, MapView, NeighbourSettings, PlaceLookup, QueryOptions, Sort};
+use c1index::{BBox, Filter, Library, MapView, NeighbourSettings, PlaceLookup, QueryOptions, RefineSettings, Sort};
 use c1model::memory::MemorySource;
 use c1model::*;
 
@@ -251,4 +251,82 @@ fn lookups_that_are_no_position_are_not_kept() {
     assert_eq!(lib.unresolved_places(&Filter::default()).unwrap().len(), 1, "asked again");
     lib.set_place_points(&[PlaceLookup { path, found: None }]).unwrap();
     assert!(lib.unresolved_places(&Filter::default()).unwrap().is_empty(), "nothing found is kept");
+}
+
+fn by_hand(lat: f64, lon: f64) -> Op {
+    Op::SetGeo { base: None, value: Some(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual }) }
+}
+
+#[test]
+fn neighbours_refine_a_place_to_a_more_specific_one() {
+    let (_d, lib) = setup();
+    let wawel = Place { location: Some("Wawel".into()), ..krakow() };
+    lib.edit(&[(row(&lib, 8), Op::SetPlace { base: Place::default(), value: wawel.clone() })]).unwrap();
+    let settings = RefineSettings::default();
+    let plan = lib.refine_plan(&Filter::default(), &settings).unwrap();
+    assert_eq!((plan.placed, plan.places, plan.approx, plan.positions), (4, 1, 0, 0));
+    assert_eq!(
+        plan.place_counts,
+        [("Poland|Malopolska|Kraków".to_owned(), "Poland|Malopolska|Kraków|Wawel".to_owned(), 1)]
+    );
+    let only_close = RefineSettings { place_gap_minutes: 4, ..settings };
+    assert_eq!(lib.refine_plan(&Filter::default(), &only_close).unwrap().places, 0);
+    lib.refine_apply(&Filter::default(), &settings).unwrap();
+    assert_eq!(lib.photo(row(&lib, 4)).unwrap().unwrap().place, wawel, "country code and all");
+    assert_eq!(lib.refine_plan(&Filter::default(), &settings).unwrap().places, 0, "nothing more to say");
+}
+
+#[test]
+fn neighbours_saying_different_things_refine_no_place() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let at = |location: &str| Place { location: Some(location.into()), ..krakow() };
+    let photos = vec![photo(1, 0, at("Wawel"), None), photo(2, 5, krakow(), None), photo(3, 10, at("Barbican"), None)];
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    assert_eq!(lib.refine_plan(&Filter::default(), &RefineSettings::default()).unwrap().places, 0);
+    lib.edit(&[(row(&lib, 3), Op::SetPlace { base: at("Barbican"), value: at("Wawel") })]).unwrap();
+    assert_eq!(lib.refine_plan(&Filter::default(), &RefineSettings::default()).unwrap().places, 1, "they agree");
+}
+
+#[test]
+fn neighbours_refine_an_approximate_position_to_their_gps() {
+    let (_d, lib) = setup();
+    let (four, eight) = (row(&lib, 4), row(&lib, 8));
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    lib.edit(&[(eight, by_hand(50.054, 19.9354))]).unwrap();
+    let settings = RefineSettings::default();
+    let plan = lib.refine_plan(&Filter::default(), &settings).unwrap();
+    assert_eq!((plan.approx, plan.positions), (1, 0), "taken five minutes apart");
+    let wider = RefineSettings { position_gap_minutes: 10, ..settings };
+    assert_eq!(lib.refine_plan(&Filter::default(), &wider).unwrap().positions, 1);
+    lib.refine_apply(&Filter::default(), &wider).unwrap();
+    let geo = lib.photo(four).unwrap().unwrap().geo.unwrap();
+    assert_eq!((geo.lat, geo.lon, geo.origin), (50.054, 19.9354, GeoOrigin::Manual));
+    assert!(numbers(&lib, &Filter { gps: Some(true), approx: Some(true), ..Filter::default() }).is_empty());
+    // A guess: with 8's position gone, 4 does not give it one back.
+    lib.edit(&[(eight, Op::SetGeo { base: None, value: None })]).unwrap();
+    let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
+    assert!(!plan.sample.iter().any(|(r, ..)| *r == eight), "{plan:?}");
+}
+
+#[test]
+fn a_position_outside_the_photos_place_refines_nothing() {
+    let (_d, lib) = setup();
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    lib.edit(&[(row(&lib, 8), by_hand(52.52, 13.405))]).unwrap();
+    let wider = RefineSettings { position_gap_minutes: 10, ..RefineSettings::default() };
+    assert_eq!(lib.refine_plan(&Filter::default(), &wider).unwrap().positions, 0, "Berlin is not in Kraków");
+}
+
+#[test]
+fn a_position_for_a_city_the_gazetteer_lacks_is_not_refined() {
+    let (_d, lib) = setup();
+    let four = row(&lib, 4);
+    let unknown = place("Poland", "Malopolska", "Xyzzyville");
+    lib.edit(&[(four, Op::SetPlace { base: krakow(), value: unknown })]).unwrap();
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Xyzzyville".to_owned()]).unwrap();
+    lib.edit(&[(row(&lib, 8), by_hand(50.054, 19.9354))]).unwrap();
+    let wider = RefineSettings { position_gap_minutes: 10, ..RefineSettings::default() };
+    let plan = lib.refine_plan(&Filter::default(), &wider).unwrap();
+    assert_eq!((plan.approx, plan.positions), (1, 0), "Kraków is in Malopolska, but is it Xyzzyville?");
 }
