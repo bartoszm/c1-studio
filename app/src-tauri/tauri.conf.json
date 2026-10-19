@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "C1 Studio",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.bartoszm.c1studio",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -34,8 +34,8 @@
     "publisher": "Bartosz Michalik",
     "copyright": "Copyright © 2026 Bartosz Michalik. MIT licensed.",
     "homepage": "https://github.com/bartoszm/c1-studio",
-    "shortDescription": "A fast browser for Capture One catalogs",
-    "longDescription": "C1 Studio finds photos in a Capture One catalog by album, date, folder, keyword, rating, colour, camera, place and free text, and edits ratings, colour tags, keywords, location and GPS.",
+    "shortDescription": "A fast browser for Capture One catalogs and photo folders",
+    "longDescription": "C1 Studio finds photos in a Capture One catalog or in plain photo folders by album, date, folder, keyword, rating, colour, camera, place and free text, and edits ratings, colour tags, keywords, location and GPS.",
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {

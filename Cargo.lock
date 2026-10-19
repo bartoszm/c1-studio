@@ -365,7 +365,7 @@ dependencies = [
 
 [[package]]
 name = "c1analysis"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image",
  "serde",
@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "c1cat"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "c1geo",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "c1geo"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "c1model",
  "flate2",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "c1image"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "c1model",
  "image",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "c1index"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "c1analysis",
@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "c1model"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "postcard",
  "serde",
@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "c1sources"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "c1model",
  "serde",
@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "c1studio"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "c1analysis",
@@ -3922,7 +3922,7 @@ dependencies = [
 
 [[package]]
 name = "source-c1"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "c1model",
  "chrono",
@@ -3935,7 +3935,7 @@ dependencies = [
 
 [[package]]
 name = "source-folders"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "c1image",
  "c1index",
