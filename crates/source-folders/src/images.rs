@@ -255,9 +255,6 @@ pub(crate) struct Images {
     /// One maker per photo: two threads making the same photo would write the same files.
     making: Making,
     made: AtomicU32,
-    /// Images whose records a store write is dropping, deleted by [`Images::sweep`] once it
-    /// has committed: no file I/O under the store's lock, and none for a write that fails.
-    doomed: Mutex<Vec<PathBuf>>,
 }
 
 impl Images {
@@ -267,7 +264,6 @@ impl Images {
             generated: Mutex::new(None),
             making: Making { busy: Mutex::new(HashSet::new()), free: Condvar::new() },
             made: AtomicU32::new(0),
-            doomed: Mutex::new(Vec::new()),
         }
     }
 
@@ -519,46 +515,56 @@ impl Images {
         }
     }
 
-    /// Fills the list of images made from the store, once. Reads the store, so it must not
-    /// be called inside a store write.
+    /// Fills the list of images made from the store, once: the recorded images and those
+    /// still to be deleted. Reads the store, so it must not be called inside a store write.
     fn load_generated(&self, src: &FolderSource) {
         if self.generated.lock().unwrap().is_some() {
             return;
         }
         let state = src.store().read();
         let mut generated = self.generated.lock().unwrap();
-        generated.get_or_insert_with(|| state.images.values().map(|i| i.path.clone()).collect());
+        generated.get_or_insert_with(|| {
+            state.images.values().map(|i| i.path.clone()).chain(state.doomed.keys().cloned()).collect()
+        });
     }
 
     /// Drops the record of one image of photo `ext`, its file to be deleted by
-    /// [`Images::sweep`]. Called inside a store write.
+    /// [`Images::sweep`] (the store keeps the path until then). Called inside a store write.
     fn drop_image(&self, w: &mut Writer, ext: &str, tier: ImageTier, image: &ImageRec) -> Result<()> {
-        self.doomed.lock().unwrap().push(image.path.clone());
-        w.put_image(ext, tier, None)
+        w.put_image(ext, tier, None)?;
+        w.doom(ext, &image.path)
     }
 
-    /// After a store write that dropped images ([`Images::invalidate`], [`Images::relocate`]):
-    /// deletes their files if it `committed`, else forgets them. A path recorded again
+    /// Deletes the files of the images whose records were dropped ([`Images::invalidate`],
+    /// [`Images::relocate`]), after the write that dropped them: no file I/O under the
+    /// store's lock. Also those a crash left before they were deleted. A path recorded again
     /// meanwhile (made anew) is kept.
-    pub fn sweep(&self, src: &FolderSource, committed: bool) {
-        let doomed = std::mem::take(&mut *self.doomed.lock().unwrap());
-        if doomed.is_empty() || !committed {
+    pub fn sweep(&self, src: &FolderSource) {
+        let doomed: Vec<(PathBuf, String)> =
+            src.store().read().doomed.iter().map(|(path, ext)| (path.clone(), ext.clone())).collect();
+        if doomed.is_empty() {
             return;
         }
-        let recorded: HashSet<PathBuf> = {
-            let state = src.store().read();
-            let doomed: HashSet<&PathBuf> = doomed.iter().collect();
-            state.images.values().filter(|i| doomed.contains(&i.path)).map(|i| i.path.clone()).collect()
-        };
-        for path in doomed.iter().filter(|p| !recorded.contains(*p)) {
-            // A file that cannot be deleted stays on the list: the scan must not take it for a photo.
-            if remove_file(path).is_ok() {
+        let mut gone = Vec::new();
+        for (path, ext) in doomed {
+            // The photo's maker waits meanwhile, so an image it makes again at the same path
+            // is not deleted after it was written.
+            let _making = self.making.enter(&ext);
+            if !src.store().read().doomed.contains_key(&path) {
+                continue;
+            }
+            // A file that cannot be deleted stays on the list, for the next sweep: the scan
+            // must not take it for a photo.
+            if remove_file(&path).is_ok() {
+                tidy(&path);
                 self.generated_update(|set| {
-                    set.remove(path);
+                    set.remove(&path);
                 });
-                tidy(path);
+                gone.push(path);
             }
         }
+        // A crash that loses this only means deleting files that are gone already.
+        let _ = src.store().write_lazy(|w| gone.iter().try_for_each(|path| w.spare(path)));
     }
 
     /// The file of photo `ext` changed or is gone: drops the records of the images made of
@@ -1318,8 +1324,10 @@ mod tests {
         assert!(fx.src.images.is_generated(&fx.src, &a.path));
         fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, A)).unwrap();
         assert!(a.path.exists(), "deleted only once the write is done");
-        fx.src.images.sweep(&fx.src, true);
+        assert!(fx.src.images.is_generated(&fx.src, &a.path), "until it is deleted");
+        fx.src.images.sweep(&fx.src);
         assert!(!a.path.exists() && !a_preview.path.exists());
+        assert!(fx.src.store().read().doomed.is_empty());
         assert!(fx.recorded(A, ImageTier::Thumb).is_none() && fx.recorded(A, ImageTier::Preview).is_none());
         assert!(b.path.is_file() && fx.recorded(B, ImageTier::Thumb).is_some());
         assert!(!fx.src.images.is_generated(&fx.src, &a.path), "no longer on the list");
@@ -1341,10 +1349,58 @@ mod tests {
             Err(SourceError::Other("no".into()))
         });
         assert!(failed.is_err());
-        fx.src.images.sweep(&fx.src, false);
+        fx.src.images.sweep(&fx.src);
         assert!(a.path.is_file() && fx.recorded(A, ImageTier::Thumb).is_some(), "record and file both kept");
-        fx.src.images.sweep(&fx.src, true);
-        assert!(a.path.is_file(), "forgotten, not left for the next sweep");
+    }
+
+    #[test]
+    fn an_image_a_crash_left_undeleted_is_deleted_by_the_next_sweep() {
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        let a = fx.make(A, ImageTier::Thumb).unwrap();
+        fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, A)).unwrap();
+        // The process ends here, before the sweep: what it knew in memory is gone.
+        fx.src.store().reload().unwrap();
+        let fresh = Images::new();
+        assert!(fresh.is_generated(&fx.src, &a.path), "not taken for a photo meanwhile");
+        fresh.sweep(&fx.src);
+        assert!(!a.path.exists() && fx.src.store().read().doomed.is_empty());
+        assert!(!fresh.is_generated(&fx.src, &a.path));
+    }
+
+    #[test]
+    fn an_image_made_again_before_the_sweep_is_kept() {
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        let a = fx.make(A, ImageTier::Thumb).unwrap();
+        fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, A)).unwrap();
+        assert_eq!(fx.make(A, ImageTier::Thumb).unwrap().path, a.path);
+        assert!(fx.src.store().read().doomed.is_empty(), "recorded again, so no longer to be deleted");
+        fx.src.images.sweep(&fx.src);
+        assert!(a.path.is_file() && fx.recorded(A, ImageTier::Thumb).is_some());
+    }
+
+    #[test]
+    fn a_sweep_waits_for_the_photos_maker() {
+        let fx = fixture(Preset::Beside);
+        fx.big(A, "a.jpg");
+        let a = fx.make(A, ImageTier::Thumb).unwrap();
+        fx.src.store().write(|w| fx.src.images.invalidate(w, &fx.src, A)).unwrap();
+        std::thread::scope(|s| {
+            // A maker at work on the photo: the sweep has read its list and waits.
+            let making = fx.src.images.making.enter(A);
+            let sweep = s.spawn(|| fx.src.images.sweep(&fx.src));
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            assert!(a.path.is_file(), "not deleted under the maker");
+            // It makes the image again at the same path, and records it.
+            let rec = fx.src.store().read().doomed.keys().next().cloned().unwrap();
+            std::fs::write(&rec, b"made again").unwrap();
+            let image = ImageRec { path: rec, src_size: 0, src_mtime_ns: 0, bytes: 10 };
+            fx.src.store().write(|w| w.put_image(A, ImageTier::Thumb, Some(image))).unwrap();
+            drop(making);
+            sweep.join().unwrap();
+        });
+        assert!(a.path.is_file(), "the image made again is kept");
     }
 
     #[test]

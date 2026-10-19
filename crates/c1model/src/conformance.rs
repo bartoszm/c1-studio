@@ -276,11 +276,14 @@ pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
 }
 
 /// Images of `probe`: `has_image` agrees with `image` for every tier; a source that
-/// does not make images returns `Ok(None)` from `make_image`; one that does finds, after
-/// making a thumbnail or preview, that very image with `image` and `image_or_make`.
+/// does not make images returns `Ok(None)` from `make_image`; one that does makes a
+/// thumbnail and a preview when the original is there, and finds that very image with
+/// `image` and `image_or_make`.
 pub fn check_images(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
     let mut problems = Vec::new();
     let makes = source.capabilities().makes_images;
+    // A source that makes images makes them of any photo it has the original of.
+    let original = matches!(source.image(probe, ImageTier::Original), Ok(Some(_)));
     for tier in [ImageTier::Thumb, ImageTier::Preview, ImageTier::Original] {
         match (source.image(probe, tier), source.has_image(probe, tier)) {
             (Ok(image), Ok(has)) if image.is_some() != has => {
@@ -306,6 +309,9 @@ pub fn check_images(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
                     problems
                         .push(format!("{tier:?}: made {}, but image_or_make() gives {shown:?}", made.path.display()));
                 }
+            }
+            Ok(None) if makes && original => {
+                problems.push(format!("{tier:?}: makes_images, the original is there, but make_image made none"));
             }
             Ok(None) => {}
             Err(e) if !makes => problems.push(format!("{tier:?}: make_image without the capability failed: {e}")),

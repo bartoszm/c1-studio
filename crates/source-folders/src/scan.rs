@@ -753,8 +753,8 @@ fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome
         }
         Ok(outcome)
     });
-    // The images it dropped are deleted now, outside the store's lock.
-    src.images.sweep(src, written.is_ok());
+    // The images it dropped (none if it failed) are deleted now, outside the store's lock.
+    src.images.sweep(src);
     written
 }
 

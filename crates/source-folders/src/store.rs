@@ -36,6 +36,10 @@ const CHANGED: TableDefinition<&str, u64> = TableDefinition::new("changed");
 const TOMBS: TableDefinition<&str, u64> = TableDefinition::new("tombs");
 /// `<photo id>/<tier>` → JSON [`ImageRec`].
 const IMAGES: TableDefinition<&str, &str> = TableDefinition::new("images");
+/// image path → photo id: an image whose record was dropped and whose file is still to be
+/// deleted (`Images::sweep`). Kept until it is, so a crash in between never leaves a file
+/// the scan would take for a photo.
+const DOOMED: TableDefinition<&str, &str> = TableDefinition::new("doomed");
 
 /// Whether a file's record is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +141,8 @@ pub struct State {
     pub changed: HashMap<String, u64>,
     pub tombs: HashMap<String, u64>,
     pub images: HashMap<(String, ImageTier), ImageRec>,
+    /// Image path → photo id: images dropped whose files are not deleted yet.
+    pub doomed: BTreeMap<PathBuf, String>,
 }
 
 impl State {
@@ -199,7 +205,7 @@ impl Store {
         })?;
         let tx = db.begin_write().map_err(other)?;
         {
-            for table in [META, FILES, USER, IMAGES] {
+            for table in [META, FILES, USER, IMAGES, DOOMED] {
                 tx.open_table(table).map_err(other)?;
             }
             tx.open_table(CHANGED).map_err(other)?;
@@ -258,6 +264,10 @@ impl Store {
                 state.images.insert(key, parse(rec.value())?);
             }
         }
+        for entry in tx.open_table(DOOMED).map_err(other)?.iter().map_err(other)? {
+            let (path, ext) = entry.map_err(other)?;
+            state.doomed.insert(PathBuf::from(path.value()), ext.value().to_owned());
+        }
         Ok(state)
     }
 
@@ -313,14 +323,25 @@ impl Store {
     }
 }
 
-impl Drop for Store {
-    /// Makes the lazy writes durable.
-    fn drop(&mut self) {
-        if self.lazy.load(Ordering::Relaxed) > 0
-            && let Ok(tx) = self.db.begin_write()
-        {
-            let _ = tx.commit();
+impl Store {
+    /// Makes the lazy writes durable: a durable commit, even an empty one, makes the
+    /// non-durable ones before it durable too.
+    fn flush_lazy(&self) -> Result<()> {
+        let _state = self.state.write().unwrap();
+        if self.lazy.load(Ordering::Relaxed) == 0 {
+            return Ok(());
         }
+        let mut tx = self.db.begin_write().map_err(other)?;
+        tx.set_durability(Durability::Immediate).map_err(other)?;
+        tx.commit().map_err(other)?;
+        self.lazy.store(0, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        let _ = self.flush_lazy();
     }
 }
 
@@ -463,6 +484,9 @@ impl Writer<'_> {
         match rec {
             Some(rec) => {
                 table.insert(key.as_str(), json(&rec)?.as_str()).map_err(other)?;
+                drop(table);
+                // Made again where one was dropped: that file is no longer to be deleted.
+                self.spare(&rec.path)?;
                 self.state.images.insert((ext.to_owned(), tier), rec);
             }
             None => {
@@ -473,6 +497,26 @@ impl Writer<'_> {
         }
         Ok(())
     }
+
+    /// Records that the file of photo `ext`'s image at `path`, whose record goes, is to be
+    /// deleted.
+    pub fn doom(&mut self, ext: &str, path: &Path) -> Result<()> {
+        self.tx.open_table(DOOMED).map_err(other)?.insert(path_key(path)?, ext).map_err(other)?;
+        self.state.doomed.insert(path.to_owned(), ext.to_owned());
+        Ok(())
+    }
+
+    /// Takes `path` off the files to be deleted.
+    pub fn spare(&mut self, path: &Path) -> Result<()> {
+        if self.state.doomed.remove(path).is_some() {
+            self.tx.open_table(DOOMED).map_err(other)?.remove(path_key(path)?).map_err(other)?;
+        }
+        Ok(())
+    }
+}
+
+fn path_key(path: &Path) -> Result<&str> {
+    path.to_str().ok_or_else(|| other(format!("{}: not a UTF-8 path", path.display())))
 }
 
 #[cfg(test)]
@@ -545,6 +589,10 @@ pub(crate) mod tests {
         }
         assert_eq!(store.lazy.load(Ordering::Relaxed), 3, "every LAZY_MAXth write is durable");
         assert_eq!(store.read().generation, 0, "image records are not changes of a photo");
+        // What closing does. (A crash cannot be had in a test: a non-durable commit still
+        // reaches the file, only not the disk.)
+        store.flush_lazy().unwrap();
+        assert_eq!(store.lazy.load(Ordering::Relaxed), 0);
         drop(store);
         let store = Store::open(&path).unwrap();
         assert_eq!(store.read().images.len(), LAZY_MAX as usize + 3);
