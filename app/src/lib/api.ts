@@ -394,6 +394,22 @@ export const neighbourPlan = (filter: Filter, settings: NeighbourSettings) =>
 /** Places the photos as the plan showed; returns the ops that undo it. */
 export const neighbourApply = (filter: Filter, settings: NeighbourSettings) =>
   invoke<[number, Op][]>("neighbour_apply", { filter, settings });
+export type RefineSettings = { place_gap_minutes: number; position_gap_minutes: number; places: boolean; positions: boolean };
+export type RefinePlan = {
+  placed: number;
+  places: number;
+  approx: number;
+  positions: number;
+  /** From, to, how many photos. */
+  place_counts: [string, string, number][];
+};
+/** Photos with a place given their neighbour's more specific one; ≈ positions given their
+ *  neighbours' GPS. Nothing is written. */
+export const refinePlan = (filter: Filter, settings: RefineSettings) =>
+  invoke<RefinePlan>("refine_plan", { filter, settings });
+/** Refines the photos as the plan showed; returns the ops that undo it. */
+export const refineApply = (filter: Filter, settings: RefineSettings) =>
+  invoke<[number, Op][]>("refine_apply", { filter, settings });
 export type GpxSettings = { path: string; offset_minutes: number; max_gap_minutes: number; overwrite: boolean };
 export type GpxPlan = {
   fixes: number;

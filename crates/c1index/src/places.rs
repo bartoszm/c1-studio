@@ -29,7 +29,7 @@ pub struct Looked {
 }
 
 /// Whether a photo still sits where it was put: moved since, it is placed for real.
-fn same_spot(a: (f64, f64), b: (f64, f64)) -> bool {
+pub(crate) fn same_spot(a: (f64, f64), b: (f64, f64)) -> bool {
     (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6
 }
 
