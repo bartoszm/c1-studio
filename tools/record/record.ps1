@@ -1,4 +1,4 @@
-# Records the feature clips for docs/FEATURES.md.
+# Records the feature clips for docs/FEATURES.md, and the README's tour (docs/media/demo.gif).
 #
 # usage: tools\record\record.ps1 [-Only search,map] [-Mp4] [-FromFrames] [-Exe <c1studio.exe>] [-Work <dir>] [-Port 9223]
 #
@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $media = Join-Path $here '..\..\docs\media\features'
-$order = 'search', 'browse', 'sort', 'match', 'edit', 'hidden', 'keywords', 'albums', 'analysis', 'alike', 'map', 'trips', 'history'
+$order = 'search', 'browse', 'sort', 'match', 'edit', 'hidden', 'keywords', 'albums', 'analysis', 'alike', 'map', 'refine', 'trips', 'history', 'folders', 'demo'
 $names = if ($Only) { $Only } else { $order }
 
 if (-not $FromFrames) { & (Join-Path $here 'start.ps1') -Exe $Exe -Work $Work -Port $Port }
@@ -33,7 +33,10 @@ foreach ($name in $names) {
         node (Join-Path $here 'drive.mjs') $scenario $frames --port $Port
         if ($LASTEXITCODE) { throw "$name failed" }
     }
-    python (Join-Path $here 'assemble.py') $frames (Join-Path $media "$name.gif") --width $Width --fps $Fps
+    # The README's tour goes beside the README's stills, at a low rate to keep it small.
+    $gif = if ($name -eq 'demo') { Join-Path $media '..\demo.gif' } else { Join-Path $media "$name.gif" }
+    $rate = if ($name -eq 'demo') { 3 } else { $Fps }
+    python (Join-Path $here 'assemble.py') $frames $gif --width $Width --fps $rate
     if ($LASTEXITCODE) { throw "assembling $name failed" }
     if ($Mp4) {
         python (Join-Path $here 'to_mp4.py') $frames (Join-Path $media "$name.mp4")

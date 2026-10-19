@@ -225,6 +225,31 @@ const d = {
     await d.settle();
   },
 
+  /** Calls one of the app's commands, as the page does. */
+  invoke: (cmd, args = {}) => evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(cmd)}, ${JSON.stringify(args)})`),
+
+  /** Opens another source (off camera: the window reloads), and waits until it is read,
+   * scanned and its first thumbnails are shown. */
+  async open(spec, { timeout = 600000 } = {}) {
+    await d.invoke("open_source", { spec });
+    await evaluate("location.reload()");
+    await sleep(1500);
+    await d.waitFor(null, null, {
+      timeout,
+      fn: `(async () => {
+        try {
+          const i = window.__TAURI_INTERNALS__;
+          if ((await i.invoke("startup_progress")) !== null) return false;
+          if ((await i.invoke("status")).progress) return false;
+          return document.querySelectorAll(".cell").length > 0;
+        } catch { return false; }
+      })()`,
+    });
+    await evaluate(overlay);
+    await sleep(300);
+    await d.settle(60000);
+  },
+
   async shot(file) {
     const s = await send("Page.captureScreenshot", { format: "png" });
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -285,7 +310,8 @@ const d = {
 // transient scrollbars or text cursor blinking from earlier runs.
 await send("Page.enable");
 await send("Emulation.setDeviceMetricsOverride", { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
-await evaluate(fs.readFileSync(new URL("./overlay.js", import.meta.url), "utf8"));
+const overlay = fs.readFileSync(new URL("./overlay.js", import.meta.url), "utf8");
+await evaluate(overlay);
 await sleep(300);
 
 const scenario = (await import(pathToFileURL(path.resolve(scenarioFile)).href)).default;

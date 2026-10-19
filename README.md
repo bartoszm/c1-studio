@@ -1,7 +1,13 @@
 # C1 Studio
 
-**A fast companion app for Capture One catalogs.** Browse, search and tidy 100,000 photos
-in milliseconds, then send your edits back to Capture One when you choose.
+**A fast companion app for Capture One catalogs, and now for plain photo folders.**
+Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
+Capture One when you choose.
+
+**New in 0.4.0:** open [photo folders](#photo-folders) (JPEG, PNG, TIFF and raw files,
+on any drive) like a catalog, choose in the installer which kinds of source to offer, and
+[refine places](docs/FEATURES.md#places-from-neighbours-in-time) from the photos taken
+moments before and after.
 
 [![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-%E2%9D%A4-db61a2?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/bartoszm)
 [![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/bartoszmics)
@@ -53,6 +59,19 @@ series (bursts) are found across the library, and **Stack** shows one photo per 
 
 ![Analysis of the search results: colour, light, focus, duplicates and series](docs/media/analysis.jpg)
 
+### Photo folders
+
+Not everything is in a catalog. C1 Studio also opens plain folders of JPEG, PNG, TIFF
+and camera raw files, from a disk, a NAS or a cloud drive, with the same search, map,
+analysis and editing. EXIF, XMP and IPTC are read from the files; your edits are kept in
+C1 Studio and written to the files only if you turn XMP export on. Photos keep their
+edits when files are moved or renamed, and a drive that is not connected marks its photos
+offline instead of losing them. Thumbnails go where you choose: one central folder, a
+folder under each root (so they travel with an external drive), beside each photo, or a
+pattern of your own.
+
+![A photo folders source on Google Drive, with a photo's details read from its file](docs/media/folders.jpg)
+
 ### On the map
 
 Photos with GPS are clustered on a map that works as a filter: pan and zoom to narrow the
@@ -63,8 +82,10 @@ Photos with a city, region or country but no GPS show too, marked ≈, at that p
 the map is zoomed out about as far as the name reaches. Place names are found offline in
 a built-in [GeoNames](https://www.geonames.org/) gazetteer (CC BY 4.0); the few it lacks
 are looked up online once. Photos with no location wait in a tray under the map to be
-dragged on, or get positions from the photos taken just before and after them. A new
-position can fill in the photo's city, region and country.
+dragged on, or get positions from the photos taken just before and after them.
+**Refine** makes rough places more specific (Kraków → Kraków › Stare Miasto) and moves ≈
+positions to the GPS of photos taken moments apart. A new position can fill in the
+photo's city, region and country.
 
 ### History
 
@@ -82,9 +103,6 @@ photo's history. This is the groundwork for browsing the catalog as it was on an
   rendering previews to JPEG. See [docs/CLI.md](docs/CLI.md).
 - **Backups**: every write is preceded by a backup of the catalog, and any backup can be
   restored from the app.
-- **Photo folders**: C1 Studio also opens plain folders of JPEG, PNG, TIFF and camera raw
-  files, with its own edits and optional XMP export. See
-  [the guide](docs/GUIDE.md#photo-folders).
 
 Place data from [GeoNames](https://www.geonames.org/), licensed under
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
@@ -116,7 +134,9 @@ installs for the current user (no administrator rights) and adds C1 Studio to th
 menu. The installer is not code-signed, so Windows may say it is from an unknown
 publisher: choose *More info* → *Run anyway*. Uninstall from *Settings → Apps*.
 
-The first time, nothing is open: choose a Capture One catalog (the `.cocatalogdb` file)
+The installer asks which kinds of photo source to offer: Capture One catalogs, photo
+folders or both (`/KINDS=capture-one,folders` for a silent install). The first time,
+nothing is open: choose a Capture One catalog (the `.cocatalogdb` file) or photo folders
 from the source menu at the top left. Catalogs from Capture One 16.8 are read and
 written, 16.5 read only; see [docs/GUIDE.md](docs/GUIDE.md).
 

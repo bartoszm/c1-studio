@@ -2004,7 +2004,15 @@ struct SourceEntry {
 fn entry(spec: &SourceSpec) -> Option<SourceEntry> {
     let provider = sources::provider(&spec.provider).ok()?;
     let path = std::path::Path::new(&spec.location);
-    let name = path.file_stem().or(path.file_name()).map_or(spec.location.clone(), |n| n.to_string_lossy().into());
+    // Photo folders are named in their definition; its file is named for the app.
+    let named = (spec.provider == source_folders::PROVIDER_ID)
+        .then(|| source_folders::Definition::load(path).ok())
+        .flatten()
+        .map(|d| d.name.trim().to_owned())
+        .filter(|n| !n.is_empty());
+    let name = named.unwrap_or_else(|| {
+        path.file_stem().or(path.file_name()).map_or(spec.location.clone(), |n| n.to_string_lossy().into())
+    });
     Some(SourceEntry {
         spec: spec.clone(),
         kind: provider.name(),
