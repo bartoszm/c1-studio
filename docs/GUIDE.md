@@ -16,6 +16,15 @@ Install it with `C1.Studio_<version>_x64-setup.exe` from the
 about an unknown publisher: choose *More info* → *Run anyway*. The first time, nothing
 is open: choose a catalog from the source menu (see below).
 
+The installer asks which kinds of photo source to offer: *Capture One catalogs*, *Photo
+folders*, or both. The source menu then offers only those. Change the choice later
+under *Kinds of source…* at the bottom of the source menu, where at least one kind stays
+on. Turning a kind off leaves the source that is open as it is, and hides that kind's
+recent sources from the menu. A silent install (`/S`) keeps the choice made before.
+`/PROVIDERS=capture-one,folders` sets the choice instead. The choice is kept in
+`%APPDATA%\c1studio\providers.json`. Without that file every kind is offered. `c1cat`
+always opens every kind.
+
 To build it from source instead:
 
 ```powershell
@@ -657,6 +666,7 @@ Keys do not act while you type in a field.
   hidden photos (`library\hidden.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
+- The kinds of source offered: `%APPDATA%\c1studio\providers.json`.
 - Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is
   the first eight characters of the source's `id` in its `.c1folders` file.
 - The sidebar layout, tile size, sort order, stacking, the strip's height and the copy

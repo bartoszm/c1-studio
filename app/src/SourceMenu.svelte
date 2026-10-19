@@ -23,6 +23,7 @@
   let busy = $state<string | null>(null);
   let failed = $state<string | null>(null);
   let typed = $state("");
+  let kinds = $state(false);
 
   const SUPPORT: Record<api.Support, string> = { Tested: "checked", Untested: "not checked, tried", Off: "off" };
 
@@ -77,6 +78,18 @@
 
   async function forget(spec: api.SourceSpec) {
     await api.forgetSource(spec);
+    await load();
+  }
+
+  async function offer(id: string, on: boolean) {
+    if (!view) return;
+    const ids = view.kinds.filter((k) => (k.id === id ? on : k.offered)).map((k) => k.id);
+    failed = null;
+    try {
+      await api.setProviders(ids);
+    } catch (e) {
+      failed = String(e);
+    }
     await load();
   }
 
@@ -162,6 +175,18 @@
     <form class="source-path" onsubmit={openTyped}>
       <input placeholder="or type a path, then Enter" spellcheck="false" bind:value={typed} disabled={!!busy} />
     </form>
+    <button role="menuitem" aria-expanded={kinds} onclick={() => (kinds = !kinds)}>Kinds of source…</button>
+    {#if kinds}
+      <div class="source-kinds">
+        {#each view.kinds as k (k.id)}
+          {@const last = k.offered && view.kinds.filter((x) => x.offered).length === 1}
+          <label title={last ? "At least one kind stays on" : `Offer ${k.name} in this menu`}>
+            <input type="checkbox" checked={k.offered} disabled={last} onchange={(e) => offer(k.id, e.currentTarget.checked)} />
+            {k.name}
+          </label>
+        {/each}
+      </div>
+    {/if}
     {#if busy}<p class="source-note">Opening {busy}…</p>{/if}
     {#if failed}<p class="source-note error">{failed}</p>{/if}
   </div>
