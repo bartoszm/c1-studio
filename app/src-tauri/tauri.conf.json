@@ -40,6 +40,8 @@
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {
         "installMode": "currentUser",
+        "template": "windows/installer.nsi",
+        "installerHooks": "windows/hooks.nsh",
         "installerIcon": "icons/icon.ico"
       }
     }

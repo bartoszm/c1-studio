@@ -207,12 +207,17 @@ export type ProviderView = {
   name: string;
   pick: { File: { label: string; extensions: string[] } } | "Folder";
 };
+/** A kind of source, and whether the app offers it (`%APPDATA%\c1studio\providers.json`). */
+export type KindView = { id: string; name: string; offered: boolean };
 export type SourcesView = {
   current: SourceEntry | null;
   compatibility: Compatibility | null;
   error: string | null;
   recent: SourceEntry[];
+  /** The kinds offered, to open. */
   providers: ProviderView[];
+  /** Every kind there is, to turn on or off. */
+  kinds: KindView[];
 };
 
 export type GeoOrigin = "Exif" | "Manual" | "Gpx" | "Geocoded";
@@ -407,6 +412,8 @@ export const foldersSave = (def: FoldersDefinition, location: string | null, mig
 /** Why the image store would not do, or null. */
 export const foldersCheckStore = (store: ImageStore) => invoke<string | null>("folders_check_store", { store });
 export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", { spec });
+/** Offers these kinds of source from now on (at least one); the source open stays open. */
+export const setProviders = (ids: string[]) => invoke<void>("set_providers", { ids });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
