@@ -1,8 +1,8 @@
 # Recording the feature clips
 
-The clips in [docs/FEATURES.md](../../docs/FEATURES.md) are recorded from a running
-C1 Studio by scripts, so they can be recorded again when the app changes, or encoded as
-MP4 instead of GIF.
+The clips in [docs/FEATURES.md](../../docs/FEATURES.md), and the README's tour and
+screenshots, are recorded from a running C1 Studio by scripts, so they can be recorded
+again when the app changes, or encoded as MP4 instead of GIF.
 
 ## Needs
 
@@ -24,7 +24,27 @@ scenario in `scenarios\`, keeps its frames in `%TEMP%\c1studio-record\frames\<na
 (`frame-NNNN.jpg` and `times.json`, when each frame was shown), and encodes them:
 `assemble.py` to a GIF (960 px, 10 fps, one palette per clip), `to_mp4.py` to H.264 with
 each frame held as long as it was on screen. `sheet.py in.gif out.png` makes a contact
-sheet for checking a clip.
+sheet for checking a clip. The `demo` scenario is the README's tour: it goes to
+`docs\media\demo.gif`, at 3 frames a second.
+
+## Screenshots
+
+```powershell
+node tools\record\drive.mjs tools\record\stills.mjs   # docs\media\*.jpg, from the running instance
+```
+
+`stills.mjs` takes the README's screenshots, 1440×900 without the pointer. Its last one,
+`folders.jpg`, opens the photo folders source the `folders` scenario made, so record that
+one first.
+
+## Photo folders
+
+The `folders` scenario shows a photo folders source. The first time, it makes one on
+`$C1_RECORD_FOLDERS` (default `G:\My Drive\foto`), named *Photos on Drive*, in the
+instance's own data. It opens that source off camera (the window reloads), and goes back
+to the catalog at the end. The first scan reads every file, and the thumbnails are made in
+the background while the source is open: on a cloud drive, open it once and let them
+finish before recording. Nothing is written to the folders (XMP export stays off).
 
 ## The recording instance
 
@@ -58,6 +78,8 @@ A scenario is a module in `scenarios\` whose default export is `{ name, title, r
 | `cut(async () => …)` | leave a wait out of the clip, such as the backup before a write |
 | `caption(text)` | a caption band at the bottom until the next one (`""` hides it) |
 | `reset({ timeline })` | the whole library, Photos view, details on, nothing open |
+| `invoke(command, args)` | one of the app's commands, as the page calls it |
+| `open(spec)` | open another source, off camera: waits until it is read and shown, and draws the overlay again |
 | `evaluate(js)`, `send(method, params)`, `shot(file)` | anything else over CDP |
 
 Scenarios that edit undo their edits at the end, so the copy stays as it was (`hidden`

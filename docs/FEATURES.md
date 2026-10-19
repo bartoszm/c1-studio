@@ -3,7 +3,11 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
+New in 0.4.0: [photo folders](#photo-folders) and
+[places from neighbours in time](#places-from-neighbours-in-time).
+
 - [Find anything, instantly](#find-anything-instantly)
+- [Photo folders](#photo-folders)
 - [Browse](#browse)
 - [Sort](#sort)
 - [The best match first](#the-best-match-first)
@@ -14,6 +18,7 @@ real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 - [See what your photos look like](#see-what-your-photos-look-like)
 - [Duplicates, bursts and stacking](#duplicates-bursts-and-stacking)
 - [On the map](#on-the-map)
+- [Places from neighbours in time](#places-from-neighbours-in-time)
 - [Trips and the timeline](#trips-and-the-timeline)
 - [Write, history and backups](#write-history-and-backups)
 
@@ -27,6 +32,20 @@ milliseconds, however big the catalog.
 ![Searching "hong kong street", then picking 2025 and four stars](media/features/search.gif)
 
 [In the guide: Finding photos](GUIDE.md#finding-photos)
+
+## Photo folders
+
+*New in 0.4.0.* Open plain folders of JPEG, PNG, TIFF and camera raw files the way you
+open a Capture One catalog: here, 1,350 photos in a Google Drive folder. EXIF, XMP and
+IPTC are read from the files, and your ratings, keywords and places are kept in C1
+Studio's own store. They go into the files only if you turn XMP export on. A photo keeps
+its edits when its file is moved or renamed, and a drive that is not connected marks its
+photos offline instead of losing them. The installer, and *Kinds of source…* in the
+source menu, choose whether the app offers catalogs, folders or both.
+
+![Photo folders on Google Drive: a folder, a photo's details, the Folders dialog, Rescan and the kinds of source](media/features/folders.gif)
+
+[In the guide: Photo folders](GUIDE.md#photo-folders)
 
 ## Browse
 
@@ -132,6 +151,20 @@ place them, import a GPX track, or take positions from the photos shot just befo
 after. Drag the line under the map to give the photo strip more room.
 
 ![Finding Kraków, opening a cluster and picking an area](media/features/map.gif)
+
+[In the guide: Map](GUIDE.md#map)
+
+## Places from neighbours in time
+
+*New in 0.4.0.* Photos taken moments apart were taken in the same place. **Neighbours…**
+fills in the photos with no position from the ones shot just before and after. Its
+**Refine** side improves rough ones: a photo placed only in *London* takes
+*London › Barbican* from its neighbour, and a ≈ position (from the place's name)
+moves to the GPS of a photo taken within two minutes, but only if it lies in the photo's
+own place. You see the counts and every from → to before anything changes, and Ctrl+Z
+undoes it.
+
+![Neighbours, Refine: rough places made more specific, every change listed, applied and undone](media/features/refine.gif)
 
 [In the guide: Map](GUIDE.md#map)
 
