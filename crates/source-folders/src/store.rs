@@ -9,10 +9,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{RwLock, RwLockReadGuard};
 
 use c1model::{Collection, CollectionId, ImageTier, Result, SourceError};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, WriteTransaction};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -145,9 +146,15 @@ impl State {
     }
 }
 
+/// How many writes may skip the disk flush ([`Store::write_lazy`]) before one makes them
+/// all durable.
+const LAZY_MAX: u32 = 64;
+
 pub struct Store {
     db: Database,
     state: RwLock<State>,
+    /// Lazy writes since the last durable one.
+    lazy: AtomicU32,
 }
 
 pub(crate) fn other(e: impl std::fmt::Display) -> SourceError {
@@ -204,7 +211,7 @@ impl Store {
             }
         }
         tx.commit().map_err(other)?;
-        let store = Self { db, state: RwLock::new(State::default()) };
+        let store = Self { db, state: RwLock::new(State::default()), lazy: AtomicU32::new(0) };
         store.reload()?;
         Ok(store)
     }
@@ -262,8 +269,24 @@ impl Store {
     /// Runs `f` as one transaction: all of its changes land, on disk and in memory, or none
     /// do. Readers wait meanwhile, so do slow work (reading files) before.
     pub fn write<T>(&self, f: impl FnOnce(&mut Writer) -> Result<T>) -> Result<T> {
+        self.write_with(false, f)
+    }
+
+    /// Like [`Store::write`], without waiting for the disk, for records that can be made
+    /// again (images in the central store): a crash may lose the last few. Every
+    /// [`LAZY_MAX`]th one, and closing the store, makes them durable.
+    pub fn write_lazy<T>(&self, f: impl FnOnce(&mut Writer) -> Result<T>) -> Result<T> {
+        self.write_with(true, f)
+    }
+
+    fn write_with<T>(&self, lazy: bool, f: impl FnOnce(&mut Writer) -> Result<T>) -> Result<T> {
         let mut state = self.state.write().unwrap();
-        let tx = self.db.begin_write().map_err(other)?;
+        // Counted under the lock, so a durable write never resets a lazy one it did not cover.
+        let durable = !lazy || self.lazy.fetch_add(1, Ordering::Relaxed) + 1 >= LAZY_MAX;
+        let mut tx = self.db.begin_write().map_err(other)?;
+        if !durable {
+            tx.set_durability(Durability::None).map_err(other)?;
+        }
         let generation = state.generation + 1;
         let mut writer = Writer { tx, state: &mut state, generation, touched: false };
         let result = f(&mut writer).and_then(|value| {
@@ -276,6 +299,9 @@ impl Store {
                 drop(meta);
             }
             tx.commit().map_err(other)?;
+            if durable {
+                self.lazy.store(0, Ordering::Relaxed);
+            }
             Ok(value)
         });
         if result.is_err() {
@@ -284,6 +310,17 @@ impl Store {
             self.reload()?;
         }
         result
+    }
+}
+
+impl Drop for Store {
+    /// Makes the lazy writes durable.
+    fn drop(&mut self) {
+        if self.lazy.load(Ordering::Relaxed) > 0
+            && let Ok(tx) = self.db.begin_write()
+        {
+            let _ = tx.commit();
+        }
     }
 }
 
@@ -495,6 +532,22 @@ pub(crate) mod tests {
         let state = store.read();
         assert!(state.files.is_empty() && state.user.is_empty() && state.by_path.is_empty());
         assert_eq!(state.tombs["aa"], 2);
+    }
+
+    #[test]
+    fn lazy_writes_are_durable_once_the_store_closes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.redb");
+        let store = Store::open(&path).unwrap();
+        let image = |n: u64| ImageRec { path: format!("{n}.jpg").into(), src_size: n, src_mtime_ns: 1, bytes: 1 };
+        for n in 0..LAZY_MAX as u64 + 3 {
+            store.write_lazy(|w| w.put_image(&format!("{n}"), ImageTier::Thumb, Some(image(n)))).unwrap();
+        }
+        assert_eq!(store.lazy.load(Ordering::Relaxed), 3, "every LAZY_MAXth write is durable");
+        assert_eq!(store.read().generation, 0, "image records are not changes of a photo");
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.read().images.len(), LAZY_MAX as usize + 3);
     }
 
     #[test]

@@ -419,8 +419,12 @@ impl Images {
                 ImageRec { path, src_size: job.rec.size, src_mtime_ns: job.rec.mtime_ns, bytes: bytes.len() as u64 };
             written.push((spec.tier, rec));
         }
-        // The file may have changed (and been scanned) while the images were made.
-        let stored = src.store().write(|w| {
+        // The file may have changed (and been scanned) while the images were made. Images in
+        // the central store are always known as made (`is_generated`): a record a crash loses
+        // only means the image is made again, so it need not wait for the disk.
+        let central = src.work_dir().join("images");
+        let central = written.iter().all(|(_, rec)| rec.path.starts_with(&central));
+        let put = |w: &mut Writer| {
             let Some(cur) = w.state().files.get(ext).filter(|r| r.state != FileState::Detached) else {
                 return Ok(false);
             };
@@ -431,7 +435,8 @@ impl Images {
                 w.put_image(ext, *tier, Some(rec.clone()))?;
             }
             Ok(true)
-        });
+        };
+        let stored = if central { src.store().write_lazy(put) } else { src.store().write(put) };
         if !matches!(stored, Ok(true)) {
             self.discard(&written, &recorded);
             return stored.map(|_| ());

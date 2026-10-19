@@ -32,16 +32,47 @@ const KEEP_BACKUPS: usize = 5;
 /// The backups' folder in the provider's `work_dir`.
 const BACKUP_DIR: &str = "backups";
 
-/// Every shown photo (records not detached) as the user sees it.
-fn shown(source: &SourceId, def: &Definition, state: &State) -> BTreeMap<PhotoId, Photo> {
+/// The shown photos (records not detached), as the user sees them, that `remaps`,
+/// `collections` and `changes` can alter: those the changes name, those carrying a keyword
+/// a remap moves and, when an album is deleted, those in any album. Only these are
+/// composed, so a write costs what it touches, not the whole library.
+fn touched(
+    source: &SourceId,
+    def: &Definition,
+    state: &State,
+    remaps: &[KeywordRemap],
+    collections: &[CollectionChange],
+    changes: &[Change],
+) -> BTreeMap<PhotoId, Photo> {
+    let named: BTreeSet<&str> =
+        changes.iter().filter(|c| &c.photo.source == source).map(|c| c.photo.ext.as_str()).collect();
+    let deletes = collections.iter().any(|c| matches!(c, CollectionChange::Delete { .. }));
+    let compose_one = |ext: &str, rec| {
+        let photo = compose(source, def, ext, rec, state.user.get(ext));
+        (photo.id.clone(), photo)
+    };
+    if remaps.is_empty() && !deletes {
+        return named
+            .into_iter()
+            .filter_map(|ext| state.files.get_key_value(ext))
+            .filter(|(_, rec)| rec.state != FileState::Detached)
+            .map(|(ext, rec)| compose_one(ext, rec))
+            .collect();
+    }
     state
         .files
         .iter()
         .filter(|(_, rec)| rec.state != FileState::Detached)
-        .map(|(ext, rec)| {
-            let photo = compose(source, def, ext, rec, state.user.get(ext));
-            (photo.id.clone(), photo)
+        .filter(|(ext, rec)| {
+            let layer = state.user.get(ext.as_str());
+            // A keyword a remap leaves alone is the same for the next one: checking the
+            // keyword as it is now against every remap is enough.
+            let keywords = layer.and_then(|l| l.keywords.as_ref()).unwrap_or(&rec.meta.keywords);
+            named.contains(ext.as_str())
+                || keywords.iter().any(|k| remaps.iter().any(|r| r.moves(k)))
+                || (deletes && layer.is_some_and(|l| !l.albums.is_empty()))
         })
+        .map(|(ext, rec)| compose_one(ext, rec))
         .collect()
 }
 
@@ -52,9 +83,10 @@ pub(crate) fn plan_after(
     changes: &[Change],
 ) -> Result<ApplyPlan> {
     let def = src.definition();
+    // Only the photos the changes name are planned against.
     let (photos, albums) = {
         let state = src.store().read();
-        (shown(&def.source_id(), &def, &state), state.albums.clone())
+        (touched(&def.source_id(), &def, &state, &[], &[], changes), state.albums.clone())
     };
     // Folders are not in `albums`: a change putting a photo into one is refused as a
     // conflict, as one into an album that is gone.
@@ -111,7 +143,7 @@ pub(crate) fn apply(src: &FolderSource, plan: &ApplyPlan) -> Result<ApplyReport>
     let def = src.definition();
     let source = def.source_id();
     let (applied, exported) = src.store().write(|w| {
-        let before = shown(&source, &def, w.state());
+        let before = touched(&source, &def, w.state(), &plan.remaps, &plan.collections, &plan.apply);
         let mut photos = before.clone();
         let mut albums = w.state().albums.clone();
         let applied = apply_with(&mut photos, &mut albums, plan, || w.next_album_id())?;
@@ -609,6 +641,35 @@ mod tests {
         f.write_after(&[KeywordRemap::rename(k("b&w"), "mono")], &[], &[]);
         assert_eq!(f.photo(0).keywords, [k("mono")]);
         assert_eq!(f.photo(2).keywords, [k("mono")]);
+    }
+
+    #[test]
+    fn a_write_reaches_photos_it_does_not_name() {
+        let f = fixture_with(4, |i, r| {
+            r.meta.keywords = match i {
+                0 => vec![k("a")],
+                1 => vec![k("b|x")],
+                _ => vec![],
+            }
+        });
+        // The second remap moves a keyword photo 1 had all along, and the one the first made.
+        let remaps = [KeywordRemap::rename(k("a"), "b"), KeywordRemap::rename(k("b"), "c")];
+        f.write_after(&remaps, &[], &[f.change(3, rating(None, Some(1)))]);
+        assert_eq!(f.photo(0).keywords, [k("c")]);
+        assert_eq!(f.photo(1).keywords, [k("c|x")]);
+        assert_eq!(f.layer(2), None, "a photo nothing touched gets no layer");
+        assert_eq!(f.photo(3).rating, Some(1));
+
+        let album = CollectionId::new_local("a");
+        f.write_after(
+            &[],
+            &[new_album(&album, "Rome", CollectionKind::Album, None)],
+            &[f.change(2, Op::AddToCollection { collection: album })],
+        );
+        let made = f.albums()[0].id.clone();
+        f.write_after(&[], &[CollectionChange::Delete { id: made }], &[f.change(3, rating(Some(1), Some(2)))]);
+        assert_eq!(f.layer(2), None, "the deleted album leaves the photo the plan did not name");
+        assert_eq!(f.photo(3).rating, Some(2));
     }
 
     #[test]
