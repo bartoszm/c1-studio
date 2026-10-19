@@ -15,7 +15,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 c1model.workspace = true
 c1geo.workspace = true
-source-c1.workspace = true
+c1sources.workspace = true
+source-folders.workspace = true
 c1index.workspace = true
 c1analysis.workspace = true
 c1image.workspace = true

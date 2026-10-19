@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import { geoText } from "./lib/format";
 
   // Choose what to copy from one photo; pasting then puts those fields on others. With
@@ -122,7 +123,7 @@
       </h2>
       <p class="muted">
         Tick what to put on {sync !== undefined ? "the other" : "the"} {onto.toLocaleString()}
-        {sync !== undefined ? "selected " : ""}photo{onto === 1 ? "" : "s"}; it is queued for Capture One like any edit{sync !== undefined ? ", and stays on the clipboard for pasting elsewhere" : ""}.
+        {sync !== undefined ? "selected " : ""}photo{onto === 1 ? "" : "s"}; it is queued for {source.word} like any edit{sync !== undefined ? ", and stays on the clipboard for pasting elsewhere" : ""}.
       </p>
       <div class="mode sync-mode" role="radiogroup" aria-label="How">
         <label><input type="radio" name="sync-mode" checked={!fill} onchange={() => (fill = false)} /> Overwrite: their values are replaced</label>
@@ -132,7 +133,7 @@
       <h2 id="copy-title">Copy from {photo.file.name}</h2>
       <p class="muted">
         Tick what to copy. Paste (Ctrl+V) puts it on the selected photos, replacing their values; Merge (Ctrl+Alt+V)
-        only fills what they leave empty; Paste… (Ctrl+Shift+V) lets you choose. Each is queued for Capture One like
+        only fills what they leave empty; Paste… (Ctrl+Shift+V) lets you choose. Each is queued for {source.word} like
         any edit.
       </p>
     {/if}

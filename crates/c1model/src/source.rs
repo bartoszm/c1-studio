@@ -90,6 +90,14 @@ pub struct Capabilities {
     /// Geo is stored per asset, so editing one variant moves all of them (Capture One).
     pub geo_per_asset: bool,
     pub collections: bool,
+    /// [`PhotoSource::rescan`] looks for changes the source cannot see by itself (files
+    /// added on disk).
+    #[serde(default)]
+    pub rescan: bool,
+    /// [`PhotoSource::make_image`] renders thumbnails and previews the source does not
+    /// have yet (from the original).
+    #[serde(default)]
+    pub makes_images: bool,
 }
 
 impl Capabilities {
@@ -124,6 +132,8 @@ pub enum ImageFormat {
     JpegXl,
     /// A camera raw; the reader extracts its embedded preview.
     Raw,
+    Png,
+    Tiff,
 }
 
 /// Where to get the pixels, plus how to turn them into display-ready sRGB.
@@ -167,6 +177,18 @@ pub struct Crop {
     pub height: f32,
 }
 
+/// How far a long piece of work in the source has got (a folder scan), for showing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SourceProgress {
+    /// What it is doing: "Scanning folders", "Reading metadata".
+    pub phase: String,
+    pub done: u64,
+    /// `None` while the amount of work is not known yet.
+    pub total: Option<u64>,
+    /// A detail, such as the folder being read.
+    pub note: Option<String>,
+}
+
 /// One item of a snapshot, delivered in order.
 #[derive(Clone, Debug, PartialEq)]
 pub enum SourceEvent {
@@ -195,8 +217,70 @@ pub trait PhotoSource: Send + Sync {
     fn snapshot(&self, since: Option<&Cursor>, sink: &mut dyn FnMut(SourceEvent) -> Result<()>) -> Result<()>;
 
     /// Locates pixels for a photo. `Ok(None)` means this tier does not exist for it
-    /// (not rendered yet, or the original's volume is offline).
+    /// (not rendered yet, or the original's volume is offline). Called for every photo in
+    /// bulk, so it only looks things up: making an image is [`PhotoSource::make_image`].
     fn image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>>;
+
+    /// Makes a tier [`PhotoSource::image`] does not have yet, for a source that renders its
+    /// own (from the original), and returns it. Slow: called off the UI thread.
+    ///
+    /// Callable from several threads at once, for different photos and also for the same
+    /// one (a thumbnail fill and a tile asking for it); a source makes each image once and
+    /// is safe under that. `Ok(None)`: the source does not make images, or has nothing to
+    /// make one from right now (the original's volume is offline), which is not an error.
+    /// `Err`: it tried and failed. After `Ok(Some(r))`, [`PhotoSource::image`] for the same
+    /// tier returns the image made, until the source drops it.
+    fn make_image(&self, _id: &PhotoId, _tier: ImageTier) -> Result<Option<ImageRef>> {
+        Ok(None)
+    }
+
+    /// Whether [`PhotoSource::image`] has the tier for a photo, for checks over the whole
+    /// library: unlike `image`, asking does not count as using the image (a source that
+    /// trims its least recently used images keeps its order).
+    fn has_image(&self, id: &PhotoId, tier: ImageTier) -> Result<bool> {
+        Ok(self.image(id, tier)?.is_some())
+    }
+
+    /// [`PhotoSource::image`], else, for a thumbnail or preview, one
+    /// [`PhotoSource::make_image`] makes: what showing a photo asks for.
+    fn image_or_make(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>> {
+        match self.image(id, tier)? {
+            Some(found) => Ok(Some(found)),
+            None if tier != ImageTier::Original => self.make_image(id, tier),
+            None => Ok(None),
+        }
+    }
+
+    /// Places of the source that could not be reached at its last read (a drive not
+    /// mounted), named for the user. Their photos are kept, marked offline.
+    fn offline_places(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Looks again for changes the source cannot notice by itself (files added, changed or
+    /// removed on disk); the next [`PhotoSource::snapshot`] reports them.
+    ///
+    /// A cheap request: the work, and the time it takes, land in that next `snapshot`
+    /// (minutes for a large folder), which also changes the source's state. Callers ask
+    /// [`Capabilities::rescan`] first; a source with it false returns `Unsupported`.
+    fn rescan(&self) -> Result<()> {
+        Err(SourceError::Unsupported("rescanning"))
+    }
+
+    /// Where a long-running snapshot or rescan has got, while it runs. `None` between runs.
+    ///
+    /// Polled from another thread while `snapshot` runs, so it is cheap and never waits on
+    /// a lock the run holds for long. Advisory: a reading may be a little behind.
+    fn progress(&self) -> Option<SourceProgress> {
+        None
+    }
+
+    /// The concrete source, for operations only one kind of source has (a folder source's
+    /// image store). `None` for a source that offers none. Only the code that manages that
+    /// kind of source downcasts; what every source can tell belongs on this trait.
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        None
+    }
 
     fn write_status(&self) -> WriteStatus;
 
@@ -230,7 +314,12 @@ pub trait PhotoSource: Send + Sync {
     }
 
     /// Writes a plan produced by [`PhotoSource::plan`]: its keyword remaps first, then
-    /// its album changes, then its photo changes. Atomic: all or nothing.
+    /// its album changes, then its photo changes. The write to the source's own store is
+    /// atomic: all or nothing. What follows it (a folder source's XMP files) is not: each
+    /// file is written whole or not at all, but a failure does not undo the write. Those
+    /// are listed in [`ApplyReport::warnings`], and are not covered by
+    /// [`PhotoSource::backups`] / [`PhotoSource::restore`], which keep what the source
+    /// holds itself.
     fn apply(&self, plan: &ApplyPlan) -> Result<ApplyReport>;
 
     /// The copies the source kept before writing, newest first. Empty for a source that
@@ -249,7 +338,7 @@ pub trait PhotoSource: Send + Sync {
 /// A copy of a source kept before writing to it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackupInfo {
-    /// What [`PhotoSource::restore`] takes: the file name, for Capture One.
+    /// What [`PhotoSource::restore`] takes: what the source names a copy by (the file name, for Capture One).
     pub id: String,
     /// Where it is, for showing.
     pub path: String,

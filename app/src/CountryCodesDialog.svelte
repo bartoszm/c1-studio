@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import { codeFor } from "./lib/countries";
 
   // Photos with a country but no ISO code, by country, with the code the country's
@@ -57,7 +58,7 @@
     <h2 id="cc-title">Fill in ISO country codes</h2>
     <p class="muted">
       Photos in view that have a country but no ISO code. The code comes from the country's name;
-      change it or untick a row. Queued for Capture One like any edit; Ctrl+Z takes it back.
+      change it or untick a row. Queued for {source.word} like any edit; Ctrl+Z takes it back.
     </p>
     {#if error}<p class="error">{error}</p>{/if}
     {#if !list}

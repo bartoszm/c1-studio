@@ -20,9 +20,9 @@ pub use photo::{
 pub use provider::{Pick, Provider, SourceSpec};
 pub use source::{
     BackupInfo, Capabilities, Compatibility, Crop, Cursor, Field, ImageFormat, ImageRef, ImageTier, PhotoSource,
-    SourceError, SourceEvent, SourceInfo, Support, WriteStatus,
+    Result, SourceError, SourceEvent, SourceInfo, SourceProgress, Support, WriteStatus,
 };
 
 /// Bumped whenever a serialised [`Photo`] or [`Collection`] changes shape, so stored copies
 /// are rebuilt.
-pub const MODEL_VERSION: u32 = 4;
+pub const MODEL_VERSION: u32 = 5;

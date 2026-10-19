@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Photo folders:** open plain folders of JPEG, PNG, TIFF and raw files as a source, the same way as a Capture One catalog (**Source > New photo folders…**). EXIF, XMP and IPTC are read; your edits are kept in C1 Studio's own store and written to the files only if XMP export is on. A photo keeps its id and edits when its file is moved or renamed. A drive that is not connected marks its photos offline instead of losing them; **Rescan** looks at the folders again. `c1cat` opens folders too (`--source`, `rescan`, `folders …`) (#14).
+
+### Install
+
+On first start the search index is rebuilt once. Edits, trips, places and hidden photos are kept.
+
 ## 0.3.0 — 2026-10-18
 
 ### New

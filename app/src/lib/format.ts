@@ -96,12 +96,38 @@ export function opText(op: Op, albumName: (id: string) => string = (id) => id): 
   return null;
 }
 
-export const ORIGINS: Record<Origin, string> = { App: "here", Source: "Capture One", Gpx: "GPX", Restore: "backup" };
+/** The source's name for headings and labels: "Capture One", "Photo folders". */
+export function sourceName(provider: string): string {
+  switch (provider) {
+    case "capture-one": return "Capture One";
+    case "folders": return "Photo folders";
+    default: return "Source";
+  }
+}
+
+/** The source as it reads in a sentence: "Write to Capture One", "write to the photo folders". */
+export function sourceWord(provider: string): string {
+  switch (provider) {
+    case "capture-one": return "Capture One";
+    case "folders": return "the photo folders";
+    default: return "the source";
+  }
+}
+
+/** Who made a logged change, for the history list. */
+export function originLabel(origin: Origin, provider = ""): string {
+  switch (origin) {
+    case "App": return "here";
+    case "Source": return sourceName(provider);
+    case "Gpx": return "GPX";
+    case "Restore": return "backup";
+  }
+}
 
 const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 
 /** A change log entry in one line: `rating: ★★ → ★★★★★`, `+ street`, `added`. */
-export function eventText(e: LogEvent, albumName?: (id: string) => string): string {
+export function eventText(e: LogEvent, albumName?: (id: string) => string, provider = ""): string {
   if ("change" in e) {
     const t = opText(e.change.op, albumName);
     if (!t) return "changed";
@@ -119,7 +145,7 @@ export function eventText(e: LogEvent, albumName?: (id: string) => string): stri
       albums && count(albums, "album change"),
       keywords && count(keywords, "keyword change"),
     ].filter(Boolean);
-    return `${parts.join(", ") || "Nothing"} written to Capture One`;
+    return `${parts.join(", ") || "Nothing"} written to ${sourceWord(provider)}`;
   }
   return "";
 }

@@ -2,7 +2,7 @@
 
 /** The error redb gives for a library file another process (or window) has open. */
 export const isLockError = (text: string | null | undefined): boolean =>
-  !!text && /already open|cannot acquire lock/i.test(text);
+  !!text && /already open|cannot acquire lock|locked by another C1 Studio/i.test(text);
 
 /** What to tell the user instead of (or beside) the raw error. */
 export const LOCK_HELP =

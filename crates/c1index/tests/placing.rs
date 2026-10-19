@@ -19,7 +19,7 @@ fn photo(n: u32, minutes: i64, place: Place, geo: Option<(f64, f64)>) -> Photo {
         id: PhotoId::new(&source, n.to_string()),
         asset: AssetId(n.to_string()),
         variant_index: 0,
-        file: FileInfo { name: format!("P{n:04}.RAF"), ext: "raf".into(), path: None, size: None },
+        file: FileInfo { name: format!("P{n:04}.RAF"), ext: "raf".into(), path: None, size: None, offline: false },
         captured_at: Some(T0 + minutes * MIN),
         imported_at: None,
         exif: Exif::default(),

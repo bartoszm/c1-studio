@@ -2,15 +2,22 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import { LOCK_HELP, isLockError } from "./lib/lock";
+  import { FOLDERS } from "./lib/folders";
+  import FoldersDialog from "./FoldersDialog.svelte";
 
   // What is open, and the way to open something else: a recent source, one of a
   // provider's kind through the system dialog, or a typed path. The window reloads on
   // the new source.
-  let { open = $bindable(false), onbackups }: {
+  let { open = $bindable(false), onbackups, onchanged }: {
     open?: boolean;
     /** Opens the list of backups made before writes. */
     onbackups?: () => void;
+    /** The open source's folders were changed and saved: the window should read it again. */
+    onchanged?: () => void;
   } = $props();
+
+  /** The photo folders dialog, when shown: the definition to edit, or none for a new source. */
+  let folders = $state<{ at: string | null } | null>(null);
 
   let view = $state<api.SourcesView | null>(null);
   let busy = $state<string | null>(null);
@@ -53,6 +60,21 @@
     }
   }
 
+  function editFolders(at: string | null) {
+    open = false;
+    folders = { at };
+  }
+
+  async function rescan() {
+    open = false;
+    try {
+      await api.rescan();
+    } catch (e) {
+      failed = String(e);
+      open = true;
+    }
+  }
+
   async function forget(spec: api.SourceSpec) {
     await api.forgetSource(spec);
     await load();
@@ -69,11 +91,11 @@
 
 <button
   class="source-button"
-  title={view?.current ? `${view.current.kind}: ${view.current.location}` : "Open a catalog"}
+  title={view?.current ? `${view.current.kind}: ${view.current.location}` : "Open a catalog or photo folders"}
   onclick={() => (open = !open)}
 >
   <span class="brand">C1 Studio</span>
-  <span class="current" class:none={!view?.current}>{view?.current?.name ?? "no catalog"}</span>
+  <span class="current" class:none={!view?.current}>{view?.current?.name ?? "nothing open"}</span>
   <span class="caret">▾</span>
 </button>
 
@@ -94,6 +116,10 @@
           </div>
           {#if c.note}<div class="note">{c.note}</div>{/if}
         </div>
+      {/if}
+      {#if view.current.provider === FOLDERS}
+        <button role="menuitem" onclick={() => editFolders(view!.current!.location)}>Edit folders…</button>
+        <button role="menuitem" onclick={rescan}>Rescan</button>
       {/if}
       {#if onbackups}
         <button role="menuitem" onclick={() => { open = false; onbackups(); }}>Backups…</button>
@@ -126,7 +152,12 @@
     {/if}
     <div class="menu-title">Open</div>
     {#each view.providers as p (p.id)}
-      <button role="menuitem" disabled={!!busy} onclick={() => browse(p)}>{p.name}…</button>
+      {#if p.id === FOLDERS}
+        <button role="menuitem" disabled={!!busy} onclick={() => editFolders(null)}>New photo folders…</button>
+        <button role="menuitem" disabled={!!busy} onclick={() => browse(p)}>Open photo folders…</button>
+      {:else}
+        <button role="menuitem" disabled={!!busy} onclick={() => browse(p)}>{p.name}…</button>
+      {/if}
     {/each}
     <form class="source-path" onsubmit={openTyped}>
       <input placeholder="or type a path, then Enter" spellcheck="false" bind:value={typed} disabled={!!busy} />
@@ -134,4 +165,12 @@
     {#if busy}<p class="source-note">Opening {busy}…</p>{/if}
     {#if failed}<p class="source-note error">{failed}</p>{/if}
   </div>
+{/if}
+
+{#if folders}
+  <FoldersDialog
+    at={folders.at}
+    onclose={() => (folders = null)}
+    onsaved={() => onchanged?.()}
+  />
 {/if}

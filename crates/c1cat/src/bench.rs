@@ -295,6 +295,7 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
                 name,
                 ext: ext.into(),
                 size: Some(rng.random_range(20_000_000..60_000_000)),
+                offline: false,
             },
             captured_at: Some(t),
             imported_at: Some(t + rng.random_range(0..30 * DAY)),

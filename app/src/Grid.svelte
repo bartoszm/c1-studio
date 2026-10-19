@@ -36,11 +36,12 @@
   import { untrack, type Snippet } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
 
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
   let {
-    total, rowAt, need, selected, picked, queued, hidden = () => false, onselect, onopen, ondragcell, children,
+    total, rowAt, need, selected, picked, queued, hidden = () => false, offline, onselect, onopen, ondragcell, children,
     tiles, shape, ontiles, layout = $bindable(),
   }: {
     total: number;
@@ -52,10 +53,12 @@
     selected: number | null;
     /** Is the photo at a position in the selection (several can be)? */
     picked: (i: number) => boolean;
-    /** Does it have edits waiting to be written to Capture One? */
+    /** Does it have edits waiting to be written to the source? */
     queued: (i: number) => boolean;
     /** Is it hidden (shown only while hidden photos are)? */
     hidden?: (i: number) => boolean;
+    /** Is its original out of reach now (a drive that is not connected)? */
+    offline?: (i: number) => boolean;
     /** A click, with its modifier keys for adding to the selection. */
     onselect: (i: number, how?: { add: boolean; range: boolean }) => void;
     onopen: (i: number) => void;
@@ -229,6 +232,8 @@
         class="cell"
         class:sel={selected === i}
         class:picked={picked(i)}
+        class:offline={offline?.(i)}
+        title={offline?.(i) ? "Offline: the original is not reachable now" : undefined}
         style:width="{cellW}px"
         style:height="{cellH}px"
         style:transform="translate({PAD + (i % cols) * (cellW + GAP)}px, {PAD + Math.floor(i / cols) * lineH}px)"
@@ -249,7 +254,7 @@
             <img class="sharp" src={api.previewUrl(row)} alt="" decoding="async" onload={(e) => e.currentTarget.classList.add("ready")} />
           {/if}
         {/if}
-        {#if queued(i)}<span class="queued" title="Edited here, not yet written to Capture One"></span>{/if}
+        {#if queued(i)}<span class="queued" title="Edited here, not yet written to {source.word}"></span>{/if}
         {#if hidden(i)}<span class="hidden-mark" title="Hidden: left out of every view unless Hidden is on">hidden</span>{/if}
       </button>
     {/each}

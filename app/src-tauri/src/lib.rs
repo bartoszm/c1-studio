@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, TryLockError};
+use std::sync::{Arc, Condvar, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use c1index::thumbs::{Failure, Kind, Progress, Thumbs};
@@ -12,7 +12,8 @@ use c1index::{Filter, Library, Origin, PendingEdit, QueryOptions, QueryResult, S
 use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
-    ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceSpec, WriteStatus,
+    ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceProgress, SourceSpec,
+    WriteStatus,
 };
 use events::Log;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 mod events;
+mod folders;
 mod sources;
 
 struct Session {
@@ -29,15 +31,17 @@ struct Session {
     spec: SourceSpec,
     source: Box<dyn PhotoSource>,
     library: Library,
-    /// One sync or write to Capture One at a time.
+    /// One sync or write to the source at a time.
     syncing: Mutex<()>,
-    /// When Capture One was last looked at for changes by [`refresh`].
+    /// When the source was last looked at for changes by [`refresh`].
     last_refresh: Mutex<Instant>,
     /// Why the last sync failed, until one succeeds: shown however late the window asks.
     sync_error: Mutex<Option<String>>,
+    /// The source has been read once in this session.
+    synced: AtomicBool,
     /// `settings.json` beside the library.
     settings_path: PathBuf,
-    /// Write the queue to Capture One by itself (off unless the user turns it on).
+    /// Write the queue to the source by itself (off unless the user turns it on).
     autosave: AtomicBool,
     /// When the queue last changed, so autosave waits until the user pauses.
     last_edit: Mutex<Instant>,
@@ -48,7 +52,7 @@ struct Session {
     analysing: AtomicBool,
     analysis_stop: AtomicBool,
     analysis: Mutex<AnalysisState>,
-    /// Thumbnails made here for photos Capture One has none for, and the run that makes
+    /// Thumbnails made here for photos the source has none for, and the run that makes
     /// them all (one at a time, stopped when another source opens).
     thumbs: Thumbs,
     filling: AtomicBool,
@@ -246,6 +250,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         syncing: Mutex::new(()),
         last_refresh: Mutex::new(Instant::now()),
         sync_error: Mutex::new(None),
+        synced: AtomicBool::new(false),
         settings_path,
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
@@ -318,10 +323,16 @@ fn count_missing(app: &AppHandle) {
 /// then measures the new ones. Photos that failed before are tried again.
 #[tauri::command]
 async fn fill_thumbnails(app: AppHandle) -> Result<(), String> {
+    start_fill(&app)
+}
+
+/// Starts [`fill_thumbnails`]' run in the background, unless one is under way.
+fn start_fill(app: &AppHandle) -> Result<(), String> {
     let s = app.state::<App>().session()?;
     if s.filling.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
+    let app = app.clone();
     std::thread::spawn(move || {
         let _done = Lowers(&s.filling);
         s.thumbs.forget();
@@ -349,7 +360,7 @@ fn run_fill(app: &AppHandle, s: &Arc<Session>) {
             return;
         }
     };
-    s.log.event(&format!("Making thumbnails for {} photos Capture One has none for", missing.len()), &[]);
+    s.log.event(&format!("Making thumbnails for {} photos the source has none for", missing.len()), &[]);
     // One place of the few is left for the window's tiles.
     let threads = (c1index::thumbs::MAKERS - 1).max(1);
     let (done, failures) = s.thumbs.fill(s.source.as_ref(), &missing, threads, &s.fill_stop, |p| {
@@ -676,6 +687,14 @@ struct Status {
     sync_error: Option<String>,
     /// What made the source and how far the app is checked against it.
     compatibility: Compatibility,
+    /// The provider's id: `capture-one`, `folders`.
+    provider: String,
+    /// The source can be asked to look at its files again ([`rescan`]).
+    can_rescan: bool,
+    /// Places of the source that could not be reached at its last read (a folder source's roots).
+    offline_roots: Vec<String>,
+    /// How far a scan has got, while one runs.
+    progress: Option<SourceProgress>,
 }
 
 #[tauri::command]
@@ -688,6 +707,10 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         writes: format!("{:?}", s.source.write_status()),
         sync_error: s.sync_error.lock().unwrap().clone(),
         compatibility: s.source.info().compatibility,
+        provider: s.spec.provider.clone(),
+        can_rescan: s.source.capabilities().rescan,
+        offline_roots: s.source.offline_places(),
+        progress: s.source.progress(),
     })
 }
 
@@ -871,7 +894,7 @@ async fn sync(app: AppHandle) -> Result<SyncReport, String> {
     tauri::async_runtime::spawn_blocking(move || run_sync(&app)).await.map_err(text)?
 }
 
-/// Pulls Capture One's changes in, and tells the window when anything moved.
+/// Pulls the source's changes in, and tells the window when anything moved.
 fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
     let s = app.state::<App>().session()?;
     let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
@@ -883,23 +906,32 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
 /// the catalog changed.
 fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Result<SyncReport, String> {
     let boot = app.state::<Boot>();
-    let report = s
-        .library
-        .sync_with(s.source.as_ref(), origin, &mut |step| boot.sync_step(app, step))
-        .map_err(|e| format!("{e:#}"));
+    let done = Finish::default();
+    let report = std::thread::scope(|scope| {
+        scope.spawn(|| report_progress(app, s, &done));
+        // Ends the poller also if the sync panics, or the scope would wait for it for ever.
+        let _ends = FinishOnDrop(&done);
+        s.library
+            .sync_with(s.source.as_ref(), origin, &mut |step| boot.sync_step(app, step))
+            .map_err(|e| format!("{e:#}"))
+    });
     let failed = report.as_ref().err().cloned();
     if let Some(e) = &failed
         && s.sync_error.lock().unwrap().as_ref() != Some(e)
     {
-        s.log.event(&format!("Reading Capture One failed: {e}"), &[]);
+        s.log.event(&format!("Reading the source failed: {e}"), &[]);
     }
     *s.sync_error.lock().unwrap() = failed;
     let report = report?;
     let changed = report.changed();
+    // A source that makes its own images has none yet for what it just found; the first
+    // read of a session also looks for those left from before.
+    let first = !s.synced.swap(true, Ordering::SeqCst);
+    let fill = (changed || first) && s.source.capabilities().makes_images;
     if changed {
         s.log.event(
             &format!(
-                "Read Capture One{}: {} added, {} updated, {} deleted",
+                "Read the source{}: {} added, {} updated, {} deleted",
                 if report.full { " in full" } else { "" },
                 report.added,
                 report.updated,
@@ -910,6 +942,9 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
         let _ = app.emit("library-changed", &report);
     }
     if !recheck && !changed {
+        if fill {
+            let _ = start_fill(app);
+        }
         return Ok(report);
     }
     // Previews may have been rendered, or crops changed: made thumbnails are checked
@@ -917,11 +952,14 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
     s.thumbs.forget();
     start_analysis(app);
     count_missing(app);
+    if fill {
+        let _ = start_fill(app);
+    }
     Ok(report)
 }
 
-/// How often Capture One is looked at while the app runs, besides when its window comes
-/// back to the front: an unchanged catalog costs a file stat.
+/// How often the source is looked at while the app runs, besides when the app's window
+/// comes back to the front: an unchanged Capture One catalog costs a file stat.
 const REFRESH_EVERY: Duration = Duration::from_secs(300);
 /// Focus can come and go quickly (dialogs): no more than one look this often.
 const REFRESH_AT_MOST: Duration = Duration::from_secs(10);
@@ -1164,7 +1202,7 @@ fn keyword_paths(paths: &[String]) -> Result<Vec<KeywordPath>, String> {
         .collect()
 }
 
-/// Edits photos in the library and queues the edits for Capture One. Returns the ops
+/// Edits photos in the library and queues the edits for the source. Returns the ops
 /// that undo it.
 #[tauri::command]
 async fn edit(app: State<'_, App>, rows: Vec<u64>, edit: Edit) -> Result<Vec<(u64, Op)>, String> {
@@ -1370,7 +1408,7 @@ async fn remap_keywords(app: State<'_, App>, request: RemapRequest) -> Result<u6
     s.library.remap_keywords(remap).map_err(|e| format!("{e:#}"))
 }
 
-/// Drops a queued keyword tree change; the photos it touched are read from Capture One
+/// Drops a queued keyword tree change; the photos it touched are read from the source
 /// again.
 #[tauri::command]
 async fn undo_remap(app: AppHandle, seq: u64) -> Result<(), String> {
@@ -1467,7 +1505,7 @@ async fn resolve(app: State<'_, App>, keys: Vec<String>, keep_mine: bool) -> Res
     s.library.resolve(&keys, keep_mine).map_err(|e| format!("{e:#}"))
 }
 
-/// What writing the queue to Capture One would do, after pulling its latest state.
+/// What writing the queue to the source would do, after pulling its latest state.
 #[derive(Serialize)]
 struct WritePlan {
     status: WriteStatus,
@@ -1475,19 +1513,19 @@ struct WritePlan {
     compatibility: Compatibility,
     /// Edits that would be written.
     apply: Vec<PendingEdit>,
-    /// Edits Capture One already matches; writing drops them from the queue.
+    /// Edits the source already matches; writing drops them from the queue.
     unchanged: Vec<PendingEdit>,
-    /// Fields changed in Capture One too: the user picks a side first.
+    /// Fields changed in the source too: the user picks a side first.
     conflicts: Vec<PendingEdit>,
-    /// Edits Capture One can no longer take (the photo is gone), with why.
+    /// Edits the source can no longer take (the photo is gone), with why.
     blocked: Vec<(PendingEdit, String)>,
     /// Keyword tree changes that would be written first: number and what they do.
     remaps: Vec<(u64, String)>,
-    /// Keyword tree changes Capture One can no longer take, with why.
+    /// Keyword tree changes the source can no longer take, with why.
     blocked_remaps: Vec<(u64, String, String)>,
     /// Album changes, written after the keyword tree and before photo edits.
     collections: Vec<(u64, String)>,
-    /// Album changes Capture One can no longer take, with why.
+    /// Album changes the source can no longer take, with why.
     blocked_collections: Vec<(u64, String, String)>,
 }
 
@@ -1569,6 +1607,8 @@ async fn write_plan(app: AppHandle) -> Result<WritePlan, String> {
 struct WriteReport {
     written: usize,
     backup: Option<String>,
+    /// What went wrong without undoing the write (an XMP export that failed).
+    warnings: Vec<String>,
 }
 
 enum Outcome {
@@ -1580,8 +1620,8 @@ enum Outcome {
     },
 }
 
-/// Writes the queue to Capture One (refused while it runs), unless some edit conflicts
-/// with a change made there. Capture One's state is pulled in before and after.
+/// Writes the queue to the source (refused while Capture One runs), unless some edit
+/// conflicts with a change made there. The source's state is pulled in before and after.
 fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
     run_sync(app)?;
     let s = app.state::<App>().session()?;
@@ -1593,13 +1633,16 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
             return Ok(Outcome::Attention { conflicts: summary.conflicts.len(), blocked: summary.blocked.len() });
         }
         let report = s.source.apply(&plan).map_err(|e| {
-            s.log.event(&format!("Writing to Capture One failed: {e:#}"), &[]);
+            s.log.event(&format!("Writing to {} failed: {e:#}", s.source.info().name), &[]);
             text(e)
         })?;
         s.log.event(
-            &format!("Wrote {} edit(s) to Capture One", report.applied),
+            &format!("Wrote {} edit(s) to {}", report.applied, s.source.info().name),
             &report.backup.iter().map(|b| format!("backup first: {b}")).collect::<Vec<_>>(),
         );
+        for warning in &report.warnings {
+            s.log.event(&format!("Warning: {warning}"), &[]);
+        }
         let done: Vec<Change> = plan.apply.iter().chain(&plan.no_ops).cloned().collect();
         s.library.settle_remaps(&carried.remaps).map_err(|e| format!("{e:#}"))?;
         s.library.settle_collections(&carried.collections).map_err(|e| format!("{e:#}"))?;
@@ -1611,7 +1654,7 @@ fn write_queue(app: &AppHandle) -> Result<Outcome, String> {
         if report.applied == 0 && blocked > 0 {
             return Ok(Outcome::Attention { conflicts: 0, blocked });
         }
-        WriteReport { written: report.applied, backup: report.backup }
+        WriteReport { written: report.applied, backup: report.backup, warnings: report.warnings }
     };
     sync_held(app, &s, true, Origin::Source)?;
     Ok(Outcome::Written(report))
@@ -1623,7 +1666,7 @@ async fn write_apply(app: AppHandle) -> Result<WriteReport, String> {
     tauri::async_runtime::spawn_blocking(move || match write_queue(&app)? {
         Outcome::Written(report) => Ok(report),
         Outcome::Attention { conflicts, .. } => {
-            Err(format!("{conflicts} edit(s) conflict with Capture One; choose a side first"))
+            Err(format!("{conflicts} edit(s) conflict with changes in the source; choose a side first"))
         }
     })
     .await
@@ -1650,7 +1693,7 @@ async fn backups(app: State<'_, App>) -> Result<Backups, String> {
 async fn restore_backup(app: AppHandle, id: String) -> Result<BackupInfo, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let s = app.state::<App>().session()?;
-        // Capture One's own changes read first, and the restored catalog read back before
+        // The source's own changes read first, and the restored catalog read back before
         // anything else reads it: what the restore put back is logged as such.
         let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
         // A catalog that cannot be read is no reason not to restore one: the failure is
@@ -1673,7 +1716,7 @@ enum AutosaveState {
     Idle,
     /// Edits are queued; it writes once the user pauses.
     Pending,
-    /// Capture One (or another program) has the catalog; it writes once it is closed.
+    /// Another program has the source open; it writes once that program lets go.
     Waiting {
         by: String,
     },
@@ -1778,7 +1821,7 @@ async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
     std::fs::write(&s.settings_path, bytes).map_err(text)
 }
 
-/// `/thumb/<row>` serves Capture One's own thumbnail: a JPEG with every edit, cut to the crop;
+/// `/thumb/<row>` serves the source's own thumbnail (Capture One's): a JPEG with every edit, cut to the crop;
 /// for a photo without one, one made here (from its preview or original) the first time.
 /// `/preview/<row>` renders the large preview (~300 ms), framed alike, and sends it as JPEG.
 fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
@@ -1798,7 +1841,7 @@ fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
             }
             made.image
         }),
-        _ => s.source.image(&id, tier)?,
+        _ => s.source.image_or_make(&id, tier)?,
     };
     let Some(source) = image else { return Ok(None) };
     // A thumbnail without a crop is sent as stored; cutting one costs ~5 ms.
@@ -1870,6 +1913,79 @@ fn sync_in_background(app: &AppHandle) {
             let _ = handle.emit("sync-failed", e);
         }
     });
+}
+
+/// A flag that a thread can sleep on until it is set.
+#[derive(Default)]
+struct Finish {
+    set: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl Finish {
+    fn set(&self) {
+        *self.set.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.changed.notify_all();
+    }
+
+    /// Waits up to `time` for the flag; whether it is set.
+    fn wait(&self, time: Duration) -> bool {
+        let set = self.set.lock().unwrap_or_else(|e| e.into_inner());
+        let (set, _) = self.changed.wait_timeout_while(set, time, |set| !*set).unwrap_or_else(|e| e.into_inner());
+        *set
+    }
+}
+
+/// Sets the flag when dropped.
+struct FinishOnDrop<'a>(&'a Finish);
+
+impl Drop for FinishOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.set();
+    }
+}
+
+/// How often a running sync is asked how far the source has got.
+const PROGRESS_EVERY: Duration = Duration::from_millis(250);
+
+/// Until `done`, tells the window how far the source's work has got (`source-progress`),
+/// then that there is none.
+fn report_progress(app: &AppHandle, s: &Session, done: &Finish) {
+    let mut last = None;
+    loop {
+        let now = s.source.progress();
+        if now != last {
+            let _ = app.emit("source-progress", &now);
+            last = now;
+        }
+        if done.wait(PROGRESS_EVERY) {
+            break;
+        }
+    }
+    if last.is_some() {
+        let _ = app.emit("source-progress", None::<SourceProgress>);
+    }
+}
+
+/// Asks the source to look at its files again, and reads it.
+#[tauri::command]
+async fn rescan(app: AppHandle) -> Result<(), String> {
+    let s = app.state::<App>().session()?;
+    s.source.rescan().map_err(text)?;
+    s.log.event("Rescan asked for", &[]);
+    sync_in_background(&app);
+    Ok(())
+}
+
+/// Asks for a folder with the system's dialog.
+#[tauri::command]
+async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let picked = app.dialog().file().set_title("Photo folder").blocking_pick_folder();
+        picked.map(|p| p.into_path().map(|p| p.display().to_string())).transpose().map_err(text)
+    })
+    .await
+    .map_err(text)?
 }
 
 /// A source as the window lists it.
@@ -2019,7 +2135,7 @@ pub fn run() {
             std::thread::spawn(move || refresh_loop(handle));
             Ok(())
         })
-        // Back from Capture One: show what changed there.
+        // Back from another program (Capture One): show what changed there.
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::Focused(true) = event {
                 let app = window.app_handle().clone();
@@ -2034,6 +2150,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sources,
             pick_source,
+            pick_folder,
+            folders::folders_new,
+            folders::folders_load,
+            folders::folders_save,
+            folders::folders_check_store,
+            rescan,
             open_source,
             forget_source,
             status,

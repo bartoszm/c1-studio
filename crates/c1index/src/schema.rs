@@ -17,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -143,6 +143,8 @@ pub mod flag {
     pub const TRASHED: &str = "trashed";
     /// Hidden by the user in C1 Studio (see [`crate::hidden`]): left out unless shown.
     pub const HIDDEN: &str = "hidden";
+    /// The original's folder or volume is not reachable now (`FileInfo::offline`).
+    pub const OFFLINE: &str = "offline";
     /// A country without its ISO code.
     pub const NO_COUNTRY_CODE: &str = "no_country_code";
     /// Measured by the analysis (stage 3).
@@ -432,6 +434,7 @@ pub fn document(
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),
         (flag::HIDDEN, hidden),
+        (flag::OFFLINE, photo.file.offline),
         (flag::NO_COUNTRY_CODE, photo.place.country.is_some() && photo.place.country_code.is_none()),
         (flag::ANALYSED, look.is_some()),
         (flag::DUPLICATE, look.is_some_and(|l| l.duplicates.is_some())),
