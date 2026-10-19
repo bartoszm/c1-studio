@@ -392,7 +392,8 @@ impl Thumbs {
         let mut out = Vec::new();
         for row in rows {
             let Some(id) = library.photo_id(row) else { continue };
-            if id.source == mine && self.get(source, &id)?.is_none() {
+            // `has_image`, not `get`: looking over the whole library is not using the images.
+            if id.source == mine && !source.has_image(&id, ImageTier::Thumb)? && self.current(source, &id).is_none() {
                 out.push((row, id));
             }
         }

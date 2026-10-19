@@ -11,7 +11,7 @@ pub struct FoldersProvider;
 
 impl Provider for FoldersProvider {
     fn id(&self) -> &'static str {
-        "folders"
+        crate::PROVIDER_ID
     }
 
     fn name(&self) -> &'static str {

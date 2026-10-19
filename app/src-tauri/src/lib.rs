@@ -17,14 +17,13 @@ use c1model::{
 };
 use events::Log;
 use serde::{Deserialize, Serialize};
-use source_folders::pattern::Pattern;
-use source_folders::{Definition, FolderSource, ImageStore, Migrate};
 use sources::Recent;
 use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 mod events;
+mod folders;
 mod sources;
 
 struct Session {
@@ -692,7 +691,7 @@ struct Status {
     provider: String,
     /// The source can be asked to look at its files again ([`rescan`]).
     can_rescan: bool,
-    /// Roots of a folder source that could not be reached at the last scan.
+    /// Places of the source that could not be reached at its last read (a folder source's roots).
     offline_roots: Vec<String>,
     /// How far a scan has got, while one runs.
     progress: Option<SourceProgress>,
@@ -710,17 +709,9 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         compatibility: s.source.info().compatibility,
         provider: s.spec.provider.clone(),
         can_rescan: s.source.capabilities().rescan,
-        offline_roots: folder_source(s.source.as_ref())
-            .and_then(|f| f.last_scan())
-            .map(|o| o.offline_roots)
-            .unwrap_or_default(),
+        offline_roots: s.source.offline_places(),
         progress: s.source.progress(),
     })
-}
-
-/// The open source as a folder source, when it is one.
-fn folder_source(source: &dyn PhotoSource) -> Option<&FolderSource> {
-    source.as_any().and_then(|a| a.downcast_ref::<FolderSource>())
 }
 
 #[tauri::command]
@@ -916,7 +907,7 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
     // A source that makes its own images has none yet for what it just found; the first
     // read of a session also looks for those left from before.
     let first = !s.synced.swap(true, Ordering::SeqCst);
-    let fill = (changed || first) && s.source.capabilities().rescan;
+    let fill = (changed || first) && s.source.capabilities().makes_images;
     if changed {
         s.log.event(
             &format!(
@@ -1830,10 +1821,7 @@ fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
             }
             made.image
         }),
-        _ => match s.source.image(&id, tier)? {
-            Some(image) => Some(image),
-            None => s.source.make_image(&id, tier)?,
-        },
+        _ => s.source.image_or_make(&id, tier)?,
     };
     let Some(source) = image else { return Ok(None) };
     // A thumbnail without a crop is sent as stored; cutting one costs ~5 ms.
@@ -1969,117 +1957,12 @@ async fn rescan(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// A folder source's definition, with where it is kept.
-#[derive(Serialize)]
-struct FoldersView {
-    /// The definition file; none for one not saved yet.
-    location: Option<String>,
-    definition: Definition,
-    /// This is the source that is open.
-    is_open: bool,
-}
-
-/// Whether `location` is the definition file of the source open now.
-fn is_open_definition(app: &AppHandle, location: &std::path::Path) -> bool {
-    let state = app.state::<App>();
-    let current = state.0.read().unwrap();
-    let Some(spec) = current.spec.as_ref().filter(|s| s.provider == "folders" && current.session.is_ok()) else {
-        return false;
-    };
-    let open = std::path::Path::new(&spec.location);
-    open == location || matches!((open.canonicalize(), location.canonicalize()), (Ok(a), Ok(b)) if a == b)
-}
-
 /// Asks for a folder with the system's dialog.
 #[tauri::command]
 async fn pick_folder(app: AppHandle) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let picked = app.dialog().file().set_title("Photo folder").blocking_pick_folder();
         picked.map(|p| p.into_path().map(|p| p.display().to_string())).transpose().map_err(text)
-    })
-    .await
-    .map_err(text)?
-}
-
-/// A definition for a new folder source, not saved yet.
-#[tauri::command]
-async fn folders_new(name: String, roots: Vec<String>) -> Result<FoldersView, String> {
-    let roots: Vec<PathBuf> = roots.into_iter().map(PathBuf::from).collect();
-    Ok(FoldersView { location: None, definition: Definition::new(&name, &roots), is_open: false })
-}
-
-/// The definition in a `.c1folders` file.
-#[tauri::command]
-async fn folders_load(app: AppHandle, location: String) -> Result<FoldersView, String> {
-    let path = PathBuf::from(&location);
-    let definition = Definition::load(&path).map_err(text)?;
-    let is_open = is_open_definition(&app, &path);
-    Ok(FoldersView { location: Some(location), definition, is_open })
-}
-
-/// Writes a definition, to `location` or (a new one) to its place in the app's folder, and
-/// returns where. If that is the source open, it is read again (with `migrate` saying what
-/// becomes of the images when their store changed) and the roots are walked; otherwise the
-/// window opens it.
-#[tauri::command]
-async fn folders_save(
-    app: AppHandle,
-    def: Definition,
-    location: Option<String>,
-    migrate: Option<Migrate>,
-) -> Result<String, String> {
-    let path = location.map_or_else(|| def.default_path(), PathBuf::from);
-    tauri::async_runtime::spawn_blocking(move || {
-        // Not trusting the dialog's own (debounced) check: a store that would write over a
-        // photo is refused here, before anything is saved.
-        if is_open_definition(&app, &path)
-            && let Ok(s) = app.state::<App>().session()
-            && let Some(source) = folder_source(s.source.as_ref())
-            && let Some(problem) = source.check_image_store(&def.images)
-        {
-            return Err(format!("Image store: {problem}"));
-        }
-        def.save(&path).map_err(text)?;
-        if is_open_definition(&app, &path) {
-            let s = app.state::<App>().session()?;
-            let source = folder_source(s.source.as_ref()).ok_or("the open source is not a folder source")?;
-            if let Some(report) = source.reload_definition(migrate).map_err(text)? {
-                let detail = report.failed.iter().map(|f| format!("failed: {f}")).collect::<Vec<_>>();
-                s.log.event(
-                    &format!("Image store changed: {} moved, {} removed", report.moved, report.removed),
-                    &detail,
-                );
-            }
-            s.log.event("Folders changed", &[]);
-            sync_in_background(&app);
-        }
-        Ok(path.display().to_string())
-    })
-    .await
-    .map_err(text)?
-}
-
-/// Why `store` would not do as an image store, or `None`. Checked against the photos when a
-/// folder source is open; otherwise only the patterns themselves.
-#[tauri::command]
-async fn folders_check_store(app: AppHandle, store: ImageStore) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Ok(s) = app.state::<App>().session()
-            && let Some(source) = folder_source(s.source.as_ref())
-        {
-            return Ok(source.check_image_store(&store));
-        }
-        for (what, pattern) in [("Thumbnails", &store.thumb), ("Previews", &store.preview)] {
-            match Pattern::parse(pattern) {
-                Ok(parsed) => {
-                    if let Some(problem) = parsed.static_problem() {
-                        return Ok(Some(format!("{what}: {problem}")));
-                    }
-                }
-                Err(e) => return Ok(Some(format!("{what}: {e}"))),
-            }
-        }
-        Ok(None)
     })
     .await
     .map_err(text)?
@@ -2248,10 +2131,10 @@ pub fn run() {
             sources,
             pick_source,
             pick_folder,
-            folders_new,
-            folders_load,
-            folders_save,
-            folders_check_store,
+            folders::folders_new,
+            folders::folders_load,
+            folders::folders_save,
+            folders::folders_check_store,
             rescan,
             open_source,
             forget_source,

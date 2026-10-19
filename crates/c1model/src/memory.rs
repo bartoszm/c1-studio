@@ -105,6 +105,7 @@ impl PhotoSource for MemorySource {
             geo_per_asset: false,
             collections: true,
             rescan: false,
+            makes_images: false,
         }
     }
 

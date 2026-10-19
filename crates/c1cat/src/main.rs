@@ -532,11 +532,7 @@ fn tier_image(session: &Session, id: &PhotoId, tier: ImageTier) -> anyhow::Resul
     if tier == ImageTier::Thumb {
         return Ok(session.thumbs.get_or_make(session.source.as_ref(), id)?.map(|made| made.image));
     }
-    match session.source.image(id, tier)? {
-        Some(found) => Ok(Some(found)),
-        None if tier == ImageTier::Preview => Ok(session.source.make_image(id, tier)?),
-        None => Ok(None),
-    }
+    Ok(session.source.image_or_make(id, tier)?)
 }
 
 /// A time in milliseconds since the epoch, as local `2026-10-11 14:03:22`; empty when unknown.

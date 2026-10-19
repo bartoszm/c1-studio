@@ -289,8 +289,15 @@ impl Images {
         src.def.read().unwrap().root(root).map(|r| r.path.clone())
     }
 
-    /// The image of `tier` there is now for photo `ext`, without making anything.
+    /// The image of `tier` there is now for photo `ext`, without making anything. Counts
+    /// as a use of it for the central store's trimming.
     pub fn lookup(&self, src: &FolderSource, ext: &str, tier: ImageTier) -> Result<Option<ImageRef>> {
+        self.find(src, ext, tier, true)
+    }
+
+    /// [`Images::lookup`]; a use of the image only when `used` (not for a check of the
+    /// whole library, which would make every image just used).
+    pub fn find(&self, src: &FolderSource, ext: &str, tier: ImageTier, used: bool) -> Result<Option<ImageRef>> {
         let (made, stand_in) = {
             let state = src.store().read();
             let Some(rec) = state.files.get(ext) else { return Ok(None) };
@@ -315,7 +322,9 @@ impl Images {
         // Looked at outside the store's lock: the file may be on a slow drive. A record can
         // outlive its file (deleted by hand, carried off with a folder).
         if let Some(path) = made.filter(|p| p.is_file()) {
-            self.touch(ext, tier);
+            if used {
+                self.touch(ext, tier);
+            }
             return Ok(Some(jpeg_ref(path)));
         }
         Ok(stand_in)
@@ -887,6 +896,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+    use c1model::{PhotoId, PhotoSource};
+
     use crate::definition::Definition;
     use crate::store::tests::rec;
 
@@ -983,6 +994,27 @@ mod tests {
 
     fn dims(path: &Path) -> (u32, u32) {
         image::image_dimensions(path).unwrap()
+    }
+
+    #[test]
+    fn passes_the_image_conformance_check() {
+        let fx = fixture(Preset::Central);
+        fx.big(A, "2024/big.jpg");
+        let probe = PhotoId::new(&fx.src.definition().source_id(), A);
+        assert_eq!(c1model::conformance::check_images(&fx.src, &probe), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_check_over_the_library_is_not_a_use() {
+        let fx = fixture(Preset::Central);
+        fx.big(A, "2024/big.jpg");
+        let probe = PhotoId::new(&fx.src.definition().source_id(), A);
+        fx.make(A, ImageTier::Thumb);
+        fx.src.images.access.lock().unwrap().clear();
+        assert!(fx.src.has_image(&probe, ImageTier::Thumb).unwrap());
+        assert!(fx.src.images.access.lock().unwrap().is_empty(), "has_image leaves the trimming order");
+        assert!(fx.src.image(&probe, ImageTier::Thumb).unwrap().is_some());
+        assert!(fx.src.images.access.lock().unwrap().contains_key(A), "image is a use");
     }
 
     #[test]

@@ -869,6 +869,7 @@ mod tests {
         assert_eq!(c1model::conformance::check_write(&src, &probe), Vec::<String>::new());
         assert_eq!(c1model::conformance::check_incremental(&src, &probe), Vec::<String>::new());
         assert_eq!(c1model::conformance::check_backup(&src, &probe), Vec::<String>::new());
+        assert_eq!(c1model::conformance::check_capabilities(&src), Vec::<String>::new());
     }
 
     #[test]

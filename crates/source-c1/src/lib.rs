@@ -131,6 +131,7 @@ impl PhotoSource for CaptureOne {
             geo_per_asset: true,
             collections: true,
             rescan: false,
+            makes_images: false,
         }
     }
 
@@ -384,9 +385,13 @@ mod tests {
     fn fixture_conforms_for_reads_and_writes() {
         let Some((_dir, source)) = source() else { return };
         assert_eq!(conformance::check_read(&source), Vec::<String>::new());
+        assert_eq!(conformance::check_capabilities(&source), Vec::<String>::new());
+        let probe = PhotoId::new(&source.info().id, "3");
+        assert_eq!(conformance::check_images(&source, &probe), Vec::<String>::new());
         if ready(&source) {
-            let probe = PhotoId::new(&source.info().id, "3");
             assert_eq!(conformance::check_write(&source, &probe), Vec::<String>::new());
+            assert_eq!(conformance::check_incremental(&source, &probe), Vec::<String>::new());
+            assert_eq!(conformance::check_backup(&source, &probe), Vec::<String>::new());
         }
     }
 

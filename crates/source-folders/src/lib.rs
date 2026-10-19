@@ -38,6 +38,9 @@ use c1model::{
 };
 
 pub use definition::{Definition, ImageStore, RootDef, SidecarNaming};
+
+/// The provider's id, as sources are recorded with it.
+pub const PROVIDER_ID: &str = "folders";
 pub use images::{Migrate, MigrateReport};
 pub use pattern::Preset;
 pub use provider::FoldersProvider;
@@ -182,6 +185,7 @@ impl PhotoSource for FolderSource {
             geo_per_asset: false,
             collections: true,
             rescan: true,
+            makes_images: true,
         }
     }
 
@@ -192,6 +196,11 @@ impl PhotoSource for FolderSource {
     fn image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>> {
         self.check_id(id)?;
         self.images.lookup(self, &id.ext, tier)
+    }
+
+    fn has_image(&self, id: &PhotoId, tier: ImageTier) -> Result<bool> {
+        self.check_id(id)?;
+        Ok(self.images.find(self, &id.ext, tier, false)?.is_some())
     }
 
     fn make_image(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>> {
@@ -243,6 +252,10 @@ impl PhotoSource for FolderSource {
     fn rescan(&self) -> Result<()> {
         self.scan_due.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn offline_places(&self) -> Vec<String> {
+        self.last_scan().map(|scan| scan.offline_roots).unwrap_or_default()
     }
 
     fn progress(&self) -> Option<SourceProgress> {

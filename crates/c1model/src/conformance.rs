@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::change::{Change, Op};
 use crate::photo::{Photo, PhotoId};
-use crate::source::{Cursor, Field, PhotoSource, SourceError, SourceEvent, WriteStatus};
+use crate::source::{Cursor, Field, ImageTier, PhotoSource, SourceError, SourceEvent, WriteStatus};
 
 /// Collects a full snapshot, checking event order along the way.
 pub fn collect(source: &dyn PhotoSource) -> Result<(Vec<Photo>, Vec<String>), SourceError> {
@@ -253,6 +253,68 @@ pub fn check_backup(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
     problems
 }
 
+/// Capabilities match what the source does: [`PhotoSource::rescan`] succeeds exactly when
+/// `capabilities().rescan` says it can, and [`PhotoSource::progress`] is `None` once a
+/// snapshot has finished. A source that can rescan is asked to, so its next snapshot reads
+/// its files again (and is then taken).
+pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
+    let mut problems = Vec::new();
+    let can = source.capabilities().rescan;
+    match (can, source.rescan()) {
+        (true, Err(e)) => problems.push(format!("capabilities().rescan is true, but rescan() failed: {e}")),
+        (false, Ok(())) => problems.push("rescan() succeeded, but capabilities().rescan is false".to_owned()),
+        (false, Err(SourceError::Unsupported(_))) | (true, Ok(())) => {}
+        (false, Err(e)) => problems.push(format!("rescan() without the capability is not Unsupported: {e}")),
+    }
+    if let Err(e) = collect(source) {
+        problems.push(format!("snapshot failed: {e}"));
+    }
+    if let Some(p) = source.progress() {
+        problems.push(format!("progress() after the snapshot ended: {p:?}"));
+    }
+    problems
+}
+
+/// Images of `probe`: `has_image` agrees with `image` for every tier; a source that
+/// does not make images returns `Ok(None)` from `make_image`; one that does finds, after
+/// making a thumbnail or preview, that very image with `image` and `image_or_make`.
+pub fn check_images(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
+    let mut problems = Vec::new();
+    let makes = source.capabilities().makes_images;
+    for tier in [ImageTier::Thumb, ImageTier::Preview, ImageTier::Original] {
+        match (source.image(probe, tier), source.has_image(probe, tier)) {
+            (Ok(image), Ok(has)) if image.is_some() != has => {
+                problems.push(format!("{tier:?}: has_image is {has}, image is {image:?}"));
+            }
+            (Err(e), _) | (_, Err(e)) => problems.push(format!("{tier:?}: lookup failed: {e}")),
+            _ => {}
+        }
+        if tier == ImageTier::Original {
+            continue;
+        }
+        match source.make_image(probe, tier) {
+            Ok(Some(made)) if !makes => {
+                problems.push(format!("{tier:?}: made {} without capabilities().makes_images", made.path.display()));
+            }
+            Ok(Some(made)) => {
+                let found = source.image(probe, tier).ok().flatten().map(|r| r.path);
+                if found.as_ref() != Some(&made.path) {
+                    problems.push(format!("{tier:?}: made {}, but image() finds {found:?}", made.path.display()));
+                }
+                let shown = source.image_or_make(probe, tier).ok().flatten().map(|r| r.path);
+                if shown.as_ref() != Some(&made.path) {
+                    problems
+                        .push(format!("{tier:?}: made {}, but image_or_make() gives {shown:?}", made.path.display()));
+                }
+            }
+            Ok(None) => {}
+            Err(e) if !makes => problems.push(format!("{tier:?}: make_image without the capability failed: {e}")),
+            Err(e) => problems.push(format!("{tier:?}: make_image failed: {e}")),
+        }
+    }
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +368,13 @@ mod tests {
         assert_eq!(check_incremental(&s, &probe), Vec::<String>::new());
         assert_eq!(check_backup(&s, &probe), Vec::<String>::new(), "keeps no backups: skipped");
         assert_eq!(s.photo(&probe).unwrap().rating, Some(3), "probe restored");
+    }
+
+    #[test]
+    fn memory_source_passes_capability_and_image_checks() {
+        let s = source();
+        assert_eq!(check_capabilities(&s), Vec::<String>::new());
+        assert_eq!(check_images(&s, &PhotoId::new(&SourceId("mem".into()), "2")), Vec::<String>::new());
     }
 
     #[test]

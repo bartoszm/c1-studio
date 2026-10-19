@@ -94,6 +94,10 @@ pub struct Capabilities {
     /// added on disk).
     #[serde(default)]
     pub rescan: bool,
+    /// [`PhotoSource::make_image`] renders thumbnails and previews the source does not
+    /// have yet (from the original).
+    #[serde(default)]
+    pub makes_images: bool,
 }
 
 impl Capabilities {
@@ -228,6 +232,29 @@ pub trait PhotoSource: Send + Sync {
     /// tier returns the image made, until the source drops it.
     fn make_image(&self, _id: &PhotoId, _tier: ImageTier) -> Result<Option<ImageRef>> {
         Ok(None)
+    }
+
+    /// Whether [`PhotoSource::image`] has the tier for a photo, for checks over the whole
+    /// library: unlike `image`, asking does not count as using the image (a source that
+    /// trims its least recently used images keeps its order).
+    fn has_image(&self, id: &PhotoId, tier: ImageTier) -> Result<bool> {
+        Ok(self.image(id, tier)?.is_some())
+    }
+
+    /// [`PhotoSource::image`], else, for a thumbnail or preview, one
+    /// [`PhotoSource::make_image`] makes: what showing a photo asks for.
+    fn image_or_make(&self, id: &PhotoId, tier: ImageTier) -> Result<Option<ImageRef>> {
+        match self.image(id, tier)? {
+            Some(found) => Ok(Some(found)),
+            None if tier != ImageTier::Original => self.make_image(id, tier),
+            None => Ok(None),
+        }
+    }
+
+    /// Places of the source that could not be reached at its last read (a drive not
+    /// mounted), named for the user. Their photos are kept, marked offline.
+    fn offline_places(&self) -> Vec<String> {
+        Vec::new()
     }
 
     /// Looks again for changes the source cannot notice by itself (files added, changed or
