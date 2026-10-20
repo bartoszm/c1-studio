@@ -190,6 +190,38 @@ fn a_file_that_could_not_go_yet_is_not_found_again() {
 }
 
 #[test]
+fn a_sidecar_stays_with_a_photo_of_the_same_batch_that_was_refused() {
+    let fx = Fixture::new(&["x.jpg", "x.png"]);
+    put(&fx.root.join("x.xmp"), b"<x:xmpmeta/>");
+    let first = fx.snap(None);
+    let (jpg, png) = (fx.id(&first, "x.jpg"), fx.id(&first, "x.png"));
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    put(&fx.root.join("x.png"), b"changed since it was read");
+
+    let report = fx.src.remove(&[jpg.clone(), png.clone()]).unwrap();
+    assert_eq!(report.removed, std::slice::from_ref(&jpg));
+    assert!(fx.root.join("x.png").exists());
+    assert!(fx.root.join("x.xmp").exists(), "x.png stays, and reads it");
+}
+
+#[test]
+fn another_file_put_where_one_waits_for_the_recycle_bin_is_left_alone() {
+    let fx = Fixture::new(&["a.jpg", "b.jpg"]);
+    let first = fx.snap(None);
+    let a = fx.id(&first, "a.jpg");
+    fx.src.set_recycler(refuse);
+    fx.src.remove(std::slice::from_ref(&a)).unwrap();
+    // Gone some other way, and a new file put at the same path.
+    std::fs::remove_file(fx.root.join("a.jpg")).unwrap();
+    put(&fx.root.join("a.jpg"), &jpeg("a new photo, not the one deleted"));
+
+    fx.src.set_recycler(delete);
+    let events = fx.rescan(&cursor(&first));
+    assert!(fx.root.join("a.jpg").exists(), "not recycled");
+    assert!(upserts(&events).iter().any(|p| p.file.name == "a.jpg" && p.id != a), "found as a new photo: {events:?}");
+}
+
+#[test]
 fn conforms() {
     let fx = Fixture::new(&["a.jpg", "x/b.jpg"]);
     let probe = fx.id(&fx.snap(None), "a.jpg");

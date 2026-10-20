@@ -285,6 +285,7 @@ Both ask first, and say what happens; it cannot be undone in C1 Studio:
   backed up first, and Capture One must be closed, as for any write. Their queued edits
   are dropped.
 
+Hidden photos you delete show in the trash too, marked hidden, so they can be restored.
 Photos already in Capture One's own Trash stay out of every view, the app's trash
 included. The trash is kept with the library (`library\bin.redb`), so it survives a
 restart and a rebuilt index.

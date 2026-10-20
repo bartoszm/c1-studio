@@ -2,8 +2,9 @@
 // restored, or until the trash is emptied and their source deletes them for good.
 import type { Filter, Removal } from "./api";
 
-/** The filter as the views ask it: only the trash's photos while it is shown. */
-export const withBin = (f: Filter, inBin: boolean): Filter => (inBin ? { ...f, bin: "Only" } : f);
+/** The filter as the views ask it: only the trash's photos while it is shown, hidden ones
+ *  too (a photo hidden, then deleted, is emptied with the rest: it must show to be restored). */
+export const withBin = (f: Filter, inBin: boolean): Filter => (inBin ? { ...f, bin: "Only", hidden: "Include" } : f);
 
 /** What a Delete key press does: moves the photos to the trash, takes them out of the album
  *  shown (Delete alone, in an album: Ctrl+Delete still trashes), or nothing (in the trash, or

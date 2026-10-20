@@ -4,7 +4,7 @@ import { binNote, deleteAction, removalText, withBin } from "../src/lib/bin";
 
 test("the trash's photos are asked for only while it is shown", () => {
   assert.deepEqual(withBin({ hues: ["red"] }, false), { hues: ["red"] });
-  assert.deepEqual(withBin({ hues: ["red"] }, true), { hues: ["red"], bin: "Only" });
+  assert.deepEqual(withBin({ hues: ["red"] }, true), { hues: ["red"], bin: "Only", hidden: "Include" });
 });
 
 test("Delete trashes, except in an album, where Ctrl+Delete does", () => {

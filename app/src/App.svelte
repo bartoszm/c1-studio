@@ -473,7 +473,7 @@
     const asked = asking($state.snapshot(filter));
     const groups = dims;
     // Which of the photos shown are hidden, to mark their tiles: none are while hidden.
-    if (showHidden) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
+    if (showHidden || inBin) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
     else hiddenHere = new Set();
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
@@ -996,6 +996,9 @@
       await binChanged();
     });
   }
+  /** What the Delete keys move to the trash: in the viewer, only the photo shown (the next one
+   *  takes its place), else the photos edited here. */
+  const deleting = () => (viewing && focusRow !== undefined ? [focusRow] : targets());
   /** After photos went into the trash or out of it: the views and its count follow. */
   async function binChanged() {
     await edited();
@@ -1610,7 +1613,7 @@
       return;
     }
     if (ctrl && !e.altKey) {
-      if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin") setBinned(true);
+      if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin") setBinned(true, deleting());
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
@@ -1638,9 +1641,8 @@
         if (!editError) note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} taken out of “${album.name}”`);
       });
     }
-    // In the viewer, only the photo shown goes, and the next one takes its place.
     else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") {
-      setBinned(true, viewing && focusRow !== undefined ? [focusRow] : targets());
+      setBinned(true, deleting());
     }
     else if (viewing) return; // the viewer has its own keys
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
