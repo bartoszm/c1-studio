@@ -12,8 +12,8 @@ use c1index::{Filter, Library, Origin, PendingEdit, QueryOptions, QueryResult, S
 use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
-    ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoSource, Pick, Place, SourceProgress, SourceSpec,
-    WriteStatus,
+    ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoId, PhotoSource, Pick, Place, Removal, SourceProgress,
+    SourceSpec, WriteStatus,
 };
 use events::Log;
 use serde::{Deserialize, Serialize};
@@ -695,6 +695,10 @@ struct Status {
     offline_roots: Vec<String>,
     /// How far a scan has got, while one runs.
     progress: Option<SourceProgress>,
+    /// What emptying the trash does at the source.
+    removes: Removal,
+    /// Photos in the app's trash.
+    binned: usize,
 }
 
 #[tauri::command]
@@ -711,6 +715,8 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         can_rescan: s.source.capabilities().rescan,
         offline_roots: s.source.offline_places(),
         progress: s.source.progress(),
+        removes: s.source.capabilities().removes,
+        binned: s.library.bin_count(),
     })
 }
 
@@ -846,19 +852,20 @@ async fn edit_trips(app: State<'_, App>, edit: c1index::trips::TripEdit) -> Resu
 }
 
 /// A photo as the details panel shows it: what its source holds, and whether it is hidden
-/// here.
+/// or in the trash here.
 #[derive(Serialize)]
 struct PhotoView {
     #[serde(flatten)]
     photo: Photo,
     hidden: bool,
+    binned: bool,
 }
 
 #[tauri::command]
 async fn photo(app: State<'_, App>, row: u64) -> Result<Option<PhotoView>, String> {
     let s = app.session()?;
     let photo = s.library.photo(row).map_err(text)?;
-    Ok(photo.map(|photo| PhotoView { photo, hidden: s.library.is_hidden(row) }))
+    Ok(photo.map(|photo| PhotoView { photo, hidden: s.library.is_hidden(row), binned: s.library.is_binned(row) }))
 }
 
 /// Hides photos from every view (`hidden`), or shows them again; returns the rows whose
@@ -882,6 +889,68 @@ async fn hidden_of(app: State<'_, App>, rows: Vec<u64>) -> Result<Vec<u64>, Stri
 #[tauri::command]
 async fn hidden_rows(app: State<'_, App>, filter: Filter) -> Result<Vec<u64>, String> {
     app.session()?.library.hidden_rows(&filter).map_err(text)
+}
+
+/// Moves photos to the app's trash (`binned`), or restores them; returns the rows whose
+/// mark changed, for undo. Nothing reaches the source until the trash is emptied. A source
+/// that deletes whole assets (Capture One) takes their other variants along.
+#[tauri::command]
+async fn set_binned(app: State<'_, App>, rows: Vec<u64>, binned: bool) -> Result<Vec<u64>, String> {
+    let s = app.session()?;
+    let whole_assets = s.source.capabilities().removes == Removal::MarksTrashed;
+    tauri::async_runtime::spawn_blocking(move || s.library.set_binned(&rows, binned, whole_assets))
+        .await
+        .map_err(text)?
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// What emptying the trash did.
+#[derive(Default, Serialize)]
+struct EmptyReport {
+    removed: usize,
+    /// Photos left in the trash, by name, with why.
+    failed: Vec<(String, String)>,
+    backup: Option<String>,
+    warnings: Vec<String>,
+}
+
+/// Deletes the photos in the trash for good (only those at `rows`, if given): the source
+/// deletes their files, or marks them deleted (refused while Capture One runs). Not undone.
+#[tauri::command]
+async fn empty_bin(app: AppHandle, rows: Option<Vec<u64>>) -> Result<EmptyReport, String> {
+    app.state::<App>().session()?.touched();
+    tauri::async_runtime::spawn_blocking(move || empty_trash(&app, rows)).await.map_err(text)?
+}
+
+fn empty_trash(app: &AppHandle, rows: Option<Vec<u64>>) -> Result<EmptyReport, String> {
+    let s = app.state::<App>().session()?;
+    // Held until the source is read back, so no refresh comes in between.
+    let _one = s.syncing.lock().unwrap_or_else(|e| e.into_inner());
+    let mut going = s.library.bin_photos().map_err(|e| format!("{e:#}"))?;
+    if let Some(rows) = &rows {
+        going.retain(|(row, _)| rows.contains(row));
+    }
+    if going.is_empty() {
+        return Ok(EmptyReport::default());
+    }
+    let ids: Vec<PhotoId> = going.iter().map(|(_, id)| id.clone()).collect();
+    let name = s.source.info().name;
+    let report = s.source.remove(&ids).map_err(|e| {
+        s.log.event(&format!("Deleting {} photo(s) in {name} failed: {e:#}", ids.len()), &[]);
+        text(e)
+    })?;
+    s.log.event(
+        &format!("Deleted {} photo(s) for good in {name}", report.removed.len()),
+        &report.backup.iter().map(|b| format!("backup first: {b}")).chain(report.warnings.clone()).collect::<Vec<_>>(),
+    );
+    s.library.emptied(&report.removed).map_err(|e| format!("{e:#}"))?;
+    let named = |id: &PhotoId| {
+        let row = going.iter().find(|(_, i)| i == id).map(|(row, _)| *row);
+        row.and_then(|row| s.library.photo(row).ok().flatten()).map_or_else(|| id.to_string(), |p| p.file.name)
+    };
+    let failed = report.failed.iter().map(|(id, why)| (named(id), why.clone())).collect();
+    sync_held(app, &s, true, Origin::Source)?;
+    Ok(EmptyReport { removed: report.removed.len(), failed, backup: report.backup, warnings: report.warnings })
 }
 
 #[tauri::command]
@@ -2235,6 +2304,8 @@ pub fn run() {
             set_hidden,
             hidden_rows,
             hidden_of,
+            set_binned,
+            empty_bin,
             photo,
             collections,
             sync,

@@ -203,7 +203,7 @@ photos with edits not yet written, and the panel lists which fields.
 | Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. Long lists show their first 8 (those on only some first); *+N more* shows the rest. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
 | GPS | The panel's GPS field: `50.0614, 19.9366`, with N/S/E/W, or degrees, minutes and seconds. Empty clears it. GPS belongs to the image, so every variant of it moves. |
-| Albums | Drag the photos onto an album in the sidebar (several picked go together). The panel lists the albums a photo is in; × takes it out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. While the grid shows an album, Delete takes the picked photos out of it. Only albums take photos; see [Albums](#albums). |
+| Albums | Drag the photos onto an album in the sidebar (several picked go together). The panel lists the albums a photo is in; × takes it out. With several picked, an album holding only some shows how many (3/5), and + puts the rest in. While the grid shows an album, Delete takes the picked photos out of it. Only albums take photos; see [Albums](#albums). Ctrl+Delete moves the photos to the [trash](#trash). |
 | IPTC fields | Typed in the panel's IPTC sections, grouped as in Capture One: **Content** (Headline, Description), **Image** (Title), **Status** (Job ID, Instructions, Source, Copyright), **Contact** (Creator). Enter or leaving saves, Esc puts the old value back, empty clears. Description takes several lines: Enter adds a line, Ctrl+Enter saves. |
 
 **Several photos picked.** The panel opens with an *Edit N photos* block: rating, colour,
@@ -256,6 +256,39 @@ hidden photos brings them back for good. Ctrl+Z undoes a hide or an unhide.
 Hiding is not encryption: the photos stay in the catalog, in Capture One and in its
 thumbnail cache.
 
+## Trash
+
+**Delete** moves the picked photos (or the one in the viewer) to C1 Studio's trash; so
+does *Delete* in the details panel. While the grid shows an album, Delete takes the photos
+out of the album instead, and **Ctrl+Delete** moves them to the trash. They leave every
+view and count at once, as hidden photos do, and nothing reaches the source yet: Ctrl+Z
+brings them back.
+
+*Trash* at the bottom of the sidebar shows them, with its count. There, the bar above the
+grid has:
+
+- **Restore**: the picked photos go back into every view.
+- **Delete for good…**: the picked photos are deleted at their source now.
+- **Empty trash…**: every photo in the trash is.
+
+Both ask first, and say what happens; it cannot be undone in C1 Studio:
+
+- **Photo folders:** the files go to the Windows Recycle Bin, with the photo's own `.xmp`
+  sidecar (one another photo shares, as `X.RAF` and `X.JPG` share `X.xmp`, stays). Their
+  edits in C1 Studio go too. A photo whose drive is not connected, or whose file changed
+  since the last scan, stays in the trash. A file another program holds open is moved
+  later, at the next delete or scan; it is never found again as a new photo.
+- **Capture One:** the photos are marked deleted in the catalog, as Capture One's own
+  Delete does, and show in its Trash, where it can restore them or empty them for good.
+  Every variant of the same image goes with them: Capture One trashes images, not
+  variants, so deleting one variant puts its siblings in the trash too. The catalog is
+  backed up first, and Capture One must be closed, as for any write. Their queued edits
+  are dropped.
+
+Photos already in Capture One's own Trash stay out of every view, the app's trash
+included. The trash is kept with the library (`library\bin.redb`), so it survives a
+restart and a rebuilt index.
+
 ## Keyword tree
 
 Right-click a keyword in the sidebar:
@@ -295,7 +328,8 @@ level (or choose a group in the dialog). In the tree:
   if the one dragged is picked).
 - **Drag an album or group** onto a group (or project) to move it there, with what is
   inside; onto the Albums title for the top level.
-- While the grid shows an album, **Delete** takes the picked photos out of it.
+- While the grid shows an album, **Delete** takes the picked photos out of it (**Ctrl+Delete**
+  moves them to the [trash](#trash)).
 
 Right-click an album, smart album or group for:
 
@@ -662,7 +696,8 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Ctrl+K | Add a keyword (details panel shown) |
 | Ctrl+C (or Ctrl+Shift+C) | Copy… from the focused photo |
 | Ctrl+V, Ctrl+Alt+V, Ctrl+Shift+V | Paste (overwrite), merge, Paste… (choose what and how) |
-| Delete | Take the picked photos out of the album the grid shows |
+| Delete | Move the picked photos (or the one in the viewer) to the [trash](#trash); in an album, take them out of it |
+| Ctrl+Delete | Move the picked photos to the trash, in an album too |
 | Ctrl+Shift+S | Copy to N selected: the focused photo's fields onto the other picked photos |
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
@@ -672,7 +707,7 @@ Keys do not act while you type in a field.
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The kinds of source offered: `%APPDATA%\c1studio\providers.json`.

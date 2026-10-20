@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Trash:** **Delete** moves the picked photos (or the one in the viewer) to C1 Studio's trash, out of every view and count; Ctrl+Z brings them back. In an album, Delete still takes photos out of the album and **Ctrl+Delete** trashes them. **Trash** at the bottom of the sidebar shows them, with **Restore**, **Delete for good…** and **Empty trash…**. Emptying sends a photo folder's files (and their own `.xmp` sidecars) to the Windows Recycle Bin; in a Capture One catalog it marks the images deleted, so they show in Capture One's own Trash, after a backup and with Capture One closed. Nothing reaches the source before the trash is emptied.
+
 ## 0.4.0 — 2026-10-19
 
 ### New

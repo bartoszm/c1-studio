@@ -106,7 +106,7 @@ fn a_photo_deleted_for_good_takes_its_files_and_is_deleted() {
     let a = fx.id(&first, "a.jpg");
 
     let report = fx.src.remove(std::slice::from_ref(&a)).unwrap();
-    assert_eq!(report.removed, [a.clone()]);
+    assert_eq!(report.removed, std::slice::from_ref(&a));
     assert!(report.failed.is_empty() && report.warnings.is_empty(), "{report:?}");
     assert!(!fx.root.join("a.jpg").exists() && !fx.root.join("a.xmp").exists(), "both went");
     assert!(fx.root.join("b.jpg").exists());
@@ -174,7 +174,7 @@ fn a_file_that_could_not_go_yet_is_not_found_again() {
     fx.src.set_recycler(refuse);
 
     let report = fx.src.remove(std::slice::from_ref(&a)).unwrap();
-    assert_eq!(report.removed, [a.clone()], "the photo is gone even though its file is not");
+    assert_eq!(report.removed, std::slice::from_ref(&a), "the photo is gone even though its file is not");
     assert_eq!(report.warnings.len(), 1, "{report:?}");
     assert!(fx.root.join("a.jpg").exists());
 

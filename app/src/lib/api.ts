@@ -71,6 +71,10 @@ export type Filter = {
   analysed?: boolean;
   /** Photos the user hid: left out unless "Include" (or "Only"). */
   hidden?: "Exclude" | "Include" | "Only";
+  /** Photos in the app's trash: left out of every view but the trash's ("Only"). */
+  bin?: "Exclude" | "Include" | "Only";
+  /** Photos in the source's own trash (Capture One's): left out unless asked for. */
+  trashed?: "Exclude" | "Include" | "Only";
   /** One photo per duplicate group or series (its sharpest), unless one group is picked. */
   stacked?: boolean;
   /** Only photos whose original cannot be reached now, or only those that can. */
@@ -189,7 +193,18 @@ export type Status = {
   offline_roots: string[];
   /** How far a scan has got, while one runs. */
   progress: SourceProgress | null;
+  /** What emptying the trash does at the source. */
+  removes: Removal;
+  /** Photos in the app's trash. */
+  binned: number;
 };
+
+/** What deleting a photo for good does at its source: nothing (it cannot), its files go to
+ * the recycle bin, or the source marks it deleted in its own trash (Capture One). */
+export type Removal = "None" | "Files" | "MarksTrashed";
+
+/** What emptying the trash did; `failed` holds the photos left in it, by name, with why. */
+export type EmptyReport = { removed: number; failed: [string, string][]; backup: string | null; warnings: string[] };
 
 /** How far a long piece of work in the source has got (`source-progress` events). */
 export type SourceProgress = { phase: string; done: number; total: number | null; note: string | null };
@@ -266,6 +281,8 @@ export type Photo = {
   trashed: boolean;
   /** Hidden by the user in C1 Studio (not a Capture One field). */
   hidden?: boolean;
+  /** In C1 Studio's trash (not a Capture One field). */
+  binned?: boolean;
 };
 
 export type CollectionKind = "Album" | "Smart" | "Group" | "Project" | "Folder" | "Other";
@@ -309,6 +326,7 @@ export type LogEvent = { at: number; origin: Origin } & (
   | { change: Change }
   | { added: PhotoRef }
   | { removed: PhotoRef }
+  | { deleted: PhotoRef }
   | { collection: { change: CollectionChange; label: string } }
   | { remap: { label: string } }
   | { written: { photos: number; changes: number; albums: number; keywords: number } }
@@ -552,6 +570,10 @@ export const setHidden = (rows: number[], hidden: boolean) => invoke<number[]>("
 export const hiddenRows = (filter: Filter) => invoke<number[]>("hidden_rows", { filter });
 /** Of these photos, the ones that are hidden (whether or not hidden photos are shown). */
 export const hiddenOf = (rows: number[]) => invoke<number[]>("hidden_of", { rows });
+/** Moves photos to the app's trash, or restores them; returns the rows whose mark changed. */
+export const setBinned = (rows: number[], binned: boolean) => invoke<number[]>("set_binned", { rows, binned });
+/** Deletes the photos in the trash for good (only those at `rows`, if given). */
+export const emptyBin = (rows?: number[]) => invoke<EmptyReport>("empty_bin", { rows: rows ?? null });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */
 export const photoHistory = (row: number) =>

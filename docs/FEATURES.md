@@ -13,6 +13,7 @@ New in 0.4.0: [photo folders](#photo-folders) and
 - [The best match first](#the-best-match-first)
 - [Edit, then write](#edit-then-write)
 - [Hide sensitive photos](#hide-sensitive-photos)
+- [Delete, with a trash](#delete-with-a-trash)
 - [The keyword tree](#the-keyword-tree)
 - [Albums and smart albums](#albums-and-smart-albums)
 - [See what your photos look like](#see-what-your-photos-look-like)
@@ -97,6 +98,15 @@ timeline, trips and the analysis. *Hidden* in the header shows them again, marke
 ![Hiding two photos, showing hidden photos, and bringing them back](media/features/hidden.gif)
 
 [In the guide: Hidden photos](GUIDE.md#hidden-photos)
+
+## Delete, with a trash
+
+**Delete** moves photos to C1 Studio's trash, out of every view; Ctrl+Z or *Restore* brings
+them back. Nothing is deleted until you empty the trash: then a photo folder's files go to
+the Windows Recycle Bin, and a Capture One catalog marks the images deleted, so they show
+in Capture One's own Trash.
+
+[In the guide: Trash](GUIDE.md#trash)
 
 ## The keyword tree
 
