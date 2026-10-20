@@ -10,8 +10,8 @@ use crate::change::{
 };
 use crate::photo::{Collection, CollectionId, KeywordNode, Photo, PhotoId, SourceId};
 use crate::source::{
-    Capabilities, Compatibility, Cursor, Field, ImageRef, ImageTier, PhotoSource, Result, SourceError, SourceEvent,
-    SourceInfo, WriteStatus,
+    Capabilities, Compatibility, Cursor, Field, ImageRef, ImageTier, PhotoSource, Removal, RemoveReport, Result,
+    SourceError, SourceEvent, SourceInfo, WriteStatus,
 };
 
 #[derive(Default)]
@@ -23,6 +23,7 @@ struct State {
     locked_by: Option<String>,
     /// Collections made so far, for their ids (`m1`, `m2`, ...).
     made: u64,
+    removal: Removal,
 }
 
 pub struct MemorySource {
@@ -33,7 +34,13 @@ pub struct MemorySource {
 impl MemorySource {
     pub fn new(id: &str, photos: Vec<Photo>, collections: Vec<Collection>) -> Self {
         let photos = photos.into_iter().map(|p| (p.id.clone(), p)).collect();
-        Self { id: SourceId(id.to_owned()), state: Mutex::new(State { photos, collections, ..State::default() }) }
+        let state = State { photos, collections, removal: Removal::Files, ..State::default() };
+        Self { id: SourceId(id.to_owned()), state: Mutex::new(state) }
+    }
+
+    /// Deletes for good as `removal` says (dropping photos, by default).
+    pub fn set_removal(&self, removal: Removal) {
+        self.state.lock().unwrap().removal = removal;
     }
 
     /// Simulates another program holding the source open.
@@ -106,6 +113,7 @@ impl PhotoSource for MemorySource {
             collections: true,
             rescan: false,
             makes_images: false,
+            removes: self.state.lock().unwrap().removal,
         }
     }
 
@@ -174,5 +182,37 @@ impl PhotoSource for MemorySource {
         })?;
         state.version += 1;
         Ok(ApplyReport { applied, backup: None, warnings: Vec::new() })
+    }
+
+    fn remove(&self, photos: &[PhotoId]) -> Result<RemoveReport> {
+        let mut state = self.state.lock().unwrap();
+        if let Some(by) = &state.locked_by {
+            return Err(SourceError::Locked { by: by.clone() });
+        }
+        if state.removal == Removal::None {
+            return Err(SourceError::Unsupported("deleting photos"));
+        }
+        let mut report = RemoveReport::default();
+        for id in photos {
+            let Some(asset) = state.photos.get(id).map(|p| p.asset.clone()) else {
+                report.failed.push((id.clone(), "not in the source".into()));
+                continue;
+            };
+            match state.removal {
+                Removal::None | Removal::Files => {
+                    state.photos.remove(id);
+                }
+                Removal::MarksTrashed => {
+                    for photo in state.photos.values_mut().filter(|p| p.asset == asset) {
+                        photo.trashed = true;
+                    }
+                }
+            }
+            report.removed.push(id.clone());
+        }
+        if !report.removed.is_empty() {
+            state.version += 1;
+        }
+        Ok(report)
     }
 }

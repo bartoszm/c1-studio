@@ -71,6 +71,8 @@ pub(crate) fn scan(src: &FolderSource) -> Result<ScanOutcome> {
     *src.last_scan.lock().unwrap() = Some(outcome.clone());
     drop(busy);
     let _ = src.images.evict(src);
+    // Files of photos deleted for good that could not go to the recycle bin before.
+    let _ = crate::remove::recycle(src);
     Ok(outcome)
 }
 

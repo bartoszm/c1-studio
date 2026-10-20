@@ -40,6 +40,10 @@ const IMAGES: TableDefinition<&str, &str> = TableDefinition::new("images");
 /// deleted (`Images::sweep`). Kept until it is, so a crash in between never leaves a file
 /// the scan would take for a photo.
 const DOOMED: TableDefinition<&str, &str> = TableDefinition::new("doomed");
+/// file path → photo id: a photo's own file (its original, its sidecar), deleted for good
+/// by the user, whose record is gone and which is still to go to the recycle bin
+/// (`remove::discard`). Kept until it has, so the scan never takes it for a new photo.
+const DISCARDED: TableDefinition<&str, &str> = TableDefinition::new("discarded");
 
 /// Whether a file's record is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,6 +147,8 @@ pub struct State {
     pub images: HashMap<(String, ImageTier), ImageRec>,
     /// Image path → photo id: images dropped whose files are not deleted yet.
     pub doomed: BTreeMap<PathBuf, String>,
+    /// File path → photo id: photo files deleted whose files are not in the recycle bin yet.
+    pub discarded: BTreeMap<PathBuf, String>,
 }
 
 impl State {
@@ -205,7 +211,7 @@ impl Store {
         })?;
         let tx = db.begin_write().map_err(other)?;
         {
-            for table in [META, FILES, USER, IMAGES, DOOMED] {
+            for table in [META, FILES, USER, IMAGES, DOOMED, DISCARDED] {
                 tx.open_table(table).map_err(other)?;
             }
             tx.open_table(CHANGED).map_err(other)?;
@@ -267,6 +273,10 @@ impl Store {
         for entry in tx.open_table(DOOMED).map_err(other)?.iter().map_err(other)? {
             let (path, ext) = entry.map_err(other)?;
             state.doomed.insert(PathBuf::from(path.value()), ext.value().to_owned());
+        }
+        for entry in tx.open_table(DISCARDED).map_err(other)?.iter().map_err(other)? {
+            let (path, ext) = entry.map_err(other)?;
+            state.discarded.insert(PathBuf::from(path.value()), ext.value().to_owned());
         }
         Ok(state)
     }
@@ -510,6 +520,22 @@ impl Writer<'_> {
     pub fn spare(&mut self, path: &Path) -> Result<()> {
         if self.state.doomed.remove(path).is_some() {
             self.tx.open_table(DOOMED).map_err(other)?.remove(path_key(path)?).map_err(other)?;
+        }
+        Ok(())
+    }
+
+    /// Records that photo `ext`'s own file at `path` (its original, its sidecar), whose
+    /// record goes, is to go to the recycle bin.
+    pub fn discard(&mut self, ext: &str, path: &Path) -> Result<()> {
+        self.tx.open_table(DISCARDED).map_err(other)?.insert(path_key(path)?, ext).map_err(other)?;
+        self.state.discarded.insert(path.to_owned(), ext.to_owned());
+        Ok(())
+    }
+
+    /// Takes `path` off the files to go to the recycle bin: it has gone.
+    pub fn discarded(&mut self, path: &Path) -> Result<()> {
+        if self.state.discarded.remove(path).is_some() {
+            self.tx.open_table(DISCARDED).map_err(other)?.remove(path_key(path)?).map_err(other)?;
         }
         Ok(())
     }
