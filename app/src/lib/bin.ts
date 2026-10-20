@@ -25,7 +25,7 @@ export function removalText(n: number, removes: Removal): string {
     case "Files":
       return `The files of ${photos(n)} go to the Windows Recycle Bin, with their own .xmp sidecars. Their edits in C1 Studio are lost.`;
     case "MarksTrashed":
-      return `${photos(n)} are marked deleted in Capture One and show in its Trash; their files stay. Any other variants of the same images go with them. A backup of the catalog is made first.`;
+      return `${photos(n)} ${n === 1 ? "is" : "are"} marked deleted in Capture One and show${n === 1 ? "s" : ""} in its Trash; the files stay. Any other variants of the same images go too. A backup of the catalog is made first.`;
     case "None":
       return "This source cannot delete photos.";
   }

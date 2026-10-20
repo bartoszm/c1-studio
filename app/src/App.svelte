@@ -1638,7 +1638,10 @@
         if (!editError) note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} taken out of “${album.name}”`);
       });
     }
-    else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") setBinned(true);
+    // In the viewer, only the photo shown goes, and the next one takes its place.
+    else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") {
+      setBinned(true, viewing && focusRow !== undefined ? [focusRow] : targets());
+    }
     else if (viewing) return; // the viewer has its own keys
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
