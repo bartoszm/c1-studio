@@ -1255,6 +1255,7 @@ async fn move_place(
         place_under: Some(from),
         trashed: c1index::Trashed::Include,
         hidden: c1index::Hidden::Include,
+        bin: c1index::Bin::Include,
         ..Filter::default()
     };
     let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
@@ -1480,6 +1481,7 @@ async fn keyword_users(app: State<'_, App>, paths: Vec<String>) -> Result<usize,
         keywords_under: paths,
         trashed: c1index::Trashed::Include,
         hidden: c1index::Hidden::Include,
+        bin: c1index::Bin::Include,
         ..Filter::default()
     };
     let options = QueryOptions { limit: Some(0), ..QueryOptions::default() };

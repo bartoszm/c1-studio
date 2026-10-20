@@ -69,6 +69,7 @@ pub enum Presence<T> {
     Values(T),
 }
 
+/// Photos in the source's own trash ([`c1model::Photo::trashed`]: Capture One's).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Trashed {
     #[default]
@@ -77,9 +78,19 @@ pub enum Trashed {
     Only,
 }
 
-/// Photos the user hid (see [`crate::hidden`]): left out unless asked for, like the trash.
+/// Photos the user hid (see [`crate::marks`]): left out unless asked for, like the trash.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Hidden {
+    #[default]
+    Exclude,
+    Include,
+    Only,
+}
+
+/// Photos the user deleted, in the app's trash (see [`crate::marks`]): left out of every
+/// view but the trash's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Bin {
     #[default]
     Exclude,
     Include,
@@ -193,6 +204,7 @@ pub struct Filter {
     pub has_local_layers: bool,
     pub trashed: Trashed,
     pub hidden: Hidden,
+    pub bin: Bin,
     pub variant_index: Option<u32>,
     /// From the analysis, each any of its values: `landscape`, `portrait`, ...
     pub shape: Vec<String>,
@@ -572,6 +584,11 @@ impl Filter {
             Hidden::Include => {}
             Hidden::Only => must.push(has(flag::HIDDEN)),
         }
+        match self.bin {
+            Bin::Exclude => must_not.push(has(flag::BINNED)),
+            Bin::Include => {}
+            Bin::Only => must.push(has(flag::BINNED)),
+        }
         for (dim, values) in
             [(Dim::Shape, &self.shape), (Dim::Hue, &self.hues), (Dim::Light, &self.light), (Dim::Focus, &self.focus)]
         {
@@ -610,10 +627,15 @@ impl Filter {
             must.push(range_u64(f.variant_index, &Range { min: Some(i), max: Some(i), ..Range::default() }));
         }
 
-        // Whether hidden photos are in is the outer filter's to say: a sub-filter left at its
-        // default (Exclude) would otherwise keep them out of a view that shows them, or make
-        // `Hidden::Only` find nothing.
-        let inner = |sub: &Filter| Filter { hidden: Hidden::Include, ..sub.clone() };
+        // Whether hidden, trashed and deleted photos are in is the outer filter's to say: a
+        // sub-filter left at its default (Exclude) would otherwise keep them out of a view
+        // that shows them, or make `Only` find nothing.
+        let inner = |sub: &Filter| Filter {
+            trashed: Trashed::Include,
+            hidden: Hidden::Include,
+            bin: Bin::Include,
+            ..sub.clone()
+        };
         for sub in &self.all_of {
             must.push(inner(sub).to_query(index, f, distinct)?);
         }

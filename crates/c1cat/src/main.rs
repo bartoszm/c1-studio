@@ -643,6 +643,7 @@ fn remap(
         keywords_under: froms,
         trashed: c1index::Trashed::Include,
         hidden: c1index::Hidden::Include,
+        bin: c1index::Bin::Include,
         ..Filter::default()
     };
     let photos = session.library.query(&carrying, &QueryOptions { limit: Some(0), ..QueryOptions::default() })?.total;
