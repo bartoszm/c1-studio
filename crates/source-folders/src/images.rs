@@ -524,7 +524,23 @@ impl Images {
         let state = src.store().read();
         let mut generated = self.generated.lock().unwrap();
         generated.get_or_insert_with(|| {
-            state.images.values().map(|i| i.path.clone()).chain(state.doomed.keys().cloned()).collect()
+            let images = state.images.values().map(|i| i.path.clone()).chain(state.doomed.keys().cloned());
+            images.chain(state.discarded.keys().cloned()).collect()
+        });
+    }
+
+    /// A photo's own file is to go to the recycle bin: the walk leaves it out until it has
+    /// ([`Images::is_generated`]). Called inside the store write that records it.
+    pub(crate) fn discarding(&self, path: &Path) {
+        self.generated_update(|set| {
+            set.insert(path.to_owned());
+        });
+    }
+
+    /// A file [`Images::discarding`] named has gone.
+    pub(crate) fn discarded(&self, path: &Path) {
+        self.generated_update(|set| {
+            set.remove(path);
         });
     }
 

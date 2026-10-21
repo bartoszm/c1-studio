@@ -101,6 +101,9 @@ pub enum What {
     Added { photo: PhotoId, name: String },
     /// A photo the source no longer has; `name` keeps the entry readable.
     Removed { photo: PhotoId, name: String },
+    /// A photo deleted for good from the app's trash: the source deleted its files, or
+    /// put it in its own trash.
+    Deleted { photo: PhotoId, name: String },
     /// An album, smart album or group made, renamed, moved or deleted.
     Collection { change: CollectionChange, label: String },
     /// A keyword tree change (rename, join, group, ungroup).
@@ -124,7 +127,7 @@ impl What {
     pub fn photo(&self) -> Option<&PhotoId> {
         match self {
             What::Change(change) => Some(&change.photo),
-            What::Added { photo, .. } | What::Removed { photo, .. } => Some(photo),
+            What::Added { photo, .. } | What::Removed { photo, .. } | What::Deleted { photo, .. } => Some(photo),
             _ => None,
         }
     }

@@ -22,6 +22,7 @@ pub mod layer;
 pub mod meta;
 pub mod pattern;
 mod provider;
+pub mod remove;
 mod scan;
 mod snapshot;
 pub mod store;
@@ -33,8 +34,8 @@ use std::sync::{Mutex, RwLock};
 
 use c1model::{
     ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Compatibility, Cursor, Field, ImageRef,
-    ImageTier, KeywordRemap, PhotoId, PhotoSource, Result, SourceError, SourceEvent, SourceInfo, SourceProgress,
-    WriteStatus,
+    ImageTier, KeywordRemap, PhotoId, PhotoSource, Removal, RemoveReport, Result, SourceError, SourceEvent, SourceInfo,
+    SourceProgress, WriteStatus,
 };
 
 pub use definition::{Definition, ImageStore, RootDef, SidecarNaming};
@@ -65,6 +66,7 @@ pub struct FolderSource {
     /// One scan or one write at a time.
     pub(crate) busy: Mutex<()>,
     last_scan: Mutex<Option<ScanOutcome>>,
+    recycler: RwLock<remove::Recycler>,
 }
 
 impl FolderSource {
@@ -88,7 +90,18 @@ impl FolderSource {
             scan_due: AtomicBool::new(true),
             busy: Mutex::new(()),
             last_scan: Mutex::new(None),
+            recycler: RwLock::new(remove::recycle_bin),
         })
+    }
+
+    /// Sends the files of photos deleted for good through `recycler` instead of the
+    /// system's recycle bin (tests).
+    pub fn set_recycler(&self, recycler: remove::Recycler) {
+        *self.recycler.write().unwrap() = recycler;
+    }
+
+    pub(crate) fn recycler(&self) -> remove::Recycler {
+        *self.recycler.read().unwrap()
     }
 
     /// The definition as last read.
@@ -186,6 +199,7 @@ impl PhotoSource for FolderSource {
             collections: true,
             rescan: true,
             makes_images: true,
+            removes: Removal::Files,
         }
     }
 
@@ -252,6 +266,10 @@ impl PhotoSource for FolderSource {
     fn rescan(&self) -> Result<()> {
         self.scan_due.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn remove(&self, photos: &[PhotoId]) -> Result<RemoveReport> {
+        remove::remove(self, photos)
     }
 
     fn offline_places(&self) -> Vec<String> {

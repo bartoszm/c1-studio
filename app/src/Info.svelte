@@ -18,7 +18,7 @@
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, ongroup,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
-    allHidden = false, onhide,
+    allHidden = false, onhide, inBin = false, ondelete,
   }: {
     row: number | undefined;
     /** Bumped after edits, to read the photo again. */
@@ -77,6 +77,10 @@
     allHidden?: boolean;
     /** Hides the photos edited here from every view, or shows them again (h). */
     onhide?: () => void;
+    /** The trash is shown (so the button restores). */
+    inBin?: boolean;
+    /** Moves the photos edited here to the trash (Delete), or restores them in the trash. */
+    ondelete?: () => void;
   } = $props();
 
   let photo = $state<api.Photo | null>(null);
@@ -342,7 +346,8 @@
       {/each}
     </span>
     {#if !batch}
-      {#if p.trashed}<span class="tag">in trash</span>{/if}
+      {#if p.trashed}<span class="tag" title="In Capture One's own Trash: left out of every view">in Capture One's trash</span>{/if}
+      {#if p.binned}<span class="tag hidden-tag" title="In C1 Studio's trash: restore it, or empty the trash to delete it for good">in Trash</span>{/if}
       {#if p.hidden}<span class="tag hidden-tag" title="Hidden in C1 Studio: left out of every view unless Hidden is on">hidden</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
       {#if p.file.offline}<span class="tag offline-tag" title="The original is not reachable now: its folder or drive is not connected. Everything known about the photo stays.">offline</span>{/if}
@@ -356,6 +361,15 @@
         aria-pressed={allHidden}
         onclick={onhide}
       >{allHidden ? "Unhide" : "Hide"}</button>
+    {/if}
+    {#if ondelete}
+      <button
+        class="hide"
+        title={inBin
+          ? "Take out of the trash, back into every view"
+          : "Move to the trash (Delete; Ctrl+Delete in an album): nothing is deleted until the trash is emptied"}
+        onclick={ondelete}
+      >{inBin ? "Restore" : "Delete"}</button>
     {/if}
   </div>
   <div class="colors" role="group" aria-label="Colour tag">

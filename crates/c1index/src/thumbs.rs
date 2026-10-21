@@ -19,7 +19,7 @@ use std::time::UNIX_EPOCH;
 use c1model::{ImageFormat, ImageRef, ImageTier, PhotoId, PhotoSource};
 use serde::{Deserialize, Serialize};
 
-use crate::filter::{Filter, Hidden, Trashed};
+use crate::filter::{Bin, Filter, Hidden, Trashed};
 use crate::library::{Library, QueryOptions, Sort};
 
 /// The long edge, as Capture One's own thumbnails.
@@ -386,7 +386,7 @@ impl Thumbs {
 
     /// The library's photos that show no thumbnail yet (or one out of date), by row.
     pub fn missing(&self, library: &Library, source: &dyn PhotoSource) -> anyhow::Result<Vec<(u64, PhotoId)>> {
-        let all = Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
+        let all = Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() };
         let rows = library.query(&all, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
         let mine = source.info().id;
         let mut out = Vec::new();

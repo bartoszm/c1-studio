@@ -23,8 +23,8 @@ use std::sync::Mutex;
 use c1model::source::Result;
 use c1model::{
     ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Crop, Cursor, Field, ImageFormat,
-    ImageRef, ImageTier, KeywordRemap, PhotoId, PhotoSource, SourceError, SourceEvent, SourceId, SourceInfo,
-    WriteStatus,
+    ImageRef, ImageTier, KeywordRemap, PhotoId, PhotoSource, Removal, RemoveReport, SourceError, SourceEvent, SourceId,
+    SourceInfo, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
@@ -132,6 +132,7 @@ impl PhotoSource for CaptureOne {
             collections: true,
             rescan: false,
             makes_images: false,
+            removes: Removal::MarksTrashed,
         }
     }
 
@@ -294,6 +295,52 @@ impl PhotoSource for CaptureOne {
         let before = write::restore(&self.catalog, &self.backup_dir(), write::KEEP_BACKUPS, id)?;
         Ok(backup_info(&before))
     }
+
+    /// Marks the photos' images deleted, the way a write goes: refused while Capture One
+    /// or anything else has the catalog open, after a backup, in one transaction.
+    fn remove(&self, photos: &[PhotoId]) -> Result<RemoveReport> {
+        let mut report = RemoveReport::default();
+        let mut variants = Vec::new();
+        for id in photos {
+            match self.variant_pk(id) {
+                Ok(pk) => variants.push((pk, id)),
+                Err(e) => report.failed.push((id.clone(), e.to_string())),
+            }
+        }
+        if variants.is_empty() {
+            return Ok(report);
+        }
+        let _guard = self.snapshot_lock.lock().unwrap();
+        write::preflight(&self.catalog)?;
+        let con = catalog::open_live(&self.catalog)?;
+        let mut known = Vec::new();
+        for (pk, id) in variants {
+            if write::variant_exists(&con, pk)? {
+                known.push((pk, id));
+            } else {
+                report.failed.push((id.clone(), "not in the catalog".into()));
+            }
+        }
+        drop(con);
+        if known.is_empty() {
+            return Ok(report);
+        }
+        let backup = write::backup(&self.catalog, &self.backup_dir(), write::KEEP_BACKUPS)?;
+        let mut con = write::open_write(&self.catalog)?;
+        let pks: Vec<i64> = known.iter().map(|(pk, _)| *pk).collect();
+        let marked = write::trash(&mut con, &pks)?;
+        drop(con);
+        write::wrote(&self.catalog, &backup)?;
+        for (pk, id) in known {
+            if marked.contains(&pk) {
+                report.removed.push(id.clone());
+            } else {
+                report.failed.push((id.clone(), "not in the catalog".into()));
+            }
+        }
+        report.backup = Some(backup.backup.display().to_string());
+        Ok(report)
+    }
 }
 
 fn backup_info(b: &Backup) -> BackupInfo {
@@ -392,7 +439,58 @@ mod tests {
             assert_eq!(conformance::check_write(&source, &probe), Vec::<String>::new());
             assert_eq!(conformance::check_incremental(&source, &probe), Vec::<String>::new());
             assert_eq!(conformance::check_backup(&source, &probe), Vec::<String>::new());
+            assert_eq!(conformance::check_remove(&source, &probe), Vec::<String>::new());
         }
+    }
+
+    #[test]
+    fn remove_marks_the_image_trashed_after_a_backup() {
+        let Some((_dir, source)) = source() else { return };
+        if !ready(&source) {
+            return;
+        }
+        let id = |pk: &str| PhotoId::new(&source.info().id, pk);
+        let report = source.remove(&[id("2"), id("99"), id("x")]).unwrap();
+        assert_eq!(report.removed, vec![id("2")]);
+        let failed: Vec<&str> = report.failed.iter().map(|(p, _)| p.ext.as_str()).collect();
+        assert_eq!(failed, ["x", "99"]);
+        let backups = source.backups();
+        assert_eq!(report.backup.as_deref(), Some(backups[0].backup.display().to_string().as_str()));
+
+        let mut trashed = Vec::new();
+        source
+            .snapshot(None, &mut |e| {
+                if let SourceEvent::Upsert(p) = e
+                    && p.trashed
+                {
+                    trashed.push(p.id.ext.clone());
+                }
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(trashed, ["2"]);
+        let old = rusqlite::Connection::open(&backups[0].backup).unwrap();
+        let before: i64 = old.query_row("SELECT ZISTRASHED FROM ZIMAGE WHERE Z_PK = 2", [], |r| r.get(0)).unwrap();
+        assert_eq!(before, 0, "the backup holds the catalog as it was");
+    }
+
+    #[test]
+    fn remove_is_refused_while_the_catalog_is_held() {
+        let Some((dir, source)) = source() else { return };
+        if !ready(&source) {
+            return;
+        }
+        fs_journal(&dir.path().join("fixture.cocatalogdb"));
+        let id = PhotoId::new(&source.info().id, "2");
+        assert!(matches!(source.remove(&[id]), Err(SourceError::Locked { .. })));
+        assert!(source.backups().is_empty(), "no backup for a write that did not happen");
+    }
+
+    /// A non-empty rollback journal next to the catalog, as a write in progress leaves.
+    fn fs_journal(catalog: &Path) {
+        let mut journal = catalog.as_os_str().to_owned();
+        journal.push("-journal");
+        std::fs::write(journal, b"busy").unwrap();
     }
 
     #[test]

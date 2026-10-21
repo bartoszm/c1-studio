@@ -141,8 +141,10 @@ pub mod flag {
     pub const EDITED: &str = "edited";
     pub const LOCAL_LAYERS: &str = "local_layers";
     pub const TRASHED: &str = "trashed";
-    /// Hidden by the user in C1 Studio (see [`crate::hidden`]): left out unless shown.
+    /// Hidden by the user in C1 Studio (see [`crate::marks`]): left out unless shown.
     pub const HIDDEN: &str = "hidden";
+    /// Deleted by the user in C1 Studio, in the app's trash (see [`crate::marks`]).
+    pub const BINNED: &str = "binned";
     /// The original's folder or volume is not reachable now (`FileInfo::offline`).
     pub const OFFLINE: &str = "offline";
     /// A country without its ISO code.
@@ -372,18 +374,27 @@ fn sort_key(ms: Option<i64>, row: u64) -> i64 {
     }
 }
 
-/// `coarse`: its position was given from its place's name (see [`flag::COARSE_GPS`]).
-/// `hidden`: the user hid it (see [`flag::HIDDEN`]).
+/// What the app knows of a photo besides the photo itself, for its document.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Marks {
+    /// Its position was given from its place's name (see [`flag::COARSE_GPS`]).
+    pub coarse: bool,
+    /// The user hid it (see [`flag::HIDDEN`]).
+    pub hidden: bool,
+    /// The user deleted it (see [`flag::BINNED`]).
+    pub binned: bool,
+}
+
 /// `classes`: where the analysis draws the lines between classes.
 pub fn document(
     f: &Fields,
     row: u64,
     photo: &Photo,
     look: Option<&Look>,
-    coarse: bool,
-    hidden: bool,
+    marks: Marks,
     classes: &ClassSettings,
 ) -> TantivyDocument {
+    let Marks { coarse, hidden, binned } = marks;
     let mut doc = TantivyDocument::default();
     let mut dim = |d: Dim, value: &str| doc_add_str(&mut doc, f.dim(d), value);
     dim(Dim::Source, &photo.id.source.0);
@@ -434,6 +445,7 @@ pub fn document(
         (flag::LOCAL_LAYERS, photo.edit.local_layers > 0),
         (flag::TRASHED, photo.trashed),
         (flag::HIDDEN, hidden),
+        (flag::BINNED, binned),
         (flag::OFFLINE, photo.file.offline),
         (flag::NO_COUNTRY_CODE, photo.place.country.is_some() && photo.place.country_code.is_none()),
         (flag::ANALYSED, look.is_some()),

@@ -17,6 +17,7 @@
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
   import BackupsDialog from "./BackupsDialog.svelte";
+  import EmptyBinDialog from "./EmptyBinDialog.svelte";
   import StartupDialog from "./StartupDialog.svelte";
   import CopyDialog from "./CopyDialog.svelte";
   import CountryCodesDialog from "./CountryCodesDialog.svelte";
@@ -38,6 +39,7 @@
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, followStep, sameRows } from "./lib/batch";
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
+  import { binNote, deleteAction, withBin } from "./lib/bin";
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
@@ -242,6 +244,10 @@
   let showHidden = $state(false);
   /** Of the photos shown, the hidden ones (only while they are shown): their tiles are marked. */
   let hiddenHere = $state.raw(new Set<number>());
+  /** The trash is shown: the photos deleted here, and only those. */
+  let inBin = $state(false);
+  /** Asking before deleting photos in the trash for good: all of them, or the picked `rows`. */
+  let emptying = $state<{ rows?: number[] } | null>(null);
   /** How tall the strip of photos under the map and the analysis is: dragged, remembered. */
   let stripH = $state(storedStrip((() => { try { return localStorage.getItem("strip"); } catch { return null; } })()));
   let paneEl = $state<HTMLDivElement>();
@@ -355,12 +361,14 @@
     | { ops: [number, api.Op][] }
     | { remap: number; request: api.RemapRequest }
     | { collection: number; change: api.CollectionChange }
-    | { hidden: number[]; on: boolean };
+    | { hidden: number[]; on: boolean }
+    | { binned: number[]; on: boolean };
   type Undone =
     | { ops: [number, api.Op][] }
     | { request: api.RemapRequest }
     | { change: api.CollectionChange }
-    | { hidden: number[]; on: boolean };
+    | { hidden: number[]; on: boolean }
+    | { binned: number[]; on: boolean };
   let undoStack: Done[] = [];
   let redoStack: Undone[] = [];
 
@@ -466,7 +474,7 @@
     const asked = asking($state.snapshot(filter));
     const groups = dims;
     // Which of the photos shown are hidden, to mark their tiles: none are while hidden.
-    if (showHidden) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
+    if (showHidden || inBin) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
     else hiddenHere = new Set();
     // Smart albums are counted apart: one query each, so they never hold up the grid.
     if (albumsShown) api.smartCounts(asked).then((c) => { if (mine === generation) smart = new Map(c); }).catch(() => {});
@@ -910,7 +918,8 @@
   }
 
   /** How many photos an undo or redo touches, when it is about photos. */
-  const doneRows = (d: Done | Undone) => ("ops" in d ? opRows(d.ops) : "hidden" in d ? d.hidden.length : null);
+  const doneRows = (d: Done | Undone) =>
+    "ops" in d ? opRows(d.ops) : "hidden" in d ? d.hidden.length : "binned" in d ? d.binned.length : null;
 
   function undo() {
     const last = undoStack.at(-1);
@@ -969,6 +978,40 @@
     }
     api.hiddenOf(rows).then((h) => { if (targets().join() === rows.join()) targetsHidden = h.length === rows.length; }).catch(() => {});
   });
+  /** Moves the photos edited here to the trash (`on`), out of every view but the trash's, or
+   *  restores them. Nothing reaches the source until the trash is emptied. */
+  async function setBinned(on: boolean, rows = targets()) {
+    if (!rows.length) return;
+    await working(on ? `deleting ${rows.length.toLocaleString()}…` : `restoring ${rows.length.toLocaleString()}…`, async () => {
+      try {
+        const changed = await api.setBinned(rows, on);
+        if (changed.length) {
+          undoStack.push({ binned: changed, on });
+          redoStack = [];
+          syncNote = binNote(changed.length, on);
+        }
+        editError = null;
+      } catch (e) {
+        editError = String(e);
+      }
+      await binChanged();
+    });
+  }
+  /** What the Delete keys move to the trash: in the viewer, only the photo shown (the next one
+   *  takes its place), else the photos edited here. */
+  const deleting = () => (viewing && focusRow !== undefined ? [focusRow] : targets());
+  /** After photos went into the trash or out of it: the views and its count follow. */
+  async function binChanged() {
+    await edited();
+    api.status().then((s) => (status = s)).catch(() => {});
+    if (viewing && !result?.total) viewing = false;
+  }
+  /** Shows the trash, or leaves it for the library. */
+  function toggleBin() {
+    inBin = !inBin;
+    run();
+  }
+
   /** Not remembered across starts: hidden photos are out again whenever the app opens. */
   function toggleShowHidden() {
     showHidden = !showHidden;
@@ -982,6 +1025,11 @@
       if ("hidden" in last) {
         await api.setHidden(last.hidden, !last.on);
         redoStack.push(last);
+      } else if ("binned" in last) {
+        await api.setBinned(last.binned, !last.on);
+        redoStack.push(last);
+        await binChanged();
+        return;
       } else if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
       else if ("collection" in last) {
         await api.undoCollection(last.collection);
@@ -1012,6 +1060,11 @@
       if ("hidden" in last) {
         await api.setHidden(last.hidden, last.on);
         undoStack.push(last);
+      } else if ("binned" in last) {
+        await api.setBinned(last.binned, last.on);
+        undoStack.push(last);
+        await binChanged();
+        return;
       } else if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
       else if ("change" in last) {
         // The same id as before, so photo edits redone after it still find the album.
@@ -1137,7 +1190,7 @@
   let allOf = $state<AllOf>({});
   /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
   function compiled(f: Filter): Filter {
-    return withHidden(allOfPicks(compile(f, match), allOf), showHidden);
+    return withBin(withHidden(allOfPicks(compile(f, match), allOf), showHidden), inBin);
   }
   function toggleAllOf(card: keyof AllOf) {
     allOf = { ...allOf, [card]: !allOf[card] };
@@ -1554,7 +1607,7 @@
   let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu));
   /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
   let dialogOpen = $derived(
-    !!(writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
+    !!(writing || showBackups || emptying || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
   );
 
   function onkey(e: KeyboardEvent) {
@@ -1576,7 +1629,8 @@
       return;
     }
     if (ctrl && !e.altKey) {
-      if (key === "z" && !e.shiftKey) undo();
+      if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin") setBinned(true, deleting());
+      else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
@@ -1596,12 +1650,15 @@
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
     else if (e.key === "h" && !e.repeat) toggleHidden();
-    else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing) {
+    else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
       const n = targets().length;
       applyEdit({ RemoveFromAlbum: album.id }).then(() => {
         if (!editError) note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} taken out of “${album.name}”`);
       });
+    }
+    else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") {
+      setBinned(true, deleting());
     }
     else if (viewing) return; // the viewer has its own keys
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
@@ -1744,6 +1801,9 @@
     analysed: (v) => [{ text: v ? "measured" : "not measured yet" }],
     // Set by the header's Hidden button, not a filter the user picks.
     hidden: () => [],
+    // Set by the Trash row, whose bar says so; the source's own trash is never shown.
+    bin: () => [],
+    trashed: () => [],
     // Set from the header's Stack button, not a filter the user picks.
     stacked: () => [],
     offline: (v) => [{ text: v ? "offline" : "online" }],
@@ -1876,6 +1936,8 @@
     onsync={openSync}
     allHidden={targetsHidden}
     onhide={toggleHidden}
+    {inBin}
+    ondelete={status && status.removes !== "None" ? () => setBinned(!inBin) : undefined}
   />
 {/snippet}
 
@@ -2128,10 +2190,29 @@
         {/if}
       {/if}
     {/each}
+    {#if status && status.removes !== "None"}
+      <button
+        class="trash-row"
+        class:on={inBin}
+        aria-pressed={inBin}
+        title={inBin ? "Back to the library" : "Photos deleted here (Delete): restore them, or empty the trash to delete them for good"}
+        onclick={toggleBin}
+      ><span class="name">Trash</span><span class="n">{status.binned.toLocaleString()}</span></button>
+    {/if}
   </aside>
 
-  {#if active}
+  {#if active || inBin}
     <div class="filters" role="group" aria-label="Filters">
+      {#if inBin && status}
+        <span class="bin-bar">
+          <b>Trash</b>
+          <span class="muted">deleted here; {status.removes === "Files" ? "their files stay" : "Capture One keeps them"} until the trash is emptied</span>
+          <button disabled={!targets().length} title="Back into every view (Ctrl+Z after a delete does too)" onclick={() => setBinned(false)}>Restore</button>
+          <button disabled={!targets().length} title="Delete the picked photos for good, now" onclick={() => (emptying = { rows: targets() })}>Delete for good…</button>
+          <button class="danger" disabled={!status.binned} title="Delete every photo in the trash for good" onclick={() => (emptying = {})}>Empty trash…</button>
+          <button title="Back to the library" onclick={toggleBin}>Close</button>
+        </span>
+      {/if}
       {#each chips as chip}
         <span class="chip" class:out={chip.out} title={chip.title}>
           {#if chip.dot}<i class="dot" style:background={chip.dot}></i>{/if}
@@ -2153,7 +2234,7 @@
           </span>
         </span>
       {/if}
-      <button class="clear" onclick={clearAll}>Clear filters</button>
+      {#if active}<button class="clear" onclick={clearAll}>Clear filters</button>{/if}
     </div>
   {/if}
 
@@ -2541,6 +2622,16 @@
     titles={TITLES}
     onclose={() => (showSettings = false)}
     onclasses={() => { version++; analysed++; refresh(true); }}
+  />
+{/if}
+
+{#if emptying && status}
+  <EmptyBinDialog
+    count={status.binned}
+    rows={emptying.rows}
+    removes={status.removes}
+    onclose={() => (emptying = null)}
+    ondone={() => { picked.clear(); binChanged(); }}
   />
 {/if}
 

@@ -23,9 +23,9 @@ use tantivy::{
 
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
-use crate::filter::{Distinct, Filter, Hidden, Presence, Range, Trashed};
-use crate::hidden::HiddenBook;
+use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, Trashed};
 use crate::looks::{Look, Looks, Record};
+use crate::marks::MarkBook;
 use crate::matching::{self, MatchSpec, Measures};
 use crate::places::{Coarse, Guessed, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
@@ -271,8 +271,11 @@ pub struct Library {
     guessed: RwLock<HashMap<String, Guessed>>,
     /// Photos the user hid, by photo key (also in `hidden_book`): read when their documents
     /// are made, so the index can leave them out.
-    hidden_book: HiddenBook,
+    hidden_book: MarkBook,
     hidden: RwLock<HashSet<String>>,
+    /// Photos the user deleted, in the app's trash, by photo key (also in `bin_book`).
+    bin_book: MarkBook,
+    binned: RwLock<HashSet<String>>,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -364,8 +367,10 @@ impl Library {
         let looks = Looks::open(&dir.join("analysis.redb"))?;
         let trip_book = TripBook::open(&dir.join("trips.redb"))?;
         let place_book = PlaceBook::open(&dir.join("places.redb"))?;
-        let hidden_book = HiddenBook::open(&dir.join("hidden.redb"))?;
+        let hidden_book = MarkBook::hidden(&dir.join("hidden.redb"))?;
         let hidden = RwLock::new(hidden_book.all()?);
+        let bin_book = MarkBook::bin(&dir.join("bin.redb"))?;
+        let binned = RwLock::new(bin_book.all()?);
         // A photo moved since it was given its place's position is placed for real: its
         // mark goes. (One with no position keeps it: an undo can be redone.)
         let mut marks = place_book.coarse()?;
@@ -414,6 +419,8 @@ impl Library {
             guessed,
             hidden_book,
             hidden,
+            bin_book,
+            binned,
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -449,8 +456,12 @@ impl Library {
         let key = photo.id.key();
         let coarse =
             photo.geo.is_some_and(|g| self.coarse.read().unwrap().get(&key).is_some_and(|c| c.holds(g.lat, g.lon)));
-        let hidden = self.hidden.read().unwrap().contains(&key);
-        schema::document(&self.fields, row, photo, seen.get(&key), coarse, hidden, &self.classes.read().unwrap())
+        let marks = schema::Marks {
+            coarse,
+            hidden: self.hidden.read().unwrap().contains(&key),
+            binned: self.binned.read().unwrap().contains(&key),
+        };
+        schema::document(&self.fields, row, photo, seen.get(&key), marks, &self.classes.read().unwrap())
     }
 
     /// Where the lines between classes lie in this library.
@@ -668,8 +679,12 @@ impl Library {
         if looks.is_empty() {
             return Ok(HashMap::new());
         }
+        let binned = self.binned.read().unwrap().clone();
         for (row, key) in self.store.keys()? {
             let Some(&(hash, sharp)) = looks.get(&key) else { continue };
+            if binned.contains(&key) {
+                continue;
+            }
             let Some(photo) = self.store.photo(row)? else { continue };
             if photo.trashed {
                 continue;
@@ -728,14 +743,56 @@ impl Library {
     /// C1 Studio's own: nothing is queued for the source. Returns the rows whose mark
     /// changed, for undo.
     pub fn set_hidden(&self, rows: &[u64], hidden: bool) -> anyhow::Result<Vec<u64>> {
+        self.set_mark(&self.hidden_book, &self.hidden, rows, hidden)
+    }
+
+    /// Moves these photos to the app's trash (`true`), out of every view but the trash's,
+    /// or restores them (`false`). Nothing reaches the source until the trash is emptied
+    /// ([`Library::emptied`]). With `whole_assets` (a source that deletes every variant of
+    /// an asset at once), the other variants of the same assets go along. Returns the rows
+    /// whose mark changed, for undo.
+    pub fn set_binned(&self, rows: &[u64], binned: bool, whole_assets: bool) -> anyhow::Result<Vec<u64>> {
+        let mut rows = rows.to_vec();
+        if whole_assets {
+            let mut assets = Vec::new();
+            for &row in &rows {
+                if let Some(photo) = self.store.photo(row)? {
+                    assets.push(photo.asset.0);
+                }
+            }
+            assets.sort();
+            assets.dedup();
+            if !assets.is_empty() {
+                let siblings = Filter {
+                    assets,
+                    trashed: Trashed::Include,
+                    hidden: Hidden::Include,
+                    bin: Bin::Include,
+                    ..Filter::default()
+                };
+                rows.extend(self.query(&siblings, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows);
+            }
+        }
+        self.set_mark(&self.bin_book, &self.binned, &rows, binned)
+    }
+
+    /// Marks (or unmarks) photos in `book`, whose marks `marked` holds in memory, and
+    /// re-indexes them. Returns the rows whose mark changed.
+    fn set_mark(
+        &self,
+        book: &MarkBook,
+        marked: &RwLock<HashSet<String>>,
+        rows: &[u64],
+        on: bool,
+    ) -> anyhow::Result<Vec<u64>> {
         let _writing = self.writing.lock().unwrap();
         let mut changed: Vec<(u64, String)> = Vec::new();
         {
-            let marked = self.hidden.read().unwrap();
+            let marked = marked.read().unwrap();
             let keys = self.keys.read().unwrap();
             for &row in rows {
                 let Some(Some(key)) = keys.get(row as usize) else { continue };
-                if marked.contains(key) != hidden && !changed.iter().any(|(r, _)| *r == row) {
+                if marked.contains(key) != on && !changed.iter().any(|(r, _)| *r == row) {
                     changed.push((row, key.clone()));
                 }
             }
@@ -745,7 +802,7 @@ impl Library {
         }
         let keys: Vec<String> = changed.iter().map(|(_, k)| k.clone()).collect();
         let mark = |on: bool| {
-            let mut marked = self.hidden.write().unwrap();
+            let mut marked = marked.write().unwrap();
             for key in &keys {
                 if on {
                     marked.insert(key.clone());
@@ -755,15 +812,15 @@ impl Library {
             }
         };
         // Stored only once the index follows: a failed re-index puts the marks back, so the
-        // book never says hidden while the index still shows the photo.
-        mark(hidden);
+        // book never holds a mark the index does not show.
+        mark(on);
         if let Err(e) = self.reindex_keys(&keys) {
-            mark(!hidden);
+            mark(!on);
             return Err(e);
         }
-        if let Err(e) = self.hidden_book.set(&keys, hidden, now_ms()) {
+        if let Err(e) = book.set(&keys, on, now_ms()) {
             // Not kept: the index goes back to what the book says.
-            mark(!hidden);
+            mark(!on);
             let _ = self.reindex_keys(&keys);
             return Err(e);
         }
@@ -789,6 +846,72 @@ impl Library {
         }
         let only = Filter { hidden: Hidden::Only, ..filter.clone() };
         Ok(self.query(&only, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows)
+    }
+
+    /// Whether this photo is in the app's trash.
+    pub fn is_binned(&self, row: u64) -> bool {
+        let keys = self.keys.read().unwrap();
+        keys.get(row as usize).and_then(|k| k.as_ref()).is_some_and(|k| self.binned.read().unwrap().contains(k))
+    }
+
+    /// How many photos are in the app's trash.
+    pub fn bin_count(&self) -> usize {
+        self.binned.read().unwrap().len()
+    }
+
+    /// The photos in the app's trash, by row, with their ids: what emptying it deletes.
+    pub fn bin_photos(&self) -> anyhow::Result<Vec<(u64, PhotoId)>> {
+        let mut out = Vec::new();
+        for key in self.binned.read().unwrap().iter() {
+            let Some(row) = self.store.row_of(key)? else { continue };
+            if let Some(photo) = self.store.photo(row)? {
+                out.push((row, photo.id));
+            }
+        }
+        out.sort_by_key(|(row, _)| *row);
+        Ok(out)
+    }
+
+    /// The source deleted these photos for good, from the trash: they leave it, their
+    /// queued edits go (there is nothing left to write them to), and the log says so. The
+    /// next sync drops them, or brings them back trashed by the source.
+    pub fn emptied(&self, removed: &[PhotoId]) -> anyhow::Result<()> {
+        if removed.is_empty() {
+            return Ok(());
+        }
+        let _writing = self.writing.lock().unwrap();
+        let keys: HashSet<String> = removed.iter().map(PhotoId::key).collect();
+        let mut edits = self.edits.batch()?;
+        for (key, _) in self.edits.pending()? {
+            if keys.contains(edits::photo_key(&key)) {
+                edits.remove(&key)?;
+            }
+        }
+        let now = now_ms();
+        for id in removed {
+            let name = match self.store.row_of(&id.key())? {
+                Some(row) => self.store.photo(row)?.map(|p| p.file.name).unwrap_or_default(),
+                None => String::new(),
+            };
+            edits.log(&Event { at: now, origin: Origin::App, what: What::Deleted { photo: id.clone(), name } })?;
+        }
+        edits.commit()?;
+        let keys: Vec<String> = keys.into_iter().collect();
+        self.unbin(&keys)
+    }
+
+    /// Takes these photos out of the trash without re-indexing them: they are gone, or
+    /// in the source's own trash, which keeps them out of view.
+    fn unbin(&self, keys: &[String]) -> anyhow::Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        self.bin_book.set(keys, false, now_ms())?;
+        let mut binned = self.binned.write().unwrap();
+        for key in keys {
+            binned.remove(key);
+        }
+        Ok(())
     }
 
     /// Writes the documents of these photos again. The caller holds `writing`.
@@ -942,6 +1065,8 @@ impl Library {
         let mut seen: HashSet<u64> = HashSet::new();
         let mut end: Option<Cursor> = None;
         let row_field = self.fields.row;
+        // Photos in the app's trash the source deleted, or put in its own trash: they leave it.
+        let mut unbin: Vec<String> = Vec::new();
 
         // Sources send their albums before their photos, so photos are diffed against
         // albums already sorted out.
@@ -955,6 +1080,9 @@ impl Library {
                 SourceEvent::BeginIncremental => {}
                 SourceEvent::Upsert(mut photo) => {
                     let key = photo.id.key();
+                    if photo.trashed && self.binned.read().unwrap().contains(&key) {
+                        unbin.push(key.clone());
+                    }
                     // The source's own state; queued edits laid over it below do not count.
                     let fingerprint = photo.fingerprint();
                     let mut by = origin;
@@ -1026,6 +1154,9 @@ impl Library {
                 }
                 SourceEvent::Delete(id) => {
                     let key = id.key();
+                    if self.binned.read().unwrap().contains(&key) {
+                        unbin.push(key.clone());
+                    }
                     if let Some(row) = batch.row_of(&key)? {
                         let name = batch.photo(row)?.map(|p| p.file.name).unwrap_or_default();
                         edits.log(&Event { at: now, origin, what: What::Removed { photo: id, name } })?;
@@ -1074,6 +1205,9 @@ impl Library {
                     let what = What::Removed { photo: photo.id, name: photo.file.name };
                     edits.log(&Event { at: now, origin, what })?;
                 }
+                if self.binned.read().unwrap().contains(key) {
+                    unbin.push(key.clone());
+                }
                 writer.delete_term(Term::from_field_u64(row_field, *row));
                 batch.delete_photo(*row, key)?;
                 report.deleted += 1;
@@ -1095,6 +1229,7 @@ impl Library {
         batch.commit()?;
         edits.commit()?;
         self.refresh()?;
+        self.unbin(&unbin)?;
         if report.added + report.updated + report.deleted > 0 {
             self.places_changed();
             // A photo trashed, retimed or added can change who is in a group, and who is
@@ -1955,6 +2090,7 @@ impl Library {
             keywords_under: remap.map.iter().map(|(from, _)| from.to_pipe()).collect(),
             trashed: Trashed::Include,
             hidden: Hidden::Include,
+            bin: Bin::Include,
             ..Filter::default()
         };
         let rows = self.query(&carrying, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
@@ -2013,8 +2149,13 @@ impl Library {
         let what = What::Undone { label: queued.remap.label.clone() };
         edits.log(&Event { at: now_ms(), origin: Origin::App, what })?;
         let moved: Vec<String> = queued.remap.map.iter().map(|(_, to)| to.to_pipe()).collect();
-        let carrying =
-            Filter { keywords_under: moved, trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
+        let carrying = Filter {
+            keywords_under: moved,
+            trashed: Trashed::Include,
+            hidden: Hidden::Include,
+            bin: Bin::Include,
+            ..Filter::default()
+        };
         let rows = self.query(&carrying, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
         let mut batch = self.store.batch()?;
         for row in rows {
@@ -2158,7 +2299,8 @@ fn expand(filter: &Filter, smart: &HashMap<String, SmartRule>) -> anyhow::Result
 pub fn smart_filter(rule: &SmartRule) -> anyhow::Result<Filter> {
     let mut parts = Vec::new();
     for condition in &rule.conditions {
-        let mut f = Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
+        let mut f =
+            Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() };
         match condition {
             Condition::KeywordContains(text) => f.keywords_containing = vec![text.clone()],
             Condition::Rating { min, max } => {
@@ -2170,7 +2312,7 @@ pub fn smart_filter(rule: &SmartRule) -> anyhow::Result<Filter> {
         }
         parts.push(f);
     }
-    let mut f = Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() };
+    let mut f = Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() };
     if rule.match_all {
         f.all_of = parts;
     } else {
