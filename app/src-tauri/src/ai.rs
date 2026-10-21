@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use c1ai::claude::{self, Claude};
+use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
 use c1ai::{AiError, Brief, Language, PhotoRequest, VisionProvider, Vocabulary};
 use c1index::Accept;
@@ -17,9 +18,20 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::{App, Lowers, Session, is_current, text};
 
 /// What the user chose for describing photos, kept per catalog in `ai.json`.
+/// How Claude is reached: the API with a key, billed per token, or Claude Code signed
+/// in with a Claude plan, counted against the plan's limits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Access {
+    #[default]
+    Api,
+    Plan,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AiSettings {
+    access: Access,
     model: String,
     language: Language,
     /// `low`, `medium`, `high`.
@@ -30,7 +42,13 @@ pub(crate) struct AiSettings {
 
 impl Default for AiSettings {
     fn default() -> Self {
-        AiSettings { model: claude::DEFAULT_MODEL.into(), language: Language::En, effort: "low".into(), parallel: 4 }
+        AiSettings {
+            access: Access::Api,
+            model: claude::DEFAULT_MODEL.into(),
+            language: Language::En,
+            effort: "low".into(),
+            parallel: 4,
+        }
     }
 }
 
@@ -63,27 +81,59 @@ pub(crate) struct ModelView {
     output: f64,
 }
 
+/// Claude Code as a plan run would use it.
+#[derive(Serialize)]
+pub(crate) struct PlanView {
+    installed: bool,
+    #[serde(flatten)]
+    status: claude_code::Status,
+    /// Why the status could not be read.
+    error: Option<String>,
+}
+
+fn plan_view() -> PlanView {
+    let Some(program) = claude_code::find() else {
+        return PlanView { installed: false, status: Default::default(), error: None };
+    };
+    match claude_code::status(&program) {
+        Ok(status) => PlanView { installed: true, status, error: None },
+        Err(e) => PlanView { installed: true, status: Default::default(), error: Some(e.to_string()) },
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct AiView {
     settings: AiSettings,
     models: Vec<ModelView>,
     /// The key in use, masked, and where it comes from (`stored`, `environment`).
     key: Option<(String, &'static str)>,
+    /// Claude Code, looked at only when the plan is chosen: it takes a second to ask.
+    plan: Option<PlanView>,
+    /// Whether a run can start: a key, or Claude Code signed in.
+    ready: bool,
     /// Calls made in this library and what they cost in all.
     calls: u64,
     spent: f64,
 }
 
 fn view(s: &Session) -> Result<AiView, String> {
+    let settings = load_settings(s);
     let key = keys::get(&ANTHROPIC).map_err(text)?;
+    let plan = (settings.access == Access::Plan).then(plan_view);
+    let ready = match &plan {
+        Some(plan) => plan.status.logged_in,
+        None => key.is_some(),
+    };
     let (calls, spent) = s.library.ai_spent().map_err(text)?;
     Ok(AiView {
-        settings: load_settings(s),
+        settings,
         models: claude::MODELS
             .iter()
             .map(|m| ModelView { id: m.id, name: m.name, input: m.input, output: m.output })
             .collect(),
         key: key.map(|k| (keys::masked(&k), keys::origin(&ANTHROPIC).unwrap_or("stored"))),
+        plan,
+        ready,
         calls,
         spent,
     })
@@ -124,13 +174,16 @@ pub(crate) struct Estimate {
     photos: usize,
     /// Photos left out: described already with this model and prompt.
     skipped: usize,
-    /// US dollars, roughly.
+    /// US dollars, roughly; nothing on a plan.
     cost: f64,
     model: &'static str,
+    /// Counted against the Claude plan's limits instead.
+    plan: bool,
 }
 
-/// The provider for a run with these settings, and the vocabulary it checks against.
-fn provider(s: &Session, settings: &AiSettings, key: String) -> Result<Claude, String> {
+/// The instructions for a run with these settings, and the vocabulary answers are
+/// checked against.
+fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), String> {
     let paths = s.library.vocabulary().map_err(text)?;
     let brief = Brief {
         language: settings.language,
@@ -145,8 +198,26 @@ fn provider(s: &Session, settings: &AiSettings, key: String) -> Result<Claude, S
         ),
     };
     let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)));
+    Ok((brief, vocabulary))
+}
+
+/// The provider for a run with these settings: the API with the stored key, or Claude
+/// Code signed in with a plan.
+fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider>, String> {
+    let (brief, vocabulary) = brief(s, settings)?;
     let options = claude::Options { model: settings.model.clone(), effort: settings.effort.clone(), attempts: 4 };
-    Claude::new(key, options, &brief, vocabulary).map_err(text)
+    Ok(match settings.access {
+        Access::Api => {
+            let key = keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())?;
+            Box::new(Claude::new(key, options, &brief, vocabulary).map_err(text)?)
+        }
+        Access::Plan => {
+            let program = claude_code::find().ok_or_else(|| {
+                AiError::Cli("not installed: get it from claude.com/claude-code and sign in".into()).to_string()
+            })?;
+            Box::new(ClaudeCode::new(program, options, &brief, vocabulary).map_err(text)?)
+        }
+    })
 }
 
 /// Of `rows`, the photos a run would describe (`again` takes those described before
@@ -154,15 +225,17 @@ fn provider(s: &Session, settings: &AiSettings, key: String) -> Result<Claude, S
 fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), String> {
     let settings = load_settings(s);
     let model = claude::model(&settings.model).ok_or("unknown model")?;
-    // The prompt's hash depends on the vocabulary only, not the key.
-    let prompt = provider(s, &settings, String::new())?.prompt_hash();
+    // Both ways send the same prompt, so a photo described one way counts for the other.
+    let prompt = c1ai::prompt_hash(&c1ai::system_prompt(&brief(s, &settings)?.0));
     let done = if again { Default::default() } else { s.library.described(rows, model.id, prompt).map_err(text)? };
     let todo: Vec<u64> = rows.iter().copied().filter(|r| !done.contains(r)).collect();
+    let on_plan = settings.access == Access::Plan;
     let estimate = Estimate {
         photos: todo.len(),
         skipped: rows.len() - todo.len(),
-        cost: claude::estimate(&model, todo.len()),
+        cost: if on_plan { 0.0 } else { claude::estimate(&model, todo.len()) },
         model: model.name,
+        plan: on_plan,
     };
     Ok((todo, estimate))
 }
@@ -214,14 +287,17 @@ fn request(s: &Session, row: u64) -> anyhow::Result<Option<PhotoRequest>> {
 #[tauri::command]
 pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) -> Result<(), String> {
     let s = app.state::<App>().session()?;
-    let key = keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())?;
     if s.describing.swap(true, Ordering::SeqCst) {
         return Err("Photos are being described already".into());
     }
     let started = (|| {
         let settings = load_settings(&s);
         let (todo, _) = plan(&s, &rows, again)?;
-        Ok::<_, String>((Arc::new(provider(&s, &settings, key)?), todo, settings.parallel.clamp(1, 8)))
+        Ok::<_, String>((
+            Arc::<dyn VisionProvider>::from(provider(&s, &settings)?),
+            todo,
+            settings.parallel.clamp(1, 8),
+        ))
     })();
     let (provider, todo, parallel) = match started {
         Ok(started) => started,
@@ -256,8 +332,11 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                                 st.failed += 1;
                                 let message = format!("{e:#}");
                                 s.log.event(&format!("Describing photo {row} failed: {message}"), &[]);
-                                // Without a working key no photo will do: the run stops.
-                                if let Some(AiError::NoKey | AiError::BadKey(_)) = e.downcast_ref::<AiError>() {
+                                // Without a working key, Claude Code or what is left of the
+                                // plan no photo will do: the run stops.
+                                if let Some(AiError::NoKey | AiError::BadKey(_) | AiError::Cli(_) | AiError::Limit(_)) =
+                                    e.downcast_ref::<AiError>()
+                                {
                                     s.describe_stop.store(true, Ordering::SeqCst);
                                 }
                                 st.error = Some(message);

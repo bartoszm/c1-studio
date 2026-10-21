@@ -1494,13 +1494,25 @@ country) and 68k have neither.
   (cache writes ×1.25, reads ×0.1), at the price of the model that answered.
 - **Keys** (`keys.rs`): the Windows Credential Manager (`keyring`, service `c1studio`),
   never a file; `$ANTHROPIC_API_KEY` overrides it.
+- **Claude plan** (`claude_code.rs`): the same prompt, schema and photo through Claude
+  Code (`claude -p`) signed in with a Pro/Max plan, so runs count against the plan's
+  limits instead of an API bill. One process per photo: the photo as a stream-json user
+  message on stdin, the answer as `structured_output` of the final `result` event
+  (`--json-schema`), the system prompt from a file (`--system-prompt-file`), no tools,
+  `--safe-mode` (none of the user's hooks, plugins, MCP servers or CLAUDE.md). An
+  `ANTHROPIC_API_KEY` in the environment is removed for the child so the plan is used.
+  The API is not called with the plan's own token: Anthropic allows those only in
+  Claude Code and claude.ai. `claude auth status` shows the plan in the settings; a 429
+  (the plan's limit), a sign-in error or a missing CLI stops the run. Cost recorded as
+  0. `cargo run -p c1ai --example describe -- photo.jpg [model] [--api]` checks either
+  way live.
 - **Library:** suggestions in `ai.redb` (newest per photo, status proposed / accepted /
   rejected) and every call's record, apart from the store like the analyses. Accepting
   queues keywords, caption, headline and rating through `edit_photos_as` as
   `Origin::Ai` (shown as "AI" in the history), made from the photo as it is then; new
   keywords are added to the catalog. A place guess is never applied.
-- **App:** `ai.rs` commands. Settings per catalog in `ai.json` (model, caption language,
-  effort, photos at once). A run first shows its estimate (photos × ~2.3k input, ~0.7k
+- **App:** `ai.rs` commands. Settings per catalog in `ai.json` (access: API key or
+  Claude plan, model, caption language, effort, photos at once). A run first shows its estimate (photos × ~2.3k input, ~0.7k
   output tokens) and leaves out photos described with the same model and prompt unless
   *again* is ticked. Up to 8 calls at a time; each answer is stored as it comes, so a
   stopped run keeps what it got; a refused key stops the run.

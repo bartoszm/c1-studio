@@ -4,10 +4,12 @@
 //! A [`VisionProvider`] answers one photo at a time with a [`Reply`]: the checked
 //! [`Suggestion`] and a [`RunRecord`] of what it cost. Nothing here writes anywhere; the
 //! library keeps suggestions until the user accepts them into the edit queue.
-//! [`claude::Claude`] is the first provider (the Claude API); Gemini through `agy`
-//! follows behind the same trait.
+//! [`claude::Claude`] calls the Claude API with a key; [`claude_code::ClaudeCode`] asks
+//! the same of Claude Code signed in with a Claude plan. Gemini through `agy` follows
+//! behind the same trait.
 
 pub mod claude;
+pub mod claude_code;
 pub mod keys;
 mod prompt;
 
@@ -15,7 +17,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use prompt::{Brief, Language, schema, system_prompt};
+pub use prompt::{Brief, Language, prompt_hash, schema, system_prompt};
 
 /// Bumped when the prompt or the schema changes: photos described by another version are
 /// described again when asked.
@@ -124,6 +126,10 @@ pub enum AiError {
     BadReply(String),
     #[error("key store: {0}")]
     Keys(String),
+    #[error("Claude Code: {0}")]
+    Cli(String),
+    #[error("the Claude plan's usage limit is reached: {0}")]
+    Limit(String),
 }
 
 impl AiError {

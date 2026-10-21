@@ -23,7 +23,7 @@
   async function loadView() {
     try {
       view = await api.aiSettings();
-      if (!view.key) showSettings = true;
+      if (!view.ready) showSettings = true;
     } catch (e) {
       onerror(String(e));
     }
@@ -182,17 +182,20 @@
         <button class="btn" onclick={() => api.stopDescribe().catch((e) => onerror(String(e)))}>Stop</button>
       {:else if estimate}
         <span>
-          {estimate.photos.toLocaleString()} photo{estimate.photos === 1 ? "" : "s"} with {estimate.model}, about <b>{money(estimate.cost)}</b>{estimate.skipped
+          {estimate.photos.toLocaleString()} photo{estimate.photos === 1 ? "" : "s"} with {estimate.model},
+          {#if estimate.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(estimate.cost)}</b>{/if}{estimate.skipped
             ? ` · ${estimate.skipped.toLocaleString()} described already, left out`
             : ""}
         </span>
-        <button class="btn primary" disabled={!estimate.photos || !view?.key} onclick={start}>Describe</button>
+        <button class="btn primary" disabled={!estimate.photos || !view?.ready} onclick={start}>Describe</button>
         <button class="btn" onclick={() => (estimate = null)}>Cancel</button>
       {:else}
         <button
           class="btn primary"
-          disabled={!picked.length || estimating || !view?.key}
-          title={!view?.key ? "Add an API key in the settings first" : picked.length ? "" : "Pick photos in the strip below"}
+          disabled={!picked.length || estimating || !view?.ready}
+          title={!view?.ready
+            ? view?.settings.access === "plan" ? "Sign in to Claude Code first" : "Add an API key in the settings first"
+            : picked.length ? "" : "Pick photos in the strip below"}
           onclick={ask}
         >Describe {picked.length ? picked.length.toLocaleString() : ""} photo{picked.length === 1 ? "" : "s"}…</button>
         <label class="muted" title="Describe photos again even when they were described with this model and prompt">
@@ -211,22 +214,47 @@
   {#if showSettings && view}
     <section class="settings">
       <label>
-        <span>Anthropic API key</span>
-        {#if view.key}
-          <code>{view.key[0]}</code>
-          <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : "in the Windows Credential Manager"}</span>
-          {#if view.key[1] === "stored"}<button class="btn" onclick={() => saveKey("")}>Remove</button>{/if}
-        {:else}
-          <input type="password" placeholder="sk-ant-…" bind:value={keyInput} autocomplete="off" />
-          <button class="btn" disabled={!keyInput.trim()} onclick={() => saveKey(keyInput)}>Save</button>
-          <span class="muted">Kept in the Windows Credential Manager, never in a file.</span>
-        {/if}
+        <span>Access</span>
+        <select value={view.settings.access} onchange={(e) => saveSettings({ access: e.currentTarget.value as api.AiAccess })}>
+          <option value="api">Anthropic API key: billed per token</option>
+          <option value="plan">Claude plan, through Claude Code</option>
+        </select>
       </label>
+      {#if view.settings.access === "plan"}
+        <div class="row">
+          <span>Claude Code</span>
+          {#if !view.plan?.installed}
+            <span class="warn">Not installed. Install Claude Code, run <code>claude</code> once to sign in, then reopen these settings.</span>
+          {:else if view.plan.error}
+            <span class="warn">{view.plan.error}</span>
+          {:else if view.plan.loggedIn}
+            <span>Signed in{view.plan.subscriptionType ? ` with Claude ${view.plan.subscriptionType}` : ""}</span>
+            {#if view.plan.authMethod !== "claude.ai"}
+              <span class="muted">({view.plan.authMethod}: billed to that account, not a plan)</span>
+            {/if}
+          {:else}
+            <span class="warn">Not signed in. Run <code>claude auth login</code> in a terminal, then reopen these settings.</span>
+          {/if}
+        </div>
+      {:else}
+        <label>
+          <span>Anthropic API key</span>
+          {#if view.key}
+            <code>{view.key[0]}</code>
+            <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : "in the Windows Credential Manager"}</span>
+            {#if view.key[1] === "stored"}<button class="btn" onclick={() => saveKey("")}>Remove</button>{/if}
+          {:else}
+            <input type="password" placeholder="sk-ant-…" bind:value={keyInput} autocomplete="off" />
+            <button class="btn" disabled={!keyInput.trim()} onclick={() => saveKey(keyInput)}>Save</button>
+            <span class="muted">Kept in the Windows Credential Manager, never in a file.</span>
+          {/if}
+        </label>
+      {/if}
       <label>
         <span>Model</span>
         <select value={view.settings.model} onchange={(e) => saveSettings({ model: e.currentTarget.value })}>
           {#each view.models as m (m.id)}
-            <option value={m.id}>{m.name} · ${m.input} / ${m.output} per M tokens</option>
+            <option value={m.id}>{m.name}{view.settings.access === "api" ? ` · $${m.input} / $${m.output} per M tokens` : ""}</option>
           {/each}
         </select>
       </label>
@@ -352,8 +380,8 @@
   .warn { color: #e8b03a; font-size: 12px; margin: 4px 0 0; }
   .empty { margin: 16px 0; }
   .settings { display: grid; gap: 8px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line, #333); border-radius: 4px; background: rgba(255, 255, 255, 0.03); }
-  .settings label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .settings label > span:first-child { width: 130px; color: #bbb; }
+  .settings label, .settings .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .settings label > span:first-child, .settings .row > span:first-child { width: 130px; color: #bbb; }
   .settings input[type="password"] { width: 280px; }
   .settings input[type="number"] { width: 56px; }
   .settings p { margin: 0; }

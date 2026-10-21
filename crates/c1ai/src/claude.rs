@@ -56,11 +56,11 @@ pub fn estimate(model: &Model, photos: usize) -> f64 {
 
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
-struct Usage {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_creation_input_tokens: u64,
-    cache_read_input_tokens: u64,
+pub(crate) struct Usage {
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) cache_creation_input_tokens: u64,
+    pub(crate) cache_read_input_tokens: u64,
 }
 
 /// What a call cost: cache writes at 1.25 times the input price, reads at a tenth.

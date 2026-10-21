@@ -634,18 +634,26 @@ export const openLog = () => invoke<void>("open_log");
 
 // Describing photos with a vision model (crates/c1ai, app/src-tauri/src/ai.rs).
 export type AiLanguage = "en" | "pl" | "both";
-export type AiSettings = { model: string; language: AiLanguage; effort: "low" | "medium" | "high"; parallel: number };
+/** The API with a key, or Claude Code signed in with a Claude plan. */
+export type AiAccess = "api" | "plan";
+export type AiSettings = { access: AiAccess; model: string; language: AiLanguage; effort: "low" | "medium" | "high"; parallel: number };
 export type AiModel = { id: string; name: string; input: number; output: number };
+/** Claude Code as a plan run would use it. */
+export type AiPlan = { installed: boolean; loggedIn: boolean; authMethod: string | null; subscriptionType: string | null; error: string | null };
 export type AiView = {
   settings: AiSettings;
   models: AiModel[];
   /** The key in use, masked, and where it comes from. */
   key: [string, "stored" | "environment"] | null;
+  /** Only when the plan is chosen. */
+  plan: AiPlan | null;
+  /** A run can start: a key, or Claude Code signed in. */
+  ready: boolean;
   calls: number;
   /** US dollars spent in this library. */
   spent: number;
 };
-export type AiEstimate = { photos: number; skipped: number; cost: number; model: string };
+export type AiEstimate = { photos: number; skipped: number; cost: number; model: string; plan: boolean };
 export type DescribeState = { running: boolean; done: number; total: number; failed: number; cost: number; error: string | null };
 export type Suggestion = {
   caption_en: string | null;
