@@ -81,18 +81,22 @@
 
   let photo = $state<api.Photo | null>(null);
   let failed = $state<string | null>(null);
+  // Not state: the newest read of the photo asked for.
+  let photoAsked = 0;
 
   $effect(() => {
     const current = row;
     void version;
     failed = null;
+    // Only the newest read's reply: after quick edits an older one may come in last.
+    const mine = ++photoAsked;
     if (current === undefined) {
       photo = null;
       return;
     }
     api.photo(current).then(
-      (p) => { if (current === row) photo = p; },
-      (e) => { if (current === row) failed = String(e); },
+      (p) => { if (mine === photoAsked) photo = p; },
+      (e) => { if (mine === photoAsked) failed = String(e); },
     );
   });
 

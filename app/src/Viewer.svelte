@@ -2,13 +2,15 @@
   import type { Snippet } from "svelte";
   import * as api from "./lib/api";
   import { exposure } from "./lib/format";
-  import { typingIn } from "./lib/keys";
+  import { viewerKey } from "./lib/keys";
 
-  let { row, next, version, onclose, onstep, children }: {
+  let { row, next, version, blocked, onclose, onstep, children }: {
     row: number;
     next?: number;
     /** Bumped after edits, to read the photo again. */
     version: number;
+    /** A dialog or menu is open over the viewer: the keys are its own. */
+    blocked: boolean;
     onclose: () => void;
     onstep: (delta: number) => void;
     /** A side panel, when shown. */
@@ -19,9 +21,11 @@
   // Capture One's thumbnail shows at once; the rendered preview replaces it when ready.
   let sharp = $state(false);
 
-  // Not state: which photo `info` is about. An edit reads the same photo again and keeps
-  // the old details until the new ones are in; another photo starts empty.
+  // Not state: which photo `info` is about, and the newest read asked for. An edit reads
+  // the same photo again and keeps the old details until the new ones are in; another
+  // photo starts empty. Only the newest read's reply is used.
   let infoOf: number | undefined;
+  let asked = 0;
   $effect(() => {
     const current = row;
     void version;
@@ -30,8 +34,9 @@
       sharp = false;
       info = null;
     }
+    const mine = ++asked;
     api.photo(current).then((p) => {
-      if (current === row) info = p;
+      if (mine === asked) info = p;
     });
   });
 
@@ -42,10 +47,9 @@
 
   function onkey(e: KeyboardEvent) {
     // Arrows and Escape in a field of the panel move the caret or leave the field.
-    if (e.defaultPrevented || typingIn(e)) return;
-    if (e.key === "Escape") onclose();
-    else if (e.key === "ArrowRight") onstep(1);
-    else if (e.key === "ArrowLeft") onstep(-1);
+    const action = viewerKey(e, blocked);
+    if (action === "close") onclose();
+    else if (action) onstep(action);
   }
 </script>
 

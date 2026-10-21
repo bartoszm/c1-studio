@@ -3,7 +3,16 @@
 import type { Merged } from "./api";
 
 /** Whether a reply for `rows` is about the photos picked now. */
-export const sameRows = (rows: number[], picked: { size: number; has: (row: number) => boolean }) =>
+/** Stepping in the viewer to `row`: a single pick (or none) follows it, so edits land on
+ *  the photo shown; several picked stay picked. Says whether the pick moved. */
+export function followStep(picked: { size: number; clear(): void; add(row: number): unknown }, row: number | undefined): boolean {
+  if (picked.size > 1 || row === undefined) return false;
+  picked.clear();
+  picked.add(row);
+  return true;
+}
+
+export const sameRows =(rows: number[], picked: { size: number; has: (row: number) => boolean }) =>
   rows.length === picked.size && rows.every((r) => picked.has(r));
 
 /** What a field shows over the selection: the value all of them share, or a placeholder

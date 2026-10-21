@@ -36,7 +36,7 @@
   import { tripDates, tripName } from "./lib/trips";
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
-  import { editingNote, sameRows } from "./lib/batch";
+  import { editingNote, followStep, sameRows } from "./lib/batch";
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
@@ -1495,19 +1495,27 @@
 
   let active = $derived(Object.values(filter).some((v) => v !== undefined));
 
+  // Not state: where a step still waiting for its page goes. Quick presses count from
+  // it, so none is lost; only the newest step moves the viewer.
+  let stepping: number | null = null;
   async function step(d: number) {
-    if (selected === null || !result) return;
-    const to = selected + d;
+    const from = stepping ?? selected;
+    if (from === null || !result) return;
+    const to = from + d;
     if (to < 0 || to >= result.total) return;
-    await need(to, to + 2);
+    stepping = to;
+    try {
+      await need(to, to + 2);
+    } catch {
+      // The page could not be read: stay where we are.
+      if (stepping === to) stepping = null;
+      return;
+    }
+    if (stepping !== to) return;
+    stepping = null;
     selected = to;
     focusRow = rowAt(to);
-    // A single pick follows the photo shown, so edits land on it; several picked stay picked.
-    if (picked.size <= 1 && focusRow !== undefined) {
-      picked.clear();
-      picked.add(focusRow);
-      anchor = to;
-    }
+    if (followStep(picked, focusRow)) anchor = to;
   }
 
   function close() {
@@ -1543,15 +1551,23 @@
     }
   }
 
+  let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu));
+  /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
+  let dialogOpen = $derived(
+    !!(writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
+  );
+
   function onkey(e: KeyboardEvent) {
-    if (e.key === "Escape" && (keywordMenu || placeMenu || albumMenu || sectionMenu)) {
+    if (e.key === "Escape" && menuOpen) {
       keywordMenu = null;
       placeMenu = null;
       albumMenu = null;
       sectionMenu = null;
+      // Handled: the viewer, listening after us, must not close too.
+      e.preventDefault();
       return;
     }
-    if (writing || showBackups || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing || typingIn(e) || e.defaultPrevented) return;
+    if (dialogOpen || typingIn(e) || e.defaultPrevented) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -2537,7 +2553,7 @@
 {/if}
 
 {#if viewing && selected !== null && focusRow !== undefined}
-  <Viewer row={focusRow} next={rowAt(selected + 1)} {version} onclose={close} onstep={step}>
+  <Viewer row={focusRow} next={rowAt(selected + 1)} {version} blocked={dialogOpen || menuOpen} onclose={close} onstep={step}>
     {#if showInfo}{@render details()}{/if}
   </Viewer>
 {/if}
