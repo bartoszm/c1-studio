@@ -16,9 +16,14 @@ rayon.workspace = true
 redb.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+trash.workspace = true
 uuid.workspace = true
 walkdir.workspace = true
 xxhash-rust.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+# Whether a drive has a recycle bin, before deleting photos on it.
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 c1index.workspace = true

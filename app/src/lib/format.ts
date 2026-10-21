@@ -135,6 +135,7 @@ export function eventText(e: LogEvent, albumName?: (id: string) => string, provi
   }
   if ("added" in e) return `${e.added.name} added`;
   if ("removed" in e) return `${e.removed.name} removed`;
+  if ("deleted" in e) return `${e.deleted.name} deleted for good from the trash`;
   if ("collection" in e) return e.collection.label;
   if ("remap" in e) return e.remap.label;
   if ("undone" in e) return `Undo: ${e.undone.label}`;

@@ -117,6 +117,26 @@ aside {
   border-right: 1px solid var(--line);
 }
 aside section { padding: 4px 0; }
+/* The app's trash, after the sections: a view of its own, not a filter. */
+.trash-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid var(--line);
+  text-align: left;
+}
+.trash-row:hover { background: var(--hover); }
+.trash-row.on { background: var(--on); }
+.trash-row .name { flex: 1; }
+.trash-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.bin-bar { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-right: 8px; }
+.bin-bar .muted { color: var(--muted); }
+.bin-bar button { padding: 1px 8px; border: 1px solid var(--line); border-radius: 3px; }
+.bin-bar button:hover:not(:disabled) { background: var(--hover); }
+.bin-bar button:disabled { opacity: 0.4; cursor: default; }
+.bin-bar button.danger { color: var(--error); }
 .head {
   display: flex;
   align-items: center;
@@ -393,6 +413,7 @@ footer {
 .info-panel .offline-tag { color: var(--star); }
 .info-panel .marks .hide { margin-left: auto; padding: 1px 8px; font-size: 12px; border: 1px solid var(--line); border-radius: 3px; }
 .info-panel .marks .hide:hover { background: var(--hover); }
+.info-panel .marks .hide + .hide { margin-left: 4px; }
 .info-panel dl { display: grid; grid-template-columns: 82px 1fr; gap: 4px 8px; margin: 10px 0 0; }
 .info-panel dt { color: var(--muted); }
 .info-panel dd { margin: 0; overflow-wrap: anywhere; }

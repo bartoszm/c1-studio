@@ -1,6 +1,6 @@
 use c1index::{
-    Dim, Filter, Hidden, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed,
-    What, parse_rating,
+    Bin, Dim, Filter, Hidden, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange,
+    Trashed, What, parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
@@ -457,7 +457,7 @@ fn filters_nest() {
 
 fn row_of(library: &Library, n: u32) -> u64 {
     let all = library.query(
-        &Filter { trashed: Trashed::Include, hidden: Hidden::Include, ..Filter::default() },
+        &Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() },
         &QueryOptions::default(),
     );
     all.unwrap().rows.into_iter().find(|r| library.photo_id(*r).unwrap().ext == n.to_string()).unwrap()
@@ -1532,6 +1532,7 @@ fn logged(lib: &Library) -> Vec<(&'static str, Origin)> {
                 What::Change(_) => "change",
                 What::Added { .. } => "added",
                 What::Removed { .. } => "removed",
+                What::Deleted { .. } => "deleted",
                 What::Collection { .. } => "collection",
                 What::Remap(_) => "remap",
                 What::Written { .. } => "written",
@@ -1891,4 +1892,97 @@ fn hidden_photos_are_left_out_of_duplicate_groups_shown_but_still_measured() {
     assert_eq!(lib.groups(&shown, false, 0, 10).unwrap().groups.len(), 1);
     // The analysis still knows it.
     assert!(lib.look(row_of(&lib, 2)).is_some());
+}
+
+#[test]
+fn photos_in_the_trash_leave_every_view_but_its_own_and_the_mark_lasts() {
+    let (d, lib, source) = setup();
+    let all = ids(&lib, &Filter::default());
+    let trash = Filter { bin: Bin::Only, ..Filter::default() };
+    let changed = lib.set_binned(&[row_of(&lib, 2), row_of(&lib, 5)], true, false).unwrap();
+    assert_eq!(changed.len(), 2);
+    assert!(lib.set_binned(&[row_of(&lib, 2)], true, false).unwrap().is_empty(), "in the trash already");
+
+    assert_eq!(ids(&lib, &Filter::default()), [1, 3, 4, 6, 7, 8, 10]);
+    let options = QueryOptions { limit: Some(0), facets: vec![Dim::Year], ..QueryOptions::default() };
+    let counted: u64 = lib.query(&Filter::default(), &options).unwrap().facets[&Dim::Year].iter().map(|(_, n)| n).sum();
+    assert_eq!(counted, 7, "out of the counts too");
+    assert_eq!(ids(&lib, &trash), [2, 5]);
+    assert_eq!(lib.bin_count(), 2);
+    assert!(lib.is_binned(row_of(&lib, 2)) && !lib.is_binned(row_of(&lib, 1)));
+    // Match: any inside the trash finds what is in it.
+    let either = Filter {
+        any_of: vec![
+            Filter { ids: vec!["2".into()], ..Filter::default() },
+            Filter { ids: vec!["3".into()], ..Filter::default() },
+        ],
+        bin: Bin::Only,
+        ..Filter::default()
+    };
+    assert_eq!(ids(&lib, &either), [2]);
+    // Nothing reaches the source until the trash is emptied.
+    assert!(lib.pending().unwrap().is_empty());
+
+    // A sync, a rebuilt index and a reopened library keep it.
+    source.edit_externally(&lib.photo_id(row_of(&lib, 5)).unwrap(), |p| p.rating = Some(1));
+    lib.sync(&source).unwrap();
+    lib.reindex().unwrap();
+    drop(lib);
+    let lib = Library::open(d.path()).unwrap();
+    assert_eq!(ids(&lib, &trash), [2, 5]);
+
+    // Restored (an undo).
+    assert_eq!(lib.set_binned(&[row_of(&lib, 2), row_of(&lib, 5)], false, false).unwrap().len(), 2);
+    assert_eq!(ids(&lib, &Filter::default()), all);
+    assert_eq!(lib.bin_count(), 0);
+}
+
+#[test]
+fn emptying_the_trash_deletes_its_photos_and_their_queued_edits() {
+    let (_d, lib, source) = setup();
+    lib.edit(&[(row_of(&lib, 2), Op::SetRating { base: Some(2), value: Some(5) })]).unwrap();
+    lib.set_binned(&[row_of(&lib, 2), row_of(&lib, 3)], true, false).unwrap();
+    let going: Vec<PhotoId> = lib.bin_photos().unwrap().into_iter().map(|(_, id)| id).collect();
+    assert_eq!(going.len(), 2);
+
+    let report = source.remove(&going).unwrap();
+    lib.emptied(&report.removed).unwrap();
+    assert_eq!(lib.bin_count(), 0);
+    assert!(lib.pending().unwrap().is_empty(), "nothing left to write the rating to");
+    lib.sync(&source).unwrap();
+    assert!(ids(&lib, &Filter { bin: Bin::Include, ..Filter::default() }).iter().all(|n| ![2, 3].contains(n)));
+    let log = lib.events(10).unwrap();
+    assert!(log.iter().any(|e| matches!(&e.what, What::Deleted { photo, .. } if photo.ext == "2")), "{log:?}");
+}
+
+#[test]
+fn the_source_deleting_or_trashing_a_photo_takes_it_out_of_the_trash() {
+    let (_d, lib, source) = setup();
+    lib.set_binned(&[row_of(&lib, 2), row_of(&lib, 3)], true, false).unwrap();
+    source.remove_externally(&lib.photo_id(row_of(&lib, 2)).unwrap());
+    source.edit_externally(&lib.photo_id(row_of(&lib, 3)).unwrap(), |p| p.trashed = true);
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.bin_count(), 0);
+    assert!(ids(&lib, &Filter { bin: Bin::Only, ..Filter::default() }).is_empty());
+}
+
+#[test]
+fn a_source_that_trashes_whole_assets_takes_every_variant_to_the_trash() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let variant =
+        |n: u32, asset: &str, index: u32| Photo { asset: AssetId(asset.into()), variant_index: index, ..photo(n) };
+    let source = MemorySource::new("mem", vec![variant(1, "a", 0), variant(2, "a", 1), variant(3, "b", 0)], vec![]);
+    source.set_removal(Removal::MarksTrashed);
+    lib.sync(&source).unwrap();
+    let changed = lib.set_binned(&[row_of(&lib, 2)], true, true).unwrap();
+    assert_eq!(changed.len(), 2);
+    assert_eq!(ids(&lib, &Filter { bin: Bin::Only, ..Filter::default() }), [1, 2]);
+
+    let going: Vec<PhotoId> = lib.bin_photos().unwrap().into_iter().map(|(_, id)| id).collect();
+    lib.emptied(&source.remove(&going).unwrap().removed).unwrap();
+    lib.sync(&source).unwrap();
+    assert_eq!(ids(&lib, &Filter::default()), [3]);
+    assert_eq!(ids(&lib, &Filter { trashed: Trashed::Only, ..Filter::default() }), [1, 2], "in the source's trash");
+    assert!(ids(&lib, &Filter { bin: Bin::Only, ..Filter::default() }).is_empty());
 }

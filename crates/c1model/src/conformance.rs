@@ -7,7 +7,7 @@ use std::collections::HashSet;
 
 use crate::change::{Change, Op};
 use crate::photo::{Photo, PhotoId};
-use crate::source::{Cursor, Field, ImageTier, PhotoSource, SourceError, SourceEvent, WriteStatus};
+use crate::source::{Cursor, Field, ImageTier, PhotoSource, Removal, SourceError, SourceEvent, WriteStatus};
 
 /// Collects a full snapshot, checking event order along the way.
 pub fn collect(source: &dyn PhotoSource) -> Result<(Vec<Photo>, Vec<String>), SourceError> {
@@ -275,6 +275,58 @@ pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
     problems
 }
 
+/// Deleting for good, which takes `probe` for good (use a copy): [`PhotoSource::remove`]
+/// is `Unsupported` exactly when `capabilities().removes` is [`Removal::None`]; an id the
+/// source does not have lands in `failed`, not in an error; and the next snapshot drops
+/// `probe` ([`Removal::Files`]) or sends it trashed, with every variant of its asset
+/// ([`Removal::MarksTrashed`]).
+pub fn check_remove(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
+    let mut problems = Vec::new();
+    let removes = source.capabilities().removes;
+    let stranger = PhotoId::new(&source.info().id, "no-such-photo");
+    let report = match (removes, source.remove(std::slice::from_ref(&stranger))) {
+        (Removal::None, Err(SourceError::Unsupported(_))) => return problems,
+        (Removal::None, other) => {
+            return vec![format!("remove() without capabilities().removes is not Unsupported: {other:?}")];
+        }
+        (_, Err(e)) => return vec![format!("remove() of an unknown photo failed: {e}")],
+        (_, Ok(report)) => report,
+    };
+    if !report.removed.is_empty() || report.failed.iter().map(|(id, _)| id).ne([&stranger]) {
+        problems.push(format!("an unknown photo should be the only one failed: {report:?}"));
+    }
+    let (before, _) = match collect(source) {
+        Ok(result) => result,
+        Err(e) => return vec![format!("snapshot failed: {e}")],
+    };
+    let Some(asset) = before.iter().find(|p| &p.id == probe).map(|p| p.asset.clone()) else {
+        return vec![format!("{probe} is not in the source")];
+    };
+    match source.remove(std::slice::from_ref(probe)) {
+        Ok(report) if report.removed != [probe.clone()] => {
+            problems.push(format!("remove() did not report {probe} removed: {report:?}"));
+        }
+        Ok(_) => {}
+        Err(e) => return vec![format!("remove() failed: {e}")],
+    }
+    let (after, _) = match collect(source) {
+        Ok(result) => result,
+        Err(e) => return vec![format!("snapshot after remove failed: {e}")],
+    };
+    match removes {
+        Removal::Files if after.iter().any(|p| &p.id == probe) => {
+            problems.push(format!("{probe} is still there after remove()"));
+        }
+        Removal::MarksTrashed => {
+            for photo in after.iter().filter(|p| p.asset == asset && !p.trashed) {
+                problems.push(format!("{} is not trashed after remove() of {probe}", photo.id));
+            }
+        }
+        _ => {}
+    }
+    problems
+}
+
 /// Images of `probe`: `has_image` agrees with `image` for every tier; a source that
 /// does not make images returns `Ok(None)` from `make_image`; one that does makes a
 /// thumbnail and a preview when the original is there, and finds that very image with
@@ -381,6 +433,16 @@ mod tests {
         let s = source();
         assert_eq!(check_capabilities(&s), Vec::<String>::new());
         assert_eq!(check_images(&s, &PhotoId::new(&SourceId("mem".into()), "2")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn memory_source_passes_remove_checks() {
+        let probe = PhotoId::new(&SourceId("mem".into()), "2");
+        for removal in [Removal::None, Removal::Files, Removal::MarksTrashed] {
+            let s = source();
+            s.set_removal(removal);
+            assert_eq!(check_remove(&s, &probe), Vec::<String>::new(), "{removal:?}");
+        }
     }
 
     #[test]

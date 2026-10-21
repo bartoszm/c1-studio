@@ -416,6 +416,42 @@ pub(crate) fn write(
     Ok(plan.remaps.len() + plan.collections.len() + plan.apply.len())
 }
 
+pub(crate) fn variant_exists(con: &Connection, variant: i64) -> Result<bool> {
+    con.query_row("SELECT 1 FROM ZVARIANT WHERE Z_PK = ?1", [variant], |_| Ok(()))
+        .optional()
+        .map_err(db_err)
+        .map(|r| r.is_some())
+}
+
+/// Marks the images of these variants deleted, as Capture One's own Delete does: the
+/// image moves to the catalog's Trash, every variant of it with it, and keeps its albums.
+/// (A catalog where Capture One trashed images holds nothing else for them: no rows in
+/// the Trash collection, `ZTRASHCOLLECTION`.) One transaction; returns the variants that
+/// were marked, leaving out those not in the catalog.
+pub(crate) fn trash(con: &mut Connection, variants: &[i64]) -> Result<Vec<i64>> {
+    let tx = con.transaction_with_behavior(TransactionBehavior::Immediate).map_err(db_err)?;
+    let mut marked = Vec::new();
+    {
+        let mut stmt = tx
+            .prepare("UPDATE ZIMAGE SET ZISTRASHED = 1 WHERE Z_PK = (SELECT ZIMAGE FROM ZVARIANT WHERE Z_PK = ?1)")
+            .map_err(db_err)?;
+        for &variant in variants {
+            if stmt.execute([variant]).map_err(db_err)? == 1 {
+                marked.push(variant);
+            }
+        }
+    }
+    if !marked.is_empty() {
+        tx.execute(
+            "UPDATE ZDOCUMENTCONTENT SET ZDATEMODIFIED = ?1 WHERE Z_PK = (SELECT MIN(Z_PK) FROM ZDOCUMENTCONTENT)",
+            [unix_now()],
+        )
+        .map_err(db_err)?;
+    }
+    tx.commit().map_err(db_err)?;
+    Ok(marked)
+}
+
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }

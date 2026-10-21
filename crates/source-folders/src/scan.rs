@@ -62,6 +62,9 @@ pub struct ScanOutcome {
 
 /// Walks the roots and brings the store up to date with them.
 pub(crate) fn scan(src: &FolderSource) -> Result<ScanOutcome> {
+    // Files of photos deleted for good that could not go to the recycle bin before; first,
+    // so the walk finds another file put at such a path since.
+    let _ = crate::remove::recycle(src);
     let busy = src.busy.lock().unwrap();
     let started = Instant::now();
     let result = scan_locked(src, &src.definition());

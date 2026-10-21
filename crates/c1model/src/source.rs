@@ -98,6 +98,38 @@ pub struct Capabilities {
     /// have yet (from the original).
     #[serde(default)]
     pub makes_images: bool,
+    /// What [`PhotoSource::remove`] does to a photo deleted for good.
+    #[serde(default)]
+    pub removes: Removal,
+}
+
+/// What deleting a photo for good does at the source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Removal {
+    /// The source cannot delete photos.
+    #[default]
+    None,
+    /// The photo's files go (to the system's recycle bin, for a folder source); the next
+    /// snapshot deletes the photo.
+    Files,
+    /// The source marks the photo deleted in its own trash ([`Photo::trashed`]), and every
+    /// variant of the same asset with it (Capture One); the files stay.
+    MarksTrashed,
+}
+
+/// What [`PhotoSource::remove`] did.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RemoveReport {
+    /// Deleted for good, or marked deleted: the next snapshot shows it.
+    pub removed: Vec<PhotoId>,
+    /// Left as they were, each with why (the source no longer has it, its drive is offline).
+    pub failed: Vec<(PhotoId, String)>,
+    /// The copy made first, for a source that keeps them (Capture One).
+    pub backup: Option<String>,
+    /// What went wrong after the photos were removed, which did not undo it (a file that
+    /// could not be moved to the recycle bin yet).
+    #[serde(default)]
+    pub warnings: Vec<String>,
 }
 
 impl Capabilities {
@@ -332,6 +364,16 @@ pub trait PhotoSource: Send + Sync {
     /// backed up first, so this can be undone the same way; that backup is returned.
     fn restore(&self, _id: &str) -> Result<BackupInfo> {
         Err(SourceError::Unsupported("restoring backups"))
+    }
+
+    /// Deletes photos for good, as [`Capabilities::removes`] says: their files go, or the
+    /// source marks them deleted. Not undone by the app; a source that keeps backups makes
+    /// one first. A photo the source cannot remove (gone already, on an offline drive,
+    /// changed on disk since it was read) is listed in [`RemoveReport::failed`] and the
+    /// others still go. The next [`PhotoSource::snapshot`] reports what changed. Callers ask
+    /// `removes` first; a source with [`Removal::None`] returns `Unsupported`.
+    fn remove(&self, _photos: &[PhotoId]) -> Result<RemoveReport> {
+        Err(SourceError::Unsupported("deleting photos"))
     }
 }
 
