@@ -42,6 +42,7 @@
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
   import { LOCK_HELP, isLockError } from "./lib/lock";
+  import { typingIn } from "./lib/keys";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -1501,6 +1502,12 @@
     await need(to, to + 2);
     selected = to;
     focusRow = rowAt(to);
+    // A single pick follows the photo shown, so edits land on it; several picked stay picked.
+    if (picked.size <= 1 && focusRow !== undefined) {
+      picked.clear();
+      picked.add(focusRow);
+      anchor = to;
+    }
   }
 
   function close() {
@@ -1534,13 +1541,6 @@
       case "failed": return [`autosave failed: ${s.error}`, true];
       default: return ["", false];
     }
-  }
-
-  /** Keys typed into a text field belong to the field, not to the shortcuts. */
-  function typingIn(e: KeyboardEvent) {
-    const t = e.target;
-    if (t instanceof HTMLInputElement) return t.type !== "checkbox";
-    return t instanceof HTMLTextAreaElement || t instanceof HTMLSelectElement || (t instanceof HTMLElement && t.isContentEditable);
   }
 
   function onkey(e: KeyboardEvent) {
@@ -2537,7 +2537,7 @@
 {/if}
 
 {#if viewing && selected !== null && focusRow !== undefined}
-  <Viewer row={focusRow} next={rowAt(selected + 1)} onclose={close} onstep={step}>
+  <Viewer row={focusRow} next={rowAt(selected + 1)} {version} onclose={close} onstep={step}>
     {#if showInfo}{@render details()}{/if}
   </Viewer>
 {/if}

@@ -2,10 +2,13 @@
   import type { Snippet } from "svelte";
   import * as api from "./lib/api";
   import { exposure } from "./lib/format";
+  import { typingIn } from "./lib/keys";
 
-  let { row, next, onclose, onstep, children }: {
+  let { row, next, version, onclose, onstep, children }: {
     row: number;
     next?: number;
+    /** Bumped after edits, to read the photo again. */
+    version: number;
     onclose: () => void;
     onstep: (delta: number) => void;
     /** A side panel, when shown. */
@@ -16,18 +19,30 @@
   // Capture One's thumbnail shows at once; the rendered preview replaces it when ready.
   let sharp = $state(false);
 
+  // Not state: which photo `info` is about. An edit reads the same photo again and keeps
+  // the old details until the new ones are in; another photo starts empty.
+  let infoOf: number | undefined;
   $effect(() => {
     const current = row;
-    sharp = false;
-    info = null;
+    void version;
+    if (current !== infoOf) {
+      infoOf = current;
+      sharp = false;
+      info = null;
+    }
     api.photo(current).then((p) => {
       if (current === row) info = p;
     });
-    // Warm the next preview while this one is being looked at.
+  });
+
+  // Warm the next preview while this one is being looked at.
+  $effect(() => {
     if (next !== undefined) new Image().src = api.previewUrl(next);
   });
 
   function onkey(e: KeyboardEvent) {
+    // Arrows and Escape in a field of the panel move the caret or leave the field.
+    if (e.defaultPrevented || typingIn(e)) return;
     if (e.key === "Escape") onclose();
     else if (e.key === "ArrowRight") onstep(1);
     else if (e.key === "ArrowLeft") onstep(-1);
