@@ -475,6 +475,7 @@ name = "c1studio"
 version = "0.5.0"
 dependencies = [
  "anyhow",
+ "c1ai",
  "c1analysis",
  "c1geo",
  "c1image",
