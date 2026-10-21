@@ -317,9 +317,9 @@ export type Op =
   | { SetColor: { base: Color | null; value: Color | null } }
   | Record<string, unknown>;
 export type Change = { photo: { source: string; ext: string }; op: Op };
-/** Who made a logged change: this app, Capture One (seen by a sync), a GPX track, or a
- * backup restored from this app. */
-export type Origin = "App" | "Source" | "Gpx" | "Restore";
+/** Who made a logged change: this app, Capture One (seen by a sync), a GPX track, a
+ * backup restored from this app, or a vision model's suggestion accepted here. */
+export type Origin = "App" | "Source" | "Gpx" | "Restore" | "Ai";
 type PhotoRef = { photo: { source: string; ext: string }; name: string };
 /** One entry of the change log (`c1index::Event`). */
 export type LogEvent = { at: number; origin: Origin } & (
@@ -631,6 +631,64 @@ export const thumbsState = () => invoke<ThumbsState>("thumbs_state");
 export const fillThumbnails = () => invoke<void>("fill_thumbnails");
 /** Opens the events log (background work and what failed) in the system's text viewer. */
 export const openLog = () => invoke<void>("open_log");
+
+// Describing photos with a vision model (crates/c1ai, app/src-tauri/src/ai.rs).
+export type AiLanguage = "en" | "pl" | "both";
+export type AiSettings = { model: string; language: AiLanguage; effort: "low" | "medium" | "high"; parallel: number };
+export type AiModel = { id: string; name: string; input: number; output: number };
+export type AiView = {
+  settings: AiSettings;
+  models: AiModel[];
+  /** The key in use, masked, and where it comes from. */
+  key: [string, "stored" | "environment"] | null;
+  calls: number;
+  /** US dollars spent in this library. */
+  spent: number;
+};
+export type AiEstimate = { photos: number; skipped: number; cost: number; model: string };
+export type DescribeState = { running: boolean; done: number; total: number; failed: number; cost: number; error: string | null };
+export type Suggestion = {
+  caption_en: string | null;
+  caption_pl: string | null;
+  headline: string | null;
+  subject: string | null;
+  /** Pipe paths the catalog has. */
+  keywords: string[];
+  /** Keywords the catalog lacks. */
+  keywords_new: string[];
+  rating: number | null;
+  quality: number | null;
+  composition: number | null;
+  confidence: number;
+  place: { city: string | null; country: string | null; confidence: number } | null;
+};
+export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
+export type SuggestionRow = {
+  row: number;
+  at: number;
+  provider: string;
+  model: string;
+  suggestion: Suggestion;
+  warnings: string[];
+  cost: number;
+  status: SuggestionStatus;
+};
+/** What the user takes from a suggestion; fields left out are not touched. */
+export type Accept = { row: number; keywords: string[]; caption?: string; headline?: string; rating?: number };
+export const aiSettings = () => invoke<AiView>("ai_settings");
+export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
+/** Stores the key in the Windows Credential Manager; an empty one removes it. */
+export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
+export const aiEstimate = (rows: number[], again: boolean) => invoke<AiEstimate>("ai_estimate", { rows, again });
+/** Describes the photos in the background ("describe" events, then "describe-done"). */
+export const startDescribe = (rows: number[], again: boolean) => invoke<void>("start_describe", { rows, again });
+export const stopDescribe = () => invoke<void>("stop_describe");
+export const describeState = () => invoke<DescribeState>("describe_state");
+export const suggestions = (status: SuggestionStatus | null) => invoke<SuggestionRow[]>("suggestions", { status });
+/** Queues what was taken; returns the ops that undo it. */
+export const acceptSuggestions = (picks: Accept[]) => invoke<[number, Op][]>("accept_suggestions", { picks });
+export const setSuggestionStatus = (rows: number[], status: SuggestionStatus) =>
+  invoke<void>("set_suggestion_status", { rows, status });
 
 /** Thumbnails that failed to load try again: one may have been made for them since. */
 let retries = 0;
