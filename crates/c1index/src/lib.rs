@@ -1,6 +1,7 @@
 //! The photo library: every source's photos in a redb store, searchable through a
 //! tantivy index with per-dimension counts.
 
+pub mod ai;
 pub mod analyse;
 pub mod edits;
 pub mod facets;
@@ -21,7 +22,7 @@ pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
 pub use filter::{BBox, Bin, Filter, Hidden, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
 pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
-pub use library::{ClassPreview, GroupSort};
+pub use library::{Accept, ClassPreview, GroupSort};
 pub use library::{
     FillGroup, Group, GroupPage, Library, Merged, NeighbourPlan, NeighbourSettings, PendingEdit, PlaceLookup,
     QueryOptions, QueryResult, RefinePlan, RefineSettings, RoutePoint, Selection, Sort, SyncReport, SyncStep, TripList,

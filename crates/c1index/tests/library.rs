@@ -1986,3 +1986,44 @@ fn a_source_that_trashes_whole_assets_takes_every_variant_to_the_trash() {
     assert_eq!(ids(&lib, &Filter { trashed: Trashed::Only, ..Filter::default() }), [1, 2], "in the source's trash");
     assert!(ids(&lib, &Filter { bin: Bin::Only, ..Filter::default() }).is_empty());
 }
+
+#[test]
+fn accepted_suggestions_are_queued_as_the_model_s_edits() {
+    use c1index::ai::{Entry, Status};
+    let (_d, lib, _s) = setup();
+    let row = row_of(&lib, 7);
+    let suggestion = c1ai::Suggestion { headline: Some("Market square".into()), ..c1ai::Suggestion::default() };
+    let entry = Entry {
+        at: 1,
+        provider: "claude".into(),
+        model: "claude-haiku-5-5".into(),
+        prompt: 7,
+        suggestion,
+        warnings: vec![],
+        cost: 0.001,
+        status: Status::Proposed,
+    };
+    lib.put_suggestion(row, &entry, &c1ai::RunRecord::default()).unwrap();
+    assert_eq!(lib.described(&[row, row_of(&lib, 8)], "claude-haiku-5-5", 7).unwrap().len(), 1);
+    assert!(lib.described(&[row], "claude-opus-5-5", 7).unwrap().is_empty());
+    assert_eq!(lib.vocabulary().unwrap()[0].0, "street");
+
+    let pick = c1index::Accept {
+        row,
+        keywords: vec!["street".into(), "market".into()],
+        headline: Some("Market square".into()),
+        rating: Some(5),
+        ..c1index::Accept::default()
+    };
+    let undo = lib.accept_suggestions(&[pick]).unwrap();
+    let photo = lib.photo(row).unwrap().unwrap();
+    assert_eq!(photo.rating, Some(5));
+    assert_eq!(photo.iptc.headline.as_deref(), Some("Market square"));
+    assert_eq!(photo.iptc.description.as_deref(), Some("Rynek we Wrocławiu"), "the caption is left as it was");
+    assert!(photo.keywords.contains(&KeywordPath::from_pipe("street")));
+    assert!(photo.keywords.contains(&KeywordPath::from_pipe("market")));
+    assert!(!undo.is_empty());
+    assert!(lib.events(10).unwrap().iter().any(|e| e.origin == Origin::Ai));
+    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
+    assert!(lib.suggestions(Some(Status::Proposed)).unwrap().is_empty());
+}

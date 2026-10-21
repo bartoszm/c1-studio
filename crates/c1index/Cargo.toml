@@ -9,6 +9,7 @@ license.workspace = true
 c1model.workspace = true
 c1geo.workspace = true
 c1analysis.workspace = true
+c1ai.workspace = true
 c1image.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
