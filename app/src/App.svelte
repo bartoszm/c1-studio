@@ -25,6 +25,8 @@
   import Info from "./Info.svelte";
   import MapPane from "./MapPane.svelte";
   import AnalysisPane from "./AnalysisPane.svelte";
+  import HistoryPane from "./HistoryPane.svelte";
+  import { pickText } from "./lib/history";
   import GpxDialog from "./GpxDialog.svelte";
   import NeighbourDialog from "./NeighbourDialog.svelte";
   import SourceMenu from "./SourceMenu.svelte";
@@ -87,13 +89,13 @@
   let syncFailed = $state<string | null>(null);
   let grid = $state<Grid>();
 
-  // Three views of the same filter: the grid, the map (with a strip of photos under it)
-  // and the analysis. While the map follows, the grid shows what the map shows.
-  type Tab = "photos" | "map" | "analysis";
+  // Four views of the same filter: the grid, the map (with a strip of photos under it),
+  // the analysis and the history. While the map follows, the grid shows what the map shows.
+  type Tab = "photos" | "map" | "analysis" | "history";
   function rememberedTab(): Tab {
     try {
       const t = localStorage.getItem("tab");
-      if (t === "map" || t === "analysis") return t;
+      if (t === "map" || t === "analysis" || t === "history") return t;
     } catch {
       // Opens on the photos.
     }
@@ -101,6 +103,8 @@
   }
   let tab = $state<Tab>(rememberedTab());
   let mapOn = $derived(tab === "map");
+  /** The tabs that keep the photos in a strip under their own view. */
+  let stripped = $derived(tab === "map" || tab === "analysis" || tab === "history");
   let follow = $state(!remembered("map").includes("free"));
   /** A photo picked on the map: the panel shows it and edits reach it when nothing else is picked. */
   let mapRow = $state<number | null>(null);
@@ -1667,8 +1671,8 @@
       const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
-    // On Analysis the page keys scroll the charts and groups; arrows move in the strip.
-    else if (tab === "analysis" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
+    // On Analysis and History the page keys scroll the charts and the log; arrows move in the strip.
+    else if ((tab === "analysis" || tab === "history") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
@@ -1682,6 +1686,12 @@
   function showGroup(group: string) {
     filter = { ...filter, group };
     if (tab !== "analysis") showTab("photos");
+    run();
+  }
+  /** The photos a part of the change log is about, from the History tab: within the other
+   *  filters, which stay. The tab keeps them in its strip. */
+  function showHistory(history: api.HistoryPick) {
+    filter = { ...filter, history };
     run();
   }
   function showKeyword(path: string) {
@@ -1795,6 +1805,7 @@
     hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
     light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
+    history: (v) => [{ what: "History", text: pickText(v, (id) => (byId.get(id) ? `“${byId.get(id)?.name}”` : id)), title: "Photos the change log says changed" }],
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
@@ -1951,6 +1962,7 @@
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
+      <button class:on={tab === "history"} title="The catalog over time: what changed between two dates, and the change log" onclick={() => showTab("history")}>History</button>
     </nav>
     <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
       <SortControl
@@ -2238,8 +2250,8 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
-  {#if showTimeline && tab !== "analysis" && status}
+  <div class="pane" class:strip={stripped} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
+  {#if showTimeline && tab !== "analysis" && tab !== "history" && status}
     <Timeline
       filter={eff}
       {version}
@@ -2304,7 +2316,18 @@
       onallof={toggleAllOf}
     />
   {/if}
-  {#if mapOn || tab === "analysis"}
+  {#if tab === "history"}
+    <HistoryPane
+      filter={eff}
+      {version}
+      provider={source.provider}
+      albumName={(id) => byId.get(id)?.name}
+      picked={filter.history}
+      onpick={showHistory}
+      onerror={(text) => (editError = text)}
+    />
+  {/if}
+  {#if stripped}
     <!-- A window splitter: a separator that can be focused and moved with the arrow keys. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div

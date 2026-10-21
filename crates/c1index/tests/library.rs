@@ -1,6 +1,6 @@
 use c1index::{
-    Bin, Dim, Filter, Hidden, Library, Merged, Origin, Presence, QueryOptions, Range, Sort, SyncStep, TimeRange,
-    Trashed, What, parse_rating,
+    Before, Bin, Dim, Filter, Hidden, HistoryPick, Library, LogKind, LogQuery, Merged, NetWhat, Origin, Presence,
+    QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed, What, parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
@@ -1985,4 +1985,235 @@ fn a_source_that_trashes_whole_assets_takes_every_variant_to_the_trash() {
     assert_eq!(ids(&lib, &Filter::default()), [3]);
     assert_eq!(ids(&lib, &Filter { trashed: Trashed::Only, ..Filter::default() }), [1, 2], "in the source's trash");
     assert!(ids(&lib, &Filter { bin: Bin::Only, ..Filter::default() }).is_empty());
+}
+
+/// A moment later than every entry so far: log times are the clock's, and the tests cut
+/// the log into dates by it.
+fn tick() -> i64 {
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let now = chrono::Utc::now().timestamp_millis();
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    now
+}
+
+fn everything() -> Filter {
+    Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() }
+}
+
+fn history(pick: HistoryPick) -> Filter {
+    Filter { history: Some(pick), ..everything() }
+}
+
+#[test]
+fn the_log_reads_in_pages_grouped_by_batch() {
+    let (_d, lib, source) = setup();
+    // One batch: three photos rated together by the app. Another, by Capture One.
+    let rows: Vec<u64> = (5..=7).map(|n| row_of(&lib, n)).collect();
+    lib.edit(&rows.iter().map(|r| (*r, rate(Some(4)))).collect::<Vec<_>>()).unwrap();
+    for n in [1, 2] {
+        source.edit_externally(&lib.photo_id(row_of(&lib, n)).unwrap(), |p| p.rating = Some(5));
+    }
+    lib.sync(&source).unwrap();
+    lib.edit(&[(row_of(&lib, 8), Op::SetColor { base: None, value: Some(ColorLabel::Blue) })]).unwrap();
+
+    let page = lib.log_page(&LogQuery::default()).unwrap();
+    let shape: Vec<(LogKind, Origin, usize, usize)> =
+        page.groups.iter().map(|g| (g.kind, g.origin, g.entries, g.photos)).collect();
+    use Origin::{App, Source};
+    assert_eq!(shape, [(LogKind::Color, App, 1, 1), (LogKind::Rating, Source, 2, 2), (LogKind::Rating, App, 3, 3)]);
+    assert!(page.groups[0].row.is_some() && page.groups[1].row.is_none(), "only a group of one names its photo");
+    assert_eq!(page.next, None);
+
+    // Paged: a group is not cut between pages, and the next page starts after it.
+    let first = lib.log_page(&LogQuery { limit: 1, ..LogQuery::default() }).unwrap();
+    assert_eq!(first.groups.len(), 1);
+    let second = lib.log_page(&LogQuery { limit: 1, before: first.next, ..LogQuery::default() }).unwrap();
+    assert_eq!((second.groups[0].kind, second.groups[0].entries), (LogKind::Rating, 2));
+    let last = lib.log_page(&LogQuery { limit: 1, before: second.next, ..LogQuery::default() }).unwrap();
+    assert_eq!((last.groups[0].entries, last.next), (3, None));
+
+    let only_source = LogQuery { origins: vec![Source], ..LogQuery::default() };
+    assert_eq!(lib.log_page(&only_source).unwrap().groups.len(), 1);
+    let only_colour = LogQuery { kinds: vec![LogKind::Color], ..LogQuery::default() };
+    assert_eq!(lib.log_page(&only_colour).unwrap().groups.len(), 1);
+}
+
+#[test]
+fn a_log_entry_picks_its_photos() {
+    let (_d, lib, _s) = setup();
+    let rows: Vec<u64> = (5..=7).map(|n| row_of(&lib, n)).collect();
+    lib.edit(&rows.iter().map(|r| (*r, rate(Some(4)))).collect::<Vec<_>>()).unwrap();
+    lib.edit(&[(row_of(&lib, 8), rate(Some(1)))]).unwrap();
+    let group = lib.log_page(&LogQuery::default()).unwrap().groups.pop().unwrap();
+    assert_eq!(group.entries, 3);
+    let pick = HistoryPick::Entries { first: group.first, last: group.last, kind: Some(LogKind::Rating) };
+    assert_eq!(ids(&lib, &history(pick)), [5, 6, 7]);
+    // Another kind in the same entries picks nothing.
+    let pick = HistoryPick::Entries { first: group.first, last: group.last, kind: Some(LogKind::Color) };
+    assert!(ids(&lib, &history(pick)).is_empty());
+}
+
+#[test]
+fn compare_counts_net_changes_between_two_dates() {
+    let (_d, lib, source) = setup();
+    let before = tick();
+    let (five, six) = (row_of(&lib, 5), row_of(&lib, 6));
+    // 5 is rated and the rating put back; 6 is rated and keeps it.
+    lib.edit(&[(five, rate(Some(3))), (six, rate(Some(3)))]).unwrap();
+    lib.edit(&[(five, rate(None))]).unwrap();
+    lib.edit(&[(six, Op::AddKeywords { paths: vec![KeywordPath::from_pipe("night")] })]).unwrap();
+    source.add_externally(photo(11));
+    source.remove_externally(&lib.photo_id(row_of(&lib, 10)).unwrap());
+    lib.sync(&source).unwrap();
+    let after = tick();
+    lib.edit(&[(row_of(&lib, 1), rate(Some(5)))]).unwrap();
+
+    let c = lib.compare(before, Some(after)).unwrap();
+    assert_eq!((c.added, c.removed, c.deleted), (1, 1, 0));
+    assert_eq!(c.fields, [(LogKind::Rating, 1), (LogKind::Keywords, 1)]);
+    assert_eq!(c.keywords_added, [("night".to_owned(), 1)]);
+    assert!(c.keywords_removed.is_empty());
+    assert_eq!(c.by_origin.get("App"), Some(&4));
+    assert!(c.log_start.is_some());
+    // Open ended, the later rating counts too.
+    assert_eq!(lib.compare(before, None).unwrap().fields, [(LogKind::Rating, 2), (LogKind::Keywords, 1)]);
+    // Before anything, nothing.
+    assert_eq!(lib.compare(0, Some(1)).unwrap().entries, 0);
+}
+
+#[test]
+fn changed_between_dates_filters_the_grid() {
+    let (_d, lib, _s) = setup();
+    let (five, six) = (row_of(&lib, 5), row_of(&lib, 6));
+    lib.edit(&[(five, rate(Some(3)))]).unwrap();
+    let from = tick();
+    lib.edit(&[(six, rate(Some(3)))]).unwrap();
+    lib.edit(&[(six, Op::AddKeywords { paths: vec![KeywordPath::from_pipe("night")] })]).unwrap();
+    let to = tick();
+    lib.edit(&[(row_of(&lib, 7), rate(Some(3)))]).unwrap();
+    let changed = |what| history(HistoryPick::Changed { from, to: Some(to), what });
+    assert_eq!(ids(&lib, &changed(NetWhat::Any)), [6]);
+    assert_eq!(ids(&lib, &changed(NetWhat::Field(LogKind::Rating))), [6]);
+    assert_eq!(ids(&lib, &changed(NetWhat::KeywordAdded("night".into()))), [6]);
+    assert!(ids(&lib, &changed(NetWhat::KeywordRemoved("night".into()))).is_empty());
+    // It narrows like any other filter.
+    let both = Filter { ext: vec!["raf".into()], ..changed(NetWhat::Any) };
+    assert_eq!(ids(&lib, &both), [6]);
+    // Open ended, and as a nested filter.
+    let open =
+        Filter { all_of: vec![history(HistoryPick::Changed { from, to: None, what: NetWhat::Any })], ..everything() };
+    assert_eq!(ids(&lib, &open), [6, 7]);
+    // A pick follows the log: another edit is in it at once.
+    lib.edit(&[(row_of(&lib, 8), rate(Some(4)))]).unwrap();
+    assert_eq!(ids(&lib, &open), [6, 7, 8]);
+}
+
+#[test]
+fn growth_counts_photos_by_import_day() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let imported = |n: u32, day: i64| Photo {
+        imported_at: Some(1_767_225_600_000 + day * 86_400_000 + 12 * 3_600_000),
+        ..photo(n)
+    };
+    let mut photos = vec![imported(1, 0), imported(2, 0), imported(3, 3), photo(4)];
+    photos[2].rating = Some(5);
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    let days = lib.growth(&Filter::default()).unwrap();
+    assert_eq!(days.iter().map(|(_, n)| *n).collect::<Vec<_>>(), [2, 1], "{days:?}");
+    assert_eq!(days[1].0 - days[0].0, 3 * 86_400_000);
+    let five = Range { min: Some(5.0), ..Range::default() };
+    let rated = Filter { rating: Some(Presence::Values(five)), ..Filter::default() };
+    assert_eq!(lib.growth(&rated).unwrap().len(), 1);
+}
+
+#[test]
+fn photos_removed_or_deleted_keep_what_they_were() {
+    let (_d, lib, source) = setup();
+    // Removed by the source.
+    let gone = lib.photo_id(row_of(&lib, 2)).unwrap();
+    let was = lib.photo(row_of(&lib, 2)).unwrap().unwrap();
+    source.remove_externally(&gone);
+    lib.sync(&source).unwrap();
+    let events = lib.photo_events(&gone).unwrap();
+    assert!(matches!(&events[0].what, What::Removed { .. }));
+    assert_eq!(events[0].before, Some(Before::Photo(Box::new(was))));
+
+    // Deleted for good from the trash.
+    let id = lib.photo_id(row_of(&lib, 3)).unwrap();
+    let kept = lib.photo(row_of(&lib, 3)).unwrap().unwrap();
+    lib.emptied(std::slice::from_ref(&id)).unwrap();
+    let events = lib.photo_events(&id).unwrap();
+    assert!(matches!(&events[0].what, What::Deleted { .. }));
+    assert_eq!(events[0].before, Some(Before::Photo(Box::new(kept))));
+
+    // An ordinary change keeps nothing.
+    lib.edit(&[(row_of(&lib, 1), rate(Some(5)))]).unwrap();
+    assert_eq!(lib.events(1).unwrap()[0].before, None);
+}
+
+#[test]
+fn album_changes_keep_what_they_overwrote() {
+    let (_d, lib, source) = setup();
+    let street = CollectionId("10".into());
+    let album = lib.collections().unwrap().into_iter().find(|c| c.id == street).unwrap();
+    lib.change_collection(CollectionChange::Rename { id: street.clone(), name: "streets".into() }).unwrap();
+    let renamed = lib.events(1).unwrap().pop().unwrap();
+    assert_eq!(renamed.before, Some(Before::Albums { albums: vec![album.clone()], members: vec![] }));
+
+    // A delete keeps who was in it, the trashed ones too.
+    lib.set_binned(&[row_of(&lib, 1)], true, false).unwrap();
+    lib.change_collection(CollectionChange::Delete { id: street.clone() }).unwrap();
+    let deleted = lib.events(1).unwrap().pop().unwrap();
+    let Some(Before::Albums { albums, members }) = &deleted.before else { panic!("{deleted:?}") };
+    assert_eq!(albums.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["streets"]);
+    assert_eq!((members[0].0.clone(), members[0].1.len()), (street.clone(), 4));
+    // Each of them has it in their own history.
+    let one = lib.photo_id(row_of(&lib, 2)).unwrap();
+    assert!(matches!(&lib.photo_events(&one).unwrap()[0].what, What::Collection { .. }));
+
+    // The source's own changes keep the album too.
+    let made = CollectionId::new_local("a-1");
+    lib.change_collection(new_album(&made, "japan", CollectionKind::Album, None)).unwrap();
+    write_all(&lib, &source);
+    lib.sync(&source).unwrap();
+    source.edit_collections_externally(|all| all.retain(|c| c.name != "japan"));
+    lib.sync(&source).unwrap();
+    let gone = lib.events(1).unwrap().pop().unwrap();
+    let Some(Before::Albums { albums, .. }) = &gone.before else { panic!("{gone:?}") };
+    assert_eq!(albums[0].name, "japan");
+}
+
+#[test]
+fn keyword_tree_changes_keep_the_photos_they_rewrote() {
+    let (_d, lib, _s) = setup();
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("street"), "avenue")).unwrap();
+    let event = lib.events(1).unwrap().pop().unwrap();
+    let Some(Before::Keywords(photos)) = &event.before else { panic!("{event:?}") };
+    // Photos with n % 3 of 0 or 1 carry it.
+    let mut exts: Vec<u32> = photos.iter().map(|(id, _)| id.ext.parse().unwrap()).collect();
+    exts.sort();
+    assert_eq!(exts, [1, 3, 4, 6, 7, 9, 10]);
+    let three = photos.iter().find(|(id, _)| id.ext == "3").unwrap();
+    assert_eq!(three.1, [KeywordPath::from_pipe("street"), KeywordPath::from_pipe("best|best2018")]);
+    // The photo's own history shows the rename now.
+    let id = lib.photo_id(row_of(&lib, 4)).unwrap();
+    assert!(matches!(&lib.photo_events(&id).unwrap()[0].what, What::Remap(_)));
+    // And picking the entry picks the photos.
+    let seq = lib.log_page(&LogQuery::default()).unwrap().groups[0].first;
+    let pick = HistoryPick::Entries { first: seq, last: seq, kind: None };
+    assert_eq!(ids(&lib, &history(pick)), [1, 3, 4, 6, 7, 9, 10]);
+}
+
+#[test]
+fn log_days_count_entries_and_grow_with_the_log() {
+    let (_d, lib, _s) = setup();
+    assert!(lib.log_days().unwrap().days.is_empty());
+    lib.edit(&[(row_of(&lib, 1), rate(Some(5)))]).unwrap();
+    lib.edit(&[(row_of(&lib, 2), rate(Some(5)))]).unwrap();
+    let days = lib.log_days().unwrap();
+    assert!(days.start.is_some());
+    assert_eq!(days.days.iter().map(|(_, n)| *n).sum::<usize>(), 2);
+    lib.edit(&[(row_of(&lib, 3), rate(Some(5)))]).unwrap();
+    assert_eq!(lib.log_days().unwrap().days.iter().map(|(_, n)| *n).sum::<usize>(), 3);
 }

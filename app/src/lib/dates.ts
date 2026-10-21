@@ -6,6 +6,27 @@ import type { Node } from "./tree";
 
 const DAY = 86_400_000;
 
+/** How wide a bar of a chart over time is. */
+export type Unit = "day" | "week" | "month";
+
+/** The start of the bar holding `ms`, and of the next one. */
+export function bar(ms: number, unit: Unit): [number, number] {
+  const d = new Date(ms);
+  if (unit === "month") return [new Date(d.getFullYear(), d.getMonth(), 1).getTime(), new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime()];
+  const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (unit === "week" ? (d.getDay() + 6) % 7 : 0));
+  const next = new Date(start.getFullYear(), start.getMonth(), start.getDate() + (unit === "week" ? 7 : 1));
+  return [start.getTime(), next.getTime()];
+}
+
+/** The bar width for a span in milliseconds drawn `width` pixels wide: about as many
+ *  bars as there is room for, three pixels each at least. */
+export function unitFor(span: number, width: number): Unit {
+  const n = span / DAY;
+  if (n <= width / 3) return "day";
+  if (n / 7 <= width / 3) return "week";
+  return "month";
+}
+
 /** ISO 8601 week number of a local date: weeks start on Monday, week 1 holds 4 January. */
 export function isoWeek(date: Date): number {
   const d = new Date(date.getFullYear(), date.getMonth(), date.getDate());

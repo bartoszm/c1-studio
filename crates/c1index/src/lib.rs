@@ -7,6 +7,7 @@ pub mod facets;
 pub mod filter;
 pub mod geo;
 pub mod gpx;
+pub mod history;
 pub mod library;
 pub mod looks;
 pub mod marks;
@@ -17,15 +18,18 @@ mod store;
 pub mod thumbs;
 pub mod trips;
 
-pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
+pub use edits::{Before, Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
-pub use filter::{BBox, Bin, Filter, Hidden, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
+pub use filter::{
+    BBox, Bin, Filter, Hidden, HistoryPick, Presence, Range, TimeRange, Trashed, parse_color, parse_rating,
+};
 pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
+pub use history::{Compare, EventView, LogGroup, LogKind, LogQuery, NetWhat};
 pub use library::{ClassPreview, GroupSort};
 pub use library::{
-    FillGroup, Group, GroupPage, Library, Merged, NeighbourPlan, NeighbourSettings, PendingEdit, PlaceLookup,
-    QueryOptions, QueryResult, RefinePlan, RefineSettings, RoutePoint, Selection, Sort, SyncReport, SyncStep, TripList,
-    TripRow, Unresolved, group_places, new_collection_id, place_of_path, smart_filter,
+    FillGroup, Group, GroupPage, Library, LogDays, LogPage, Merged, NeighbourPlan, NeighbourSettings, PendingEdit,
+    PlaceLookup, QueryOptions, QueryResult, RefinePlan, RefineSettings, RoutePoint, Selection, Sort, SyncReport,
+    SyncStep, TripList, TripRow, Unresolved, group_places, new_collection_id, place_of_path, smart_filter,
 };
 pub use looks::Look;
 pub use schema::{Dim, NO_PLACE};

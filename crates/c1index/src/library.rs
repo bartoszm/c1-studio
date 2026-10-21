@@ -9,8 +9,8 @@ use anyhow::{Context, bail};
 use c1analysis::ClassSettings;
 use c1model::change::{Check, collection_diff, collection_problem, descendants, diff, membership_problem};
 use c1model::{
-    Change, Collection, CollectionChange, CollectionId, Condition, Cursor, KeywordNode, KeywordPath, KeywordRemap,
-    MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceEvent,
+    Change, Collection, CollectionChange, CollectionId, CollectionKind, Condition, Cursor, KeywordNode, KeywordPath,
+    KeywordRemap, MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
@@ -21,7 +21,9 @@ use tantivy::{
     DocAddress, DocId, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher, SegmentReader, Term,
 };
 
-use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key};
+use crate::edits::{
+    self, Before, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key,
+};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, Trashed};
 use crate::looks::{Look, Looks, Record};
@@ -32,9 +34,11 @@ use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
 
+mod history;
 mod placing;
 mod selection;
 
+pub use history::{LogDays, LogPage};
 pub use placing::{
     FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,
 };
@@ -276,6 +280,8 @@ pub struct Library {
     /// Photos the user deleted, in the app's trash, by photo key (also in `bin_book`).
     bin_book: MarkBook,
     binned: RwLock<HashSet<String>>,
+    /// What the History tab's picks and the log's days came to, for the log as last read.
+    history: history::Cache,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -421,6 +427,7 @@ impl Library {
             hidden,
             bin_book,
             binned,
+            history: history::Cache::default(),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -889,11 +896,16 @@ impl Library {
         }
         let now = now_ms();
         for id in removed {
-            let name = match self.store.row_of(&id.key())? {
-                Some(row) => self.store.photo(row)?.map(|p| p.file.name).unwrap_or_default(),
-                None => String::new(),
+            let photo = match self.store.row_of(&id.key())? {
+                Some(row) => self.store.photo(row)?,
+                None => None,
             };
-            edits.log(&Event { at: now, origin: Origin::App, what: What::Deleted { photo: id.clone(), name } })?;
+            let name = photo.as_ref().map(|p| p.file.name.clone()).unwrap_or_default();
+            let mut event = Event::new(now, Origin::App, What::Deleted { photo: id.clone(), name });
+            if let Some(photo) = photo {
+                event = event.with_before(Before::Photo(Box::new(photo)));
+            }
+            edits.log(&event)?;
         }
         edits.commit()?;
         let keys: Vec<String> = keys.into_iter().collect();
@@ -1107,7 +1119,7 @@ impl Library {
                             report.added += 1;
                             if !first_fill {
                                 let what = What::Added { photo: photo.id.clone(), name: photo.file.name.clone() };
-                                edits.log(&Event { at: now, origin: by, what })?;
+                                edits.log(&Event::new(now, by, what))?;
                             }
                             (batch.next_row()?, None)
                         }
@@ -1145,7 +1157,7 @@ impl Library {
                         }
                         for op in diff(&old, &photo) {
                             let what = What::Change(Change { photo: photo.id.clone(), op });
-                            edits.log(&Event { at: now, origin: by, what })?;
+                            edits.log(&Event::new(now, by, what))?;
                         }
                     }
                     seen.insert(row);
@@ -1158,8 +1170,13 @@ impl Library {
                         unbin.push(key.clone());
                     }
                     if let Some(row) = batch.row_of(&key)? {
-                        let name = batch.photo(row)?.map(|p| p.file.name).unwrap_or_default();
-                        edits.log(&Event { at: now, origin, what: What::Removed { photo: id, name } })?;
+                        let photo = batch.photo(row)?;
+                        let name = photo.as_ref().map(|p| p.file.name.clone()).unwrap_or_default();
+                        let mut event = Event::new(now, origin, What::Removed { photo: id, name });
+                        if let Some(photo) = photo {
+                            event = event.with_before(Before::Photo(Box::new(photo)));
+                        }
+                        edits.log(&event)?;
                         writer.delete_term(Term::from_field_u64(row_field, row));
                         batch.delete_photo(row, &key)?;
                         report.deleted += 1;
@@ -1182,8 +1199,20 @@ impl Library {
                                 CollectionChange::Create { .. } => change.label(&collections),
                                 _ => change.label(&old),
                             };
-                            let what = What::Collection { change, label };
-                            edits.log(&Event { at: now, origin, what })?;
+                            // What an album was before it changed, for putting it back.
+                            let kept: Vec<Collection> = match &change {
+                                CollectionChange::Create { .. } => Vec::new(),
+                                CollectionChange::Delete { id } => {
+                                    let gone = descendants(&old, id);
+                                    old.iter().filter(|c| gone.contains(&c.id)).cloned().collect()
+                                }
+                                other => old.iter().filter(|c| c.id == *other.id()).cloned().collect(),
+                            };
+                            let mut event = Event::new(now, origin, What::Collection { change, label });
+                            if !kept.is_empty() {
+                                event = event.with_before(Before::Albums { albums: kept, members: Vec::new() });
+                            }
+                            edits.log(&event)?;
                         }
                     }
                     edits.name_albums(&collections)?;
@@ -1202,8 +1231,8 @@ impl Library {
             // Anything of this source not seen in a full snapshot is gone.
             for (row, key) in known.iter().filter(|(row, key)| key.starts_with(&prefix) && !seen.contains(row)) {
                 if let Some(photo) = batch.photo(*row)? {
-                    let what = What::Removed { photo: photo.id, name: photo.file.name };
-                    edits.log(&Event { at: now, origin, what })?;
+                    let what = What::Removed { photo: photo.id.clone(), name: photo.file.name.clone() };
+                    edits.log(&Event::new(now, origin, what).with_before(Before::Photo(Box::new(photo))))?;
                 }
                 if self.binned.read().unwrap().contains(key) {
                     unbin.push(key.clone());
@@ -1356,7 +1385,7 @@ impl Library {
                 _ => {}
             }
             undo.push((row, shown.reverted()));
-            edits.log(&Event { at: now, origin, what: What::Change(Change { photo: photo.id.clone(), op: shown }) })?;
+            edits.log(&Event::new(now, origin, What::Change(Change { photo: photo.id.clone(), op: shown })))?;
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
             batch.put_photo(row, &after, fingerprint)?;
             writer.delete_term(Term::from_field_u64(self.fields.row, row));
@@ -1460,7 +1489,7 @@ impl Library {
         let photos = applied.iter().map(|c| &c.photo).collect::<HashSet<_>>().len();
         let what = What::Written { photos, changes: applied.len(), albums, keywords };
         let mut edits = self.edits.batch()?;
-        edits.log(&Event { at: now_ms(), origin: Origin::App, what })?;
+        edits.log(&Event::new(now_ms(), Origin::App, what))?;
         edits.commit()
     }
 
@@ -1484,7 +1513,7 @@ impl Library {
                 continue;
             }
             let what = What::Change(Change { photo: photo.id.clone(), op: shown });
-            edits.log(&Event { at: now, origin: Origin::App, what })?;
+            edits.log(&Event::new(now, Origin::App, what))?;
             op.apply_to(&mut photo);
             let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
             batch.put_photo(row, &photo, fingerprint)?;
@@ -1511,6 +1540,7 @@ impl Library {
     }
 
     pub fn query(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
+        let filter = &self.resolve_history(filter)?;
         // Stacking leaves out the frames behind the sharpest of their group. Where other
         // filters narrow the photos, only those whose sharpest frame is among the matches go:
         // a frame that matches stays when its sharpest does not, so no burst disappears.
@@ -1769,6 +1799,7 @@ impl Library {
     }
 
     fn compile(&self, filter: &Filter) -> anyhow::Result<Box<dyn Query>> {
+        let filter = &self.resolve_history(filter)?;
         let distinct = self.distinct.read().unwrap();
         let smart = self.smart.read().unwrap();
         expand(filter, &smart)?.to_query(&self.index, &self.fields, &distinct)
@@ -1777,6 +1808,7 @@ impl Library {
     /// How many photos each smart album holds among those `filter` selects, setting
     /// aside the albums it picks. Albums whose rule cannot be evaluated are left out.
     pub fn smart_counts(&self, filter: &Filter) -> anyhow::Result<Vec<(String, u64)>> {
+        let filter = &self.resolve_history(filter)?;
         let distinct = self.distinct.read().unwrap();
         let smart = self.smart.read().unwrap();
         let searcher = self.reader.searcher();
@@ -1963,7 +1995,11 @@ impl Library {
             }
             let at = now_ms();
             let what = What::Collection { change: change.clone(), label: label.clone() };
-            edits.log(&Event { at, origin: Origin::App, what })?;
+            let mut event = Event::new(at, Origin::App, what);
+            if let Some(before) = self.albums_before(&current, &change)? {
+                event = event.with_before(before);
+            }
+            edits.log(&event)?;
             // The log names albums by id; one made here is known by the app's until written.
             let mut after = current.clone();
             change.apply_to(&mut after);
@@ -1974,6 +2010,35 @@ impl Library {
         };
         self.refresh_smart()?;
         Ok(seq)
+    }
+
+    /// What an album change is about to replace: the albums as they are, and for a delete
+    /// who is in them (trashed, hidden and binned photos too), so it can be put back.
+    fn albums_before(&self, current: &[Collection], change: &CollectionChange) -> anyhow::Result<Option<Before>> {
+        let ids = match change {
+            CollectionChange::Create { .. } => return Ok(None),
+            CollectionChange::Delete { id } => descendants(current, id),
+            other => vec![other.id().clone()],
+        };
+        let albums: Vec<Collection> = current.iter().filter(|c| ids.contains(&c.id)).cloned().collect();
+        let mut members = Vec::new();
+        if matches!(change, CollectionChange::Delete { .. }) {
+            for album in albums.iter().filter(|c| c.kind != CollectionKind::Smart) {
+                let filter = Filter {
+                    collections_any: vec![album.id.0.clone()],
+                    trashed: Trashed::Include,
+                    hidden: Hidden::Include,
+                    bin: Bin::Include,
+                    ..Filter::default()
+                };
+                let rows = self.query(&filter, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+                let photos: Vec<PhotoId> = rows.into_iter().filter_map(|row| self.photo_id(row)).collect();
+                if !photos.is_empty() {
+                    members.push((album.id.clone(), photos));
+                }
+            }
+        }
+        Ok(Some(Before::Albums { albums, members }))
     }
 
     /// Queued album changes, in order.
@@ -2011,7 +2076,7 @@ impl Library {
                     edits.put(key, pending)?;
                 }
                 edits.remove_collection(*s)?;
-                edits.log(&Event { at, origin: Origin::App, what: What::Undone { label: q.label.clone() } })?;
+                edits.log(&Event::new(at, Origin::App, What::Undone { label: q.label.clone() }))?;
             }
             let discard: Vec<String> = edits
                 .all()?
@@ -2097,9 +2162,12 @@ impl Library {
         let mut writer = self.writer()?;
         let mut batch = self.store.batch()?;
         let mut edits = self.edits.batch()?;
+        let mut was: Vec<(PhotoId, Vec<KeywordPath>)> = Vec::new();
         for row in rows {
             let Some(mut photo) = batch.photo(row)? else { continue };
+            let old = photo.keywords.clone();
             if remap.apply(&mut photo.keywords) {
+                was.push((photo.id.clone(), old));
                 let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
                 batch.put_photo(row, &photo, fingerprint)?;
                 writer.delete_term(Term::from_field_u64(self.fields.row, row));
@@ -2123,7 +2191,11 @@ impl Library {
             edits.put(&pending_key(&pending.change.photo, &what), &pending)?;
         }
         let at = now_ms();
-        edits.log(&Event { at, origin: Origin::App, what: What::Remap(remap.clone()) })?;
+        let mut event = Event::new(at, Origin::App, What::Remap(remap.clone()));
+        if !was.is_empty() {
+            event = event.with_before(Before::Keywords(was));
+        }
+        edits.log(&event)?;
         let seq = edits.add_remap(&QueuedRemap { remap, at })?;
         writer.commit()?;
         batch.commit()?;
@@ -2147,7 +2219,7 @@ impl Library {
         let Some(queued) = edits.get_remap(seq)? else { return Ok(()) };
         edits.remove_remap(seq)?;
         let what = What::Undone { label: queued.remap.label.clone() };
-        edits.log(&Event { at: now_ms(), origin: Origin::App, what })?;
+        edits.log(&Event::new(now_ms(), Origin::App, what))?;
         let moved: Vec<String> = queued.remap.map.iter().map(|(_, to)| to.to_pipe()).collect();
         let carrying = Filter {
             keywords_under: moved,

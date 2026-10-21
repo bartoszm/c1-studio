@@ -1065,7 +1065,7 @@ fn refresh_loop(app: AppHandle) {
 /// were called when last seen (for albums since deleted, or made here and since written).
 #[derive(Serialize)]
 struct PhotoHistory {
-    events: Vec<c1index::Event>,
+    events: Vec<c1index::EventView>,
     albums: BTreeMap<String, String>,
 }
 
@@ -1077,13 +1077,38 @@ async fn photo_history(app: State<'_, App>, row: u64) -> Result<PhotoHistory, St
     };
     let events = s.library.photo_events(&id).map_err(text)?;
     let albums = s.library.album_names(&events).map_err(text)?.into_iter().map(|(id, name)| (id.0, name)).collect();
-    Ok(PhotoHistory { events, albums })
+    Ok(PhotoHistory { events: events.iter().map(c1index::EventView::of).collect(), albums })
 }
 
 /// The newest `limit` entries of the change log.
 #[tauri::command]
-async fn change_log(app: State<'_, App>, limit: usize) -> Result<Vec<c1index::Event>, String> {
-    app.session()?.library.events(limit).map_err(text)
+async fn change_log(app: State<'_, App>, limit: usize) -> Result<Vec<c1index::EventView>, String> {
+    let events = app.session()?.library.events(limit).map_err(text)?;
+    Ok(events.iter().map(c1index::EventView::of).collect())
+}
+
+/// A page of the change log, newest first, in groups of one batch each.
+#[tauri::command]
+async fn change_log_page(app: State<'_, App>, query: c1index::LogQuery) -> Result<c1index::LogPage, String> {
+    app.session()?.library.log_page(&query).map_err(text)
+}
+
+/// What changed between two times (inclusive, in ms; `to` of null is now).
+#[tauri::command]
+async fn history_compare(app: State<'_, App>, from: i64, to: Option<i64>) -> Result<c1index::Compare, String> {
+    app.session()?.library.compare(from, to).map_err(text)
+}
+
+/// Photos per import day under `filter`: (local midnight in ms, count), in date order.
+#[tauri::command]
+async fn growth(app: State<'_, App>, filter: Filter) -> Result<Vec<(i64, usize)>, String> {
+    app.session()?.library.growth(&filter).map_err(text)
+}
+
+/// Entries logged per day, and when the log starts.
+#[tauri::command]
+async fn log_days(app: State<'_, App>) -> Result<c1index::LogDays, String> {
+    app.session()?.library.log_days().map_err(text)
 }
 
 /// An edit from the UI, applied to every photo it names.
@@ -2339,7 +2364,11 @@ pub fn run() {
             set_autosave,
             selection_summary,
             photo_history,
-            change_log
+            change_log,
+            change_log_page,
+            history_compare,
+            growth,
+            log_days
         ])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");

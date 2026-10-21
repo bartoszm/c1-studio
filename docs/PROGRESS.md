@@ -1149,6 +1149,56 @@ written before the kinds below existed still read.
 - **Known limit:** what Capture One changed between the last sync and a store wipe shows
   up as a fresh state, not as changes.
 
+### Time travel, part 1: the History tab
+
+The log is read as history. The next part (state on a date, restore) builds on what is
+recorded here, so recording came first.
+
+- **The log keeps what a change replaced.** `Event` has an optional `before: Before`,
+  written only when there is something to keep, so an old entry is read and written back
+  byte for byte, and a build from before reads a new one as the entry it was (a test
+  holds a copy of the 0.5 `Event` to prove it).
+  - `Before::Photo` for a removed or deleted photo (the sync's `Removed`, a full read that
+    no longer has it, `emptied`);
+  - `Before::Albums { albums, members }` for an album renamed, moved, given a rule or
+    deleted: the albums as they were (the subtree for a delete) and, for a delete made
+    here, who was in each (trashed, hidden and binned photos too). A delete seen in the
+    source keeps the albums only: the photos leaving it are logged one by one;
+  - `Before::Keywords` for a keyword tree change: each rewritten photo's keywords before.
+  - `Event::photos()` lists the photos an entry is about, those in `before` too, so
+    `events_by_photo` (and a photo's History section) now shows a keyword tree change or an
+    album delete that touched it. The UI gets `EventView` (no `before`, a `has_before` flag).
+- **Reading the log** (`edits.rs`): `last_seq`, `seq_after(ms)` (a binary search: keys have
+  no gaps and `at` never goes down along them), `range`, which skips what it cannot read.
+  Times are inclusive in the API (`from ≤ at ≤ to`).
+- **`c1index::history`** (pure, unit-tested):
+  - `Grouper`: consecutive entries with the same time, origin and kind are one `LogGroup`
+    ("rating changed on 1,240 photos"). Album, keyword tree, written and undone entries
+    stand alone;
+  - `Net`: what a run of entries came to. Set fields compare the first base with the last
+    value (a rating set and set back is nothing); keywords and albums add +1/−1 per
+    photo and keyword or album; a photo's presence is judged by its first and last entry
+    (added then removed is nothing). `Net::compare` is the numbers of the compare panel
+    (the 20 keywords most photos gained and lost, photos in and out of each album,
+    album and keyword tree changes as lists).
+- **`Library`** (`library/history.rs`): `log_page` (groups, walking back a chunk at a time,
+  with the album names and the cursor for the next page), `compare(from, to)`,
+  `growth(filter)` (photos per import day, the `imported` fast column), `log_days()`
+  (entries per day and where the log starts, counted once and then only what was added
+  since).
+- **A pick filters the grid.** `Filter.history: Option<HistoryPick>` (`Changed { from, to,
+  what }` or `Entries { first, last, kind }`) is the only field the UI sends; the library
+  turns it into `Filter.rows` (a `TermSetQuery` over the indexed `row` field; `rows_not`
+  is the same under `must_not`) at the top of `query`, `compile` and `smart_counts`,
+  nested filters too. The rows are cached per pick and last sequence number.
+- **UI:** a **History** tab. `GrowthChart` (import bars on a square-root scale, the
+  running total, a tick row for log activity, a "log starts" marker; drag to pick days),
+  the compare panel (every number is a button that sends a `Changed` pick) and `LogList`
+  (origin and kind chips, paged, a row picks its entries). The pick shows as a chip
+  (`pickText`). `lib/dates.ts` holds the bar and unit choice the timeline shares.
+- **Tauri:** `change_log_page`, `history_compare`, `growth`, `log_days`.
+- **Not done yet** (part 2): state on a date (`state_at`), `Existed` picks, restore.
+
 ### Settings: sidebar sections, main colour, offline map
 
 - **Settings dialog** (⚙ in the header, or right-click a sidebar section's title):
@@ -1474,7 +1524,8 @@ country) and 68k have neither.
 
 ### Next
 
-1. Time travel views on the change log: state on a date, growth of the collection, compare
-   two dates, restore a past state as a set of `Change`s.
+1. Time travel, part 2: the state on a date (counts rewound from the log), photos that
+   existed then, and restore a past state as a set of `Change`s. The History tab, the
+   growth chart and compare two dates are in.
 2. Trips found by positions alone could be named with `c1geo::reverse`.
 3. Stage 4, rest: photo direction, lasso.

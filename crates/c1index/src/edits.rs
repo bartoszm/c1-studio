@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use anyhow::Context;
-use c1model::{Change, Collection, CollectionChange, CollectionId, KeywordRemap, Op, PhotoId};
+use c1model::{Change, Collection, CollectionChange, CollectionId, KeywordPath, KeywordRemap, Op, Photo, PhotoId};
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +86,48 @@ pub struct Event {
     pub origin: Origin,
     #[serde(flatten)]
     pub what: What,
+    /// What the change overwrote or removed, for the kinds that cannot be taken back from
+    /// the entry alone. Entries written before it existed have none, and are written back
+    /// without it, so a build that does not know it still reads the log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Before>,
+}
+
+/// What a change replaced, kept so it can be put back later.
+// A photo is far bigger than the rest, but it is only held while an entry is written or read.
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Before {
+    /// The photo as it was, for a removed or deleted one.
+    Photo(Box<Photo>),
+    /// The albums a change replaced (as they were) and, for a delete, who was in them.
+    Albums { albums: Vec<Collection>, members: Vec<(CollectionId, Vec<PhotoId>)> },
+    /// The keywords each photo a keyword tree change rewrote had before it.
+    Keywords(Vec<(PhotoId, Vec<KeywordPath>)>),
+}
+
+impl Event {
+    pub fn new(at: i64, origin: Origin, what: What) -> Self {
+        Self { at, origin, what, before: None }
+    }
+
+    /// The same entry, with what it replaced.
+    pub fn with_before(mut self, before: Before) -> Self {
+        self.before = Some(before);
+        self
+    }
+
+    /// Every photo this entry is about: the one it names, and those it kept in `before`.
+    pub fn photos(&self) -> Vec<&PhotoId> {
+        let mut out: Vec<&PhotoId> = self.what.photo().into_iter().collect();
+        match &self.before {
+            Some(Before::Photo(photo)) => out.push(&photo.id),
+            Some(Before::Albums { members, .. }) => out.extend(members.iter().flat_map(|(_, ids)| ids)),
+            Some(Before::Keywords(photos)) => out.extend(photos.iter().map(|(id, _)| id)),
+            None => {}
+        }
+        out
+    }
 }
 
 /// What an [`Event`] records. Entries written before the other kinds existed hold only a
@@ -146,8 +188,20 @@ impl What {
 
 /// An event as stored, or `None` (said on stderr) for one this build cannot read:
 /// written by a newer one. One unreadable entry does not take the log with it.
-fn read_event(seq: u64, bytes: &[u8]) -> Option<Event> {
+pub(crate) fn read_event(seq: u64, bytes: &[u8]) -> Option<Event> {
     serde_json::from_slice(bytes).inspect_err(|e| eprintln!("change log entry {seq} skipped: {e}")).ok()
+}
+
+/// When an entry was made, without reading the rest of it.
+fn read_at(seq: u64, bytes: &[u8]) -> Option<i64> {
+    #[derive(Deserialize)]
+    struct At {
+        at: i64,
+    }
+    serde_json::from_slice::<At>(bytes)
+        .inspect_err(|e| eprintln!("change log entry {seq} skipped: {e}"))
+        .ok()
+        .map(|a| a.at)
 }
 
 pub fn pending_key(photo: &PhotoId, field: &str) -> String {
@@ -187,10 +241,10 @@ impl Edits {
             for entry in events.range(from..)? {
                 let (seq, bytes) = entry?;
                 upto = seq.value() + 1;
-                if let Some(event) = read_event(seq.value(), bytes.value())
-                    && let Some(photo) = event.what.photo()
-                {
-                    by_photo.insert(photo.key().as_str(), seq.value())?;
+                if let Some(event) = read_event(seq.value(), bytes.value()) {
+                    for photo in event.photos() {
+                        by_photo.insert(photo.key().as_str(), seq.value())?;
+                    }
                 }
             }
             if upto != from {
@@ -250,6 +304,57 @@ impl Edits {
             out.extend(read_event(seq.value(), bytes.value()));
         }
         Ok(out)
+    }
+
+    /// The sequence number of the newest entry, or `None` for an empty log.
+    pub fn last_seq(&self) -> anyhow::Result<Option<u64>> {
+        let tx = self.db.begin_read()?;
+        Ok(tx.open_table(EVENTS)?.last()?.map(|(k, _)| k.value()))
+    }
+
+    /// The sequence number of the first entry made after `ms` (`at > ms`), or one past
+    /// the newest when there is none. Sequence numbers have no gaps and `at` never goes
+    /// down along them, so a search over them finds it without reading the whole log.
+    pub fn seq_after(&self, ms: i64) -> anyhow::Result<u64> {
+        let tx = self.db.begin_read()?;
+        let events = tx.open_table(EVENTS)?;
+        let (Some((first, _)), Some((last, _))) = (events.first()?, events.last()?) else { return Ok(0) };
+        let (mut lo, mut hi) = (first.value(), last.value() + 1);
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            // An entry that cannot be read does not tell when it was made: it counts as
+            // before, which keeps the search going to the right.
+            let at = events.get(mid)?.and_then(|bytes| read_at(mid, bytes.value()));
+            if at.is_some_and(|at| at > ms) {
+                hi = mid;
+            } else {
+                lo = mid + 1;
+            }
+        }
+        Ok(lo)
+    }
+
+    /// The entries with these sequence numbers, oldest first. Unreadable ones are left out.
+    pub fn range(&self, seqs: std::ops::Range<u64>) -> anyhow::Result<Vec<(u64, Event)>> {
+        let tx = self.db.begin_read()?;
+        let mut out = Vec::new();
+        for entry in tx.open_table(EVENTS)?.range(seqs)? {
+            let (seq, bytes) = entry?;
+            out.extend(read_event(seq.value(), bytes.value()).map(|e| (seq.value(), e)));
+        }
+        Ok(out)
+    }
+
+    /// When each entry from `seq` on was made, with its number, for counting by day.
+    pub fn times_from(&self, seq: u64, each: &mut dyn FnMut(u64, i64)) -> anyhow::Result<()> {
+        let tx = self.db.begin_read()?;
+        for entry in tx.open_table(EVENTS)?.range(seq..)? {
+            let (seq, bytes) = entry?;
+            if let Some(at) = read_at(seq.value(), bytes.value()) {
+                each(seq.value(), at);
+            }
+        }
+        Ok(())
     }
 
     /// The names last seen for these albums, by id; ids never seen are left out.
@@ -358,9 +463,11 @@ impl EditsBatch {
         let next = table.last()?.map_or(0, |(k, _)| k.value() + 1);
         let bytes = serde_json::to_vec(event)?;
         table.insert(next, bytes.as_slice())?;
-        if let Some(photo) = event.what.photo() {
-            self.tx.open_multimap_table(BY_PHOTO)?.insert(photo.key().as_str(), next)?;
+        let mut by_photo = self.tx.open_multimap_table(BY_PHOTO)?;
+        for photo in event.photos() {
+            by_photo.insert(photo.key().as_str(), next)?;
         }
+        drop(by_photo);
         self.tx.open_table(META)?.insert(BY_PHOTO_UPTO, next + 1)?;
         Ok(())
     }
@@ -459,10 +566,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edits.redb");
         let photo = PhotoId::new(&c1model::SourceId("c1".into()), "7".to_string());
-        let rated = |value| Event {
-            at: 5,
-            origin: Origin::Source,
-            what: What::Change(Change { photo: photo.clone(), op: Op::SetRating { base: None, value } }),
+        let rated = |value| {
+            let change = Change { photo: photo.clone(), op: Op::SetRating { base: None, value } };
+            Event::new(5, Origin::Source, What::Change(change))
         };
         {
             let edits = Edits::open(&path).unwrap();
@@ -486,5 +592,108 @@ mod tests {
         let ratings: Vec<Event> = edits.photo_events(&photo.key()).unwrap();
         assert_eq!(ratings, [rated(Some(4)), rated(Some(3))]);
         assert_eq!(edits.events(10).unwrap().len(), 2);
+    }
+
+    fn written_at(at: i64) -> Event {
+        Event::new(at, Origin::App, What::Undone { label: format!("at {at}") })
+    }
+
+    fn log_of(times: &[i64]) -> (tempfile::TempDir, Edits) {
+        let dir = tempfile::tempdir().unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let mut batch = edits.batch().unwrap();
+        for &at in times {
+            batch.log(&written_at(at)).unwrap();
+        }
+        batch.commit().unwrap();
+        (dir, edits)
+    }
+
+    #[test]
+    fn the_first_entry_after_a_time_is_found_by_search() {
+        let (_d, edits) = log_of(&[10, 20, 20, 20, 30]);
+        assert_eq!(edits.last_seq().unwrap(), Some(4));
+        // Equal times: an entry at the time itself is not after it.
+        assert_eq!(edits.seq_after(20).unwrap(), 4);
+        assert_eq!(edits.seq_after(19).unwrap(), 1);
+        assert_eq!(edits.seq_after(10).unwrap(), 1);
+        // Beyond either end.
+        assert_eq!(edits.seq_after(i64::MIN).unwrap(), 0);
+        assert_eq!(edits.seq_after(9).unwrap(), 0);
+        assert_eq!(edits.seq_after(30).unwrap(), 5);
+        assert_eq!(edits.seq_after(i64::MAX).unwrap(), 5);
+    }
+
+    #[test]
+    fn an_empty_log_has_nothing_after_any_time() {
+        let (_d, edits) = log_of(&[]);
+        assert_eq!(edits.last_seq().unwrap(), None);
+        assert_eq!(edits.seq_after(0).unwrap(), 0);
+        assert!(edits.range(0..10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_range_skips_entries_it_cannot_read() {
+        let (dir, edits) = log_of(&[1, 2, 3]);
+        drop(edits);
+        {
+            let db = Database::create(dir.path().join("edits.redb")).unwrap();
+            let tx = db.begin_write().unwrap();
+            tx.open_table(EVENTS).unwrap().insert(1, br#"{"at":2,"origin":"App","teleported":{}}"#.as_slice()).unwrap();
+            tx.commit().unwrap();
+        }
+        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let seqs: Vec<u64> = edits.range(0..3).unwrap().into_iter().map(|(seq, _)| seq).collect();
+        assert_eq!(seqs, [0, 2]);
+        assert_eq!(edits.range(1..3).unwrap().len(), 1);
+        // Searching passes it too: it still says when it was made.
+        assert_eq!(edits.seq_after(2).unwrap(), 2);
+    }
+
+    /// What 0.5 read: an entry without `before`.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Event05 {
+        at: i64,
+        origin: Origin,
+        #[serde(flatten)]
+        what: What,
+    }
+
+    #[test]
+    fn entries_with_what_they_replaced_still_read_in_older_builds() {
+        let photo = PhotoId::new(&c1model::SourceId("c1".into()), "7".to_string());
+        let removed = What::Removed { photo: photo.clone(), name: "a.raf".into() };
+        let kept = Before::Keywords(vec![(photo.clone(), vec![KeywordPath::from_pipe("a|b")])]);
+        let new = Event::new(5, Origin::App, removed.clone()).with_before(kept.clone());
+        let json = serde_json::to_string(&new).unwrap();
+        assert!(json.contains("\"before\""));
+        // This build reads it back whole.
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), new);
+        // The build before reads it as the entry it was.
+        let old: Event05 = serde_json::from_str(&json).unwrap();
+        assert_eq!(old, Event05 { at: 5, origin: Origin::App, what: removed });
+        // And an old entry has no `before`, and is written back without one, byte for byte.
+        let text = r#"{"at":5,"origin":"App","undone":{"label":"x"}}"#;
+        let event: Event = serde_json::from_str(text).unwrap();
+        assert_eq!(event.before, None);
+        assert_eq!(serde_json::to_string(&event).unwrap(), text);
+    }
+
+    #[test]
+    fn what_a_log_entry_kept_is_in_its_photos_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let (a, b) = (
+            PhotoId::new(&c1model::SourceId("c1".into()), "1".to_string()),
+            PhotoId::new(&c1model::SourceId("c1".into()), "2".to_string()),
+        );
+        let remap = KeywordRemap::rename(KeywordPath::from_pipe("x"), "y");
+        let event = Event::new(1, Origin::App, What::Remap(remap))
+            .with_before(Before::Keywords(vec![(a.clone(), vec![KeywordPath::from_pipe("x")]), (b.clone(), vec![])]));
+        let mut batch = edits.batch().unwrap();
+        batch.log(&event).unwrap();
+        batch.commit().unwrap();
+        assert_eq!(edits.photo_events(&a.key()).unwrap(), std::slice::from_ref(&event));
+        assert_eq!(edits.photo_events(&b.key()).unwrap(), [event]);
     }
 }

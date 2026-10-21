@@ -447,6 +447,32 @@ way (no faster than three photos a second): the way travelled is drawn in amber 
 photo of the moment rides at its head. The slider moves along it by hand; ⤢ shows the
 whole route. A trip needs two photos with a position for a route.
 
+## History
+
+The **History** tab shows the catalog over time. It needs the change log, which starts the
+day the app first read the catalog: the chart marks where it starts, and anything before
+is not known.
+
+- **The chart.** Photos imported per day (the bars grow with the square root of the count,
+  so one big import does not flatten the rest), a green line for the running total, and
+  under the bars a row of marks for the days with log entries. It follows the filters
+  (picks from the sidebar narrow it). Drag across it to pick days, or click a bar; *⤢ all*
+  lets go.
+- **Compare.** With days picked, the panel says how many log entries there are (by who
+  made them), and how many photos ended up different: changed, added, removed, deleted
+  for good, per field, the 20 keywords gained and lost the most, and per album the photos
+  put in and taken out. Changes that cancelled out do not count. Click any number to show
+  those photos in the grid; the chip *History: …* above the grid drops the pick.
+- **The log.** Newest first. Entries made together (a rating on 1,240 photos from one
+  action, or one read of Capture One) are one row. The chips limit it by who (here,
+  Capture One, GPX, backup) and by kind; *More* reads the next page. Click a row to show
+  its photos. A keyword tree change or an album delete shows the photos it touched, when
+  the app recorded them (from this version on).
+- Each photo's own history, in the details panel, now also shows keyword tree changes and
+  album deletes that touched it.
+
+Restoring a past state is not in this version.
+
 ## Look
 
 The app measures every photo from Capture One's thumbnail (which carries your edits and

@@ -22,6 +22,7 @@ New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
 - [Places from neighbours in time](#places-from-neighbours-in-time)
 - [Trips and the timeline](#trips-and-the-timeline)
 - [Write, history and backups](#write-history-and-backups)
+- [History: the catalog over time](#history-the-catalog-over-time)
 
 ## Find anything, instantly
 
@@ -195,10 +196,22 @@ day, week or month with the trips under the bars: drag across it to pick days.
 Writing makes a backup of the catalog first, and any backup can be restored from the app.
 Every change to the catalog is recorded, whether it was made here, in Capture One, by a
 GPX import or by restoring a backup, and the details panel shows each photo's history.
+The History tab shows all of it over time: [History: the catalog over time](#history-the-catalog-over-time).
 
 ![Writing a rating to the catalog, the photo's history, and the backups](media/features/history.gif)
 
 [In the guide: Writing to Capture One](GUIDE.md#writing-to-capture-one)
+
+## History: the catalog over time
+
+The History tab draws the library as photos imported per day, with a line for the running
+total and a row of marks for the days the change log saw changes. Drag across it to pick
+days and it compares them: how many photos changed (a rating set and set back is not a
+change), which fields, the keywords gained and lost, and the albums photos went into and
+out of. Every number shows those photos in the grid. Under it, the change log in groups, so
+"rating changed on 1,240 photos" is one row you can click.
+
+[In the guide: History](GUIDE.md#history)
 
 ---
 
