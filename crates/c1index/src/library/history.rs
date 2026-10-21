@@ -64,6 +64,31 @@ impl Library {
         self.history.picked.lock().unwrap().clear();
     }
 
+    /// Turns the History tab's side of the change log on or off (it is on unless turned
+    /// off). Off, entries are logged as 0.5 logged them, without what a change replaced;
+    /// nothing reads the log as history (a page of it, a compare, the days, the growth
+    /// chart), a History pick in a filter is set aside, and what was worked out is let go.
+    /// Entries already logged stay as they are, so turning it back on finds them.
+    pub fn set_history(&self, on: bool) {
+        self.edits.set_keep_before(on);
+        if !on {
+            self.forget_picks();
+            *self.history.days.lock().unwrap() = DaysCache::default();
+        }
+    }
+
+    /// Whether the History tab's side of the change log is on.
+    pub fn history_on(&self) -> bool {
+        self.edits.keeps_before()
+    }
+
+    fn needs_history(&self) -> anyhow::Result<()> {
+        if !self.history_on() {
+            anyhow::bail!("History is turned off (Settings › History)");
+        }
+        Ok(())
+    }
+
     /// The sequence numbers of the entries made between two times (inclusive).
     fn seq_range(&self, from: Option<i64>, to: Option<i64>) -> anyhow::Result<Range<u64>> {
         let lo = match from {
@@ -99,6 +124,7 @@ impl Library {
     /// A page of the log, newest first, in groups: one batch of a kind from one origin
     /// is one group.
     pub fn log_page(&self, query: &LogQuery) -> anyhow::Result<LogPage> {
+        self.needs_history()?;
         let limit = if query.limit == 0 { PAGE } else { query.limit };
         let mut seqs = self.seq_range(query.from, query.to)?;
         if let Some(before) = query.before {
@@ -138,6 +164,7 @@ impl Library {
     /// What changed between two times (inclusive; `to` of `None` is now): the net effect
     /// on photos, so a rating set and set back is not a change.
     pub fn compare(&self, from: i64, to: Option<i64>) -> anyhow::Result<Compare> {
+        self.needs_history()?;
         let mut net = Net::default();
         // A keyword tree change's photos are what it did to them: its entry is read whole.
         let remaps = |event: &Event| matches!(event.what, crate::edits::What::Remap(_));
@@ -155,6 +182,7 @@ impl Library {
     /// How many photos `filter` selects that were imported on each day, by the local
     /// midnight starting it, in date order. Photos with no import time are left out.
     pub fn growth(&self, filter: &Filter) -> anyhow::Result<Vec<(i64, usize)>> {
+        self.needs_history()?;
         let query = self.compile(filter)?;
         let searcher = self.reader.searcher();
         let docs = searcher.search(query.as_ref(), &tantivy::collector::DocSetCollector)?;
@@ -177,6 +205,7 @@ impl Library {
     /// Entries per day and when the log starts. Counted once, and from then on only what
     /// was logged since.
     pub fn log_days(&self) -> anyhow::Result<LogDays> {
+        self.needs_history()?;
         let mut cache = self.history.days.lock().unwrap();
         let cache = &mut *cache;
         let from = cache.next;
@@ -243,10 +272,12 @@ impl Library {
     }
 
     /// The filter with every History pick in it (also in nested filters) made into the
-    /// rows it picks.
+    /// rows it picks. With History off, a pick is set aside: it picks nothing out.
     pub(super) fn resolve_history(&self, filter: &Filter) -> anyhow::Result<Filter> {
         let mut f = filter.clone();
-        if let Some(pick) = f.history.take() {
+        if let Some(pick) = f.history.take()
+            && self.history_on()
+        {
             let picked = self.history_rows(&pick)?;
             f.rows = Some(match f.rows.take() {
                 // Another pick or list of rows narrows it.

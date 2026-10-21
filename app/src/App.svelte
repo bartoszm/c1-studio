@@ -343,6 +343,10 @@
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
   let autosaveOn = $state(false);
+  /** The History tab is on for this catalog (Settings › History). Off, the tab is hidden, a
+   *  History pick leaves the filter, and the log keeps only what 0.5 kept. Shown once the
+   *  catalog says it is on, so a tab remembered from last time asks nothing of it before. */
+  let historyOn = $state(false);
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
   /** A word on what an edit did, shown a few seconds in the footer. */
@@ -630,6 +634,7 @@
     loaded = true;
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
+    api.historyEnabled().then(showsHistory).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
   }
@@ -1580,6 +1585,25 @@
     viewing = false;
   }
 
+  /** The History tab shown or not; hidden, it is left, and a pick from it goes. */
+  function showsHistory(on: boolean) {
+    historyOn = on;
+    if (on) return;
+    if (tab === "history") showTab("photos");
+    if (filter.history) {
+      filter = { ...filter, history: undefined };
+      run();
+    }
+  }
+  async function toggleHistory(on: boolean) {
+    try {
+      await api.setHistory(on);
+      showsHistory(on);
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+
   async function toggleAutosave(on: boolean) {
     autosaveOn = on;
     try {
@@ -1962,7 +1986,9 @@
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
-      <button class:on={tab === "history"} title="The catalog over time: what changed between two dates, and the change log" onclick={() => showTab("history")}>History</button>
+      {#if historyOn}
+        <button class:on={tab === "history"} title="The catalog over time: what changed between two dates, and the change log" onclick={() => showTab("history")}>History</button>
+      {/if}
     </nav>
     <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
       <SortControl
@@ -2034,7 +2060,7 @@
     >Hidden</button>
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
-    <button class="toggle settings" title="Settings: the sidebar's sections, online map services" aria-label="Settings" onclick={() => (showSettings = true)}>
+    <button class="toggle settings" title="Settings: the sidebar's sections, online map services, the History tab" aria-label="Settings" onclick={() => (showSettings = true)}>
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
         <circle cx="8" cy="8" r="2.2" />
         <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round" />
@@ -2316,7 +2342,7 @@
       onallof={toggleAllOf}
     />
   {/if}
-  {#if tab === "history"}
+  {#if tab === "history" && historyOn}
     <HistoryPane
       filter={eff}
       {version}
@@ -2643,6 +2669,8 @@
 {#if showSettings}
   <SettingsDialog
     titles={TITLES}
+    history={historyOn}
+    onhistory={toggleHistory}
     onclose={() => (showSettings = false)}
     onclasses={() => { version++; analysed++; refresh(true); }}
   />

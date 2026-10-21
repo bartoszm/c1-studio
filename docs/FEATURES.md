@@ -211,6 +211,9 @@ change), which fields, the keywords gained and lost, and the albums photos went 
 out of. Every number shows those photos in the grid. Under it, the change log in groups, so
 "rating changed on 1,240 photos" is one row you can click.
 
+Not wanted? *Settings › History* turns the tab off for a catalog: the change log then
+keeps only the changes themselves, as before, and the app does no history work.
+
 [In the guide: History](GUIDE.md#history)
 
 ---

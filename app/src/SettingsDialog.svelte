@@ -6,12 +6,21 @@
 
   // The app's preferences, applied as they are changed: the sidebar's sections (which,
   // in what order) and whether the map may use the internet. The analysis lines are the
-  // exception: they are applied on request, and `onclasses` is told when they are.
+  // exception: they are applied on request, and `onclasses` is told when they are. The
+  // History tab is the open catalog's own setting, kept with it: `onhistory` sets it.
   let {
     titles,
+    history,
+    onhistory,
     onclose,
     onclasses,
-  }: { titles: Record<string, string>; onclose: () => void; onclasses: () => void } = $props();
+  }: {
+    titles: Record<string, string>;
+    history: boolean;
+    onhistory: (on: boolean) => void;
+    onclose: () => void;
+    onclasses: () => void;
+  } = $props();
 
   /** The row being dragged, and the row it would land before. */
   let from = $state<number | null>(null);
@@ -33,6 +42,7 @@
     { key: "sidebar", label: "Sidebar" },
     { key: "map", label: "Map & places" },
     { key: "analysis", label: "Analysis" },
+    { key: "history", label: "History" },
   ] as const;
   type Tab = (typeof TABS)[number]["key"];
   let tab = $state<Tab>("sidebar");
@@ -165,6 +175,23 @@
 
     <div role="tabpanel" id="panel-analysis" aria-labelledby="tab-analysis" hidden={tab !== "analysis"}>
       <ClassSettings onapplied={onclasses} />
+    </div>
+
+    <div role="tabpanel" id="panel-history" aria-labelledby="tab-history" hidden={tab !== "history"}>
+    <h3>History</h3>
+    <label class="option">
+      <input type="checkbox" checked={history} onchange={(e) => onhistory(e.currentTarget.checked)} />
+      <span>
+        Show the History tab
+        <small class="muted">
+          The catalog over time: two dates compared, the change log in groups, photos imported per day. For it, the change log
+          also keeps what a change replaced (a removed photo, an album as it was, the keywords a keyword tree change rewrote).
+          Off, the tab is hidden and the log keeps only the changes themselves, as before; a photo's own history in the details
+          panel stays. What was logged so far is kept either way.
+        </small>
+      </span>
+    </label>
+    <p class="muted small">Kept with this catalog: another catalog has its own.</p>
     </div>
     </div>
     </div>

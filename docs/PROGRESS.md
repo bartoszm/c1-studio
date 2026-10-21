@@ -1164,7 +1164,18 @@ recorded here, so recording came first.
   was (a test holds a copy of the 0.5 `Event`).
   - **Size:** a read of a source that finds more than 5,000 photos gone in one go (a drive
     unplugged, a catalog that failed to open) keeps the first 5,000 whole; the rest are
-    logged without a copy. Nothing prunes the log.
+    logged without a copy. The count covers photos removed one by one and those missing
+    from a full read alike. Nothing prunes the log.
+  - **Entries from the first History builds** held `before` in the entry itself. It is
+    still read (into `inline_before`, then decoded leniently like the table's copy), so a
+    log written by those builds keeps what it kept.
+  - **It can be turned off:** *Settings › History* (per catalog, `history` in
+    `settings.json`, on by default) calls `Library::set_history`, which the app also sets
+    from the file before the first sync. Off, `Edits` logs entries as 0.5 did (no
+    `has_before`, nothing in `event_before`; the library does not even gather albums'
+    members or a remap's old keywords), `log_page`, `compare`, `growth` and `log_days`
+    refuse, `resolve_history` sets a pick aside, and the caches are dropped. The UI hides
+    the tab, leaves it, and clears a pick.
   - **`at` never goes down along the log:** `EditsBatch::log` raises an entry's time to the
     newest's, so a clock set back cannot break `seq_after`.
   - `Before::Photo` for a removed or deleted photo (the sync's `Removed`, a full read that
@@ -1210,7 +1221,7 @@ recorded here, so recording came first.
   the compare panel (every number is a button that sends a `Changed` pick) and `LogList`
   (origin and kind chips, paged, a row picks its entries). The pick shows as a chip
   (`pickText`). `lib/dates.ts` holds the bar and unit choice the timeline shares.
-- **Tauri:** `change_log_page`, `history_compare`, `growth`, `log_days`.
+- **Tauri:** `change_log_page`, `history_compare`, `growth`, `log_days`, `history_enabled`, `set_history`.
 - **Known limits:** `log_page` still reads every entry of a group to its end (one big
   sync is one group), and a filter that matches rarely reads the log to find a page: no
   timing was measured on a large log. A batch id in the entry would make a group one

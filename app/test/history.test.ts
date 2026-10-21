@@ -15,7 +15,8 @@ test("a group of one reads as its entry", () => {
 });
 
 test("a batch says how many photos it is about", () => {
-  assert.equal(groupText(group({ entries: 1240, photos: 1240 })), "rating changed on 1,240 photos");
+  // In the locale the tests run in, as the app shows it.
+  assert.equal(groupText(group({ entries: 1240, photos: 1240 })), `rating changed on ${(1240).toLocaleString()} photos`);
   assert.equal(groupText(group({ kind: "added", entries: 3, photos: 3 })), "3 photos added");
   assert.equal(groupText(group({ kind: "removed", entries: 2, photos: 2 })), "2 photos removed");
   assert.equal(groupText(group({ kind: "keywords", entries: 2, photos: 1 })), "keywords: 2 changes");

@@ -2284,3 +2284,65 @@ fn a_pick_made_into_rows_is_forgotten_when_a_read_adds_photos_without_logging_th
     assert_eq!(ids(&lib, &pick), [1]);
     assert_eq!(ids(&lib, &history(HistoryPick::Changed { from, to: None, what: NetWhat::Any })), [1]);
 }
+
+#[test]
+fn with_history_off_the_log_keeps_nothing_and_history_reads_nothing() {
+    let (_d, lib, source) = setup();
+    assert!(lib.history_on(), "on unless turned off");
+    lib.edit(&[(row_of(&lib, 5), rate(Some(4)))]).unwrap();
+    let pick = HistoryPick::Changed { from: 0, to: None, what: NetWhat::Any };
+    assert_eq!(ids(&lib, &history(pick.clone())), [5]);
+
+    lib.set_history(false);
+    assert!(!lib.history_on());
+    // The change log as 0.5 kept it goes on: every entry, without what it replaced.
+    let gone = lib.photo_id(row_of(&lib, 2)).unwrap();
+    source.remove_externally(&gone);
+    lib.sync(&source).unwrap();
+    let removed = lib.photo_events(&gone).unwrap();
+    assert!(matches!(&removed[0].what, What::Removed { .. }));
+    assert!(!removed[0].has_before && removed[0].before.is_none());
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("street"), "avenue")).unwrap();
+    let remapped = lib.events(1).unwrap().pop().unwrap();
+    assert!(matches!(remapped.what, What::Remap(_)) && !remapped.has_before);
+    lib.change_collection(CollectionChange::Delete { id: CollectionId("10".into()) }).unwrap();
+    let deleted = lib.events(1).unwrap().pop().unwrap();
+    assert!(matches!(deleted.what, What::Collection { .. }) && !deleted.has_before);
+    lib.edit(&[(row_of(&lib, 8), rate(Some(1)))]).unwrap();
+    let logged = lib.events(100).unwrap();
+    assert!(matches!(&logged[0].what, What::Change(c) if c.photo.ext == "8"), "{:?}", logged[0]);
+    assert!(logged.iter().all(|e| !e.has_before));
+
+    // Nothing reads the log as history, and a pick picks nothing out.
+    assert!(lib.log_page(&LogQuery::default()).is_err());
+    assert!(lib.compare(0, None).is_err());
+    assert!(lib.log_days().is_err());
+    assert!(lib.growth(&Filter::default()).is_err());
+    assert_eq!(ids(&lib, &history(pick.clone())), ids(&lib, &everything()));
+
+    // Back on, the log is all there: what was logged while it was off reads too.
+    lib.set_history(true);
+    let picked = ids(&lib, &history(pick));
+    assert!(picked.contains(&5) && picked.contains(&8) && !picked.contains(&2), "{picked:?}");
+    let days: usize = lib.log_days().unwrap().days.iter().map(|(_, n)| *n).sum();
+    assert_eq!(days, logged.len());
+    assert!(lib.log_page(&LogQuery::default()).unwrap().groups.len() >= 5);
+}
+
+#[test]
+fn a_read_that_finds_every_photo_gone_keeps_only_so_many_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let photos: Vec<Photo> = (1..=5_010).map(photo).collect();
+    let source = MemorySource::new("mem", photos.clone(), vec![]);
+    lib.sync(&source).unwrap();
+    // A source that comes back empty (a drive unplugged): every photo is gone.
+    for p in &photos {
+        source.remove_externally(&p.id);
+    }
+    lib.sync(&source).unwrap();
+    let logged = lib.events(6_000).unwrap();
+    let removed = logged.iter().filter(|e| matches!(e.what, What::Removed { .. })).count();
+    let whole = logged.iter().filter(|e| e.has_before).count();
+    assert_eq!((removed, whole), (5_010, 5_000));
+}

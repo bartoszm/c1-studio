@@ -44,7 +44,8 @@ pub use placing::{
 };
 pub use selection::{Merged, Selection, group_places};
 
-/// How many photos one read of a source may keep whole in the log when it finds them gone.
+/// How many photos one read of a source may keep whole in the log when it finds them gone
+/// (removed one by one, or missing from a full read).
 const KEEP_REMOVED: usize = 5_000;
 
 /// Dimensions whose values substring filters match against.
@@ -898,6 +899,7 @@ impl Library {
             }
         }
         let now = now_ms();
+        let keep = self.history_on();
         for id in removed {
             let photo = match self.store.row_of(&id.key())? {
                 Some(row) => self.store.photo(row)?,
@@ -905,7 +907,7 @@ impl Library {
             };
             let name = photo.as_ref().map(|p| p.file.name.clone()).unwrap_or_default();
             let mut event = Event::new(now, Origin::App, What::Deleted { photo: id.clone(), name });
-            if let Some(photo) = photo {
+            if let Some(photo) = photo.filter(|_| keep) {
                 event = event.with_before(Before::Photo(Box::new(photo)));
             }
             edits.log(&event)?;
@@ -1059,6 +1061,11 @@ impl Library {
         let remaps: Vec<KeywordRemap> = self.edits.remaps()?.into_iter().map(|(_, q)| q.remap).collect();
         let mut edits = self.edits.batch()?;
         let now = now_ms();
+        // Whether entries keep what they replaced (History on), and how many photos this
+        // read kept whole so far: a source that comes back empty or part read (a drive
+        // unplugged) would otherwise put the whole library into the log.
+        let keep = self.history_on();
+        let mut kept_whole = 0;
         let known: Vec<(u64, String)> = self.store.keys()?;
         let prefix = format!("{source_id}\u{1f}");
         // The first fill of a source (or a refill after the store was dropped) is not news:
@@ -1176,7 +1183,11 @@ impl Library {
                         let photo = batch.photo(row)?;
                         let name = photo.as_ref().map(|p| p.file.name.clone()).unwrap_or_default();
                         let mut event = Event::new(now, origin, What::Removed { photo: id, name });
-                        if let Some(photo) = photo {
+                        if let Some(photo) = photo
+                            && keep
+                            && kept_whole < KEEP_REMOVED
+                        {
+                            kept_whole += 1;
                             event = event.with_before(Before::Photo(Box::new(photo)));
                         }
                         edits.log(&event)?;
@@ -1212,7 +1223,7 @@ impl Library {
                                 other => old.iter().filter(|c| c.id == *other.id()).cloned().collect(),
                             };
                             let mut event = Event::new(now, origin, What::Collection { change, label });
-                            if !kept.is_empty() {
+                            if keep && !kept.is_empty() {
                                 event = event.with_before(Before::Albums { albums: kept, members: Vec::new() });
                             }
                             edits.log(&event)?;
@@ -1232,15 +1243,13 @@ impl Library {
         let Some(end) = end else { bail!("source {source_id} ended its snapshot without a cursor") };
         if report.full {
             // Anything of this source not seen in a full snapshot is gone.
-            let mut kept = 0;
             for (row, key) in known.iter().filter(|(row, key)| key.starts_with(&prefix) && !seen.contains(row)) {
                 if let Some(photo) = batch.photo(*row)? {
                     let what = What::Removed { photo: photo.id.clone(), name: photo.file.name.clone() };
                     let event = Event::new(now, origin, what);
-                    // A source that comes back empty or part read (a drive unplugged) would
-                    // otherwise put the whole library into the log: only so many are kept.
-                    kept += 1;
-                    edits.log(&if kept <= KEEP_REMOVED {
+                    // Only so many are kept whole (see `kept_whole`).
+                    edits.log(&if keep && kept_whole < KEEP_REMOVED {
+                        kept_whole += 1;
                         event.with_before(Before::Photo(Box::new(photo)))
                     } else {
                         event
@@ -2029,6 +2038,8 @@ impl Library {
     /// who is in them (trashed, hidden and binned photos too), so it can be put back.
     fn albums_before(&self, current: &[Collection], change: &CollectionChange) -> anyhow::Result<Option<Before>> {
         let ids = match change {
+            // With History off nothing is kept, and the members are not looked up.
+            _ if !self.history_on() => return Ok(None),
             CollectionChange::Create { .. } => return Ok(None),
             CollectionChange::Delete { id } => descendants(current, id),
             other => vec![other.id().clone()],
@@ -2176,11 +2187,14 @@ impl Library {
         let mut batch = self.store.batch()?;
         let mut edits = self.edits.batch()?;
         let mut was: Vec<(PhotoId, Vec<KeywordPath>)> = Vec::new();
+        let keep = self.history_on();
         for row in rows {
             let Some(mut photo) = batch.photo(row)? else { continue };
-            let old = photo.keywords.clone();
+            let old = if keep { photo.keywords.clone() } else { Vec::new() };
             if remap.apply(&mut photo.keywords) {
-                was.push((photo.id.clone(), old));
+                if keep {
+                    was.push((photo.id.clone(), old));
+                }
                 let fingerprint = batch.fingerprint(row)?.unwrap_or_default();
                 batch.put_photo(row, &photo, fingerprint)?;
                 writer.delete_term(Term::from_field_u64(self.fields.row, row));

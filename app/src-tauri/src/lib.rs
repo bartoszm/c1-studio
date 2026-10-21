@@ -148,10 +148,27 @@ impl Session {
 }
 
 /// The app's own settings, kept per catalog.
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
     autosave: bool,
+    /// The History tab, and the change log keeping what changes replaced for it.
+    history: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings { autosave: false, history: true }
+    }
+}
+
+impl Session {
+    /// Writes the settings as they are now.
+    fn save_settings(&self) -> Result<(), String> {
+        let settings = Settings { autosave: self.autosave.load(Ordering::Relaxed), history: self.library.history_on() };
+        let bytes = serde_json::to_vec_pretty(&settings).map_err(text)?;
+        std::fs::write(&self.settings_path, bytes).map_err(text)
+    }
 }
 
 /// The source asked for and its session, or why there is none (nothing chosen yet, the
@@ -243,6 +260,8 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
     let settings_path = dir.join("settings.json");
     let settings: Settings =
         std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    // Before the first sync, so what it logs follows the setting.
+    library.set_history(settings.history);
     let session = Session {
         spec: spec.clone(),
         source,
@@ -1913,8 +1932,22 @@ async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
     s.autosave.store(on, Ordering::Relaxed);
     // Turning it on waits for the usual pause, so the first write is never a surprise.
     s.touched();
-    let bytes = serde_json::to_vec_pretty(&Settings { autosave: on }).map_err(text)?;
-    std::fs::write(&s.settings_path, bytes).map_err(text)
+    s.save_settings()
+}
+
+/// Whether the History tab is on for the open catalog.
+#[tauri::command]
+async fn history_enabled(app: State<'_, App>) -> Result<bool, String> {
+    Ok(app.session()?.library.history_on())
+}
+
+/// Turns the History tab on or off for the open catalog. Off, the change log goes on as
+/// 0.5 kept it (without what changes replaced), and nothing reads it as history.
+#[tauri::command]
+async fn set_history(app: State<'_, App>, on: bool) -> Result<(), String> {
+    let s = app.session()?;
+    s.library.set_history(on);
+    s.save_settings()
 }
 
 /// `/thumb/<row>` serves the source's own thumbnail (Capture One's): a JPEG with every edit, cut to the crop;
@@ -2362,6 +2395,8 @@ pub fn run() {
             write_apply,
             autosave,
             set_autosave,
+            history_enabled,
+            set_history,
             selection_summary,
             photo_history,
             change_log,
@@ -2379,6 +2414,16 @@ mod tests {
     use super::*;
     use c1index::group_places;
     use c1model::{AssetId, EditInfo, Exif, FileInfo, PhotoId, SourceId};
+
+    #[test]
+    fn settings_saved_before_the_history_tab_keep_it_on() {
+        let old: Settings = serde_json::from_str(r#"{"autosave":true}"#).unwrap();
+        assert!(old.autosave && old.history);
+        let none: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!none.autosave && none.history);
+        let off: Settings = serde_json::from_str(r#"{"autosave":false,"history":false}"#).unwrap();
+        assert!(!off.history);
+    }
 
     fn photo(n: u32, keywords: &[&str], city: Option<&str>) -> Photo {
         Photo {

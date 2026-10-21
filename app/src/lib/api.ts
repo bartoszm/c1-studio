@@ -751,6 +751,10 @@ export type AutosaveState =
 /** Whether autosave is on, and what it last reported. */
 export const autosave = () => invoke<[boolean, AutosaveState]>("autosave");
 export const setAutosave = (on: boolean) => invoke<void>("set_autosave", { on });
+/** Whether the History tab is on for the open catalog (it is unless turned off). */
+export const historyEnabled = () => invoke<boolean>("history_enabled");
+/** Off, the change log stops keeping what changes replaced and nothing reads it as history. */
+export const setHistory = (on: boolean) => invoke<void>("set_history", { on });
 export type WriteReport = { written: number; backup: string | null; warnings: string[] };
 export const writeApply = () => invoke<WriteReport>("write_apply");
 

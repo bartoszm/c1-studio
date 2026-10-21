@@ -6,6 +6,7 @@
 //! are JSON so an older queue still reads after `Op` gains variants.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use c1model::{Change, Collection, CollectionChange, CollectionId, KeywordPath, KeywordRemap, Op, Photo, PhotoId};
@@ -99,10 +100,28 @@ pub struct Event {
     /// the reads that ask for it.
     #[serde(skip)]
     pub before: Option<Before>,
+    /// What the first builds of the History tab kept in the entry itself, before it moved
+    /// to `event_before`: read in its place (leniently, like the table's), never written.
+    #[serde(default, rename = "before", skip_serializing)]
+    inline_before: Option<serde_json::Value>,
 }
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// Puts what an entry kept into it: the copy in `event_before`, or the one an earlier
+/// build wrote into the entry. A copy this build cannot read is left out (said on stderr).
+fn fill_before(event: &mut Event, seq: u64, stored: Option<&[u8]>) {
+    let inline = event.inline_before.take();
+    event.before = match stored {
+        Some(bytes) => read_before(seq, Some(bytes)),
+        None => inline.and_then(|value| {
+            serde_json::from_value(value)
+                .inspect_err(|e| eprintln!("change log entry {seq}: what it replaced skipped: {e}"))
+                .ok()
+        }),
+    };
 }
 
 /// What a change replaced, kept so it can be put back later.
@@ -120,7 +139,7 @@ pub enum Before {
 
 impl Event {
     pub fn new(at: i64, origin: Origin, what: What) -> Self {
-        Self { at, origin, what, has_before: false, before: None }
+        Self { at, origin, what, has_before: false, before: None, inline_before: None }
     }
 
     /// The same entry, with what it replaced.
@@ -202,7 +221,10 @@ impl What {
 /// An event as stored, or `None` (said on stderr) for one this build cannot read:
 /// written by a newer one. One unreadable entry does not take the log with it.
 pub(crate) fn read_event(seq: u64, bytes: &[u8]) -> Option<Event> {
-    serde_json::from_slice(bytes).inspect_err(|e| eprintln!("change log entry {seq} skipped: {e}")).ok()
+    let mut event: Event =
+        serde_json::from_slice(bytes).inspect_err(|e| eprintln!("change log entry {seq} skipped: {e}")).ok()?;
+    event.has_before |= event.inline_before.is_some();
+    Some(event)
 }
 
 /// What an entry kept, or `None` (said on stderr) when it is missing or this build cannot
@@ -236,10 +258,14 @@ pub fn photo_key(pending_key: &str) -> &str {
 
 pub struct Edits {
     db: Database,
+    /// Entries keep what they replaced (for the History tab). Off, they are logged as 0.5
+    /// logged them.
+    keep_before: AtomicBool,
 }
 
 pub struct EditsBatch {
     tx: redb::WriteTransaction,
+    keep_before: bool,
 }
 
 impl Edits {
@@ -274,11 +300,21 @@ impl Edits {
             }
         }
         tx.commit()?;
-        Ok(Self { db })
+        Ok(Self { db, keep_before: AtomicBool::new(true) })
     }
 
     pub fn batch(&self) -> anyhow::Result<EditsBatch> {
-        Ok(EditsBatch { tx: self.db.begin_write()? })
+        Ok(EditsBatch { tx: self.db.begin_write()?, keep_before: self.keeps_before() })
+    }
+
+    /// Whether entries logged from now on keep what they replaced. Entries already
+    /// logged are left as they are either way.
+    pub fn set_keep_before(&self, on: bool) {
+        self.keep_before.store(on, Ordering::Relaxed);
+    }
+
+    pub fn keeps_before(&self) -> bool {
+        self.keep_before.load(Ordering::Relaxed)
     }
 
     /// Every pending edit with its key, in key order (so a photo's fields sit together).
@@ -326,7 +362,7 @@ impl Edits {
             let (seq, bytes) = entry?;
             if let Some(mut event) = read_event(seq.value(), bytes.value()) {
                 if event.has_before {
-                    event.before = read_before(seq.value(), befores.get(seq.value())?.as_ref().map(|b| b.value()));
+                    fill_before(&mut event, seq.value(), befores.get(seq.value())?.as_ref().map(|b| b.value()));
                 }
                 out.push(event);
             }
@@ -378,8 +414,9 @@ impl Edits {
             let seq = seq.value();
             let Some(mut event) = read_event(seq, bytes.value()) else { continue };
             if event.has_before && with_before(&event) {
-                event.before = read_before(seq, befores.get(seq)?.as_ref().map(|b| b.value()));
+                fill_before(&mut event, seq, befores.get(seq)?.as_ref().map(|b| b.value()));
             }
+            event.inline_before = None;
             out.push((seq, event));
         }
         Ok(out)
@@ -441,7 +478,7 @@ impl Edits {
                 && let Some(mut event) = read_event(seq, bytes.value())
             {
                 if event.has_before {
-                    event.before = read_before(seq, befores.get(seq)?.as_ref().map(|b| b.value()));
+                    fill_before(&mut event, seq, befores.get(seq)?.as_ref().map(|b| b.value()));
                 }
                 out.push(event);
             }
@@ -531,6 +568,11 @@ impl EditsBatch {
         let mut event = event.clone();
         if let Some(newest) = newest {
             event.at = event.at.max(newest);
+        }
+        // With History off, the entry is what 0.5 wrote.
+        if !self.keep_before {
+            event.before = None;
+            event.has_before = false;
         }
         let bytes = serde_json::to_vec(&event)?;
         table.insert(next, bytes.as_slice())?;
@@ -810,5 +852,102 @@ mod tests {
         assert_eq!(read.iter().map(|(_, e)| e.at).collect::<Vec<_>>(), [10, 30, 30, 40]);
         assert_eq!(edits.seq_after(30).unwrap(), 3);
         assert_eq!((edits.first_at().unwrap(), edits.last_at().unwrap()), (Some(10), Some(40)));
+    }
+
+    fn a_photo(n: u32) -> Photo {
+        use c1model::{AssetId, EditInfo, Exif, FileInfo, Iptc, Place};
+        Photo {
+            id: PhotoId::new(&c1model::SourceId("c1".into()), n.to_string()),
+            asset: AssetId(n.to_string()),
+            variant_index: 0,
+            file: FileInfo { name: format!("{n}.raf"), ext: "raf".into(), path: None, size: None, offline: false },
+            captured_at: None,
+            imported_at: None,
+            exif: Exif::default(),
+            rating: Some(3),
+            color: None,
+            keywords: vec![],
+            iptc: Iptc::default(),
+            place: Place::default(),
+            geo: None,
+            collections: vec![],
+            edit: EditInfo::default(),
+            trashed: false,
+        }
+    }
+
+    fn removed(n: u32) -> Event {
+        let photo = a_photo(n);
+        Event::new(5, Origin::Source, What::Removed { photo: photo.id.clone(), name: photo.file.name.clone() })
+            .with_before(Before::Photo(Box::new(photo)))
+    }
+
+    /// Writes raw entries into the log, as another build would.
+    fn put_raw(path: &Path, entries: &[(u64, &str)]) {
+        let db = Database::create(path).unwrap();
+        let tx = db.begin_write().unwrap();
+        {
+            let mut events = tx.open_table(EVENTS).unwrap();
+            for (seq, json) in entries {
+                events.insert(*seq, json.as_bytes()).unwrap();
+            }
+        }
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn what_the_first_history_builds_kept_in_the_entry_still_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edits.redb");
+        drop(Edits::open(&path).unwrap());
+        // The first builds of the History tab wrote `before` into the entry itself.
+        let photo = serde_json::to_string(&Before::Photo(Box::new(a_photo(7)))).unwrap();
+        let whole = format!(
+            r#"{{"at":5,"origin":"Source","removed":{{"photo":{{"source":"c1","ext":"7"}},"name":"7.raf"}},"before":{photo}}}"#
+        );
+        // And one of a shape this build cannot read: the entry still does.
+        let odd = r#"{"at":6,"origin":"Source","removed":{"photo":{"source":"c1","ext":"8"},"name":"8.raf"},"before":{"Photo":{"future":true}}}"#;
+        put_raw(&path, &[(0, &whole), (1, odd)]);
+        let edits = Edits::open(&path).unwrap();
+        let events = edits.events(10).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.has_before && matches!(e.what, What::Removed { .. })));
+        assert_eq!(
+            (events[1].before.clone(), events[0].before.clone()),
+            (Some(Before::Photo(Box::new(a_photo(7)))), None)
+        );
+        // Reads that do not ask for it do not carry it.
+        let page = edits.range(0..2, &|_| false).unwrap();
+        assert!(page.iter().all(|(_, e)| e.before.is_none() && e.has_before));
+        assert_eq!(page[0].1, Event { has_before: true, ..Event::new(5, Origin::Source, events[1].what.clone()) });
+    }
+
+    #[test]
+    fn with_history_off_entries_are_what_0_5_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        edits.set_keep_before(false);
+        let mut batch = edits.batch().unwrap();
+        batch.log(&removed(7)).unwrap();
+        batch.commit().unwrap();
+        let tx = edits.db.begin_read().unwrap();
+        let bytes = tx.open_table(EVENTS).unwrap().get(0).unwrap().unwrap().value().to_vec();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            r#"{"at":5,"origin":"Source","removed":{"photo":{"source":"c1","ext":"7"},"name":"7.raf"}}"#
+        );
+        assert!(tx.open_table(BEFORES).unwrap().first().unwrap().is_none());
+        drop(tx);
+        // Still in the photo's history.
+        let id = PhotoId::new(&c1model::SourceId("c1".into()), "7".to_string());
+        assert_eq!(edits.photo_events(&id.key()).unwrap().len(), 1);
+
+        // Back on, entries keep it again; the one logged while off stays as it was.
+        edits.set_keep_before(true);
+        let mut batch = edits.batch().unwrap();
+        batch.log(&removed(8)).unwrap();
+        batch.commit().unwrap();
+        let both = edits.events(2).unwrap();
+        assert_eq!((both[0].before.is_some(), both[1].before.is_some()), (true, false));
     }
 }

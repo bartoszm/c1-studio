@@ -84,8 +84,8 @@ up at the next of these, or on the next start.
   Settings, and the number of matching photos with how long the query took. On a narrow
   window the search box gives way first; the map's own tools sit in a row above the map.
 - **Settings** (⚙): *Sidebar* (which sections show, in what order), *Map & places*
-  (online map services, places by name) and *Analysis* (the lines between classes; see
-  [Look](#look)).
+  (online map services, places by name), *Analysis* (the lines between classes; see
+  [Look](#look)) and *History* (the History tab on or off; see [History](#history)).
 - **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera and
   Country. Click a section's title to fold it. Which sections are folded and which
   branches are open is remembered.
@@ -470,6 +470,20 @@ is not known.
   the app recorded them (from this version on).
 - Each photo's own history, in the details panel, now also shows keyword tree changes and
   album deletes that touched it.
+
+For the tab, the change log also keeps what a change replaced: a photo as it was when it
+was removed or deleted, an album as it was before a rename, move or delete (and who was
+in it), and the keywords a keyword tree change rewrote. One read of the catalog keeps at
+most 5,000 removed photos whole; past that, they are logged without it, so a catalog that
+comes back empty for a moment does not fill the log.
+
+**Turning it off.** *Settings › History › Show the History tab* (on unless you turn it
+off) is kept per catalog. Off, the tab is hidden and a pick from it leaves the grid; the
+change log goes on as before this version, every change logged but nothing of what it
+replaced, and the app does no history work (no compare, no log pages, no day counts).
+The details panel still shows each photo's history. Entries logged so far stay as they
+are, so turning it back on finds them; what happened while it was off is in the log too,
+only without what those changes replaced.
 
 Restoring a past state is not in this version.
 
