@@ -2352,6 +2352,7 @@ pub fn run() {
             ai::ai_settings,
             ai::set_ai_settings,
             ai::set_ai_key,
+            ai::ai_prompt,
             ai::ai_estimate,
             ai::start_describe,
             ai::stop_describe,

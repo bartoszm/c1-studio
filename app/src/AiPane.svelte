@@ -67,6 +67,28 @@
     }
   }
 
+  // How long a run has taken and will take: a clock that ticks while it runs.
+  let now = $state(Date.now());
+  $effect(() => {
+    if (!describe?.running) return;
+    now = Date.now();
+    const timer = setInterval(() => (now = Date.now()), 1000);
+    return () => clearInterval(timer);
+  });
+  let elapsed = $derived(describe?.running && describe.started ? Math.max(0, now - describe.started) : 0);
+  /** From the pace so far, once a photo is back; the photos at work count as half done. */
+  let left = $derived.by(() => {
+    if (!describe?.running || describe.done < 1) return null;
+    const done = describe.done + describe.working.length / 2;
+    return (elapsed / done) * (describe.total - done);
+  });
+  function duration(ms: number): string {
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s} s`;
+    const m = Math.round(s / 60);
+    return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+  }
+
   // ---- the review ---------------------------------------------------------------------
   type Show = SuggestionStatus | "All";
   let show = $state<Show>("Proposed");
@@ -96,21 +118,40 @@
   });
 
   /** A card as first shown: known keywords ticked, new ones not (they would be added to the
-   *  catalog), the rating not taken (ratings are the photographer's own). */
+   *  catalog), the rating not taken (ratings are the photographer's own), and a caption or
+   *  headline taken only where the photo has none: what it has is replaced only on a tick. */
   function draftOf(r: SuggestionRow): Draft {
     const s = r.suggestion;
+    const now = r.current;
     const keywords: Record<string, boolean> = {};
     for (const k of s.keywords) keywords[k] = true;
     for (const k of s.keywords_new) keywords[k] = false;
+    const caption = s.caption_en ?? s.caption_pl ?? "";
     return {
-      caption: s.caption_en ?? s.caption_pl ?? "",
+      caption,
       headline: s.headline ?? "",
       rating: s.rating,
       keywords,
-      takeCaption: !!(s.caption_en ?? s.caption_pl),
-      takeHeadline: !!s.headline,
+      takeCaption: !!caption && !now?.caption,
+      takeHeadline: !!s.headline && !now?.headline,
       takeRating: false,
     };
+  }
+
+  /** The photo has this keyword already: taking it changes nothing. */
+  const has = (r: SuggestionRow, path: string) =>
+    !!r.current?.keywords.some((k) => k.toLowerCase() === path.toLowerCase());
+
+  /** What accepting this card would overwrite that the photo has now. */
+  function replaces(r: SuggestionRow): string[] {
+    const d = drafts[r.row];
+    const now = r.current;
+    if (!d || !now) return [];
+    return [
+      d.takeCaption && now.caption && d.caption.trim() !== now.caption && "caption",
+      d.takeHeadline && now.headline && d.headline.trim() !== now.headline && "headline",
+      d.takeRating && now.rating && d.rating !== now.rating && `rating (${now.rating}★)`,
+    ].filter((x): x is string => !!x);
   }
 
   function pickOf(row: number): Accept {
@@ -162,7 +203,14 @@
   <div class="bar">
     <div class="run">
       {#if describe?.running}
-        <span class="muted">Describing {describe.done.toLocaleString()} / {describe.total.toLocaleString()} · {money(describe.cost)}</span>
+        <span>
+          Describing <b>{describe.done.toLocaleString()}</b> of {describe.total.toLocaleString()}
+          <span class="muted">
+            · {describe.working.length} at work · {duration(elapsed)}
+            {left === null ? "· the first answers take a few seconds" : `· about ${duration(left)} left`}
+            {describe.failed ? `· ${describe.failed} failed` : ""}{describe.cost ? ` · ${money(describe.cost)}` : ""}
+          </span>
+        </span>
         <progress max={describe.total} value={describe.done}></progress>
         <button class="btn" onclick={() => api.stopDescribe().catch((e) => onerror(String(e)))}>Stop</button>
       {:else if estimate}
@@ -200,6 +248,17 @@
     </button>
   </div>
 
+  {#if describe?.running && describe.working.length}
+    <div class="at-work" aria-label="Photos being described">
+      <span class="muted">Now:</span>
+      {#each describe.working as row (row)}
+        <button class="busy" onclick={() => onselect(row)} title="Being described: show this photo">
+          <img src={api.thumbUrl(row)} alt="" decoding="async" />
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <div class="bar">
     <nav class="parts">
       {#each ["Proposed", "Accepted", "Rejected", "All"] as const as s (s)}
@@ -209,7 +268,12 @@
     {#if proposed.length}
       <div class="bulk">
         <label class="muted">confidence ≥ <input type="number" min="0" max="1" step="0.05" bind:value={minConfidence} /></label>
-        <button class="btn" disabled={working || !sure.length} onclick={() => accept(sure.map((r) => r.row))}>Accept {sure.length.toLocaleString()}</button>
+        <button
+          class="btn"
+          disabled={working || !sure.length}
+          title="Takes what each card has ticked: a caption, headline or rating a photo already has is kept unless ticked on its card"
+          onclick={() => accept(sure.map((r) => r.row))}
+        >Accept {sure.length.toLocaleString()}</button>
         <button class="btn" disabled={working} onclick={() => setStatus(proposed.map((r) => r.row), "Rejected")}>Reject all {proposed.length.toLocaleString()}</button>
       </div>
     {/if}
@@ -225,41 +289,71 @@
       {@const d = drafts[r.row]}
       {@const s = r.suggestion}
       {#if d}
+        {@const now = r.current}
+        {@const over = replaces(r)}
         <article class="card" class:done={r.status !== "Proposed"}>
           <button class="thumb" onclick={() => onselect(r.row)} title="Show this photo">
             <img src={api.thumbUrl(r.row)} alt="" loading="lazy" decoding="async" />
           </button>
           <div class="body">
             <div class="head">
-              <input class="headline" bind:value={d.headline} placeholder="Headline" disabled={!d.takeHeadline} />
-              <input type="checkbox" bind:checked={d.takeHeadline} title="Take the headline" />
+              {#if s.headline}
+                <input class="headline" bind:value={d.headline} placeholder="Headline" disabled={!d.takeHeadline} />
+                <input type="checkbox" bind:checked={d.takeHeadline} title={now?.headline ? "Replace the headline the photo has" : "Take the headline"} />
+              {:else}
+                <span class="headline muted">{s.subject ?? ""}</span>
+              {/if}
               <span class="conf" title="How sure the model is">{Math.round(s.confidence * 100)}%</span>
             </div>
-            <div class="caption">
-              <textarea rows="3" bind:value={d.caption} disabled={!d.takeCaption}></textarea>
-              <div class="side">
-                <input type="checkbox" bind:checked={d.takeCaption} title="Take the caption" />
-                {#if s.caption_en && s.caption_pl}
-                  <button class="tiny" onclick={() => (d.caption = s.caption_en ?? "")}>EN</button>
-                  <button class="tiny" onclick={() => (d.caption = s.caption_pl ?? "")}>PL</button>
-                {/if}
+            {#if s.headline && now?.headline && now.headline !== d.headline.trim()}
+              <p class="now" class:replacing={d.takeHeadline}><span>Now</span>{now.headline}</p>
+            {:else if s.headline && now?.headline}
+              <p class="now"><span>Now</span>the same headline</p>
+            {/if}
+            {#if s.caption_en || s.caption_pl}
+              {#if now?.caption && now.caption !== d.caption.trim()}
+                <p class="now" class:replacing={d.takeCaption}><span>Now</span>{now.caption}</p>
+              {/if}
+              <div class="caption">
+                <textarea rows="3" bind:value={d.caption} disabled={!d.takeCaption}></textarea>
+                <div class="side">
+                  <input type="checkbox" bind:checked={d.takeCaption} title={now?.caption ? "Replace the caption the photo has" : "Take the caption"} />
+                  {#if s.caption_en && s.caption_pl}
+                    <button class="tiny" onclick={() => (d.caption = s.caption_en ?? "")}>EN</button>
+                    <button class="tiny" onclick={() => (d.caption = s.caption_pl ?? "")}>PL</button>
+                  {/if}
+                  {#if now?.caption}
+                    <button class="tiny" title="Start from the caption the photo has" onclick={() => (d.caption = now.caption ?? "")}>Now</button>
+                  {/if}
+                </div>
               </div>
-            </div>
-            <div class="keywords">
-              {#each Object.keys(d.keywords) as k (k)}
-                <label class="kw" class:new={s.keywords_new.includes(k)} title={s.keywords_new.includes(k) ? "New: added to the catalog" : k}>
-                  <input type="checkbox" bind:checked={d.keywords[k]} />{leaf(k)}
-                </label>
-              {/each}
-            </div>
+            {/if}
+            {#if Object.keys(d.keywords).length}
+              <div class="keywords">
+                {#each Object.keys(d.keywords) as k (k)}
+                  {@const already = has(r, k)}
+                  <label
+                    class="kw"
+                    class:new={s.keywords_new.includes(k)}
+                    class:has={already}
+                    title={already ? "The photo has it already" : s.keywords_new.includes(k) ? "New: added to the catalog" : k}
+                  >
+                    <input type="checkbox" checked={already || d.keywords[k]} disabled={already} onchange={(e) => (d.keywords[k] = e.currentTarget.checked)} />{leaf(k)}
+                  </label>
+                {/each}
+              </div>
+            {/if}
             <div class="facts muted">
-              <label title="Take the rating">
-                <input type="checkbox" bind:checked={d.takeRating} />
-                <span class="stars">{stars(d.rating)}</span>
-              </label>
+              {#if s.rating}
+                <label title={now?.rating ? "Replace the photo's rating" : "Take the rating"}>
+                  <input type="checkbox" bind:checked={d.takeRating} />
+                  <span class="stars">{stars(d.rating)}</span>
+                </label>
+                {#if now?.rating && now.rating !== d.rating}<span title="The photo's rating now">now <span class="stars">{"★".repeat(now.rating)}</span></span>{/if}
+              {/if}
               {#if s.quality}<span>quality {s.quality}/5</span>{/if}
               {#if s.composition}<span>composition {s.composition}/5</span>{/if}
-              {#if s.subject}<span>subject: {s.subject}</span>{/if}
+              {#if s.subject && s.headline}<span>subject: {s.subject}</span>{/if}
               {#if s.place}<span title="A guess, never applied">place? {[s.place.city, s.place.country].filter(Boolean).join(", ")} ({Math.round(s.place.confidence * 100)}%)</span>{/if}
               <span title={r.model}>{money(r.cost)}</span>
             </div>
@@ -270,6 +364,7 @@
               {#if r.status === "Proposed"}
                 <button class="btn primary" disabled={working} onclick={() => accept([r.row])}>Accept</button>
                 <button class="btn" disabled={working} onclick={() => setStatus([r.row], "Rejected")}>Reject</button>
+                {#if over.length}<span class="replace-note">replaces the {over.join(", ")} it has now</span>{/if}
               {:else}
                 <span class="muted">{r.status === "Accepted" ? "Accepted: in the edit queue" : "Rejected"}</span>
                 <button class="btn" disabled={working} onclick={() => setStatus([r.row], "Proposed")}>Review again</button>
@@ -320,5 +415,16 @@
   .facts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .facts label { display: inline-flex; align-items: center; gap: 4px; }
   .stars { color: #e8b03a; letter-spacing: 1px; }
-  .actions { display: flex; gap: 8px; align-items: center; }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .replace-note { color: #e8b03a; font-size: 12px; }
+  /* What the photo has now, above what would replace it. */
+  .now { margin: 0; padding: 3px 6px; font-size: 12px; color: var(--muted, #999); border-left: 2px solid var(--line, #444); }
+  .now > span { margin-right: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .now.replacing { border-left-color: #e8b03a; text-decoration: line-through; text-decoration-color: rgb(232 176 58 / 60%); }
+  .kw.has { opacity: 0.55; }
+  .at-work { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; flex-wrap: wrap; }
+  .busy { padding: 0; border-radius: 3px; outline: 2px solid #5b8def; animation: pulse 1.4s ease-in-out infinite; }
+  .busy img { display: block; width: 56px; height: 56px; object-fit: cover; border-radius: 3px; }
+  @keyframes pulse { 50% { outline-color: rgb(91 141 239 / 25%); } }
+  @media (prefers-reduced-motion: reduce) { .busy { animation: none; } }
 </style>

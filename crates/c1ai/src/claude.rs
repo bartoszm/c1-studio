@@ -91,6 +91,7 @@ pub struct Claude {
     model: Model,
     options: Options,
     system: String,
+    schema: Value,
     prompt: u64,
     vocabulary: Vocabulary,
     agent: ureq::Agent,
@@ -101,13 +102,14 @@ impl Claude {
         let model =
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
         let system = crate::system_prompt(brief);
-        let prompt = crate::prompt::prompt_hash(&system);
+        let schema = crate::schema(&brief.fields);
+        let prompt = crate::prompt_hash(&system, &schema);
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))
             .http_status_as_error(false)
             .build()
             .into();
-        Ok(Claude { key, model, options, system, prompt, vocabulary, agent })
+        Ok(Claude { key, model, options, system, schema, prompt, vocabulary, agent })
     }
 
     fn body(&self, photo: &PhotoRequest) -> Value {
@@ -118,7 +120,7 @@ impl Claude {
             "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
             "output_config": {
                 "effort": self.options.effort,
-                "format": {"type": "json_schema", "schema": crate::schema()}
+                "format": {"type": "json_schema", "schema": self.schema}
             },
             "messages": [{
                 "role": "user",

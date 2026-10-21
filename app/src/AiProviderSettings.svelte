@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import type { AiView } from "./lib/api";
 
@@ -22,10 +22,50 @@
       busy = false;
     }
   }
-  onMount(() => run(api.aiSettings));
+  onMount(() => run(api.aiSettings).then(() => (draft = view?.settings.instructions ?? view?.default_instructions ?? "")));
   const save = (change: Partial<api.AiSettings>) => view && run(() => api.setAiSettings({ ...view!.settings, ...change }));
   const saveKey = (key: string) => run(() => api.setAiKey(key)).then(() => (keyInput = ""));
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
+
+  // ---- what a description holds -------------------------------------------------------
+  const FIELDS: { key: keyof api.AiFields; label: string; hint: string }[] = [
+    { key: "caption", label: "Caption", hint: "two or three sentences, in the language below" },
+    { key: "headline", label: "Headline", hint: "at most five words" },
+    { key: "subject", label: "Subject", hint: "the main subject, shown on the card" },
+    { key: "keywords", label: "Keywords", hint: "chosen from the catalog's own" },
+    { key: "keywords_new", label: "New keywords", hint: "at most three the catalog lacks" },
+    { key: "rating", label: "Rating", hint: "1 to 5 stars, never taken unless ticked" },
+    { key: "scores", label: "Quality and composition", hint: "1 to 5 each, shown on the card" },
+    { key: "place", label: "Place guess", hint: "city and country from landmarks or signs; never applied" },
+  ];
+  function toggleField(key: keyof api.AiFields, on: boolean) {
+    if (!view) return;
+    save({ fields: { ...view.settings.fields, [key]: on } });
+  }
+
+  // ---- the prompt -------------------------------------------------------------------
+  let showPrompt = $state(false);
+  let draft = $state("");
+  let own = $derived(!!view?.settings.instructions);
+  let edited = $derived(!!view && draft.trim() !== (view.settings.instructions ?? view.default_instructions).trim());
+  let preview = $state<api.AiPrompt | null>(null);
+  async function saveInstructions(text: string | null) {
+    await run(() => api.setAiSettings({ ...view!.settings, instructions: text }));
+    draft = view?.settings.instructions ?? view?.default_instructions ?? "";
+  }
+  async function togglePreview() {
+    if (preview) return (preview = null);
+    try {
+      preview = await api.aiPrompt();
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  // The preview follows the settings it shows (read untracked: it is what this sets).
+  $effect(() => {
+    void view?.settings;
+    if (untrack(() => preview)) api.aiPrompt().then((p) => (preview = p)).catch(() => {});
+  });
 </script>
 
 <h3>Describing photos</h3>
@@ -110,6 +150,47 @@
     </div>
   </div>
   {#if error}<p class="warn">{error}</p>{/if}
+
+  <h3 class="next">What a description holds</h3>
+  <div class="fields">
+    {#each FIELDS as f (f.key)}
+      <label class="field">
+        <input type="checkbox" checked={view.settings.fields[f.key]} disabled={busy} onchange={(e) => toggleField(f.key, e.currentTarget.checked)} />
+        <span>{f.label} <small class="muted">{f.hint}</small></span>
+      </label>
+    {/each}
+  </div>
+  <p class="muted small">
+    What the photo already has (caption, headline, keywords, rating) is sent along as context, and the review shows it beside
+    each suggestion. Changing these settings, or the prompt, lets photos described before be described again.
+  </p>
+
+  <h3 class="next">
+    <button class="disclosure" aria-expanded={showPrompt} onclick={() => (showPrompt = !showPrompt)}>
+      {showPrompt ? "▾" : "▸"} Prompt {own ? "(your own)" : ""}
+    </button>
+  </h3>
+  {#if showPrompt}
+    <p class="muted small">
+      The instructions the model gets first. The list of fields ticked above, the caption language and the catalog's keyword
+      vocabulary are added after them, so the answer always fits the review.
+    </p>
+    <textarea class="prompt" rows="10" bind:value={draft} spellcheck="false"></textarea>
+    <div class="row-buttons">
+      <button class="small-btn" disabled={busy || !edited} onclick={() => saveInstructions(draft)}>Save prompt</button>
+      <button class="small-btn" disabled={busy || !edited} onclick={() => (draft = view?.settings.instructions ?? view?.default_instructions ?? "")}>Undo changes</button>
+      <button class="small-btn" disabled={busy || !own} onclick={() => saveInstructions(null)}>Back to the default</button>
+      <button class="small-btn" onclick={togglePreview}>{preview ? "Hide" : "Show"} the full prompt</button>
+    </div>
+    {#if preview}
+      <pre class="preview">{preview.system}</pre>
+      <details>
+        <summary class="muted small">The answer's JSON Schema</summary>
+        <pre class="preview">{JSON.stringify(preview.schema, null, 2)}</pre>
+      </details>
+    {/if}
+  {/if}
+
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
     sent to Anthropic as previews of at most 1568 pixels. These settings belong to this catalog.
@@ -123,8 +204,8 @@
   .grid > label, .label { color: var(--muted); }
   .grid > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .grid small { flex-basis: 100%; font-size: 12px; }
-  select, input { padding: 2px 6px; background: var(--panel); color: inherit; border: 1px solid var(--line, #444); border-radius: 3px; font: inherit; }
-  select:focus, input:focus { outline: none; border-color: var(--queued); }
+  select, input, textarea { padding: 2px 6px; background: var(--panel); color: inherit; border: 1px solid var(--line, #444); border-radius: 3px; font: inherit; }
+  select:focus, input:focus, textarea:focus { outline: none; border-color: var(--queued); }
   input[type="password"] { width: 280px; }
   input[type="number"] { width: 56px; }
   .small-btn { padding: 2px 10px; border: 1px solid var(--line); border-radius: 4px; }
@@ -132,4 +213,13 @@
   .muted { color: var(--muted); }
   .small { font-size: 12px; }
   .warn { color: #e8b03a; }
+  h3.next { margin-top: 18px; }
+  .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; }
+  .field { display: flex; align-items: baseline; gap: 6px; cursor: pointer; }
+  .field small { font-size: 11px; }
+  .disclosure { padding: 0; font: inherit; font-weight: 600; }
+  .disclosure:hover { text-decoration: underline; }
+  .prompt { width: 100%; box-sizing: border-box; resize: vertical; font: 12px/1.4 ui-monospace, Consolas, monospace; }
+  .row-buttons { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .preview { max-height: 260px; overflow: auto; margin: 6px 0; padding: 8px; white-space: pre-wrap; font: 11px/1.4 ui-monospace, Consolas, monospace; background: rgb(0 0 0 / 25%); border: 1px solid var(--line); border-radius: 3px; }
 </style>

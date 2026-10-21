@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-pub use prompt::{Brief, Language, prompt_hash, schema, system_prompt};
+pub use prompt::{Brief, Fields, INSTRUCTIONS, Language, prompt_hash, schema, system_prompt};
 
 /// Bumped when the prompt or the schema changes: photos described by another version are
 /// described again when asked.

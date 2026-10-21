@@ -2470,7 +2470,7 @@
     {/if}
     {#if describing?.running && describing.total}
       <button class="sync" title="Photos described by the vision model; the AI tab shows what it suggests" onclick={() => showTab("ai")}>
-        describing photos {describing.done.toLocaleString()} / {describing.total.toLocaleString()}
+        describing photos {describing.done.toLocaleString()} / {describing.total.toLocaleString()}{describing.working.length ? ` · ${describing.working.length} at work` : ""}
       </button>
     {/if}
     <span class="autosave" class:alone={!syncNote}>

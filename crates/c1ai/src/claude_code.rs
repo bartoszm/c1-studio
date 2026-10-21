@@ -66,6 +66,7 @@ pub struct ClaudeCode {
     options: Options,
     /// The system prompt, in a file: with the vocabulary it can outgrow a command line.
     system: PathBuf,
+    schema: Value,
     prompt: u64,
     vocabulary: Vocabulary,
 }
@@ -75,11 +76,12 @@ impl ClaudeCode {
         let model =
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
         let text = crate::system_prompt(brief);
-        let prompt = crate::prompt::prompt_hash(&text);
+        let schema = crate::schema(&brief.fields);
+        let prompt = crate::prompt_hash(&text, &schema);
         // Named by its hash, so runs at once share one file and never see another's.
         let system = std::env::temp_dir().join(format!("c1studio-ai-{prompt:016x}.txt"));
         std::fs::write(&system, text).map_err(|e| AiError::Cli(e.to_string()))?;
-        Ok(ClaudeCode { program, model, options, system, prompt, vocabulary })
+        Ok(ClaudeCode { program, model, options, system, schema, prompt, vocabulary })
     }
 
     fn args(&self) -> Vec<String> {
@@ -103,7 +105,7 @@ impl ClaudeCode {
         .into();
         args.extend(["--model".into(), self.model.id.into(), "--effort".into(), self.options.effort.clone()]);
         args.extend(["--system-prompt-file".into(), self.system.display().to_string()]);
-        args.extend(["--json-schema".into(), crate::schema().to_string()]);
+        args.extend(["--json-schema".into(), self.schema.to_string()]);
         args
     }
 
@@ -263,7 +265,7 @@ mod tests {
         let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
         assert_eq!(after("--tools"), "");
         assert_eq!(after("--model"), "claude-opus-5-5");
-        assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), crate::schema());
+        assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), crate::schema(&brief.fields));
         assert!(std::fs::read_to_string(after("--system-prompt-file")).unwrap().contains("street"));
         let message = ClaudeCode::message(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into() });
         let message: Value = serde_json::from_str(message.trim_end()).unwrap();

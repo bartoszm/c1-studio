@@ -1511,8 +1511,25 @@ country) and 68k have neither.
   queues keywords, caption, headline and rating through `edit_photos_as` as
   `Origin::Ai` (shown as "AI" in the history), made from the photo as it is then; new
   keywords are added to the catalog. A place guess is never applied.
+- **What is asked:** Settings > AI ticks the fields a description holds (caption,
+  headline, subject, keywords, new keywords, rating, quality and composition, place
+  guess); the schema and the prompt's list of fields follow (`Fields`). The opening
+  instructions can be rewritten (kept as `instructions`, `null` for the default), with
+  the full prompt and schema shown; fields, language and vocabulary are always appended,
+  so the answer fits the review whatever the instructions say. Any change gives a new
+  prompt hash, so photos can be described again.
+- **What the photo has:** its title, headline, caption, rating and keywords go with it as
+  context; the default instructions tell the model to build on them and not to repeat
+  keywords. Each review card shows the photo's current values ("Now") beside the
+  suggestion; a caption or headline it already has is not taken unless ticked (struck
+  through when it would be replaced, with "replaces the … it has now" by Accept), keywords
+  it has are dimmed, its rating shown beside the suggested one. Bulk accept follows the
+  cards, so it never overwrites what is there.
+- **Progress:** the run's state is sent as it starts, with the photos at work (shown
+  pulsing in the AI tab), the start time, elapsed and, once a photo is back, the time
+  left; the footer counts the photos at work too.
 - **App:** `ai.rs` commands. Settings per catalog in `ai.json` (access: API key or
-  Claude plan, model, caption language, effort, photos at once). A run first shows its estimate (photos × ~2.3k input, ~0.7k
+  Claude plan, model, caption language, effort, photos at once, fields, instructions). A run first shows its estimate (photos × ~2.3k input, ~0.7k
   output tokens) and leaves out photos described with the same model and prompt unless
   *again* is ticked. Up to 8 calls at a time; each answer is stored as it comes, so a
   stopped run keeps what it got; a refused key stops the run.

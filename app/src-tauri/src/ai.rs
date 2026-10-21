@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
-use c1ai::{AiError, Brief, Language, PhotoRequest, VisionProvider, Vocabulary};
+use c1ai::{AiError, Brief, Fields, Language, PhotoRequest, VisionProvider, Vocabulary};
 use c1index::Accept;
 use c1index::ai::{Entry, Status};
 use c1model::{ImageTier, Op, Photo};
@@ -17,7 +17,6 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{App, Lowers, Session, is_current, text};
 
-/// What the user chose for describing photos, kept per catalog in `ai.json`.
 /// How Claude is reached: the API with a key, billed per token, or Claude Code signed
 /// in with a Claude plan, counted against the plan's limits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +27,7 @@ pub(crate) enum Access {
     Plan,
 }
 
+/// What the user chose for describing photos, kept per catalog in `ai.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AiSettings {
@@ -38,6 +38,10 @@ pub(crate) struct AiSettings {
     effort: String,
     /// Photos described at once.
     parallel: usize,
+    /// What a description holds.
+    fields: Fields,
+    /// The user's own instructions in place of [`c1ai::INSTRUCTIONS`].
+    instructions: Option<String>,
 }
 
 impl Default for AiSettings {
@@ -48,6 +52,8 @@ impl Default for AiSettings {
             language: Language::En,
             effort: "low".into(),
             parallel: 4,
+            fields: Fields::default(),
+            instructions: None,
         }
     }
 }
@@ -60,13 +66,17 @@ fn load_settings(s: &Session) -> AiSettings {
     std::fs::read(settings_path(s)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
-/// How far a run has got, for the footer.
+/// How far a run has got, for the footer and the AI tab.
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct DescribeState {
     running: bool,
     done: usize,
     total: usize,
     failed: usize,
+    /// The photos being described now.
+    working: Vec<u64>,
+    /// When the run started, Unix ms: with `done`, how long the rest will take.
+    started: i64,
     /// US dollars spent by this run.
     cost: f64,
     /// Why the run stopped early (no key, a refused key), or the last photo's failure.
@@ -114,6 +124,8 @@ pub(crate) struct AiView {
     /// Calls made in this library and what they cost in all.
     calls: u64,
     spent: f64,
+    /// The instructions a run gives when the user wrote none.
+    default_instructions: &'static str,
 }
 
 fn view(s: &Session) -> Result<AiView, String> {
@@ -136,6 +148,7 @@ fn view(s: &Session) -> Result<AiView, String> {
         ready,
         calls,
         spent,
+        default_instructions: c1ai::INSTRUCTIONS,
     })
 }
 
@@ -151,7 +164,14 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     if claude::model(&settings.model).is_none() {
         return Err(format!("unknown model {}", settings.model));
     }
-    let settings = AiSettings { parallel: settings.parallel.clamp(1, 8), ..settings };
+    if !settings.fields.any() {
+        return Err("Pick at least one thing to describe".into());
+    }
+    // The default instructions, or none written, are kept as "the default": a later
+    // version of them then reaches this catalog too.
+    let instructions =
+        settings.instructions.map(|i| i.trim().to_string()).filter(|i| !i.is_empty() && i != c1ai::INSTRUCTIONS.trim());
+    let settings = AiSettings { parallel: settings.parallel.clamp(1, 8), instructions, ..settings };
     std::fs::write(settings_path(&s), serde_json::to_vec_pretty(&settings).map_err(text)?).map_err(text)?;
     tauri::async_runtime::spawn_blocking(move || view(&s)).await.map_err(text)?
 }
@@ -196,9 +216,30 @@ fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), Stri
                 names
             },
         ),
+        fields: settings.fields,
+        instructions: settings.instructions.clone(),
     };
     let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)));
     Ok((brief, vocabulary))
+}
+
+/// The prompt a run with the current settings would send, for the user to read.
+#[derive(Serialize)]
+pub(crate) struct PromptView {
+    system: String,
+    schema: serde_json::Value,
+}
+
+#[tauri::command]
+pub(crate) async fn ai_prompt(app: State<'_, App>) -> Result<PromptView, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_settings(&s);
+        let (brief, _) = brief(&s, &settings)?;
+        Ok(PromptView { system: c1ai::system_prompt(&brief), schema: c1ai::schema(&brief.fields) })
+    })
+    .await
+    .map_err(text)?
 }
 
 /// The provider for a run with these settings: the API with the stored key, or Claude
@@ -226,7 +267,8 @@ fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), 
     let settings = load_settings(s);
     let model = claude::model(&settings.model).ok_or("unknown model")?;
     // Both ways send the same prompt, so a photo described one way counts for the other.
-    let prompt = c1ai::prompt_hash(&c1ai::system_prompt(&brief(s, &settings)?.0));
+    let (brief, _) = brief(s, &settings)?;
+    let prompt = c1ai::prompt_hash(&c1ai::system_prompt(&brief), &c1ai::schema(&brief.fields));
     let done = if again { Default::default() } else { s.library.described(rows, model.id, prompt).map_err(text)? };
     let todo: Vec<u64> = rows.iter().copied().filter(|r| !done.contains(r)).collect();
     let on_plan = settings.access == Access::Plan;
@@ -261,6 +303,16 @@ fn context(photo: &Photo) -> String {
         .collect();
     if !place.is_empty() {
         parts.push(format!("place: {}", place.join(", ")));
+    }
+    // What the photographer wrote: the model builds on it rather than guessing again.
+    let quoted = |label: &str, value: &Option<String>| {
+        value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(|v| format!("{label}: \"{v}\""))
+    };
+    parts.extend(quoted("title", &photo.iptc.title));
+    parts.extend(quoted("headline", &photo.iptc.headline));
+    parts.extend(quoted("caption", &photo.iptc.description));
+    if let Some(rating) = photo.rating {
+        parts.push(format!("rating: {rating}/5"));
     }
     if !photo.keywords.is_empty() {
         let keywords: Vec<String> = photo.keywords.iter().map(|k| k.to_pipe()).collect();
@@ -307,11 +359,19 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
         }
     };
     s.describe_stop.store(false, Ordering::SeqCst);
-    *s.describe.lock().unwrap() = DescribeState { running: true, total: todo.len(), ..DescribeState::default() };
+    let first = DescribeState {
+        running: true,
+        total: todo.len(),
+        started: chrono::Utc::now().timestamp_millis(),
+        ..DescribeState::default()
+    };
+    *s.describe.lock().unwrap() = first.clone();
+    // Shown at once: the first answer can take half a minute.
+    let _ = app.emit("describe", first.clone());
     std::thread::spawn(move || {
         let _done = Lowers(&s.describing);
         let next = AtomicUsize::new(0);
-        let state = Mutex::new(DescribeState { running: true, total: todo.len(), ..DescribeState::default() });
+        let state = Mutex::new(first);
         let report = |state: &DescribeState| {
             *s.describe.lock().unwrap() = state.clone();
             if is_current(&app, &s) {
@@ -323,8 +383,14 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                 scope.spawn(|| {
                     while !s.describe_stop.load(Ordering::SeqCst) && is_current(&app, &s) {
                         let Some(&row) = todo.get(next.fetch_add(1, Ordering::SeqCst)) else { break };
+                        {
+                            let mut st = state.lock().unwrap();
+                            st.working.push(row);
+                            report(&st);
+                        }
                         let outcome = describe_one(&s, provider.as_ref(), row);
                         let mut st = state.lock().unwrap();
+                        st.working.retain(|&r| r != row);
                         st.done += 1;
                         match outcome {
                             Ok(cost) => st.cost += cost,
@@ -347,7 +413,7 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                 });
             }
         });
-        let last = DescribeState { running: false, ..state.into_inner().unwrap() };
+        let last = DescribeState { running: false, working: Vec::new(), ..state.into_inner().unwrap() };
         s.log.event(
             &format!("Described {} photos, {} failed, ${:.4}", last.done - last.failed, last.failed, last.cost),
             &[],
@@ -390,20 +456,50 @@ pub(crate) async fn describe_state(app: State<'_, App>) -> Result<DescribeState,
     Ok(app.session()?.describe.lock().unwrap().clone())
 }
 
+/// What a photo has now of what a suggestion would set: the review shows the two side
+/// by side, so nothing the photographer wrote is replaced by mistake.
+#[derive(Serialize)]
+pub(crate) struct Current {
+    caption: Option<String>,
+    headline: Option<String>,
+    rating: Option<u8>,
+    /// Pipe paths.
+    keywords: Vec<String>,
+}
+
+impl Current {
+    fn of(photo: &Photo) -> Current {
+        let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
+        Current {
+            caption: text(&photo.iptc.description),
+            headline: text(&photo.iptc.headline),
+            rating: photo.rating,
+            keywords: photo.keywords.iter().map(|k| k.to_pipe()).collect(),
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(crate) struct SuggestionRow {
     row: u64,
     #[serde(flatten)]
     entry: Entry,
+    current: Option<Current>,
 }
 
-/// Stored suggestions, newest first: `proposed`, `accepted`, `rejected`, or all.
+/// Stored suggestions, newest first: `proposed`, `accepted`, `rejected`, or all; each
+/// with what its photo has now (edits queued included).
 #[tauri::command]
 pub(crate) async fn suggestions(app: State<'_, App>, status: Option<Status>) -> Result<Vec<SuggestionRow>, String> {
     let s = app.session()?;
     tauri::async_runtime::spawn_blocking(move || {
         let list = s.library.suggestions(status).map_err(text)?;
-        Ok(list.into_iter().map(|(row, entry)| SuggestionRow { row, entry }).collect())
+        list.into_iter()
+            .map(|(row, entry)| {
+                let current = s.library.photo(row).map_err(text)?.as_ref().map(Current::of);
+                Ok(SuggestionRow { row, entry, current })
+            })
+            .collect()
     })
     .await
     .map_err(text)?
