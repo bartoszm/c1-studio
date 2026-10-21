@@ -3,8 +3,8 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.4.0: [photo folders](#photo-folders) and
-[places from neighbours in time](#places-from-neighbours-in-time).
+New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
+[photo folders](#photo-folders) and [places from neighbours in time](#places-from-neighbours-in-time).
 
 - [Find anything, instantly](#find-anything-instantly)
 - [Photo folders](#photo-folders)

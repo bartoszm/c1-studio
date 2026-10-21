@@ -4,6 +4,10 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.5.0:** a [trash](docs/FEATURES.md#delete-with-a-trash): **Delete** takes photos
+out of every view, and nothing leaves the catalog or the drive until you empty it. Editing
+in the full-screen viewer is fixed: stars and keywords land on the photo shown.
+
 **New in 0.4.0:** open [photo folders](#photo-folders) (JPEG, PNG, TIFF and raw files,
 on any drive) like a catalog, choose in the installer which kinds of source to offer, and
 [refine places](docs/FEATURES.md#places-from-neighbours-in-time) from the photos taken
