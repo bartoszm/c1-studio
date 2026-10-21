@@ -123,6 +123,8 @@
   .grid > label, .label { color: var(--muted); }
   .grid > div { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
   .grid small { flex-basis: 100%; font-size: 12px; }
+  select, input { padding: 2px 6px; background: var(--panel); color: inherit; border: 1px solid var(--line, #444); border-radius: 3px; font: inherit; }
+  select:focus, input:focus { outline: none; border-color: var(--queued); }
   input[type="password"] { width: 280px; }
   input[type="number"] { width: 56px; }
   .small-btn { padding: 2px 10px; border: 1px solid var(--line); border-radius: 4px; }

@@ -68,7 +68,7 @@
   /** How far opening a source has got, while it is under way. */
   let startup = $state<api.Startup | null>(null);
   /** The window has read the source the app started with. It may start before it is open. */
-  let loaded = false;
+  let loaded = $state(false);
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
@@ -2321,7 +2321,8 @@
       onallof={toggleAllOf}
     />
   {/if}
-  {#if tab === "ai"}
+  <!-- Once the source is open: before, there is no library to read the settings from. -->
+  {#if tab === "ai" && loaded}
     <AiPane
       picked={aiTargets}
       describe={describing}
