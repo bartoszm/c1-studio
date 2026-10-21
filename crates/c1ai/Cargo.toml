@@ -1,0 +1,15 @@
+[package]
+name = "c1ai"
+description = "Photos described by a vision model: captions, keywords from the catalog's own vocabulary, a rating; checked before anything is suggested"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+xxhash-rust.workspace = true
+base64 = "0.22"
+ureq = { version = "3", features = ["json"] }
+keyring = { version = "3", features = ["windows-native"] }
