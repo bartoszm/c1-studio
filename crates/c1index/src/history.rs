@@ -9,7 +9,7 @@ use c1model::change::spot;
 use c1model::{CollectionId, KeywordPath, Op};
 use serde::{Deserialize, Serialize};
 
-use crate::edits::{Event, Origin, What};
+use crate::edits::{Before, Event, Origin, What};
 
 /// What sort of entry the log holds: the fields a photo has, and the other kinds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -308,10 +308,32 @@ impl Net {
                 state.deleted |= deleted;
             }
             What::Collection { .. } => self.album_changes.push(EventView::new(seq, event)),
-            What::Remap(_) => self.keyword_changes.push(EventView::new(seq, event)),
+            What::Remap(remap) => {
+                self.keyword_changes.push(EventView::new(seq, event));
+                // What it did to each photo it rewrote, when the entry kept them.
+                if let Some(Before::Keywords(photos)) = &event.before {
+                    for (photo, old) in photos {
+                        let mut new = old.clone();
+                        remap.apply(&mut new);
+                        let key = photo.key();
+                        for path in old.iter().filter(|p| !new.contains(p)) {
+                            *self.keywords.entry((key.clone(), path.clone())).or_default() -= 1;
+                        }
+                        for path in new.iter().filter(|p| !old.contains(p)) {
+                            *self.keywords.entry((key.clone(), path.clone())).or_default() += 1;
+                        }
+                    }
+                }
+            }
             What::Written { .. } => self.written += 1,
             What::Undone { .. } => {}
         }
+    }
+
+    /// Whether a photo is still there at the end: one removed since has no row to show,
+    /// so what happened to it before does not count.
+    fn alive(&self, photo: &str) -> bool {
+        self.presence.get(photo).is_none_or(|p| p.present_after)
     }
 
     fn changed(&self) -> impl Iterator<Item = (&String, LogKind)> {
@@ -321,6 +343,7 @@ impl Net {
             .map(|((photo, kind), _)| (photo, *kind))
             .chain(self.keywords.iter().filter(|(_, n)| **n != 0).map(|((photo, _), _)| (photo, LogKind::Keywords)))
             .chain(self.albums.iter().filter(|(_, n)| **n != 0).map(|((photo, _), _)| (photo, LogKind::Albums)))
+            .filter(|(photo, _)| self.alive(photo))
     }
 
     /// How many photos ended up with each field changed.
@@ -355,7 +378,7 @@ impl Net {
     pub fn keywords(&self, top: usize) -> (KeywordCounts, KeywordCounts) {
         let mut up: HashMap<&KeywordPath, usize> = HashMap::new();
         let mut down: HashMap<&KeywordPath, usize> = HashMap::new();
-        for ((_, path), n) in &self.keywords {
+        for ((_, path), n) in self.keywords.iter().filter(|((photo, _), _)| self.alive(photo)) {
             match n.cmp(&0) {
                 std::cmp::Ordering::Greater => *up.entry(path).or_default() += 1,
                 std::cmp::Ordering::Less => *down.entry(path).or_default() += 1,
@@ -374,7 +397,7 @@ impl Net {
     /// Per album, how many photos went in and how many came out.
     pub fn albums(&self) -> Vec<(CollectionId, usize, usize)> {
         let mut per: BTreeMap<&CollectionId, (usize, usize)> = BTreeMap::new();
-        for ((_, id), n) in &self.albums {
+        for ((_, id), n) in self.albums.iter().filter(|((photo, _), _)| self.alive(photo)) {
             let entry = per.entry(id).or_default();
             match n.cmp(&0) {
                 std::cmp::Ordering::Greater => entry.0 += 1,
@@ -400,7 +423,9 @@ impl Net {
                 out.extend(
                     self.keywords
                         .iter()
-                        .filter(|((_, p), n)| *p == path && if want_up { **n > 0 } else { **n < 0 })
+                        .filter(|((photo, p), n)| {
+                            *p == path && self.alive(photo) && if want_up { **n > 0 } else { **n < 0 }
+                        })
                         .map(|((photo, _), _)| photo),
                 );
             }
@@ -409,7 +434,9 @@ impl Net {
                 out.extend(
                     self.albums
                         .iter()
-                        .filter(|((_, a), n)| a.0 == *id && if want_in { **n > 0 } else { **n < 0 })
+                        .filter(|((photo, a), n)| {
+                            a.0 == *id && self.alive(photo) && if want_in { **n > 0 } else { **n < 0 }
+                        })
                         .map(|((photo, _), _)| photo),
                 );
             }

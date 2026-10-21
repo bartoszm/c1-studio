@@ -44,6 +44,9 @@ pub use placing::{
 };
 pub use selection::{Merged, Selection, group_places};
 
+/// How many photos one read of a source may keep whole in the log when it finds them gone.
+const KEEP_REMOVED: usize = 5_000;
+
 /// Dimensions whose values substring filters match against.
 const SUBSTRING_DIMS: [Dim; 7] =
     [Dim::Camera, Dim::Lens, Dim::City, Dim::State, Dim::Country, Dim::Style, Dim::KeywordTree];
@@ -1229,10 +1232,19 @@ impl Library {
         let Some(end) = end else { bail!("source {source_id} ended its snapshot without a cursor") };
         if report.full {
             // Anything of this source not seen in a full snapshot is gone.
+            let mut kept = 0;
             for (row, key) in known.iter().filter(|(row, key)| key.starts_with(&prefix) && !seen.contains(row)) {
                 if let Some(photo) = batch.photo(*row)? {
                     let what = What::Removed { photo: photo.id.clone(), name: photo.file.name.clone() };
-                    edits.log(&Event::new(now, origin, what).with_before(Before::Photo(Box::new(photo))))?;
+                    let event = Event::new(now, origin, what);
+                    // A source that comes back empty or part read (a drive unplugged) would
+                    // otherwise put the whole library into the log: only so many are kept.
+                    kept += 1;
+                    edits.log(&if kept <= KEEP_REMOVED {
+                        event.with_before(Before::Photo(Box::new(photo)))
+                    } else {
+                        event
+                    })?;
                 }
                 if self.binned.read().unwrap().contains(key) {
                     unbin.push(key.clone());
@@ -1257,6 +1269,7 @@ impl Library {
         drop(writer);
         batch.commit()?;
         edits.commit()?;
+        self.forget_picks();
         self.refresh()?;
         self.unbin(&unbin)?;
         if report.added + report.updated + report.deleted > 0 {

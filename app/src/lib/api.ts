@@ -375,7 +375,7 @@ export type NetWhat =
 /** The photos a part of the change log is about: the filter's `history`. `to` of null is now. */
 export type HistoryPick =
   | { Changed: { from: number; to: number | null; what: NetWhat } }
-  | { Entries: { first: number; last: number; kind: LogKind | null } };
+  | { Entries: { first: number; last: number; kind: LogKind | null; origin: Origin | null } };
 export type Compare = {
   from: number | null;
   to: number | null;

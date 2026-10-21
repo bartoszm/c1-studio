@@ -2046,10 +2046,10 @@ fn a_log_entry_picks_its_photos() {
     lib.edit(&[(row_of(&lib, 8), rate(Some(1)))]).unwrap();
     let group = lib.log_page(&LogQuery::default()).unwrap().groups.pop().unwrap();
     assert_eq!(group.entries, 3);
-    let pick = HistoryPick::Entries { first: group.first, last: group.last, kind: Some(LogKind::Rating) };
+    let pick = HistoryPick::Entries { first: group.first, last: group.last, kind: Some(LogKind::Rating), origin: None };
     assert_eq!(ids(&lib, &history(pick)), [5, 6, 7]);
     // Another kind in the same entries picks nothing.
-    let pick = HistoryPick::Entries { first: group.first, last: group.last, kind: Some(LogKind::Color) };
+    let pick = HistoryPick::Entries { first: group.first, last: group.last, kind: Some(LogKind::Color), origin: None };
     assert!(ids(&lib, &history(pick)).is_empty());
 }
 
@@ -2201,7 +2201,7 @@ fn keyword_tree_changes_keep_the_photos_they_rewrote() {
     assert!(matches!(&lib.photo_events(&id).unwrap()[0].what, What::Remap(_)));
     // And picking the entry picks the photos.
     let seq = lib.log_page(&LogQuery::default()).unwrap().groups[0].first;
-    let pick = HistoryPick::Entries { first: seq, last: seq, kind: None };
+    let pick = HistoryPick::Entries { first: seq, last: seq, kind: None, origin: None };
     assert_eq!(ids(&lib, &history(pick)), [1, 3, 4, 6, 7, 9, 10]);
 }
 
@@ -2216,4 +2216,71 @@ fn log_days_count_entries_and_grow_with_the_log() {
     assert_eq!(days.days.iter().map(|(_, n)| *n).sum::<usize>(), 2);
     lib.edit(&[(row_of(&lib, 3), rate(Some(5)))]).unwrap();
     assert_eq!(lib.log_days().unwrap().days.iter().map(|(_, n)| *n).sum::<usize>(), 3);
+}
+
+#[test]
+fn a_batch_picked_from_a_narrowed_list_leaves_out_other_origins() {
+    let (_d, lib, source) = setup();
+    lib.edit(&[(row_of(&lib, 5), rate(Some(4)))]).unwrap();
+    source.edit_externally(&lib.photo_id(row_of(&lib, 6)).unwrap(), |p| p.rating = Some(4));
+    lib.sync(&source).unwrap();
+    lib.edit(&[(row_of(&lib, 7), rate(Some(4)))]).unwrap();
+    // With only the app's entries listed, photos 5 and 7 are one batch's neighbours in time,
+    // and Capture One's photo 6 lies between them.
+    let only_app = LogQuery { origins: vec![Origin::App], kinds: vec![LogKind::Rating], ..LogQuery::default() };
+    let groups = lib.log_page(&only_app).unwrap().groups;
+    let pick = |g: &c1index::LogGroup| HistoryPick::Entries {
+        first: g.first,
+        last: g.last,
+        kind: Some(g.kind),
+        origin: Some(g.origin),
+    };
+    assert_eq!(groups.len(), 2);
+    assert_eq!(ids(&lib, &history(pick(&groups[0]))), [7]);
+    let wide =
+        HistoryPick::Entries { first: groups[1].first, last: groups[0].last, kind: None, origin: Some(Origin::App) };
+    assert_eq!(ids(&lib, &history(wide)), [5, 7]);
+}
+
+#[test]
+fn a_keyword_tree_change_counts_in_compare_and_picks() {
+    let (_d, lib, _s) = setup();
+    let from = tick();
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("street"), "avenue")).unwrap();
+    let c = lib.compare(from, None).unwrap();
+    assert_eq!(c.fields, [(LogKind::Keywords, 7)]);
+    assert_eq!(c.keywords_added, [("avenue".to_owned(), 7)]);
+    assert_eq!(c.keywords_removed, [("street".to_owned(), 7)]);
+    let pick = HistoryPick::Changed { from, to: None, what: NetWhat::KeywordAdded("avenue".into()) };
+    assert_eq!(ids(&lib, &history(pick)), [1, 3, 4, 6, 7, 9, 10]);
+}
+
+#[test]
+fn photos_removed_since_do_not_count_as_changed() {
+    let (_d, lib, source) = setup();
+    let from = tick();
+    lib.edit(&[(row_of(&lib, 5), rate(Some(4))), (row_of(&lib, 6), rate(Some(4)))]).unwrap();
+    source.remove_externally(&lib.photo_id(row_of(&lib, 6)).unwrap());
+    lib.sync(&source).unwrap();
+    let c = lib.compare(from, None).unwrap();
+    assert_eq!((c.changed, c.removed), (1, 1), "{c:?}");
+    assert_eq!(c.fields, [(LogKind::Rating, 1)]);
+    assert_eq!(ids(&lib, &history(HistoryPick::Changed { from, to: None, what: NetWhat::Any })), [5]);
+}
+
+#[test]
+fn a_pick_made_into_rows_is_forgotten_when_a_read_adds_photos_without_logging_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);
+    lib.sync(&source).unwrap();
+    let from = tick();
+    lib.edit(&[(row_of(&lib, 1), rate(Some(4)))]).unwrap();
+    let pick = history(HistoryPick::Entries { first: 0, last: 0, kind: None, origin: None });
+    assert_eq!(ids(&lib, &pick), [1]);
+    // Another source's first read logs nothing, and its rows are new: nothing stale is kept.
+    let other = MemorySource::new("other", vec![], vec![]);
+    lib.sync(&other).unwrap();
+    assert_eq!(ids(&lib, &pick), [1]);
+    assert_eq!(ids(&lib, &history(HistoryPick::Changed { from, to: None, what: NetWhat::Any })), [1]);
 }

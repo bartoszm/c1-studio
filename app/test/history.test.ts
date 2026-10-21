@@ -49,6 +49,6 @@ test("a pick reads as what it is about and when", () => {
   assert.equal(pickText({ Changed: { from, to: null, what: "Added" } }), `added, since ${day(12)}`);
   assert.equal(pickText({ Changed: { from, to, what: { AlbumIn: "7" } } }, () => "“street”"), `put into “street”, ${range}`);
   assert.equal(pickText({ Changed: { from, to: from + 1000, what: "Any" } }), `changed, ${day(12)}`);
-  assert.equal(pickText({ Entries: { first: 4, last: 4, kind: null } }), "photos of one log entry");
-  assert.equal(pickText({ Entries: { first: 4, last: 9, kind: "rating" } }), "photos of 6 log entries (rating)");
+  assert.equal(pickText({ Entries: { first: 4, last: 4, kind: null, origin: null } }), "photos of one log entry");
+  assert.equal(pickText({ Entries: { first: 4, last: 9, kind: "rating", origin: "App" } }), "photos of a batch of log entries (rating)");
 });

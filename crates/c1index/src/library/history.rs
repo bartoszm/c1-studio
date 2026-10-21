@@ -14,6 +14,8 @@ use crate::history::{Compare, Grouper, LogGroup, LogQuery, Net, kind};
 
 /// Entries read in one go: a page of the log walks back through the log this many at a time.
 const CHUNK: u64 = 2000;
+/// How many picks' rows are kept.
+const PICKS_KEPT: usize = 8;
 /// Groups in a page when the query does not say.
 const PAGE: usize = 50;
 
@@ -39,11 +41,11 @@ pub struct LogDays {
 /// The photos a pick came to, and the days of the log, for the log as it was.
 #[derive(Default)]
 pub(super) struct Cache {
-    picked: Mutex<Option<Picked>>,
+    picked: Mutex<Vec<Picked>>,
     days: Mutex<DaysCache>,
 }
 
-/// A pick, the newest entry when it was made into rows, and the rows.
+/// A pick, the newest entry when it was made into rows (if the rows depend on it), and the rows.
 type Picked = (HistoryPick, Option<u64>, Arc<Vec<u64>>);
 
 #[derive(Default)]
@@ -56,6 +58,12 @@ struct DaysCache {
 }
 
 impl Library {
+    /// Forgets the rows picks came to: photos came or went in a way the log does not say
+    /// (the first read of a source logs none).
+    pub(super) fn forget_picks(&self) {
+        self.history.picked.lock().unwrap().clear();
+    }
+
     /// The sequence numbers of the entries made between two times (inclusive).
     fn seq_range(&self, from: Option<i64>, to: Option<i64>) -> anyhow::Result<Range<u64>> {
         let lo = match from {
@@ -70,11 +78,17 @@ impl Library {
     }
 
     /// Reads entries oldest first, a chunk at a time, so a long log is not held whole.
-    fn each_entry(&self, seqs: Range<u64>, each: &mut dyn FnMut(u64, &Event)) -> anyhow::Result<()> {
+    /// What an entry kept is read only for those `with_before` says yes to.
+    fn each_entry(
+        &self,
+        seqs: Range<u64>,
+        with_before: &dyn Fn(&Event) -> bool,
+        each: &mut dyn FnMut(u64, &Event),
+    ) -> anyhow::Result<()> {
         let mut at = seqs.start;
         while at < seqs.end {
             let to = (at + CHUNK).min(seqs.end);
-            for (seq, event) in self.edits.range(at..to)? {
+            for (seq, event) in self.edits.range(at..to, with_before)? {
                 each(seq, &event);
             }
             at = to;
@@ -94,7 +108,7 @@ impl Library {
         let mut groups: Vec<LogGroup> = Vec::new();
         'read: while seqs.end > seqs.start {
             let from = seqs.start.max(seqs.end.saturating_sub(CHUNK));
-            for (seq, event) in self.edits.range(from..seqs.end)?.into_iter().rev() {
+            for (seq, event) in self.edits.range(from..seqs.end, &|_| false)?.into_iter().rev() {
                 if query.wants(&event) {
                     groups.extend(grouper.push(seq, &event));
                     // One group past the page: the last one on it is complete.
@@ -125,8 +139,10 @@ impl Library {
     /// on photos, so a rating set and set back is not a change.
     pub fn compare(&self, from: i64, to: Option<i64>) -> anyhow::Result<Compare> {
         let mut net = Net::default();
-        self.each_entry(self.seq_range(Some(from), to)?, &mut |seq, event| net.add(seq, event))?;
-        let mut compare = net.compare(Some(from), to, self.log_days()?.start);
+        // A keyword tree change's photos are what it did to them: its entry is read whole.
+        let remaps = |event: &Event| matches!(event.what, crate::edits::What::Remap(_));
+        self.each_entry(self.seq_range(Some(from), to)?, &remaps, &mut |seq, event| net.add(seq, event))?;
+        let mut compare = net.compare(Some(from), to, self.edits.first_at()?);
         let ids: Vec<c1model::CollectionId> =
             compare.albums.iter().map(|a| c1model::CollectionId(a.id.clone())).collect();
         let names = self.edits.album_names(&ids)?;
@@ -164,24 +180,32 @@ impl Library {
         let mut cache = self.history.days.lock().unwrap();
         let cache = &mut *cache;
         let from = cache.next;
-        let mut next = from;
         self.edits.times_from(from, &mut |seq, at| {
-            next = seq + 1;
+            // Counted and moved past together, so a read that fails halfway counts nothing twice.
+            cache.next = seq + 1;
             cache.start.get_or_insert(at);
             if let Some(midnight) = cache.local.midnight(at) {
                 *cache.days.entry(midnight).or_default() += 1;
             }
         })?;
-        cache.next = next;
         Ok(LogDays { start: cache.start, days: cache.days.iter().map(|(d, n)| (*d, *n)).collect() })
     }
 
     /// The rows of the photos a pick from the History tab is about, in order.
     fn history_rows(&self, pick: &HistoryPick) -> anyhow::Result<Arc<Vec<u64>>> {
         let last = self.edits.last_seq()?;
-        if let Some((cached, at, rows)) = &*self.history.picked.lock().unwrap()
-            && cached == pick
-            && *at == last
+        // A pick of entries already in the log, or of days that are over, cannot change with
+        // what is logged next; the others are good for as long as the log's end is.
+        let settled = match pick {
+            HistoryPick::Entries { .. } => true,
+            HistoryPick::Changed { to, .. } => match (to, self.edits.last_at()?) {
+                (Some(to), Some(newest)) => *to < newest,
+                _ => false,
+            },
+        };
+        let end = (!settled).then_some(last).flatten();
+        if let Some((_, _, rows)) =
+            self.history.picked.lock().unwrap().iter().find(|(p, at, _)| p == pick && (settled || *at == end))
         {
             return Ok(rows.clone());
         }
@@ -189,12 +213,14 @@ impl Library {
         match pick {
             HistoryPick::Changed { from, to, what } => {
                 let mut net = Net::default();
-                self.each_entry(self.seq_range(Some(*from), *to)?, &mut |seq, event| net.add(seq, event))?;
+                let remaps = |event: &Event| matches!(event.what, crate::edits::What::Remap(_));
+                self.each_entry(self.seq_range(Some(*from), *to)?, &remaps, &mut |seq, event| net.add(seq, event))?;
                 keys.extend(net.photos(what));
             }
-            HistoryPick::Entries { first, last, kind: only } => {
-                self.each_entry(*first..last.saturating_add(1), &mut |_, event| {
-                    if only.is_none_or(|k| k == kind(&event.what)) {
+            HistoryPick::Entries { first, last, kind: only, origin } => {
+                // The photos an entry kept are about it too.
+                self.each_entry(*first..last.saturating_add(1), &|_| true, &mut |_, event| {
+                    if only.is_none_or(|k| k == kind(&event.what)) && origin.is_none_or(|o| o == event.origin) {
                         keys.extend(event.photos().iter().map(|p| p.key()));
                     }
                 })?;
@@ -206,7 +232,13 @@ impl Library {
         }
         rows.sort_unstable();
         let rows = Arc::new(rows);
-        *self.history.picked.lock().unwrap() = Some((pick.clone(), last, rows.clone()));
+        let mut picked = self.history.picked.lock().unwrap();
+        picked.retain(|(p, _, _)| p != pick);
+        // A few picks at a time: the grid's and the sidebar's own are not one slot.
+        if picked.len() >= PICKS_KEPT {
+            picked.remove(0);
+        }
+        picked.push((pick.clone(), end, rows.clone()));
         Ok(rows)
     }
 

@@ -1154,10 +1154,19 @@ written before the kinds below existed still read.
 The log is read as history. The next part (state on a date, restore) builds on what is
 recorded here, so recording came first.
 
-- **The log keeps what a change replaced.** `Event` has an optional `before: Before`,
-  written only when there is something to keep, so an old entry is read and written back
-  byte for byte, and a build from before reads a new one as the entry it was (a test
-  holds a copy of the 0.5 `Event` to prove it).
+- **The log keeps what a change replaced.** `Event` has `has_before` (only written when
+  true) and a `before: Before` that is not part of the entry's JSON: it is stored in its
+  own table `event_before`, by sequence number. So reading the log does not read it (reads
+  ask for it: a photo's history, a keyword tree change in a compare, picking an entry's
+  photos), and a copy this build cannot read (a later `Photo` shape) costs only itself:
+  the entry still reads, with `before` empty and a line on stderr. An old entry is read
+  and written back byte for byte, and a build from before reads a new one as the entry it
+  was (a test holds a copy of the 0.5 `Event`).
+  - **Size:** a read of a source that finds more than 5,000 photos gone in one go (a drive
+    unplugged, a catalog that failed to open) keeps the first 5,000 whole; the rest are
+    logged without a copy. Nothing prunes the log.
+  - **`at` never goes down along the log:** `EditsBatch::log` raises an entry's time to the
+    newest's, so a clock set back cannot break `seq_after`.
   - `Before::Photo` for a removed or deleted photo (the sync's `Removed`, a full read that
     no longer has it, `emptied`);
   - `Before::Albums { albums, members }` for an album renamed, moved, given a rule or
@@ -1190,13 +1199,22 @@ recorded here, so recording came first.
   what }` or `Entries { first, last, kind }`) is the only field the UI sends; the library
   turns it into `Filter.rows` (a `TermSetQuery` over the indexed `row` field; `rows_not`
   is the same under `must_not`) at the top of `query`, `compile` and `smart_counts`,
-  nested filters too. The rows are cached per pick and last sequence number.
+  nested filters too. The rows of the last 8 picks are kept; a pick of entries, or of days
+  that are over, stays good, the others last until the log grows, and a sync forgets them
+  all (the first read of a source adds photos without logging them). A pick of entries
+  also keeps the origin, as the list may have left other origins between a batch's first
+  and last entry. Compare and picks count a keyword tree change's effect on the photos it
+  rewrote, and leave out photos removed since.
 - **UI:** a **History** tab. `GrowthChart` (import bars on a square-root scale, the
   running total, a tick row for log activity, a "log starts" marker; drag to pick days),
   the compare panel (every number is a button that sends a `Changed` pick) and `LogList`
   (origin and kind chips, paged, a row picks its entries). The pick shows as a chip
   (`pickText`). `lib/dates.ts` holds the bar and unit choice the timeline shares.
 - **Tauri:** `change_log_page`, `history_compare`, `growth`, `log_days`.
+- **Known limits:** `log_page` still reads every entry of a group to its end (one big
+  sync is one group), and a filter that matches rarely reads the log to find a page: no
+  timing was measured on a large log. A batch id in the entry would make a group one
+  lookup. The `rows` of a pick are rebuilt into a term set for each query.
 - **Not done yet** (part 2): state on a date (`state_at`), `Existed` picks, restore.
 
 ### Settings: sidebar sections, main colour, offline map

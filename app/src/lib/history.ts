@@ -86,9 +86,9 @@ export function pickText(pick: HistoryPick, albumName?: (id: string) => string):
     const { from, to, what } = pick.Changed;
     return `${whatText(what, albumName)}, ${spanText(from, to)}`;
   }
+  // The span of numbers holds entries of other kinds and origins, so it is no count.
   const { first, last, kind } = pick.Entries;
-  const n = last - first + 1;
-  const of = n === 1 ? "one log entry" : `${n.toLocaleString()} log entries`;
+  const of = first === last ? "one log entry" : "a batch of log entries";
   return kind ? `photos of ${of} (${KIND_LABELS[kind]})` : `photos of ${of}`;
 }
 

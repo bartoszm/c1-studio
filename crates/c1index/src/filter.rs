@@ -13,6 +13,7 @@ use tantivy::query::{
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, Term};
 
+use crate::edits::Origin;
 use crate::history::{LogKind, NetWhat};
 use crate::schema::{Dim, Fields, flag, normalise_folder};
 
@@ -130,8 +131,9 @@ pub enum HistoryPick {
     /// `to` of `None` is now).
     Changed { from: i64, to: Option<i64>, what: NetWhat },
     /// The photos some entries of the log are about: those with these sequence numbers
-    /// (inclusive), of this kind if one is given.
-    Entries { first: u64, last: u64, kind: Option<LogKind> },
+    /// (inclusive), of this kind and from this origin if given. A batch picked from a list
+    /// narrowed by origin or kind has other entries between its first and last.
+    Entries { first: u64, last: u64, kind: Option<LogKind>, origin: Option<Origin> },
 }
 
 /// Fields left out of a JSON filter take their defaults, so callers send only what they set.

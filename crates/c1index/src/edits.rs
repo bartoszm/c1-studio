@@ -16,6 +16,10 @@ use serde::{Deserialize, Serialize};
 const PENDING: TableDefinition<&str, &[u8]> = TableDefinition::new("pending");
 /// sequence number → JSON [`Event`].
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("events");
+/// sequence number → JSON [`Before`]: what the entry replaced, apart from the entry so
+/// that reading the log does not read it, and a payload this build cannot read costs
+/// only itself.
+const BEFORES: TableDefinition<u64, &[u8]> = TableDefinition::new("event_before");
 /// photo key → sequence numbers of the events about that photo.
 const BY_PHOTO: MultimapTableDefinition<&str, u64> = MultimapTableDefinition::new("events_by_photo");
 /// sequence number → JSON [`QueuedRemap`]: keyword tree changes, applied in order.
@@ -86,11 +90,19 @@ pub struct Event {
     pub origin: Origin,
     #[serde(flatten)]
     pub what: What,
+    /// Whether the entry kept what the change overwrote or removed (in `event_before`).
+    /// Entries written before it existed say nothing, and are written back as they were.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_before: bool,
     /// What the change overwrote or removed, for the kinds that cannot be taken back from
-    /// the entry alone. Entries written before it existed have none, and are written back
-    /// without it, so a build that does not know it still reads the log.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// the entry alone. Not part of the entry's JSON: it is stored apart, and read only by
+    /// the reads that ask for it.
+    #[serde(skip)]
     pub before: Option<Before>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// What a change replaced, kept so it can be put back later.
@@ -108,11 +120,12 @@ pub enum Before {
 
 impl Event {
     pub fn new(at: i64, origin: Origin, what: What) -> Self {
-        Self { at, origin, what, before: None }
+        Self { at, origin, what, has_before: false, before: None }
     }
 
     /// The same entry, with what it replaced.
     pub fn with_before(mut self, before: Before) -> Self {
+        self.has_before = true;
         self.before = Some(before);
         self
     }
@@ -192,6 +205,14 @@ pub(crate) fn read_event(seq: u64, bytes: &[u8]) -> Option<Event> {
     serde_json::from_slice(bytes).inspect_err(|e| eprintln!("change log entry {seq} skipped: {e}")).ok()
 }
 
+/// What an entry kept, or `None` (said on stderr) when it is missing or this build cannot
+/// read it: the entry itself still reads.
+fn read_before(seq: u64, bytes: Option<&[u8]>) -> Option<Before> {
+    serde_json::from_slice(bytes?)
+        .inspect_err(|e| eprintln!("change log entry {seq}: what it replaced skipped: {e}"))
+        .ok()
+}
+
 /// When an entry was made, without reading the rest of it.
 fn read_at(seq: u64, bytes: &[u8]) -> Option<i64> {
     #[derive(Deserialize)]
@@ -230,6 +251,7 @@ impl Edits {
         tx.open_table(COLLECTIONS)?;
         tx.open_table(WRITTEN)?;
         tx.open_table(ALBUM_NAMES)?;
+        tx.open_table(BEFORES)?;
         {
             // The per-photo lookup came after the log, and a build from before it may
             // still add to the log: what it has not seen is looked up now.
@@ -295,13 +317,19 @@ impl Edits {
     /// The newest `limit` events, newest first.
     pub fn events(&self, limit: usize) -> anyhow::Result<Vec<Event>> {
         let tx = self.db.begin_read()?;
+        let befores = tx.open_table(BEFORES)?;
         let mut out = Vec::new();
         for entry in tx.open_table(EVENTS)?.iter()?.rev() {
             if out.len() == limit {
                 break;
             }
             let (seq, bytes) = entry?;
-            out.extend(read_event(seq.value(), bytes.value()));
+            if let Some(mut event) = read_event(seq.value(), bytes.value()) {
+                if event.has_before {
+                    event.before = read_before(seq.value(), befores.get(seq.value())?.as_ref().map(|b| b.value()));
+                }
+                out.push(event);
+            }
         }
         Ok(out)
     }
@@ -335,14 +363,42 @@ impl Edits {
     }
 
     /// The entries with these sequence numbers, oldest first. Unreadable ones are left out.
-    pub fn range(&self, seqs: std::ops::Range<u64>) -> anyhow::Result<Vec<(u64, Event)>> {
+    /// What an entry kept is read only for those `with_before` says yes to: it can be a
+    /// whole photo, and most reads of the log have no use for it.
+    pub fn range(
+        &self,
+        seqs: std::ops::Range<u64>,
+        with_before: &dyn Fn(&Event) -> bool,
+    ) -> anyhow::Result<Vec<(u64, Event)>> {
         let tx = self.db.begin_read()?;
+        let befores = tx.open_table(BEFORES)?;
         let mut out = Vec::new();
         for entry in tx.open_table(EVENTS)?.range(seqs)? {
             let (seq, bytes) = entry?;
-            out.extend(read_event(seq.value(), bytes.value()).map(|e| (seq.value(), e)));
+            let seq = seq.value();
+            let Some(mut event) = read_event(seq, bytes.value()) else { continue };
+            if event.has_before && with_before(&event) {
+                event.before = read_before(seq, befores.get(seq)?.as_ref().map(|b| b.value()));
+            }
+            out.push((seq, event));
         }
         Ok(out)
+    }
+
+    /// When the newest entry was made.
+    pub fn last_at(&self) -> anyhow::Result<Option<i64>> {
+        let tx = self.db.begin_read()?;
+        let events = tx.open_table(EVENTS)?;
+        let Some((seq, bytes)) = events.last()? else { return Ok(None) };
+        Ok(read_at(seq.value(), bytes.value()))
+    }
+
+    /// When the first entry was made.
+    pub fn first_at(&self) -> anyhow::Result<Option<i64>> {
+        let tx = self.db.begin_read()?;
+        let events = tx.open_table(EVENTS)?;
+        let Some((seq, bytes)) = events.first()? else { return Ok(None) };
+        Ok(read_at(seq.value(), bytes.value()))
     }
 
     /// When each entry from `seq` on was made, with its number, for counting by day.
@@ -377,11 +433,17 @@ impl Edits {
     pub fn photo_events(&self, key: &str) -> anyhow::Result<Vec<Event>> {
         let tx = self.db.begin_read()?;
         let events = tx.open_table(EVENTS)?;
+        let befores = tx.open_table(BEFORES)?;
         let mut out = Vec::new();
         for seq in tx.open_multimap_table(BY_PHOTO)?.get(key)?.rev() {
             let seq = seq?.value();
-            if let Some(bytes) = events.get(seq)? {
-                out.extend(read_event(seq, bytes.value()));
+            if let Some(bytes) = events.get(seq)?
+                && let Some(mut event) = read_event(seq, bytes.value())
+            {
+                if event.has_before {
+                    event.before = read_before(seq, befores.get(seq)?.as_ref().map(|b| b.value()));
+                }
+                out.push(event);
             }
         }
         Ok(out)
@@ -460,9 +522,21 @@ impl EditsBatch {
 
     pub fn log(&mut self, event: &Event) -> anyhow::Result<()> {
         let mut table = self.tx.open_table(EVENTS)?;
-        let next = table.last()?.map_or(0, |(k, _)| k.value() + 1);
-        let bytes = serde_json::to_vec(event)?;
+        let (next, newest) = match table.last()? {
+            Some((k, bytes)) => (k.value() + 1, read_at(k.value(), bytes.value())),
+            None => (0, None),
+        };
+        // `at` never goes down along the log, which a search by time relies on: a clock set
+        // back (or a sync that took its time before logging) does not break it.
+        let mut event = event.clone();
+        if let Some(newest) = newest {
+            event.at = event.at.max(newest);
+        }
+        let bytes = serde_json::to_vec(&event)?;
         table.insert(next, bytes.as_slice())?;
+        if let Some(before) = &event.before {
+            self.tx.open_table(BEFORES)?.insert(next, serde_json::to_vec(before)?.as_slice())?;
+        }
         let mut by_photo = self.tx.open_multimap_table(BY_PHOTO)?;
         for photo in event.photos() {
             by_photo.insert(photo.key().as_str(), next)?;
@@ -629,7 +703,7 @@ mod tests {
         let (_d, edits) = log_of(&[]);
         assert_eq!(edits.last_seq().unwrap(), None);
         assert_eq!(edits.seq_after(0).unwrap(), 0);
-        assert!(edits.range(0..10).unwrap().is_empty());
+        assert!(edits.range(0..10, &|_| false).unwrap().is_empty());
     }
 
     #[test]
@@ -643,9 +717,9 @@ mod tests {
             tx.commit().unwrap();
         }
         let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
-        let seqs: Vec<u64> = edits.range(0..3).unwrap().into_iter().map(|(seq, _)| seq).collect();
+        let seqs: Vec<u64> = edits.range(0..3, &|_| false).unwrap().into_iter().map(|(seq, _)| seq).collect();
         assert_eq!(seqs, [0, 2]);
-        assert_eq!(edits.range(1..3).unwrap().len(), 1);
+        assert_eq!(edits.range(1..3, &|_| false).unwrap().len(), 1);
         // Searching passes it too: it still says when it was made.
         assert_eq!(edits.seq_after(2).unwrap(), 2);
     }
@@ -666,9 +740,9 @@ mod tests {
         let kept = Before::Keywords(vec![(photo.clone(), vec![KeywordPath::from_pipe("a|b")])]);
         let new = Event::new(5, Origin::App, removed.clone()).with_before(kept.clone());
         let json = serde_json::to_string(&new).unwrap();
-        assert!(json.contains("\"before\""));
-        // This build reads it back whole.
-        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), new);
+        // What it replaced is stored apart: the entry says only that it has some.
+        assert!(json.contains("\"has_before\":true") && !json.contains("a|b"), "{json}");
+        assert!(serde_json::from_str::<Event>(&json).unwrap().has_before);
         // The build before reads it as the entry it was.
         let old: Event05 = serde_json::from_str(&json).unwrap();
         assert_eq!(old, Event05 { at: 5, origin: Origin::App, what: removed });
@@ -695,5 +769,46 @@ mod tests {
         batch.commit().unwrap();
         assert_eq!(edits.photo_events(&a.key()).unwrap(), std::slice::from_ref(&event));
         assert_eq!(edits.photo_events(&b.key()).unwrap(), [event]);
+    }
+
+    #[test]
+    fn what_an_entry_kept_is_read_when_asked_and_a_bad_copy_costs_only_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edits.redb");
+        let photo = PhotoId::new(&c1model::SourceId("c1".into()), "1".to_string());
+        let kept = Before::Keywords(vec![(photo.clone(), vec![KeywordPath::from_pipe("x")])]);
+        let remap = || What::Remap(KeywordRemap::rename(KeywordPath::from_pipe("x"), "y"));
+        {
+            let edits = Edits::open(&path).unwrap();
+            let mut batch = edits.batch().unwrap();
+            batch.log(&Event::new(1, Origin::App, remap()).with_before(kept.clone())).unwrap();
+            batch.log(&Event::new(2, Origin::App, remap()).with_before(kept.clone())).unwrap();
+            batch.commit().unwrap();
+            // Only the entries the read asks for have it.
+            let read = edits.range(0..2, &|e| e.at == 1).unwrap();
+            assert_eq!((read[0].1.before.clone(), read[1].1.before.clone()), (Some(kept.clone()), None));
+            assert!(read[1].1.has_before);
+        }
+        {
+            // A later build changed what a photo looks like: this copy no longer reads.
+            let db = Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            tx.open_table(BEFORES).unwrap().insert(1, br#"{"Photo":{"future":true}}"#.as_slice()).unwrap();
+            tx.commit().unwrap();
+        }
+        let edits = Edits::open(&path).unwrap();
+        let events = edits.events(10).unwrap();
+        assert_eq!(events.len(), 2, "the entry reads without it");
+        assert_eq!((events[0].before.clone(), events[1].before.clone()), (None, Some(kept)));
+    }
+
+    #[test]
+    fn times_never_go_down_along_the_log() {
+        // A clock set back, or a sync that logs with the time it began.
+        let (_d, edits) = log_of(&[10, 30, 20, 40]);
+        let read = edits.range(0..4, &|_| false).unwrap();
+        assert_eq!(read.iter().map(|(_, e)| e.at).collect::<Vec<_>>(), [10, 30, 30, 40]);
+        assert_eq!(edits.seq_after(30).unwrap(), 3);
+        assert_eq!((edits.first_at().unwrap(), edits.last_at().unwrap()), (Some(10), Some(40)));
     }
 }

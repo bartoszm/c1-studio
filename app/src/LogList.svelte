@@ -77,7 +77,7 @@
     <ol>
       {#each groups as g (g.first)}
         <li class:on={isPicked(g)}>
-          <button class="row" disabled={!pickable(g)} title={pickable(g) ? "Show the photos of this entry in the grid" : ""} onclick={() => onpick({ Entries: { first: g.first, last: g.last, kind: g.kind } })}>
+          <button class="row" disabled={!pickable(g)} title={pickable(g) ? "Show the photos of this entry in the grid" : ""} onclick={() => onpick({ Entries: { first: g.first, last: g.last, kind: g.kind, origin: g.origin } })}>
             <span class="when">{date(g.at)}</span>
             <span class="origin from-{g.origin.toLowerCase()}">{originLabel(g.origin, provider)}</span>
             <span class="what">{groupText(g, album, provider)}</span>
