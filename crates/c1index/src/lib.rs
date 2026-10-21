@@ -27,9 +27,9 @@ pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
 pub use history::{Compare, EventView, LogGroup, LogKind, LogQuery, NetWhat};
 pub use library::{ClassPreview, GroupSort};
 pub use library::{
-    FillGroup, Group, GroupPage, Library, LogDays, LogPage, Merged, NeighbourPlan, NeighbourSettings, PendingEdit,
-    PlaceLookup, QueryOptions, QueryResult, RefinePlan, RefineSettings, RoutePoint, Selection, Sort, SyncReport,
-    SyncStep, TripList, TripRow, Unresolved, group_places, new_collection_id, place_of_path, smart_filter,
+    FillGroup, Group, GroupPage, HistoryOff, Library, LogDays, LogPage, Merged, NeighbourPlan, NeighbourSettings,
+    PendingEdit, PlaceLookup, QueryOptions, QueryResult, RefinePlan, RefineSettings, RoutePoint, Selection, Sort,
+    SyncReport, SyncStep, TripList, TripRow, Unresolved, group_places, new_collection_id, place_of_path, smart_filter,
 };
 pub use looks::Look;
 pub use schema::{Dim, NO_PLACE};

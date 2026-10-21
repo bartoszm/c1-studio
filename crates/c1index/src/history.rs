@@ -481,6 +481,10 @@ pub struct Compare {
     pub written: usize,
     /// When the log starts: nothing before is known.
     pub log_start: Option<i64>,
+    /// How many of the entries were logged while History was off: they kept nothing of
+    /// what they replaced, so a keyword tree change or an album delete among them is
+    /// counted as a change, but not in the photos it touched.
+    pub logged_off: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -517,6 +521,7 @@ impl Net {
             keywords_unkept: self.keywords_unkept,
             written: self.written,
             log_start,
+            logged_off: 0,
         }
     }
 }

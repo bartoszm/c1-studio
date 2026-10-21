@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { LogEvent, LogGroup } from "../src/lib/api";
-import { dayRange, groupText, kindOf, pickText } from "../src/lib/history";
+import { dayRange, groupText, kindOf, offText, pickText } from "../src/lib/history";
+import { date } from "../src/lib/format";
 
 const photo = { source: "c1", ext: "7" };
 const rated: LogEvent = { at: 1, origin: "App", change: { photo, op: { SetRating: { base: null, value: 3 } } } };
@@ -52,4 +53,13 @@ test("a pick reads as what it is about and when", () => {
   assert.equal(pickText({ Changed: { from, to: from + 1000, what: "Any" } }), `changed, ${day(12)}`);
   assert.equal(pickText({ Entries: { first: 4, last: 4, kind: null, origin: null } }), "photos of one log entry");
   assert.equal(pickText({ Entries: { first: 4, last: 9, kind: "rating", origin: "App" } }), "photos of a batch of log entries (rating)");
+});
+
+test("the stretches History was off read in a phrase", () => {
+  const day = 86_400_000;
+  assert.equal(offText([]), "");
+  assert.equal(
+    offText([{ from: 0, to: day, entries: 4 }, { from: 2 * day, to: null, entries: 1 }]),
+    `from ${date(0)} to ${date(day)}; since ${date(2 * day)}`,
+  );
 });

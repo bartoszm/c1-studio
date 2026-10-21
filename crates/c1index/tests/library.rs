@@ -2330,6 +2330,46 @@ fn with_history_off_the_log_keeps_nothing_and_history_reads_nothing() {
 }
 
 #[test]
+fn history_off_is_the_librarys_own_so_a_plain_open_keeps_nothing_either() {
+    let (dir, lib, source) = setup();
+    lib.set_history(false).unwrap();
+    let logged_before = lib.events(1_000).unwrap().len();
+    drop(lib);
+
+    // `c1cat` opens `<data root>/<key>/library` with a plain `Library::open`, as here: it
+    // is told nothing, and still finds History off.
+    let lib = Library::open(dir.path()).unwrap();
+    assert!(!lib.history_on());
+    let gone = lib.photo_id(row_of(&lib, 2)).unwrap();
+    source.remove_externally(&gone);
+    lib.sync(&source).unwrap();
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("street"), "avenue")).unwrap();
+    lib.change_collection(CollectionChange::Delete { id: CollectionId("10".into()) }).unwrap();
+    let logged = lib.events(1_000).unwrap();
+    let off = logged.len() - logged_before;
+    assert!(off >= 3, "{logged:?}");
+    assert!(logged.iter().all(|e| !e.has_before && e.before.is_none()), "{logged:?}");
+    drop(lib);
+
+    // Turned back on (by the app): the stretch logged while off is known, and said.
+    let lib = Library::open(dir.path()).unwrap();
+    assert!(!lib.history_on());
+    lib.set_history(true).unwrap();
+    lib.edit(&[(row_of(&lib, 5), rate(Some(4)))]).unwrap();
+    assert!(lib.events(1).unwrap()[0].what.photo().is_some());
+    let spans = lib.history_off().unwrap();
+    assert_eq!(spans.len(), 1, "{spans:?}");
+    assert_eq!(spans[0].entries, off as u64);
+    assert!(spans[0].to.is_some_and(|to| to >= spans[0].from));
+    let compare = lib.compare(0, None).unwrap();
+    assert_eq!((compare.entries, compare.logged_off), (logged.len() + 1, off as u64));
+    drop(lib);
+    let lib = Library::open(dir.path()).unwrap();
+    assert!(lib.history_on());
+    assert_eq!(lib.history_off().unwrap(), spans);
+}
+
+#[test]
 fn a_read_that_finds_every_photo_gone_keeps_only_so_many_whole() {
     let dir = tempfile::tempdir().unwrap();
     let lib = Library::open(dir.path()).unwrap();

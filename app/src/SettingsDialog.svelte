@@ -188,12 +188,12 @@
           also keeps what a change replaced (a removed photo, an album as it was, the keywords a keyword tree change rewrote).
           Off, the tab is hidden and the log keeps only the changes themselves, as before; a photo's own history in the details
           panel stays. What was logged so far is kept either way. Changes made while it is off are not fully counted when
-          compared later (a keyword tree change's photos, an album delete's members). Kept with the change log, so the command
-          line tool follows it too.
+          compared later (a keyword tree change or an album delete then counts as a change, not by the photos it touched);
+          the History tab says when the dates it compares include such a time.
         </small>
       </span>
     </label>
-    <p class="muted small">Kept with this catalog: another catalog has its own.</p>
+    <p class="muted small">Kept with this catalog's library, so the command line (c1cat) follows it too; another catalog has its own.</p>
     </div>
     </div>
     </div>

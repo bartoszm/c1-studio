@@ -635,6 +635,7 @@
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     api.historyEnabled().then(showsHistory).catch(() => {});
+    api.settingsProblem().then((p) => { if (p) editError = `Settings: ${p}`; }).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
   }

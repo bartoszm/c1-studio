@@ -478,13 +478,21 @@ most 5,000 removed photos whole; past that, they are logged without it, so a cat
 comes back empty for a moment does not fill the log.
 
 **Turning it off.** *Settings › History › Show the History tab* (on unless you turn it
-off) is kept per catalog, with its change log, so the command line tool follows it too. Off, the tab is hidden and a pick from it leaves the grid; the
-change log goes on as before this version, every change logged but nothing of what it
-replaced, and the app does no history work (no compare, no log pages, no day counts).
-The details panel still shows each photo's history. Entries logged so far stay as they
-are, so turning it back on finds them; what happened while it was off is in the log too,
-only without what those changes replaced. A compare over those days says so when a keyword
-tree change did not keep its photos: the keyword numbers fall short by what it did.
+off) is kept per catalog, in the catalog's library itself, so `c1cat` (and the Claude
+plugin through it) follows it too. Off, the tab is hidden and a pick from it leaves the
+grid; the change log goes on as before this version, every change logged but nothing of
+what it replaced, and the app does no history work (no compare, no log pages, no day
+counts). The details panel still shows each photo's history. Entries logged so far stay
+as they are, so turning it back on finds them; what happened while it was off is in the
+log too, only without what those changes replaced.
+
+That leaves a gap: a keyword tree change or an album delete made while History was off
+counts as a change when two dates are compared, but not by the photos it touched (their
+keywords gained and lost, who was in the album), and it is missing from those photos' own
+history. The library remembers when History was off, so the History tab says how many of
+the entries it compares were logged then, and a photo's history in the details panel says
+when it was off. A keyword tree change logged before History existed is flagged too: the
+keyword numbers fall short by what it did.
 
 Restoring a past state is not in this version.
 

@@ -60,7 +60,12 @@
         {#if compare.log_start !== null && range.from < compare.log_start}
           <p class="note">The log starts on {date(compare.log_start)}: what changed before it is not known.</p>
         {/if}
-        {#if compare.keywords_unkept}
+        {#if compare.logged_off}
+          <p class="note">
+            {n(compare.logged_off)} of these {compare.logged_off === 1 ? "entry was" : "entries were"} logged while History was
+            off: what they replaced was not kept, so keyword tree changes and album deletes among them are not counted by photo.
+          </p>
+        {:else if compare.keywords_unkept}
           <p class="note">
             {n(compare.keywords_unkept)} keyword tree {compare.keywords_unkept === 1 ? "change" : "changes"} in these days did not
             keep the photos {compare.keywords_unkept === 1 ? "it" : "they"} rewrote (logged while History was off, or before it

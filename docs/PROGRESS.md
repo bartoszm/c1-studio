@@ -1170,9 +1170,18 @@ recorded here, so recording came first.
     still read (into `inline_before`, then decoded leniently like the table's copy), so a
     log written by those builds keeps what it kept.
   - **It can be turned off:** *Settings › History* (per catalog, on by default) calls
-    `Library::set_history`, which stores it in the `meta` table of `edits.redb` (`history_off`)
-    before it takes effect, so the command line tool and plugins, which open the library the
-    plain way, follow it too (it is not in `settings.json`). Off, `Edits` logs entries as 0.5 did (no
+    `Library::set_history`, which keeps it in the edits file itself, in `meta`:
+    `history_off` (1 off, 0 or absent on) and, while off, `history_off_from` (the first
+    entry logged since). Every opener of the library (the app, `c1cat` and the plugin
+    through it) reads it in `Edits::open`, each `EditsBatch` reads it again in its own
+    transaction, and it is stored before it takes effect. Turning it back on moves the
+    stretch into the `history_off_spans` table (first seq → one past the last), so
+    `Compare::logged_off` and a photo's history (`Library::history_off`) can say a range
+    includes entries that kept nothing. The first builds kept the flag as `history` in
+    `settings.json`: off there is carried into the library once and the key dropped;
+    `settings.json` (autosave only now) is written to a temp file and renamed, and one that
+    does not parse is set aside as `settings.json.bad` and reported rather than read as the
+    defaults silently. Off, `Edits` logs entries as 0.5 did (no
     `has_before`, nothing in `event_before`; the library does not even gather albums'
     members or a remap's old keywords), `log_page`, `compare`, `growth` and `log_days`
     refuse, `resolve_history` sets a pick aside, and the caches are dropped. The UI hides

@@ -1,8 +1,8 @@
 // The change log as the History tab words it: a group of entries, and what a pick of it
 // is about.
 
-import type { HistoryPick, LogEvent, LogGroup, LogKind, NetWhat } from "./api";
-import { eventText } from "./format";
+import type { HistoryOff, HistoryPick, LogEvent, LogGroup, LogKind, NetWhat } from "./api";
+import { date, eventText } from "./format";
 
 const DAY = 86_400_000;
 
@@ -26,6 +26,11 @@ export const KIND_LABELS: Record<LogKind, string> = {
 
 /** The kinds the list's chips offer, in order. */
 export const LIST_KINDS: LogKind[] = ["rating", "color", "keywords", "iptc", "place", "geo", "albums", "added", "removed", "collection", "remap", "written"];
+
+/** When History was off, in a phrase: `from … to …`, or `since …` while it still is. */
+export function offText(spans: HistoryOff[]): string {
+  return spans.map((s) => (s.to === null ? `since ${date(s.from)}` : `from ${date(s.from)} to ${date(s.to)}`)).join("; ");
+}
 
 const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`;
 

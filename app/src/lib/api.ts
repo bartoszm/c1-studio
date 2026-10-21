@@ -398,7 +398,12 @@ export type Compare = {
   written: number;
   /** When the log starts: nothing before is known. */
   log_start: number | null;
+  /** Entries among them logged while History was off: they kept nothing of what they
+   *  replaced, so keyword tree changes and album deletes among them are not counted by photo. */
+  logged_off: number;
 };
+/** A stretch of the log written while History was off; `to` is null while it still is. */
+export type HistoryOff = { from: number; to: number | null; entries: number };
 export type PendingEdit = {
   key: string;
   row: number | null;
@@ -643,8 +648,9 @@ export const setBinned = (rows: number[], binned: boolean) => invoke<number[]>("
 export const emptyBin = (rows?: number[]) => invoke<EmptyReport>("empty_bin", { rows: rows ?? null });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */
+/** `history_off`: when History was off, oldest first. */
 export const photoHistory = (row: number) =>
-  invoke<{ events: LogEvent[]; albums: Record<string, string> }>("photo_history", { row });
+  invoke<{ events: LogEvent[]; albums: Record<string, string>; history_off: HistoryOff[] }>("photo_history", { row });
 /** The newest entries of the change log. */
 export const changeLog = (limit: number) => invoke<LogEvent[]>("change_log", { limit });
 /** A page of the change log, newest first, in groups of one batch each. */
@@ -757,6 +763,8 @@ export const setAutosave = (on: boolean) => invoke<void>("set_autosave", { on })
 export const historyEnabled = () => invoke<boolean>("history_enabled");
 /** Off, the change log stops keeping what changes replaced and nothing reads it as history. */
 export const setHistory = (on: boolean) => invoke<void>("set_history", { on });
+/** Why the catalog's settings file could not be read when it was opened, if it could not. */
+export const settingsProblem = () => invoke<string | null>("settings_problem");
 export type WriteReport = { written: number; backup: string | null; warnings: string[] };
 export const writeApply = () => invoke<WriteReport>("write_apply");
 

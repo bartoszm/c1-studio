@@ -38,7 +38,7 @@ mod history;
 mod placing;
 mod selection;
 
-pub use history::{LogDays, LogPage};
+pub use history::{HistoryOff, LogDays, LogPage};
 pub use placing::{
     FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,
 };

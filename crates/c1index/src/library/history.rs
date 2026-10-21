@@ -44,6 +44,18 @@ pub struct LogDays {
     pub days: Vec<(i64, usize)>,
 }
 
+/// A stretch of the log written while History was off: its entries kept nothing of what
+/// they replaced, so a keyword tree change or an album delete among them counts as a change
+/// but not by the photos it touched (and is missing from those photos' own history).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct HistoryOff {
+    /// When its first entry was made.
+    pub from: i64,
+    /// When its last one was, or `None` while History is still off.
+    pub to: Option<i64>,
+    pub entries: u64,
+}
+
 /// The photos a pick came to, and the days of the log, for the log as it was.
 #[derive(Default)]
 pub(super) struct Cache {
@@ -74,9 +86,12 @@ impl Library {
     /// off). Off, entries are logged as 0.5 logged them, without what a change replaced;
     /// nothing reads the log as history (a page of it, a compare, the days, the growth
     /// chart), a History pick in a filter is set aside, and what was worked out is let go.
-    /// Entries already logged stay as they are, so turning it back on finds them.
-    /// Kept with the log, so the CLI and plugins follow it too. Nothing changes if it
-    /// cannot be stored.
+    /// Entries already logged stay as they are, so turning it back on finds them; the
+    /// stretch logged while off is remembered ([`Library::history_off`]).
+    ///
+    /// The setting is the library's own, kept in its change log file: every program that
+    /// opens the library (the app, `c1cat`) logs by it. Nothing changes when it cannot be
+    /// saved.
     pub fn set_history(&self, on: bool) -> anyhow::Result<()> {
         self.edits.set_keep_before(on)?;
         if !on {
@@ -89,6 +104,37 @@ impl Library {
     /// Whether the History tab's side of the change log is on.
     pub fn history_on(&self) -> bool {
         self.edits.keeps_before()
+    }
+
+    /// The stretches of the log written while History was off, oldest first.
+    pub fn history_off(&self) -> anyhow::Result<Vec<HistoryOff>> {
+        let last = self.edits.last_seq()?;
+        let mut out = Vec::new();
+        for span in self.edits.off_spans()? {
+            let open = span.end == u64::MAX;
+            let end = match last {
+                Some(last) => span.end.min(last + 1),
+                None => 0,
+            };
+            // Off, with nothing logged since: no stretch yet.
+            if span.start >= end {
+                continue;
+            }
+            let Some(from) = self.edits.at_of(span.start)? else { continue };
+            let to = if open { None } else { self.edits.at_of(end - 1)? };
+            out.push(HistoryOff { from, to, entries: end - span.start });
+        }
+        Ok(out)
+    }
+
+    /// How many of these entries were logged while History was off.
+    fn logged_off(&self, seqs: &Range<u64>) -> anyhow::Result<u64> {
+        Ok(self
+            .edits
+            .off_spans()?
+            .iter()
+            .map(|span| span.end.min(seqs.end).saturating_sub(span.start.max(seqs.start)))
+            .sum())
     }
 
     fn needs_history(&self) -> anyhow::Result<()> {
@@ -177,8 +223,10 @@ impl Library {
         let mut net = Net::default();
         // A keyword tree change's photos are what it did to them: its entry is read whole.
         let remaps = |event: &Event| matches!(event.what, crate::edits::What::Remap(_));
-        self.each_entry(self.seq_range(Some(from), to)?, &remaps, &mut |seq, event| net.add(seq, event))?;
+        let seqs = self.seq_range(Some(from), to)?;
+        self.each_entry(seqs.clone(), &remaps, &mut |seq, event| net.add(seq, event))?;
         let mut compare = net.compare(Some(from), to, self.edits.first_at()?);
+        compare.logged_off = self.logged_off(&seqs)?;
         let ids: Vec<c1model::CollectionId> =
             compare.albums.iter().map(|a| c1model::CollectionId(a.id.clone())).collect();
         let names = self.edits.album_names(&ids)?;

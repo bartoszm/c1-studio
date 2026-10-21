@@ -41,6 +41,12 @@ const HISTORY_OFF: &str = "history_off";
 /// Events from this sequence number on are not in [`BY_PHOTO`] yet: written by a build
 /// from before it, or not looked at since.
 const BY_PHOTO_UPTO: &str = "by_photo_upto";
+/// Set while History is off (with [`HISTORY_OFF`]), to the sequence number of the first
+/// entry logged since it was turned off.
+const HISTORY_OFF_FROM: &str = "history_off_from";
+/// first sequence number → one past the last, of the entries logged while History was off
+/// and since turned back on: they kept nothing of what they replaced.
+const OFF_SPANS: TableDefinition<u64, u64> = TableDefinition::new("history_off_spans");
 
 /// A keyword tree change waiting to be written.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -262,7 +268,8 @@ pub fn photo_key(pending_key: &str) -> &str {
 pub struct Edits {
     db: Database,
     /// Entries keep what they replaced (for the History tab). Off, they are logged as 0.5
-    /// logged them.
+    /// logged them. A copy of what [`HISTORY_OFF`] says, for reads; a batch asks the
+    /// file itself.
     keep_before: AtomicBool,
 }
 
@@ -281,6 +288,7 @@ impl Edits {
         tx.open_table(WRITTEN)?;
         tx.open_table(ALBUM_NAMES)?;
         tx.open_table(BEFORES)?;
+        tx.open_table(OFF_SPANS)?;
         let keep_before;
         {
             // The per-photo lookup came after the log, and a build from before it may
@@ -288,7 +296,7 @@ impl Edits {
             let events = tx.open_table(EVENTS)?;
             let mut by_photo = tx.open_multimap_table(BY_PHOTO)?;
             let mut meta = tx.open_table(META)?;
-            keep_before = meta.get(HISTORY_OFF)?.is_none_or(|v| v.value() == 0);
+            keep_before = history_on(&meta)?;
             let from = meta.get(BY_PHOTO_UPTO)?.map_or(0, |v| v.value());
             let mut upto = from;
             for entry in events.range(from..)? {
@@ -309,18 +317,61 @@ impl Edits {
     }
 
     pub fn batch(&self) -> anyhow::Result<EditsBatch> {
-        Ok(EditsBatch { tx: self.db.begin_write()?, keep_before: self.keeps_before() })
+        let tx = self.db.begin_write()?;
+        // From the file, in the batch's own transaction: whatever turned it off last.
+        let keep_before = history_on(&tx.open_table(META)?)?;
+        Ok(EditsBatch { tx, keep_before })
     }
 
-    /// Whether entries logged from now on keep what they replaced. Entries already
-    /// logged are left as they are either way. Kept with the log, so it holds for every
-    /// program that opens it, and takes effect only once it is stored.
+    /// Whether entries logged from now on keep what they replaced, kept in the file (on
+    /// unless turned off). Entries already logged are left as they are either way; a
+    /// stretch logged while off is remembered (see [`Edits::off_spans`]). Nothing changes
+    /// when the write fails.
     pub fn set_keep_before(&self, on: bool) -> anyhow::Result<()> {
         let tx = self.db.begin_write()?;
-        tx.open_table(META)?.insert(HISTORY_OFF, u64::from(!on))?;
+        {
+            let next = tx.open_table(EVENTS)?.last()?.map_or(0, |(k, _)| k.value() + 1);
+            let mut meta = tx.open_table(META)?;
+            meta.insert(HISTORY_OFF, u64::from(!on))?;
+            let from = meta.get(HISTORY_OFF_FROM)?.map(|v| v.value());
+            match (on, from) {
+                (false, None) => {
+                    meta.insert(HISTORY_OFF_FROM, next)?;
+                }
+                (true, Some(from)) => {
+                    meta.remove(HISTORY_OFF_FROM)?;
+                    // Nothing logged while it was off leaves nothing to say.
+                    if next > from {
+                        tx.open_table(OFF_SPANS)?.insert(from, next)?;
+                    }
+                }
+                _ => {}
+            }
+        }
         tx.commit()?;
         self.keep_before.store(on, Ordering::Relaxed);
         Ok(())
+    }
+
+    /// The stretches of the log written while History was off, oldest first, as sequence
+    /// numbers: the last runs to `u64::MAX` while it is still off.
+    pub fn off_spans(&self) -> anyhow::Result<Vec<std::ops::Range<u64>>> {
+        let tx = self.db.begin_read()?;
+        let mut out = Vec::new();
+        for entry in tx.open_table(OFF_SPANS)?.iter()? {
+            let (from, to) = entry?;
+            out.push(from.value()..to.value());
+        }
+        if let Some(from) = tx.open_table(META)?.get(HISTORY_OFF_FROM)? {
+            out.push(from.value()..u64::MAX);
+        }
+        Ok(out)
+    }
+
+    /// When the entry with this sequence number was made.
+    pub fn at_of(&self, seq: u64) -> anyhow::Result<Option<i64>> {
+        let tx = self.db.begin_read()?;
+        Ok(tx.open_table(EVENTS)?.get(seq)?.and_then(|bytes| read_at(seq, bytes.value())))
     }
 
     pub fn keeps_before(&self) -> bool {
@@ -637,6 +688,11 @@ impl EditsBatch {
         self.tx.commit()?;
         Ok(())
     }
+}
+
+/// Whether History is on, as `meta` holds it: on unless turned off.
+fn history_on(meta: &impl ReadableTable<&'static str, u64>) -> anyhow::Result<bool> {
+    Ok(meta.get(HISTORY_OFF)?.is_none_or(|v| v.value() == 0))
 }
 
 pub fn now_ms() -> i64 {
@@ -973,5 +1029,45 @@ mod tests {
         again.set_keep_before(true).unwrap();
         drop(again);
         assert!(Edits::open(&path).unwrap().keeps_before());
+    }
+
+    #[test]
+    fn history_off_is_kept_in_the_file_with_the_stretches_logged_while_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edits.redb");
+        let log = |edits: &Edits, n: u32| {
+            let mut batch = edits.batch().unwrap();
+            batch.log(&removed(n)).unwrap();
+            batch.commit().unwrap();
+        };
+        let edits = Edits::open(&path).unwrap();
+        assert!(edits.keeps_before(), "on unless turned off");
+        log(&edits, 1);
+        edits.set_keep_before(false).unwrap();
+        // Turning it off twice does not move where it went off.
+        edits.set_keep_before(false).unwrap();
+        log(&edits, 2);
+        log(&edits, 3);
+        assert_eq!(edits.off_spans().unwrap(), vec![(1..u64::MAX)]);
+        drop(edits);
+
+        // Another program opening the library (c1cat) finds it off and logs alike.
+        let edits = Edits::open(&path).unwrap();
+        assert!(!edits.keeps_before());
+        log(&edits, 4);
+        assert!(edits.events(3).unwrap().iter().all(|e| !e.has_before));
+        edits.set_keep_before(true).unwrap();
+        log(&edits, 5);
+        // Off and on again with nothing logged between leaves no stretch.
+        edits.set_keep_before(false).unwrap();
+        edits.set_keep_before(true).unwrap();
+        drop(edits);
+
+        let edits = Edits::open(&path).unwrap();
+        assert!(edits.keeps_before());
+        assert_eq!(edits.off_spans().unwrap(), vec![(1..4)]);
+        let kept: Vec<bool> = edits.events(10).unwrap().iter().rev().map(|e| e.has_before).collect();
+        assert_eq!(kept, [true, false, false, false, true]);
+        assert_eq!(edits.at_of(2).unwrap(), Some(5));
     }
 }
