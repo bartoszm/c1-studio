@@ -148,16 +148,10 @@ impl Session {
 }
 
 /// The app's own settings, kept per catalog.
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
     autosave: bool,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Settings { autosave: false }
-    }
 }
 
 impl Session {
