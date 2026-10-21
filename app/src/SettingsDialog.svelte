@@ -3,15 +3,18 @@
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
   import ClassSettings from "./ClassSettings.svelte";
+  import AiProviderSettings from "./AiProviderSettings.svelte";
 
   // The app's preferences, applied as they are changed: the sidebar's sections (which,
-  // in what order) and whether the map may use the internet. The analysis lines are the
-  // exception: they are applied on request, and `onclasses` is told when they are.
+  // in what order), whether the map may use the internet, how photos are described. The
+  // analysis lines are the exception: they are applied on request, and `onclasses` is
+  // told when they are.
   let {
     titles,
+    initial = "sidebar",
     onclose,
     onclasses,
-  }: { titles: Record<string, string>; onclose: () => void; onclasses: () => void } = $props();
+  }: { titles: Record<string, string>; initial?: Tab; onclose: () => void; onclasses: () => void } = $props();
 
   /** The row being dragged, and the row it would land before. */
   let from = $state<number | null>(null);
@@ -33,9 +36,11 @@
     { key: "sidebar", label: "Sidebar" },
     { key: "map", label: "Map & places" },
     { key: "analysis", label: "Analysis" },
+    { key: "ai", label: "AI" },
   ] as const;
   type Tab = (typeof TABS)[number]["key"];
-  let tab = $state<Tab>("sidebar");
+  // svelte-ignore state_referenced_locally
+  let tab = $state<Tab>(initial);
   /** Arrow keys move between the categories, as in any tab list. */
   function tabKey(e: KeyboardEvent, key: Tab) {
     const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 0;
@@ -47,7 +52,7 @@
   }
   /** What can take focus now: not in a category that is not shown. */
   const focusable = () =>
-    [...dialog.querySelectorAll<HTMLElement>("input, button:not(:disabled)")].filter((el) => !el.closest("[hidden]"));
+    [...dialog.querySelectorAll<HTMLElement>("input, select, button:not(:disabled)")].filter((el) => !el.closest("[hidden]"));
 
   // Focus goes into the dialog, stays in it, and goes back where it was on closing.
   let dialog: HTMLDivElement;
@@ -165,6 +170,11 @@
 
     <div role="tabpanel" id="panel-analysis" aria-labelledby="tab-analysis" hidden={tab !== "analysis"}>
       <ClassSettings onapplied={onclasses} />
+    </div>
+
+    <div role="tabpanel" id="panel-ai" aria-labelledby="tab-ai" hidden={tab !== "ai"}>
+      <!-- Mounted when shown: on a plan it asks Claude Code, which takes a moment. -->
+      {#if tab === "ai"}<AiProviderSettings />{/if}
     </div>
     </div>
     </div>

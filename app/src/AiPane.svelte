@@ -3,51 +3,36 @@
   import type { Accept, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
   let {
-    picked, describe, version, onselect, onaccepted, onerror,
+    picked, describe, version, settingsOpen, onsettings, onselect, onaccepted, onerror,
   }: {
     /** The photos an edit would reach now: what a run describes. */
     picked: number[];
     describe: DescribeState | null;
     /** Bumped when photos were edited or described. */
     version: number;
+    /** The Settings dialog is open: closed, the AI settings may have changed. */
+    settingsOpen: boolean;
+    /** Opens Settings on its AI tab. */
+    onsettings: () => void;
     onselect: (row: number) => void;
     /** Suggestions were queued: the ops that undo it. */
     onaccepted: (undo: [number, api.Op][]) => void;
     onerror: (message: string) => void;
   } = $props();
 
-  // ---- settings and key -------------------------------------------------------------
+  // ---- settings (edited in Settings > AI) ---------------------------------------------
   let view = $state<AiView | null>(null);
-  let showSettings = $state(false);
-  let keyInput = $state("");
   async function loadView() {
     try {
       view = await api.aiSettings();
-      if (!view.ready) showSettings = true;
     } catch (e) {
       onerror(String(e));
     }
   }
   $effect(() => {
     void version;
-    loadView();
+    if (!settingsOpen) loadView();
   });
-  async function saveSettings(change: Partial<api.AiSettings>) {
-    if (!view) return;
-    try {
-      view = await api.setAiSettings({ ...view.settings, ...change });
-    } catch (e) {
-      onerror(String(e));
-    }
-  }
-  async function saveKey(key: string) {
-    try {
-      view = await api.setAiKey(key);
-      keyInput = "";
-    } catch (e) {
-      onerror(String(e));
-    }
-  }
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
   let model = $derived(view?.models.find((m) => m.id === view?.settings.model));
 
@@ -194,7 +179,7 @@
           class="btn primary"
           disabled={!picked.length || estimating || !view?.ready}
           title={!view?.ready
-            ? view?.settings.access === "plan" ? "Sign in to Claude Code first" : "Add an API key in the settings first"
+            ? view?.settings.access === "plan" ? "Sign in to Claude Code first" : "Add an API key in Settings > AI first"
             : picked.length ? "" : "Pick photos in the strip below"}
           onclick={ask}
         >Describe {picked.length ? picked.length.toLocaleString() : ""} photo{picked.length === 1 ? "" : "s"}…</button>
@@ -206,82 +191,14 @@
         <span class="warn" title={describe.error ?? ""}>⚠ {describe.failed} failed{describe.error ? `: ${describe.error}` : ""}</span>
       {/if}
     </div>
-    <button class="link" class:on={showSettings} onclick={() => (showSettings = !showSettings)}>
-      {model?.name ?? "Settings"}{view ? ` · ${money(view.spent)} spent` : ""}
+    <button class="link" title="Settings > AI: access, model, language" onclick={onsettings}>
+      {#if view && !view.ready}
+        {view.settings.access === "plan" ? "Sign in to Claude Code…" : "Add an API key…"}
+      {:else}
+        {model?.name ?? "Settings"}{view?.settings.access === "plan" ? " · Claude plan" : view ? ` · ${money(view.spent)} spent` : ""}
+      {/if}
     </button>
   </div>
-
-  {#if showSettings && view}
-    <section class="settings">
-      <label>
-        <span>Access</span>
-        <select value={view.settings.access} onchange={(e) => saveSettings({ access: e.currentTarget.value as api.AiAccess })}>
-          <option value="api">Anthropic API key: billed per token</option>
-          <option value="plan">Claude plan, through Claude Code</option>
-        </select>
-      </label>
-      {#if view.settings.access === "plan"}
-        <div class="row">
-          <span>Claude Code</span>
-          {#if !view.plan?.installed}
-            <span class="warn">Not installed. Install Claude Code, run <code>claude</code> once to sign in, then reopen these settings.</span>
-          {:else if view.plan.error}
-            <span class="warn">{view.plan.error}</span>
-          {:else if view.plan.loggedIn}
-            <span>Signed in{view.plan.subscriptionType ? ` with Claude ${view.plan.subscriptionType}` : ""}</span>
-            {#if view.plan.authMethod !== "claude.ai"}
-              <span class="muted">({view.plan.authMethod}: billed to that account, not a plan)</span>
-            {/if}
-          {:else}
-            <span class="warn">Not signed in. Run <code>claude auth login</code> in a terminal, then reopen these settings.</span>
-          {/if}
-        </div>
-      {:else}
-        <label>
-          <span>Anthropic API key</span>
-          {#if view.key}
-            <code>{view.key[0]}</code>
-            <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : "in the Windows Credential Manager"}</span>
-            {#if view.key[1] === "stored"}<button class="btn" onclick={() => saveKey("")}>Remove</button>{/if}
-          {:else}
-            <input type="password" placeholder="sk-ant-…" bind:value={keyInput} autocomplete="off" />
-            <button class="btn" disabled={!keyInput.trim()} onclick={() => saveKey(keyInput)}>Save</button>
-            <span class="muted">Kept in the Windows Credential Manager, never in a file.</span>
-          {/if}
-        </label>
-      {/if}
-      <label>
-        <span>Model</span>
-        <select value={view.settings.model} onchange={(e) => saveSettings({ model: e.currentTarget.value })}>
-          {#each view.models as m (m.id)}
-            <option value={m.id}>{m.name}{view.settings.access === "api" ? ` · $${m.input} / $${m.output} per M tokens` : ""}</option>
-          {/each}
-        </select>
-      </label>
-      <label>
-        <span>Captions</span>
-        <select value={view.settings.language} onchange={(e) => saveSettings({ language: e.currentTarget.value as api.AiLanguage })}>
-          <option value="en">English</option>
-          <option value="pl">Polish</option>
-          <option value="both">English and Polish</option>
-        </select>
-      </label>
-      <label>
-        <span>Effort</span>
-        <select value={view.settings.effort} onchange={(e) => saveSettings({ effort: e.currentTarget.value as api.AiSettings["effort"] })}>
-          <option value="low">Low: quick and cheap</option>
-          <option value="medium">Medium</option>
-          <option value="high">High: thinks longer, costs more</option>
-        </select>
-      </label>
-      <label>
-        <span>At once</span>
-        <input type="number" min="1" max="8" value={view.settings.parallel} onchange={(e) => saveSettings({ parallel: Number(e.currentTarget.value) })} />
-        <span class="muted">photos described in parallel</span>
-      </label>
-      <p class="muted">{view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at list prices. Photos are sent to Anthropic as previews of at most 1568 pixels.</p>
-    </section>
-  {/if}
 
   <div class="bar">
     <nav class="parts">
@@ -375,16 +292,10 @@
   .btn.primary { background: var(--on, #2a3a55); border-color: #5b8def; }
   .btn:disabled { opacity: 0.5; }
   .link { color: #e8b03a; font-size: 12px; }
-  .link:hover, .link.on { text-decoration: underline; }
+  .link:hover { text-decoration: underline; }
   .muted { color: var(--muted, #999); font-size: 12px; }
   .warn { color: #e8b03a; font-size: 12px; margin: 4px 0 0; }
   .empty { margin: 16px 0; }
-  .settings { display: grid; gap: 8px; padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--line, #333); border-radius: 4px; background: rgba(255, 255, 255, 0.03); }
-  .settings label, .settings .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .settings label > span:first-child, .settings .row > span:first-child { width: 130px; color: #bbb; }
-  .settings input[type="password"] { width: 280px; }
-  .settings input[type="number"] { width: 56px; }
-  .settings p { margin: 0; }
   .parts { display: flex; gap: 2px; border-bottom: 1px solid var(--line, #333); }
   .parts button { padding: 5px 14px; border-bottom: 2px solid transparent; margin-bottom: -1px; }
   .parts button:hover { background: var(--hover, #333); }
