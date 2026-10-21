@@ -45,7 +45,9 @@ A resizable grid, a details panel and a full-screen viewer, showing each photo a
 Capture One renders it. Edit ratings, colour tags, keywords and
 the keyword tree (rename, join, group), albums and smart albums, location, GPS and IPTC
 fields, or copy fields from one photo to many. Press `h` to hide sensitive photos from
-every view and count; Capture One never sees the mark.
+every view and count; Capture One never sees the mark. Press **Delete** to move photos to
+the app's trash: they leave every view at once, and nothing reaches Capture One or the
+drive until you empty it.
 
 ![The portfolio album in the grid](docs/media/library.jpg)
 

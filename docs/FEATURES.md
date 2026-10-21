@@ -106,6 +106,8 @@ them back. Nothing is deleted until you empty the trash: then a photo folder's f
 the Windows Recycle Bin, and a Capture One catalog marks the images deleted, so they show
 in Capture One's own Trash.
 
+![Deleting three photos, the trash with its count, and restoring them](media/features/trash.gif)
+
 [In the guide: Trash](GUIDE.md#trash)
 
 ## The keyword tree

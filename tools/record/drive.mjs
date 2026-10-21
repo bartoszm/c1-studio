@@ -217,6 +217,7 @@ const d = {
     // Stacking and hidden photos off, newest first: what a clip starts from.
     if (await on(/^Stack$/)) await d.press("header button.toggle", /^Stack$/);
     if (await on(/^Hidden$/)) await d.press("header button.toggle", /^Hidden$/);
+    if (await locate(".trash-row.on")) await d.press(".trash-row");
     const sort = 'header select[aria-label="Sort photos by"]';
     if ((await evaluate(`document.querySelector(${JSON.stringify(sort)})?.value`)) !== "date") await d.choose(sort, "date");
     if (await locate("header .sort .dir", /Oldest first/)) await d.press("header .sort .dir");
