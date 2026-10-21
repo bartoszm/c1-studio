@@ -1,10 +1,18 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-21
 
 ### New
 
-- **Trash:** **Delete** moves the picked photos (or the one in the viewer) to C1 Studio's trash, out of every view and count; Ctrl+Z brings them back. In an album, Delete still takes photos out of the album and **Ctrl+Delete** trashes them. **Trash** at the bottom of the sidebar shows them, with **Restore**, **Delete for good…** and **Empty trash…**. Emptying sends a photo folder's files (and their own `.xmp` sidecars) to the Windows Recycle Bin; in a Capture One catalog it marks the images deleted, so they show in Capture One's own Trash, after a backup and with Capture One closed. Nothing reaches the source before the trash is emptied.
+- **Trash:** **Delete** moves the picked photos (or the one in the viewer) to C1 Studio's trash, out of every view and count; Ctrl+Z brings them back. In an album, Delete still takes photos out of the album and **Ctrl+Delete** trashes them. **Trash** at the bottom of the sidebar shows them, with **Restore**, **Delete for good…** and **Empty trash…**. Emptying sends a photo folder's files (and their own `.xmp` sidecars) to the Windows Recycle Bin; in a Capture One catalog it marks the images deleted, so they show in Capture One's own Trash, after a backup and with Capture One closed. Nothing reaches the source before the trash is emptied (#64).
+
+### Fixed
+
+- **Editing in the full-screen viewer:** after ← or →, the first rating, colour or keyword went to the photo just left, so stars took two presses and keywords seemed not to be added. Edits now land on the photo shown (several picked photos stay picked). ← → and Escape typed in a field of the details panel stay in the field instead of changing photo or closing the viewer, keys no longer reach the viewer behind an open dialog, quick arrow presses are no longer lost, and the viewer's bar shows a rating or keyword as soon as it is set (#65).
+
+### Install
+
+Run `C1.Studio_0.5.0_x64-setup.exe`. It installs over 0.4.x for the current user and keeps your settings and your library: the search index is not rebuilt.
 
 ## 0.4.0 — 2026-10-19
 
