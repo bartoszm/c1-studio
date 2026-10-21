@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collapse, editingNote, mergedField, sameRows, scrollFix } from "../src/lib/batch";
+import { collapse, editingNote, followStep, mergedField, sameRows, scrollFix } from "../src/lib/batch";
 
 const n = (v: number) => v.toLocaleString();
 
@@ -51,4 +51,26 @@ test("the scroll keeps a field in place when what is above it changes", () => {
   assert.equal(scrollFix(300, 420, 100), 220);
   assert.equal(scrollFix(300, 250, 100), 50);
   assert.equal(scrollFix(null, 420, 100), 100);
+});
+
+test("stepping in the viewer moves a single pick to the photo shown", () => {
+  const one = new Set([7]);
+  assert.equal(followStep(one, 8), true);
+  assert.deepEqual([...one], [8]);
+  // A pick left on another photo (a Ctrl+click) moves too.
+  const none = new Set<number>();
+  assert.equal(followStep(none, 8), true);
+  assert.deepEqual([...none], [8]);
+});
+
+test("stepping in the viewer keeps several picked photos picked", () => {
+  const many = new Set([1, 2, 3]);
+  assert.equal(followStep(many, 4), false);
+  assert.deepEqual([...many], [1, 2, 3]);
+});
+
+test("stepping to a photo not read yet leaves the pick alone", () => {
+  const one = new Set([7]);
+  assert.equal(followStep(one, undefined), false);
+  assert.deepEqual([...one], [7]);
 });
