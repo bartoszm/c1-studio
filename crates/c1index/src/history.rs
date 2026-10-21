@@ -236,6 +236,9 @@ pub struct Net {
     pub written: usize,
     pub album_changes: Vec<EventView>,
     pub keyword_changes: Vec<EventView>,
+    /// Keyword tree changes that did not keep the photos they rewrote (logged while History
+    /// was off, or before it existed): what they did to photos is not in the counts.
+    pub keywords_unkept: usize,
 }
 
 /// Whether a set field ended up with another value than it started with.
@@ -310,6 +313,9 @@ impl Net {
             What::Collection { .. } => self.album_changes.push(EventView::new(seq, event)),
             What::Remap(remap) => {
                 self.keyword_changes.push(EventView::new(seq, event));
+                if !event.has_before {
+                    self.keywords_unkept += 1;
+                }
                 // What it did to each photo it rewrote, when the entry kept them.
                 if let Some(Before::Keywords(photos)) = &event.before {
                     for (photo, old) in photos {
@@ -469,6 +475,9 @@ pub struct Compare {
     pub albums: Vec<AlbumNet>,
     pub album_changes: Vec<EventView>,
     pub keyword_changes: Vec<EventView>,
+    /// How many keyword tree changes in range did not keep their photos: the keyword
+    /// counts and picks fall short by what they did.
+    pub keywords_unkept: usize,
     pub written: usize,
     /// When the log starts: nothing before is known.
     pub log_start: Option<i64>,
@@ -505,6 +514,7 @@ impl Net {
                 .collect(),
             album_changes: self.album_changes.clone(),
             keyword_changes: self.keyword_changes.clone(),
+            keywords_unkept: self.keywords_unkept,
             written: self.written,
             log_start,
         }

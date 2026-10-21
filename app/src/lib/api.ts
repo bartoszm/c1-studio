@@ -393,6 +393,8 @@ export type Compare = {
   albums: { id: string; name: string | null; photos_in: number; photos_out: number }[];
   album_changes: LogEvent[];
   keyword_changes: LogEvent[];
+  /** Keyword tree changes in range that did not keep their photos: the keyword counts fall short by what they did. */
+  keywords_unkept: number;
   written: number;
   /** When the log starts: nothing before is known. */
   log_start: number | null;

@@ -152,22 +152,23 @@ impl Session {
 #[serde(default)]
 struct Settings {
     autosave: bool,
-    /// The History tab, and the change log keeping what changes replaced for it.
-    history: bool,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { autosave: false, history: true }
+        Settings { autosave: false }
     }
 }
 
 impl Session {
     /// Writes the settings as they are now.
     fn save_settings(&self) -> Result<(), String> {
-        let settings = Settings { autosave: self.autosave.load(Ordering::Relaxed), history: self.library.history_on() };
+        let settings = Settings { autosave: self.autosave.load(Ordering::Relaxed) };
         let bytes = serde_json::to_vec_pretty(&settings).map_err(text)?;
-        std::fs::write(&self.settings_path, bytes).map_err(text)
+        // Written whole, then moved into place: a crash halfway leaves the old file.
+        let part = self.settings_path.with_extension("json.part");
+        std::fs::write(&part, bytes).map_err(text)?;
+        std::fs::rename(&part, &self.settings_path).map_err(text)
     }
 }
 
@@ -260,8 +261,6 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
     let settings_path = dir.join("settings.json");
     let settings: Settings =
         std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-    // Before the first sync, so what it logs follows the setting.
-    library.set_history(settings.history);
     let session = Session {
         spec: spec.clone(),
         source,
@@ -1946,8 +1945,8 @@ async fn history_enabled(app: State<'_, App>) -> Result<bool, String> {
 #[tauri::command]
 async fn set_history(app: State<'_, App>, on: bool) -> Result<(), String> {
     let s = app.session()?;
-    s.library.set_history(on);
-    s.save_settings()
+    // Kept with the change log itself, so the CLI and plugins follow it too.
+    s.library.set_history(on).map_err(text)
 }
 
 /// `/thumb/<row>` serves the source's own thumbnail (Capture One's): a JPEG with every edit, cut to the crop;
@@ -2416,13 +2415,14 @@ mod tests {
     use c1model::{AssetId, EditInfo, Exif, FileInfo, PhotoId, SourceId};
 
     #[test]
-    fn settings_saved_before_the_history_tab_keep_it_on() {
+    fn settings_files_read_whatever_they_hold() {
         let old: Settings = serde_json::from_str(r#"{"autosave":true}"#).unwrap();
-        assert!(old.autosave && old.history);
+        assert!(old.autosave);
         let none: Settings = serde_json::from_str("{}").unwrap();
-        assert!(!none.autosave && none.history);
-        let off: Settings = serde_json::from_str(r#"{"autosave":false,"history":false}"#).unwrap();
-        assert!(!off.history);
+        assert!(!none.autosave);
+        // A file a build that kept History here wrote.
+        let other: Settings = serde_json::from_str(r#"{"autosave":true,"history":false}"#).unwrap();
+        assert!(other.autosave);
     }
 
     fn photo(n: u32, keywords: &[&str], city: Option<&str>) -> Photo {

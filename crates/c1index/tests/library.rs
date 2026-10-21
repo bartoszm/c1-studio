@@ -2293,7 +2293,7 @@ fn with_history_off_the_log_keeps_nothing_and_history_reads_nothing() {
     let pick = HistoryPick::Changed { from: 0, to: None, what: NetWhat::Any };
     assert_eq!(ids(&lib, &history(pick.clone())), [5]);
 
-    lib.set_history(false);
+    lib.set_history(false).unwrap();
     assert!(!lib.history_on());
     // The change log as 0.5 kept it goes on: every entry, without what it replaced.
     let gone = lib.photo_id(row_of(&lib, 2)).unwrap();
@@ -2321,7 +2321,7 @@ fn with_history_off_the_log_keeps_nothing_and_history_reads_nothing() {
     assert_eq!(ids(&lib, &history(pick.clone())), ids(&lib, &everything()));
 
     // Back on, the log is all there: what was logged while it was off reads too.
-    lib.set_history(true);
+    lib.set_history(true).unwrap();
     let picked = ids(&lib, &history(pick));
     assert!(picked.contains(&5) && picked.contains(&8) && !picked.contains(&2), "{picked:?}");
     let days: usize = lib.log_days().unwrap().days.iter().map(|(_, n)| *n).sum();
@@ -2345,4 +2345,38 @@ fn a_read_that_finds_every_photo_gone_keeps_only_so_many_whole() {
     let removed = logged.iter().filter(|e| matches!(e.what, What::Removed { .. })).count();
     let whole = logged.iter().filter(|e| e.has_before).count();
     assert_eq!((removed, whole), (5_010, 5_000));
+}
+
+#[test]
+fn turning_history_off_holds_for_every_program_that_opens_the_library() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = MemorySource::new("mem", (1..=3).map(photo).collect(), vec![]);
+    {
+        let lib = Library::open(dir.path()).unwrap();
+        lib.sync(&source).unwrap();
+        lib.set_history(false).unwrap();
+    }
+    // The command line tool opens it the plain way, and keeps nothing either.
+    let lib = Library::open(dir.path()).unwrap();
+    assert!(!lib.history_on());
+    source.remove_externally(&lib.photo_id(row_of(&lib, 2)).unwrap());
+    lib.sync(&source).unwrap();
+    assert_eq!(lib.events(1).unwrap()[0].before, None);
+    lib.set_history(true).unwrap();
+    drop(lib);
+    assert!(Library::open(dir.path()).unwrap().history_on());
+}
+
+#[test]
+fn compare_says_when_a_keyword_tree_change_kept_no_photos() {
+    let (_d, lib, _s) = setup();
+    let from = tick();
+    lib.set_history(false).unwrap();
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("street"), "avenue")).unwrap();
+    lib.set_history(true).unwrap();
+    lib.remap_keywords(KeywordRemap::rename(KeywordPath::from_pipe("best"), "top")).unwrap();
+    let c = lib.compare(from, None).unwrap();
+    assert_eq!(c.keywords_unkept, 1);
+    // The one that kept its photos counts; the other is not in the numbers.
+    assert_eq!(c.keywords_added, [("top|best2018".to_owned(), 3)]);
 }

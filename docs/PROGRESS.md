@@ -1169,13 +1169,19 @@ recorded here, so recording came first.
   - **Entries from the first History builds** held `before` in the entry itself. It is
     still read (into `inline_before`, then decoded leniently like the table's copy), so a
     log written by those builds keeps what it kept.
-  - **It can be turned off:** *Settings › History* (per catalog, `history` in
-    `settings.json`, on by default) calls `Library::set_history`, which the app also sets
-    from the file before the first sync. Off, `Edits` logs entries as 0.5 did (no
+  - **It can be turned off:** *Settings › History* (per catalog, on by default) calls
+    `Library::set_history`, which stores it in the `meta` table of `edits.redb` (`history_off`)
+    before it takes effect, so the command line tool and plugins, which open the library the
+    plain way, follow it too (it is not in `settings.json`). Off, `Edits` logs entries as 0.5 did (no
     `has_before`, nothing in `event_before`; the library does not even gather albums'
     members or a remap's old keywords), `log_page`, `compare`, `growth` and `log_days`
     refuse, `resolve_history` sets a pick aside, and the caches are dropped. The UI hides
     the tab, leaves it, and clears a pick.
+  - **Compare says what it cannot count:** `Compare.keywords_unkept` is the number of keyword
+    tree changes in range that kept no photos (logged while History was off, or before it
+    existed); the pane says the keyword numbers fall short. A remap that rewrote no photo
+    still keeps an empty list, so it is not mistaken for one. An `Entries` pick reads the
+    kept copy only for album and keyword tree entries: the others name their photos.
   - **`at` never goes down along the log:** `EditsBatch::log` raises an entry's time to the
     newest's, so a clock set back cannot break `seq_after`.
   - `Before::Photo` for a removed or deleted photo (the sync's `Removed`, a full read that

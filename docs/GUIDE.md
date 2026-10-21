@@ -478,12 +478,13 @@ most 5,000 removed photos whole; past that, they are logged without it, so a cat
 comes back empty for a moment does not fill the log.
 
 **Turning it off.** *Settings › History › Show the History tab* (on unless you turn it
-off) is kept per catalog. Off, the tab is hidden and a pick from it leaves the grid; the
+off) is kept per catalog, with its change log, so the command line tool follows it too. Off, the tab is hidden and a pick from it leaves the grid; the
 change log goes on as before this version, every change logged but nothing of what it
 replaced, and the app does no history work (no compare, no log pages, no day counts).
 The details panel still shows each photo's history. Entries logged so far stay as they
 are, so turning it back on finds them; what happened while it was off is in the log too,
-only without what those changes replaced.
+only without what those changes replaced. A compare over those days says so when a keyword
+tree change did not keep its photos: the keyword numbers fall short by what it did.
 
 Restoring a past state is not in this version.
 

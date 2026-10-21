@@ -2219,7 +2219,9 @@ impl Library {
         }
         let at = now_ms();
         let mut event = Event::new(at, Origin::App, What::Remap(remap.clone()));
-        if !was.is_empty() {
+        // Even when no photo carried it: an entry without is one logged while History was
+        // off (or before it existed), whose photos are not known.
+        if keep {
             event = event.with_before(Before::Keywords(was));
         }
         edits.log(&event)?;

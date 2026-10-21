@@ -35,6 +35,9 @@ const WRITTEN: TableDefinition<u64, &[u8]> = TableDefinition::new("written_colle
 const ALBUM_NAMES: TableDefinition<&str, &str> = TableDefinition::new("album_names");
 /// [`BY_PHOTO_UPTO`] and such.
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
+/// 1 when the user turned History off for this catalog: entries then keep nothing but
+/// the change. Kept here, with the log, so every program that opens the library follows it.
+const HISTORY_OFF: &str = "history_off";
 /// Events from this sequence number on are not in [`BY_PHOTO`] yet: written by a build
 /// from before it, or not looked at since.
 const BY_PHOTO_UPTO: &str = "by_photo_upto";
@@ -278,12 +281,14 @@ impl Edits {
         tx.open_table(WRITTEN)?;
         tx.open_table(ALBUM_NAMES)?;
         tx.open_table(BEFORES)?;
+        let keep_before;
         {
             // The per-photo lookup came after the log, and a build from before it may
             // still add to the log: what it has not seen is looked up now.
             let events = tx.open_table(EVENTS)?;
             let mut by_photo = tx.open_multimap_table(BY_PHOTO)?;
             let mut meta = tx.open_table(META)?;
+            keep_before = meta.get(HISTORY_OFF)?.is_none_or(|v| v.value() == 0);
             let from = meta.get(BY_PHOTO_UPTO)?.map_or(0, |v| v.value());
             let mut upto = from;
             for entry in events.range(from..)? {
@@ -300,7 +305,7 @@ impl Edits {
             }
         }
         tx.commit()?;
-        Ok(Self { db, keep_before: AtomicBool::new(true) })
+        Ok(Self { db, keep_before: AtomicBool::new(keep_before) })
     }
 
     pub fn batch(&self) -> anyhow::Result<EditsBatch> {
@@ -308,9 +313,14 @@ impl Edits {
     }
 
     /// Whether entries logged from now on keep what they replaced. Entries already
-    /// logged are left as they are either way.
-    pub fn set_keep_before(&self, on: bool) {
+    /// logged are left as they are either way. Kept with the log, so it holds for every
+    /// program that opens it, and takes effect only once it is stored.
+    pub fn set_keep_before(&self, on: bool) -> anyhow::Result<()> {
+        let tx = self.db.begin_write()?;
+        tx.open_table(META)?.insert(HISTORY_OFF, u64::from(!on))?;
+        tx.commit()?;
         self.keep_before.store(on, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn keeps_before(&self) -> bool {
@@ -926,7 +936,7 @@ mod tests {
     fn with_history_off_entries_are_what_0_5_wrote() {
         let dir = tempfile::tempdir().unwrap();
         let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
-        edits.set_keep_before(false);
+        edits.set_keep_before(false).unwrap();
         let mut batch = edits.batch().unwrap();
         batch.log(&removed(7)).unwrap();
         batch.commit().unwrap();
@@ -943,11 +953,25 @@ mod tests {
         assert_eq!(edits.photo_events(&id.key()).unwrap().len(), 1);
 
         // Back on, entries keep it again; the one logged while off stays as it was.
-        edits.set_keep_before(true);
+        edits.set_keep_before(true).unwrap();
         let mut batch = edits.batch().unwrap();
         batch.log(&removed(8)).unwrap();
         batch.commit().unwrap();
         let both = edits.events(2).unwrap();
         assert_eq!((both[0].before.is_some(), both[1].before.is_some()), (true, false));
+    }
+
+    #[test]
+    fn turning_history_off_is_kept_with_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("edits.redb");
+        assert!(Edits::open(&path).unwrap().keeps_before());
+        Edits::open(&path).unwrap().set_keep_before(false).unwrap();
+        // Another program opening the same log follows it.
+        let again = Edits::open(&path).unwrap();
+        assert!(!again.keeps_before());
+        again.set_keep_before(true).unwrap();
+        drop(again);
+        assert!(Edits::open(&path).unwrap().keeps_before());
     }
 }

@@ -187,7 +187,9 @@
           The catalog over time: two dates compared, the change log in groups, photos imported per day. For it, the change log
           also keeps what a change replaced (a removed photo, an album as it was, the keywords a keyword tree change rewrote).
           Off, the tab is hidden and the log keeps only the changes themselves, as before; a photo's own history in the details
-          panel stays. What was logged so far is kept either way.
+          panel stays. What was logged so far is kept either way. Changes made while it is off are not fully counted when
+          compared later (a keyword tree change's photos, an album delete's members). Kept with the change log, so the command
+          line tool follows it too.
         </small>
       </span>
     </label>

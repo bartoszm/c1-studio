@@ -60,6 +60,13 @@
         {#if compare.log_start !== null && range.from < compare.log_start}
           <p class="note">The log starts on {date(compare.log_start)}: what changed before it is not known.</p>
         {/if}
+        {#if compare.keywords_unkept}
+          <p class="note">
+            {n(compare.keywords_unkept)} keyword tree {compare.keywords_unkept === 1 ? "change" : "changes"} in these days did not
+            keep the photos {compare.keywords_unkept === 1 ? "it" : "they"} rewrote (logged while History was off, or before it
+            existed): the keyword numbers fall short by what {compare.keywords_unkept === 1 ? "it" : "they"} did.
+          </p>
+        {/if}
         {#if !compare.entries}
           <p class="hint">Nothing was logged on these days.</p>
         {:else}

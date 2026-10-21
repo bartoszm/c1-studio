@@ -14,6 +14,12 @@ use crate::history::{Compare, Grouper, LogGroup, LogQuery, Net, kind};
 
 /// Entries read in one go: a page of the log walks back through the log this many at a time.
 const CHUNK: u64 = 2000;
+/// Entries whose photos are in what they kept: an album delete's members, a keyword tree
+/// change's photos. The others name theirs, and their payload (a whole photo) stays unread.
+fn carries_photos(event: &Event) -> bool {
+    matches!(event.what, crate::edits::What::Collection { .. } | crate::edits::What::Remap(_))
+}
+
 /// How many picks' rows are kept.
 const PICKS_KEPT: usize = 8;
 /// Groups in a page when the query does not say.
@@ -69,12 +75,15 @@ impl Library {
     /// nothing reads the log as history (a page of it, a compare, the days, the growth
     /// chart), a History pick in a filter is set aside, and what was worked out is let go.
     /// Entries already logged stay as they are, so turning it back on finds them.
-    pub fn set_history(&self, on: bool) {
-        self.edits.set_keep_before(on);
+    /// Kept with the log, so the CLI and plugins follow it too. Nothing changes if it
+    /// cannot be stored.
+    pub fn set_history(&self, on: bool) -> anyhow::Result<()> {
+        self.edits.set_keep_before(on)?;
         if !on {
             self.forget_picks();
             *self.history.days.lock().unwrap() = DaysCache::default();
         }
+        Ok(())
     }
 
     /// Whether the History tab's side of the change log is on.
@@ -248,7 +257,7 @@ impl Library {
             }
             HistoryPick::Entries { first, last, kind: only, origin } => {
                 // The photos an entry kept are about it too.
-                self.each_entry(*first..last.saturating_add(1), &|_| true, &mut |_, event| {
+                self.each_entry(*first..last.saturating_add(1), &carries_photos, &mut |_, event| {
                     if only.is_none_or(|k| k == kind(&event.what)) && origin.is_none_or(|o| o == event.origin) {
                         keys.extend(event.photos().iter().map(|p| p.key()));
                     }
