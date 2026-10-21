@@ -4,9 +4,10 @@
 //! goes in on stdin as a stream-json user message, the answer comes back as the
 //! `structured_output` of the final `result` event.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
@@ -14,7 +15,11 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::claude::{Model, Options, Usage, model};
-use crate::{AiError, Brief, PhotoRequest, RawAnswer, Reply, RunRecord, VisionProvider, Vocabulary, validate};
+use crate::{AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, VisionProvider, Vocabulary, validate};
+
+/// How long one photo may take before Claude Code is stopped: answers take seconds, a
+/// minute at high effort; past this it is stuck (a prompt it waits on, a network gone).
+const CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Where Claude Code is: on `PATH`, else where its installer puts it.
 pub fn find() -> Option<PathBuf> {
@@ -65,6 +70,7 @@ pub struct ClaudeCode {
     model: Model,
     options: Options,
     /// The system prompt, in a file: with the vocabulary it can outgrow a command line.
+    /// This provider's own, removed when it is dropped.
     system: PathBuf,
     schema: Value,
     prompt: u64,
@@ -73,14 +79,15 @@ pub struct ClaudeCode {
 
 impl ClaudeCode {
     pub fn new(program: PathBuf, options: Options, brief: &Brief, vocabulary: Vocabulary) -> Result<Self, AiError> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
         let model =
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
         let text = crate::system_prompt(brief);
         let schema = crate::schema(&brief.fields);
-        let prompt = crate::prompt_hash(&text, &schema);
-        // Named by its hash, so runs at once share one file and never see another's.
-        let system = std::env::temp_dir().join(format!("c1studio-ai-{prompt:016x}.txt"));
-        std::fs::write(&system, text).map_err(|e| AiError::Cli(e.to_string()))?;
+        let prompt = crate::prompt_hash(brief);
+        let name = format!("c1studio-ai-{}-{}.txt", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+        let system = std::env::temp_dir().join(name);
+        std::fs::write(&system, text).map_err(|e| AiError::Cli(format!("the prompt's file: {e}")))?;
         Ok(ClaudeCode { program, model, options, system, schema, prompt, vocabulary })
     }
 
@@ -124,6 +131,8 @@ impl ClaudeCode {
         format!("{message}\n")
     }
 
+    /// Runs Claude Code on one photo. It is killed on a stop or after [`CALL_TIMEOUT`];
+    /// its output is read as it comes, so neither pipe fills and stalls it.
     fn call(&self, photo: &PhotoRequest) -> Result<(Value, u64), AiError> {
         let started = Instant::now();
         let mut child = command(&self.program)
@@ -132,26 +141,63 @@ impl ClaudeCode {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| AiError::Cli(e.to_string()))?;
+            .map_err(|e| AiError::Cli(format!("would not start: {e}")))?;
         let mut stdin = child.stdin.take().expect("piped");
         // Written from another thread: a photo is larger than the pipe, and Claude Code
-        // starts writing before it has read it all.
+        // starts writing before it has read it all. Dropping it closes Claude Code's input.
         let message = Self::message(photo);
-        let writer = std::thread::spawn(move || stdin.write_all(message.as_bytes()));
-        let out = child.wait_with_output().map_err(|e| AiError::Cli(e.to_string()))?;
-        let _ = writer.join();
+        std::thread::spawn(move || stdin.write_all(message.as_bytes()));
+        let drain = |mut pipe: Box<dyn Read + Send>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                bytes
+            })
+        };
+        let stdout = drain(Box::new(child.stdout.take().expect("piped")));
+        let stderr = drain(Box::new(child.stderr.take().expect("piped")));
+        let ended = loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break Ok(()),
+                Ok(None) => {}
+                Err(e) => break Err(AiError::BadReply(format!("Claude Code: {e}"))),
+            }
+            if self.options.stopped() {
+                break Err(AiError::Stopped);
+            }
+            if started.elapsed() > CALL_TIMEOUT {
+                break Err(AiError::BadReply(format!(
+                    "no answer from Claude Code in {} minutes",
+                    CALL_TIMEOUT.as_secs() / 60
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        if let Err(e) = ended {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
         let millis = started.elapsed().as_millis() as u64;
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let result = stdout
+        let stdout = stdout.join().unwrap_or_default();
+        let result = String::from_utf8_lossy(&stdout)
             .lines()
             .rev()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .find(|event| event["type"] == "result")
-            .ok_or_else(|| {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                AiError::Cli(stderr.lines().last().unwrap_or("no answer").trim().to_string())
-            })?;
+            .find(|event| event["type"] == "result");
+        // No result: this photo failed; Claude Code itself ran, so the run goes on.
+        let result = result.ok_or_else(|| {
+            let stderr = stderr.join().unwrap_or_default();
+            let stderr = String::from_utf8_lossy(&stderr);
+            AiError::BadReply(format!("Claude Code gave no answer: {}", stderr.lines().last().unwrap_or("").trim()))
+        })?;
         Ok((result, millis))
+    }
+}
+
+impl Drop for ClaudeCode {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.system);
     }
 }
 
@@ -193,22 +239,21 @@ impl VisionProvider for ClaudeCode {
         self.prompt
     }
 
-    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, AiError> {
+    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
         // Claude Code retries rate limits and overload itself; this is for the rest.
         let mut attempt = 0;
-        let (result, millis, (raw, answer)) = loop {
+        let (result, millis) = loop {
             attempt += 1;
-            match self.call(photo).and_then(|(result, millis)| Ok((read(&result)?, result, millis))) {
-                Ok((answer, result, millis)) => break (result, millis, answer),
-                Err(e) if e.retryable() && attempt < self.options.attempts.min(2) => {
+            match self.call(photo) {
+                Ok(done) => break done,
+                Err(e) if e.retryable() && attempt < self.options.attempts.min(2) && !self.options.stopped() => {
                     std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             }
         };
         let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
-        let (suggestion, warnings) = validate(&answer, &self.vocabulary);
-        let record = RunRecord {
+        let record = |raw: String| RunRecord {
             provider: "claude-code".to_string(),
             model: self.model.id.to_string(),
             prompt: self.prompt,
@@ -221,7 +266,10 @@ impl VisionProvider for ClaudeCode {
             millis,
             raw,
         };
-        Ok(Reply { suggestion, warnings, record })
+        let (raw, answer) =
+            read(&result).map_err(|error| Failed { error, record: Some(Box::new(record(result.to_string()))) })?;
+        let (suggestion, warnings) = validate(&answer, &self.vocabulary);
+        Ok(Reply { suggestion, warnings, record: record(raw) })
     }
 }
 
@@ -271,5 +319,28 @@ mod tests {
         let message: Value = serde_json::from_str(message.trim_end()).unwrap();
         assert_eq!(message["message"]["content"][0]["source"]["data"], "AQID");
         assert_eq!(message["message"]["content"][1]["text"], "DSCF0001.RAF");
+    }
+
+    #[test]
+    fn a_missing_program_stops_the_run_and_the_prompt_file_goes_with_the_provider() {
+        let missing = std::env::temp_dir().join("c1studio-no-such-dir").join("claude.exe");
+        let cli = ClaudeCode::new(missing, Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
+        let file = cli.system.clone();
+        assert!(file.is_file());
+        let failed = cli.describe(&PhotoRequest { jpeg: vec![1], context: String::new() }).unwrap_err();
+        assert!(matches!(failed.error, AiError::Cli(_)) && failed.error.stops_run() && failed.record.is_none());
+        drop(cli);
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn a_failed_answer_is_kept_with_its_record() {
+        let error = read(&json!({"type": "result", "is_error": false, "stop_reason": "end_turn", "result": "no"}));
+        assert!(matches!(error, Err(AiError::BadReply(_))));
+        assert!(!AiError::BadReply("x".into()).stops_run());
+        assert!(
+            AiError::Http { status: 400, message: "Your credit balance is too low".into(), retry_after: None }
+                .stops_run()
+        );
     }
 }

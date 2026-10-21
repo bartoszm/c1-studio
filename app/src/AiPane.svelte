@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import * as api from "./lib/api";
   import type { Accept, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
@@ -21,6 +22,8 @@
   } = $props();
 
   // ---- settings (edited in Settings > AI) ---------------------------------------------
+  // Read when the tab opens, when Settings closes and when a run ends (what was spent):
+  // on a plan, reading them asks Claude Code, which takes a moment.
   let view = $state<AiView | null>(null);
   async function loadView() {
     try {
@@ -29,38 +32,48 @@
       onerror(String(e));
     }
   }
+  let running = $derived(!!describe?.running);
   $effect(() => {
-    void version;
-    if (!settingsOpen) loadView();
+    void running;
+    if (!settingsOpen) untrack(loadView);
   });
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
   let model = $derived(view?.models.find((m) => m.id === view?.settings.model));
 
   // ---- a run --------------------------------------------------------------------------
-  let estimate = $state<api.AiEstimate | null>(null);
+  /** The estimate shown, with the photos and choice it was made for: Describe runs those. */
+  let estimate = $state<{ of: api.AiEstimate; rows: number[]; again: boolean } | null>(null);
   let again = $state(false);
   let estimating = $state(false);
+  let estimates = 0;
   async function ask() {
     if (!picked.length) return;
+    const mine = ++estimates;
+    const rows = [...picked];
+    const twice = again;
     estimating = true;
     try {
-      estimate = await api.aiEstimate(picked, again);
+      const of = await api.aiEstimate(rows, twice);
+      if (mine === estimates) estimate = { of, rows, again: twice };
     } catch (e) {
       onerror(String(e));
     } finally {
-      estimating = false;
+      if (mine === estimates) estimating = false;
     }
   }
   $effect(() => {
-    // Another pick or model: the estimate shown no longer holds.
+    // Another pick or model: the estimate shown, or one under way, no longer holds.
     void picked;
     void view?.settings.model;
     void again;
+    estimates++;
     estimate = null;
+    estimating = false;
   });
   async function start() {
+    if (!estimate) return;
     try {
-      await api.startDescribe(picked, again);
+      await api.startDescribe(estimate.rows, estimate.again);
       estimate = null;
     } catch (e) {
       onerror(String(e));
@@ -93,9 +106,20 @@
   type Show = SuggestionStatus | "All";
   let show = $state<Show>("Proposed");
   let rows = $state<SuggestionRow[]>([]);
-  /** What each card takes, as the user edited it: by row. */
-  type Draft = { caption: string; headline: string; rating: number | null; keywords: Record<string, boolean>; takeCaption: boolean; takeHeadline: boolean; takeRating: boolean };
+  /** What each card takes, as the user edited it: by row. `at` and `seen` say which
+   *  suggestion, and which state of the photo, it was made for. */
+  type Draft = {
+    at: number; seen: api.Seen;
+    caption: string; headline: string; rating: number | null; keywords: Record<string, boolean>;
+    takeCaption: boolean; takeHeadline: boolean; takeRating: boolean;
+  };
   let drafts = $state<Record<number, Draft>>({});
+  const seenOf = (r: SuggestionRow): api.Seen => ({
+    caption: r.current?.caption ?? null,
+    headline: r.current?.headline ?? null,
+    rating: r.current?.rating ?? null,
+  });
+  const sameSeen = (a: api.Seen, b: api.Seen) => a.caption === b.caption && a.headline === b.headline && a.rating === b.rating;
   let asked = 0;
   async function loadRows() {
     const mine = ++asked;
@@ -103,8 +127,13 @@
       const list = await api.suggestions(show === "All" ? null : show);
       if (mine !== asked) return;
       rows = list;
+      // A card keeps its edits while it shows the same suggestion of the same photo: a
+      // new description, or a caption written meanwhile, starts it again.
       const next: Record<number, Draft> = {};
-      for (const r of list) next[r.row] = drafts[r.row] ?? draftOf(r);
+      for (const r of list) {
+        const d = drafts[r.row];
+        next[r.row] = d && d.at === r.at && sameSeen(d.seen, seenOf(r)) ? d : draftOf(r);
+      }
       drafts = next;
     } catch (e) {
       onerror(String(e));
@@ -113,9 +142,20 @@
   $effect(() => {
     void version;
     void show;
-    void describe?.done;
-    loadRows();
+    untrack(loadRows);
   });
+  // While a run goes, new suggestions come in every few seconds at most, not once per
+  // photo; its end bumps `version`, which reads them all.
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    void describe?.done;
+    if (pending || !describe?.running) return;
+    pending = setTimeout(() => {
+      pending = undefined;
+      loadRows();
+    }, 3000);
+  });
+  $effect(() => () => clearTimeout(pending));
 
   /** A card as first shown: known keywords ticked, new ones not (they would be added to the
    *  catalog), the rating not taken (ratings are the photographer's own), and a caption or
@@ -128,6 +168,8 @@
     for (const k of s.keywords_new) keywords[k] = false;
     const caption = s.caption_en ?? s.caption_pl ?? "";
     return {
+      at: r.at,
+      seen: seenOf(r),
       caption,
       headline: s.headline ?? "",
       rating: s.rating,
@@ -162,16 +204,23 @@
       caption: d.takeCaption ? d.caption : undefined,
       headline: d.takeHeadline ? d.headline : undefined,
       rating: d.takeRating && d.rating ? d.rating : undefined,
+      seen: d.seen,
     };
   }
 
   let working = $state(false);
+  /** Said after accepting: photos changed since their card was shown. */
+  let notice = $state("");
   async function accept(list: number[]) {
     if (!list.length) return;
     working = true;
+    notice = "";
     try {
-      const undo = await api.acceptSuggestions(list.map(pickOf));
+      const { undo, changed } = await api.acceptSuggestions(list.map(pickOf));
       onaccepted(undo);
+      if (changed.length) {
+        notice = `${changed.length} photo${changed.length === 1 ? "" : "s"} changed since shown: the caption, headline or rating written since was kept. The card shows it now; accept again to replace it.`;
+      }
       await loadRows();
     } catch (e) {
       onerror(String(e));
@@ -214,13 +263,14 @@
         <progress max={describe.total} value={describe.done}></progress>
         <button class="btn" onclick={() => api.stopDescribe().catch((e) => onerror(String(e)))}>Stop</button>
       {:else if estimate}
+        {@const e = estimate.of}
         <span>
-          {estimate.photos.toLocaleString()} photo{estimate.photos === 1 ? "" : "s"} with {estimate.model},
-          {#if estimate.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(estimate.cost)}</b>{/if}{estimate.skipped
-            ? ` · ${estimate.skipped.toLocaleString()} described already, left out`
+          {e.photos.toLocaleString()} photo{e.photos === 1 ? "" : "s"} with {e.model},
+          {#if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
+            ? ` · ${e.skipped.toLocaleString()} described already, left out`
             : ""}
         </span>
-        <button class="btn primary" disabled={!estimate.photos || !view?.ready} onclick={start}>Describe</button>
+        <button class="btn primary" disabled={!e.photos || !view?.ready} onclick={start}>Describe</button>
         <button class="btn" onclick={() => (estimate = null)}>Cancel</button>
       {:else}
         <button
@@ -247,6 +297,10 @@
       {/if}
     </button>
   </div>
+
+  {#if notice}
+    <p class="notice">{notice} <button class="link" onclick={() => (notice = "")}>OK</button></p>
+  {/if}
 
   {#if describe?.running && describe.working.length}
     <div class="at-work" aria-label="Photos being described">
@@ -417,6 +471,7 @@
   .stars { color: #e8b03a; letter-spacing: 1px; }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .replace-note { color: #e8b03a; font-size: 12px; }
+  .notice { margin: 0 0 10px; padding: 6px 10px; font-size: 12px; border: 1px solid #e8b03a; border-radius: 3px; }
   /* What the photo has now, above what would replace it. */
   .now { margin: 0; padding: 3px 6px; font-size: 12px; color: var(--muted, #999); border-left: 2px solid var(--line, #444); }
   .now > span { margin-right: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }

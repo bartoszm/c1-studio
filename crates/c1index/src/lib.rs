@@ -22,7 +22,7 @@ pub use edits::{Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
 pub use filter::{BBox, Bin, Filter, Hidden, Presence, Range, TimeRange, Trashed, parse_color, parse_rating};
 pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
-pub use library::{Accept, ClassPreview, GroupSort};
+pub use library::{Accept, Accepted, ClassPreview, GroupSort, Seen};
 pub use library::{
     FillGroup, Group, GroupPage, Library, Merged, NeighbourPlan, NeighbourSettings, PendingEdit, PlaceLookup,
     QueryOptions, QueryResult, RefinePlan, RefineSettings, RoutePoint, Selection, Sort, SyncReport, SyncStep, TripList,

@@ -102,6 +102,7 @@ pub struct RunRecord {
     pub raw: String,
 }
 
+#[derive(Debug)]
 pub struct Reply {
     pub suggestion: Suggestion,
     pub warnings: Vec<String>,
@@ -126,10 +127,13 @@ pub enum AiError {
     BadReply(String),
     #[error("key store: {0}")]
     Keys(String),
+    /// Claude Code is missing or would not start.
     #[error("Claude Code: {0}")]
     Cli(String),
     #[error("the Claude plan's usage limit is reached: {0}")]
     Limit(String),
+    #[error("stopped")]
+    Stopped,
 }
 
 impl AiError {
@@ -141,6 +145,33 @@ impl AiError {
             _ => false,
         }
     }
+
+    /// No other photo would fare better (no key, no Claude Code, no credit, a model the
+    /// account cannot use): a run stops rather than fail every photo the same way.
+    pub fn stops_run(&self) -> bool {
+        match self {
+            AiError::NoKey | AiError::BadKey(_) | AiError::Cli(_) | AiError::Limit(_) | AiError::Stopped => true,
+            AiError::Http { status, message, .. } => {
+                *status == 404 || message.to_lowercase().contains("credit balance")
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A photo that got no suggestion, with the call's record when one was made and paid
+/// for (a refusal, a cut or unreadable answer): spending counts it all the same.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct Failed {
+    pub error: AiError,
+    pub record: Option<Box<RunRecord>>,
+}
+
+impl From<AiError> for Failed {
+    fn from(error: AiError) -> Self {
+        Failed { error, record: None }
+    }
 }
 
 pub trait VisionProvider: Send + Sync {
@@ -150,7 +181,7 @@ pub trait VisionProvider: Send + Sync {
     /// Hash of the prompt and schema in use: with [`VisionProvider::model`], says whether
     /// a stored suggestion was made the same way.
     fn prompt_hash(&self) -> u64;
-    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, AiError>;
+    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed>;
 }
 
 /// The keywords a catalog has, by name: what a model's answer is matched against.

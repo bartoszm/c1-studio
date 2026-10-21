@@ -2,13 +2,15 @@
 //! per photo: the instructions and vocabulary as a cached system prompt, the photo as a
 //! base64 JPEG, the answer constrained to [`crate::schema`] by structured output.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{AiError, Brief, PhotoRequest, RawAnswer, Reply, RunRecord, VisionProvider, Vocabulary, validate};
+use crate::{AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, VisionProvider, Vocabulary, validate};
 
 const URL: &str = "https://api.anthropic.com/v1/messages";
 const VERSION: &str = "2023-06-01";
@@ -71,18 +73,29 @@ fn cost(model: &Model, usage: &Usage) -> f64 {
     (input * model.input + usage.output_tokens as f64 * model.output) / 1e6
 }
 
+/// How much the model may think before answering.
+pub const EFFORTS: [&str; 3] = ["low", "medium", "high"];
+
 #[derive(Clone, Debug)]
 pub struct Options {
     pub model: String,
-    /// `low`, `medium`, `high`: how much the model thinks before answering.
+    /// One of [`EFFORTS`].
     pub effort: String,
     /// Attempts per photo on rate limits, overload and network errors.
     pub attempts: u32,
+    /// Set to stop: a call under way ends as soon as it can, with [`AiError::Stopped`].
+    pub stop: Arc<AtomicBool>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { model: DEFAULT_MODEL.to_string(), effort: "low".to_string(), attempts: 4 }
+        Options { model: DEFAULT_MODEL.to_string(), effort: "low".to_string(), attempts: 4, stop: Arc::default() }
+    }
+}
+
+impl Options {
+    pub(crate) fn stopped(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
     }
 }
 
@@ -103,7 +116,7 @@ impl Claude {
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
         let system = crate::system_prompt(brief);
         let schema = crate::schema(&brief.fields);
-        let prompt = crate::prompt_hash(&system, &schema);
+        let prompt = crate::prompt_hash(brief);
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))
             .http_status_as_error(false)
@@ -206,11 +219,14 @@ impl VisionProvider for Claude {
         self.prompt
     }
 
-    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, AiError> {
+    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
         let body = self.body(photo);
         let mut attempt = 0;
         let (message, millis) = loop {
             attempt += 1;
+            if self.options.stopped() {
+                return Err(AiError::Stopped.into());
+            }
             match self.call(&body) {
                 Ok(done) => break done,
                 Err(e) if e.retryable() && attempt < self.options.attempts => {
@@ -218,17 +234,19 @@ impl VisionProvider for Claude {
                         AiError::Http { retry_after: Some(s), .. } => *s,
                         _ => 2u64.pow(attempt),
                     };
-                    std::thread::sleep(Duration::from_secs(wait.min(60)));
+                    // In short steps, so a stop is not kept waiting.
+                    let until = Instant::now() + Duration::from_secs(wait.min(60));
+                    while Instant::now() < until && !self.options.stopped() {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
                 }
-                Err(e) => return Err(e),
+                Err(e) => return Err(e.into()),
             }
         };
-        let (raw, answer) = read(&message)?;
         let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
         // A declined photo answered by the fallback model is billed at that model's price.
         let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
-        let (suggestion, warnings) = validate(&answer, &self.vocabulary);
-        let record = RunRecord {
+        let record = |raw: String| RunRecord {
             provider: "claude".to_string(),
             model: served.id.to_string(),
             prompt: self.prompt,
@@ -240,7 +258,11 @@ impl VisionProvider for Claude {
             millis,
             raw,
         };
-        Ok(Reply { suggestion, warnings, record })
+        // A refusal or a cut answer was paid for: it is recorded with the error.
+        let (raw, answer) =
+            read(&message).map_err(|error| Failed { error, record: Some(Box::new(record(message.to_string()))) })?;
+        let (suggestion, warnings) = validate(&answer, &self.vocabulary);
+        Ok(Reply { suggestion, warnings, record: record(raw) })
     }
 }
 

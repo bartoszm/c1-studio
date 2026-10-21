@@ -1,6 +1,7 @@
 //! Describing photos with a vision model (stage 5): the run in the background, its cost
 //! up front, the API key, and accepting or rejecting what was suggested.
 
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -8,10 +9,10 @@ use std::sync::{Arc, Mutex};
 use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
-use c1ai::{AiError, Brief, Fields, Language, PhotoRequest, VisionProvider, Vocabulary};
-use c1index::Accept;
+use c1ai::{AiError, Brief, Failed, Fields, Language, PhotoRequest, VisionProvider, Vocabulary};
 use c1index::ai::{Entry, Status};
-use c1model::{ImageTier, Op, Photo};
+use c1index::{Accept, Accepted};
+use c1model::{ImageTier, Photo};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -128,12 +129,19 @@ pub(crate) struct AiView {
     default_instructions: &'static str,
 }
 
+/// Whether Claude Code runs on a Claude plan: signed in through claude.ai. Signed in with
+/// an API key or a cloud provider it is billed per token, which plan access would show
+/// as free, so it does not count.
+fn on_plan(status: &claude_code::Status) -> bool {
+    status.logged_in && status.auth_method.as_deref() == Some("claude.ai")
+}
+
 fn view(s: &Session) -> Result<AiView, String> {
     let settings = load_settings(s);
     let key = keys::get(&ANTHROPIC).map_err(text)?;
     let plan = (settings.access == Access::Plan).then(plan_view);
     let ready = match &plan {
-        Some(plan) => plan.status.logged_in,
+        Some(plan) => on_plan(&plan.status),
         None => key.is_some(),
     };
     let (calls, spent) = s.library.ai_spent().map_err(text)?;
@@ -166,6 +174,9 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     }
     if !settings.fields.any() {
         return Err("Pick at least one thing to describe".into());
+    }
+    if !claude::EFFORTS.contains(&settings.effort.as_str()) {
+        return Err(format!("unknown effort {}", settings.effort));
     }
     // The default instructions, or none written, are kept as "the default": a later
     // version of them then reaches this catalog too.
@@ -246,7 +257,12 @@ pub(crate) async fn ai_prompt(app: State<'_, App>) -> Result<PromptView, String>
 /// Code signed in with a plan.
 fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider>, String> {
     let (brief, vocabulary) = brief(s, settings)?;
-    let options = claude::Options { model: settings.model.clone(), effort: settings.effort.clone(), attempts: 4 };
+    let options = claude::Options {
+        model: settings.model.clone(),
+        effort: settings.effort.clone(),
+        attempts: 4,
+        stop: s.describe_stop.clone(),
+    };
     Ok(match settings.access {
         Access::Api => {
             let key = keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())?;
@@ -256,6 +272,16 @@ fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider
             let program = claude_code::find().ok_or_else(|| {
                 AiError::Cli("not installed: get it from claude.com/claude-code and sign in".into()).to_string()
             })?;
+            let status = claude_code::status(&program).map_err(text)?;
+            if !on_plan(&status) {
+                return Err(match status.auth_method {
+                    Some(method) if status.logged_in => format!(
+                        "Claude Code is signed in with {method}, billed per token, not a Claude plan: \
+                         run `claude auth login` with your plan, or choose API key access"
+                    ),
+                    _ => "Claude Code is not signed in: run `claude auth login`".into(),
+                });
+            }
             Box::new(ClaudeCode::new(program, options, &brief, vocabulary).map_err(text)?)
         }
     })
@@ -267,8 +293,7 @@ fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), 
     let settings = load_settings(s);
     let model = claude::model(&settings.model).ok_or("unknown model")?;
     // Both ways send the same prompt, so a photo described one way counts for the other.
-    let (brief, _) = brief(s, &settings)?;
-    let prompt = c1ai::prompt_hash(&c1ai::system_prompt(&brief), &c1ai::schema(&brief.fields));
+    let prompt = c1ai::prompt_hash(&brief(s, &settings)?.0);
     let done = if again { Default::default() } else { s.library.described(rows, model.id, prompt).map_err(text)? };
     let todo: Vec<u64> = rows.iter().copied().filter(|r| !done.contains(r)).collect();
     let on_plan = settings.access == Access::Plan;
@@ -305,8 +330,13 @@ fn context(photo: &Photo) -> String {
         parts.push(format!("place: {}", place.join(", ")));
     }
     // What the photographer wrote: the model builds on it rather than guessing again.
+    // Quoted on one line and cut short, so it reads as data and keeps the cost estimated.
     let quoted = |label: &str, value: &Option<String>| {
-        value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(|v| format!("{label}: \"{v}\""))
+        value.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(|v| {
+            let flat: String = v.split_whitespace().collect::<Vec<_>>().join(" ").replace('"', "'");
+            let cut: String = flat.chars().take(CONTEXT_TEXT).collect();
+            format!("{label}: \"{cut}{}\"", if cut.len() < flat.len() { "…" } else { "" })
+        })
     };
     parts.extend(quoted("title", &photo.iptc.title));
     parts.extend(quoted("headline", &photo.iptc.headline));
@@ -315,11 +345,16 @@ fn context(photo: &Photo) -> String {
         parts.push(format!("rating: {rating}/5"));
     }
     if !photo.keywords.is_empty() {
-        let keywords: Vec<String> = photo.keywords.iter().map(|k| k.to_pipe()).collect();
+        let keywords: Vec<String> = photo.keywords.iter().take(CONTEXT_KEYWORDS).map(|k| k.to_pipe()).collect();
         parts.push(format!("keywords already: {}", keywords.join(", ")));
     }
     format!("Catalog data: {}", parts.join(" · "))
 }
+
+/// The most of a caption or headline, in characters, and of a photo's keywords, sent
+/// with it as context.
+const CONTEXT_TEXT: usize = 600;
+const CONTEXT_KEYWORDS: usize = 60;
 
 /// The photo as the model sees it: its preview (else its thumbnail), at most
 /// [`claude::LONG_EDGE`] on the long side.
@@ -365,15 +400,17 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
         started: chrono::Utc::now().timestamp_millis(),
         ..DescribeState::default()
     };
-    *s.describe.lock().unwrap() = first.clone();
+    *lock(&s.describe) = first.clone();
     // Shown at once: the first answer can take half a minute.
     let _ = app.emit("describe", first.clone());
     std::thread::spawn(move || {
         let _done = Lowers(&s.describing);
         let next = AtomicUsize::new(0);
         let state = Mutex::new(first);
+        // Photos failed one after another: past FAILING, the rest would fail the same way.
+        let failing = AtomicUsize::new(0);
         let report = |state: &DescribeState| {
-            *s.describe.lock().unwrap() = state.clone();
+            *lock(&s.describe) = state.clone();
             if is_current(&app, &s) {
                 let _ = app.emit("describe", state.clone());
             }
@@ -384,28 +421,43 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                     while !s.describe_stop.load(Ordering::SeqCst) && is_current(&app, &s) {
                         let Some(&row) = todo.get(next.fetch_add(1, Ordering::SeqCst)) else { break };
                         {
-                            let mut st = state.lock().unwrap();
+                            let mut st = lock(&state);
                             st.working.push(row);
                             report(&st);
                         }
-                        let outcome = describe_one(&s, provider.as_ref(), row);
-                        let mut st = state.lock().unwrap();
+                        // A panic is this photo's failure, not the run's end with the
+                        // state left saying it runs.
+                        let outcome =
+                            std::panic::catch_unwind(AssertUnwindSafe(|| describe_one(&s, provider.as_ref(), row)))
+                                .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
+                        let mut st = lock(&state);
                         st.working.retain(|&r| r != row);
-                        st.done += 1;
                         match outcome {
-                            Ok(cost) => st.cost += cost,
+                            Ok(cost) => {
+                                st.done += 1;
+                                st.cost += cost;
+                                failing.store(0, Ordering::SeqCst);
+                            }
+                            // Stopped mid-call: neither done nor failed.
+                            Err(e) if matches!(failed_with(&e), Some(AiError::Stopped)) => {}
                             Err(e) => {
+                                st.done += 1;
                                 st.failed += 1;
                                 let message = format!("{e:#}");
                                 s.log.event(&format!("Describing photo {row} failed: {message}"), &[]);
-                                // Without a working key, Claude Code or what is left of the
-                                // plan no photo will do: the run stops.
-                                if let Some(AiError::NoKey | AiError::BadKey(_) | AiError::Cli(_) | AiError::Limit(_)) =
-                                    e.downcast_ref::<AiError>()
-                                {
+                                let in_a_row = failing.fetch_add(1, Ordering::SeqCst) + 1;
+                                // Without a working key, Claude Code, credit or what is left
+                                // of the plan no photo will do: the run stops.
+                                if failed_with(&e).is_some_and(AiError::stops_run) {
                                     s.describe_stop.store(true, Ordering::SeqCst);
+                                    st.error = Some(message);
+                                } else if in_a_row >= FAILING {
+                                    s.describe_stop.store(true, Ordering::SeqCst);
+                                    st.error =
+                                        Some(format!("stopped after {FAILING} photos failed in a row: {message}"));
+                                } else {
+                                    st.error = Some(message);
                                 }
-                                st.error = Some(message);
                             }
                         }
                         report(&st);
@@ -413,7 +465,11 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                 });
             }
         });
-        let last = DescribeState { running: false, working: Vec::new(), ..state.into_inner().unwrap() };
+        let last = DescribeState {
+            running: false,
+            working: Vec::new(),
+            ..state.into_inner().unwrap_or_else(|e| e.into_inner())
+        };
         s.log.event(
             &format!("Described {} photos, {} failed, ${:.4}", last.done - last.failed, last.failed, last.cost),
             &[],
@@ -426,14 +482,38 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
     Ok(())
 }
 
-/// Describes one photo and stores the suggestion. Returns what the call cost.
+/// Photos failing one after another before a run stops.
+const FAILING: usize = 5;
+
+/// A lock that outlives a panic elsewhere: the run's state is plain counters.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The provider's error behind a photo's failure, if it was one.
+fn failed_with(e: &anyhow::Error) -> Option<&AiError> {
+    e.downcast_ref::<Failed>().map(|f| &f.error)
+}
+
+/// Describes one photo and stores the suggestion. Returns what the call cost. A call
+/// that was paid for but gave nothing is recorded all the same.
 fn describe_one(s: &Session, provider: &dyn VisionProvider, row: u64) -> anyhow::Result<f64> {
     let Some(request) = request(s, row)? else { anyhow::bail!("no preview or thumbnail") };
-    let reply = provider.describe(&request)?;
+    let reply = match provider.describe(&request) {
+        Ok(reply) => reply,
+        Err(failed) => {
+            if let Some(record) = &failed.record {
+                s.library.record_call(row, record)?;
+            }
+            return Err(failed.into());
+        }
+    };
     let entry = Entry {
         at: chrono::Utc::now().timestamp_millis(),
         provider: provider.id().to_string(),
-        model: reply.record.model.clone(),
+        // The model asked for, which is what "described already" compares; the record
+        // keeps the one that answered (a fallback, on a declined photo).
+        model: provider.model().to_string(),
         prompt: provider.prompt_hash(),
         suggestion: reply.suggestion,
         warnings: reply.warnings,
@@ -444,7 +524,7 @@ fn describe_one(s: &Session, provider: &dyn VisionProvider, row: u64) -> anyhow:
     Ok(reply.record.cost)
 }
 
-/// Stops the run after the photos under way.
+/// Stops the run: calls under way end as soon as they can.
 #[tauri::command]
 pub(crate) async fn stop_describe(app: State<'_, App>) -> Result<(), String> {
     app.session()?.describe_stop.store(true, Ordering::SeqCst);
@@ -453,7 +533,7 @@ pub(crate) async fn stop_describe(app: State<'_, App>) -> Result<(), String> {
 
 #[tauri::command]
 pub(crate) async fn describe_state(app: State<'_, App>) -> Result<DescribeState, String> {
-    Ok(app.session()?.describe.lock().unwrap().clone())
+    Ok(lock(&app.session()?.describe).clone())
 }
 
 /// What a photo has now of what a suggestion would set: the review shows the two side
@@ -512,7 +592,7 @@ pub(crate) async fn suggestion(app: State<'_, App>, row: u64) -> Result<Option<E
 
 /// Queues what the user took from suggestions. Returns the ops that undo it.
 #[tauri::command]
-pub(crate) async fn accept_suggestions(app: State<'_, App>, picks: Vec<Accept>) -> Result<Vec<(u64, Op)>, String> {
+pub(crate) async fn accept_suggestions(app: State<'_, App>, picks: Vec<Accept>) -> Result<Accepted, String> {
     let s = app.session()?;
     s.touched();
     tauri::async_runtime::spawn_blocking(move || s.library.accept_suggestions(&picks).map_err(|e| format!("{e:#}")))

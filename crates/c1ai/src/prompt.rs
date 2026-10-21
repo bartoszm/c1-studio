@@ -182,9 +182,12 @@ pub fn schema(fields: &Fields) -> Value {
     })
 }
 
-/// Identifies the prompt and schema a suggestion was made with.
-pub fn prompt_hash(system: &str, schema: &Value) -> u64 {
-    let text = format!("{}\n{system}\n{schema}", crate::PROMPT_VERSION);
+/// Identifies the prompt and schema a suggestion was made with. The vocabulary is left
+/// out: it grows with every keyword accepted, and would make every photo look as if it
+/// had never been described.
+pub fn prompt_hash(brief: &Brief) -> u64 {
+    let general = Brief { vocabulary: Vec::new(), ..brief.clone() };
+    let text = format!("{}\n{}\n{}", crate::PROMPT_VERSION, system_prompt(&general), schema(&brief.fields));
     xxhash_rust::xxh3::xxh3_64(text.as_bytes())
 }
 
@@ -214,7 +217,15 @@ mod tests {
         let blank = Brief { instructions: Some("  ".into()), ..Default::default() };
         assert!(system_prompt(&own).starts_with("Describe tersely.\n\nFields:"));
         assert_eq!(system_prompt(&blank), system_prompt(&default));
-        let schema = schema(&Fields::default());
-        assert_ne!(prompt_hash(&system_prompt(&own), &schema), prompt_hash(&system_prompt(&default), &schema));
+        assert_ne!(prompt_hash(&own), prompt_hash(&default));
+    }
+
+    #[test]
+    fn a_grown_vocabulary_keeps_the_hash() {
+        let before = Brief { vocabulary: vec!["street".into()], ..Default::default() };
+        let after = Brief { vocabulary: vec!["street".into(), "tram".into()], ..Default::default() };
+        assert_eq!(prompt_hash(&before), prompt_hash(&after));
+        let fewer = Brief { fields: Fields { rating: false, ..Fields::default() }, ..before.clone() };
+        assert_ne!(prompt_hash(&before), prompt_hash(&fewer));
     }
 }

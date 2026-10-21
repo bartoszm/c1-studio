@@ -23,6 +23,34 @@ pub struct Accept {
     pub caption: Option<String>,
     pub headline: Option<String>,
     pub rating: Option<u8>,
+    /// What the review showed the photo to have.
+    pub seen: Seen,
+}
+
+/// A photo's caption, headline and rating as the review showed them. A field taken is
+/// set only while the photo still has what was shown: one written since (in Capture One,
+/// in the panel) is not replaced unseen. Left out, it reads as "the photo had none".
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Seen {
+    pub caption: Option<String>,
+    pub headline: Option<String>,
+    pub rating: Option<u8>,
+}
+
+/// What accepting did.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Accepted {
+    /// The ops that undo it.
+    pub undo: Vec<(u64, Op)>,
+    /// Photos with a taken field that changed since it was shown: that field was left as
+    /// it is, and the suggestion stays to review against what the photo has now.
+    pub changed: Vec<u64>,
+}
+
+/// A text field as compared: trimmed, empty as none.
+fn text(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
 
 impl Library {
@@ -91,15 +119,18 @@ impl Library {
 
     /// Queues what the user took from suggestions, logged as coming from the model, and
     /// marks those suggestions accepted. Each photo's ops are made from the photo as it is
-    /// now, so nothing edited since is undone. Returns the undo ops.
-    pub fn accept_suggestions(&self, picks: &[Accept]) -> anyhow::Result<Vec<(u64, Op)>> {
+    /// now, so nothing edited since is undone; a caption, headline or rating that is no
+    /// longer what the review showed is left alone (see [`Seen`]).
+    pub fn accept_suggestions(&self, picks: &[Accept]) -> anyhow::Result<Accepted> {
         let by_row: HashMap<u64, &Accept> = picks.iter().map(|p| (p.row, p)).collect();
         let rows: Vec<u64> = by_row.keys().copied().collect();
+        let changed = std::sync::Mutex::new(HashSet::new());
         let undo = self.edit_photos_as(
             &rows,
             |row, photo| {
                 let pick = by_row[&row];
                 let mut ops = Vec::new();
+                let mut stale = false;
                 let paths: Vec<KeywordPath> = pick
                     .keywords
                     .iter()
@@ -110,11 +141,19 @@ impl Library {
                     ops.push(Op::AddKeywords { paths });
                 }
                 let mut iptc = photo.iptc.clone();
-                if let Some(caption) = pick.caption.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-                    iptc.description = Some(caption.to_string());
+                if let Some(caption) = text(&pick.caption) {
+                    if text(&photo.iptc.description) == text(&pick.seen.caption) {
+                        iptc.description = Some(caption.to_string());
+                    } else {
+                        stale = true;
+                    }
                 }
-                if let Some(headline) = pick.headline.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
-                    iptc.headline = Some(headline.to_string());
+                if let Some(headline) = text(&pick.headline) {
+                    if text(&photo.iptc.headline) == text(&pick.seen.headline) {
+                        iptc.headline = Some(headline.to_string());
+                    } else {
+                        stale = true;
+                    }
                 }
                 if iptc != photo.iptc {
                     ops.push(Op::SetIptc { base: photo.iptc.clone(), value: iptc });
@@ -122,13 +161,24 @@ impl Library {
                 if let Some(rating) = pick.rating.filter(|r| (1..=5).contains(r))
                     && photo.rating != Some(rating)
                 {
-                    ops.push(Op::SetRating { base: photo.rating, value: Some(rating) });
+                    if photo.rating == pick.seen.rating {
+                        ops.push(Op::SetRating { base: photo.rating, value: Some(rating) });
+                    } else {
+                        stale = true;
+                    }
+                }
+                if stale {
+                    changed.lock().unwrap().insert(row);
                 }
                 Ok(ops)
             },
             Origin::Ai,
         )?;
-        self.set_suggestion_status(&rows, Status::Accepted)?;
-        Ok(undo)
+        let changed = changed.into_inner().unwrap();
+        let done: Vec<u64> = rows.iter().copied().filter(|r| !changed.contains(r)).collect();
+        self.set_suggestion_status(&done, Status::Accepted)?;
+        let mut changed: Vec<u64> = changed.into_iter().collect();
+        changed.sort_unstable();
+        Ok(Accepted { undo, changed })
     }
 }

@@ -703,8 +703,12 @@ export type SuggestionRow = {
   /** What the photo has now, for comparing. */
   current: { caption: string | null; headline: string | null; rating: number | null; keywords: string[] } | null;
 };
+/** What the review showed a photo to have: a field taken is set only while it still has it. */
+export type Seen = { caption: string | null; headline: string | null; rating: number | null };
 /** What the user takes from a suggestion; fields left out are not touched. */
-export type Accept = { row: number; keywords: string[]; caption?: string; headline?: string; rating?: number };
+export type Accept = { row: number; keywords: string[]; caption?: string; headline?: string; rating?: number; seen: Seen };
+/** The ops that undo it, and the photos whose taken field changed since shown (left as is). */
+export type Accepted = { undo: [number, Op][]; changed: number[] };
 export const aiSettings = () => invoke<AiView>("ai_settings");
 export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
 /** Stores the key in the Windows Credential Manager; an empty one removes it. */
@@ -716,8 +720,8 @@ export const startDescribe = (rows: number[], again: boolean) => invoke<void>("s
 export const stopDescribe = () => invoke<void>("stop_describe");
 export const describeState = () => invoke<DescribeState>("describe_state");
 export const suggestions = (status: SuggestionStatus | null) => invoke<SuggestionRow[]>("suggestions", { status });
-/** Queues what was taken; returns the ops that undo it. */
-export const acceptSuggestions = (picks: Accept[]) => invoke<[number, Op][]>("accept_suggestions", { picks });
+/** Queues what was taken. */
+export const acceptSuggestions = (picks: Accept[]) => invoke<Accepted>("accept_suggestions", { picks });
 export const setSuggestionStatus = (rows: number[], status: SuggestionStatus) =>
   invoke<void>("set_suggestion_status", { rows, status });
 

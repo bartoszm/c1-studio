@@ -37,7 +37,7 @@ mod describing;
 mod placing;
 mod selection;
 
-pub use describing::Accept;
+pub use describing::{Accept, Accepted, Seen};
 
 pub use placing::{
     FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,

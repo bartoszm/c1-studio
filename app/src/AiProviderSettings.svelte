@@ -90,11 +90,13 @@
           <span class="warn">Not installed. Install Claude Code and run <code>claude</code> once to sign in.</span>
         {:else if view.plan.error}
           <span class="warn">{view.plan.error}</span>
+        {:else if view.plan.loggedIn && view.plan.authMethod !== "claude.ai"}
+          <span class="warn">
+            Signed in with {view.plan.authMethod ?? "something other than a plan"}, which is billed per token, not a Claude plan.
+            Run <code>claude auth login</code> with your plan, or choose API key access.
+          </span>
         {:else if view.plan.loggedIn}
           <span>Signed in{view.plan.subscriptionType ? ` with Claude ${view.plan.subscriptionType}` : ""}</span>
-          {#if view.plan.authMethod !== "claude.ai"}
-            <span class="muted">({view.plan.authMethod}: billed to that account, not a plan)</span>
-          {/if}
         {:else}
           <span class="warn">Not signed in. Run <code>claude auth login</code> in a terminal.</span>
         {/if}
