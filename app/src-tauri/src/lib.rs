@@ -296,22 +296,19 @@ impl Boot {
         if !self.active.load(Ordering::SeqCst) {
             return;
         }
-        let shown = {
-            let mut shown = self.shown.lock().unwrap();
-            match shown.as_mut() {
-                Some(s) if s.step == "reading" => {
-                    s.source = progress.clone();
-                    s.clone()
-                }
-                _ => return,
-            }
-        };
-        self.emit(app, Some(shown), false);
+        // Sent with `shown` held, as in `set`: what reaches the window keeps its order.
+        let mut shown = self.shown.lock().unwrap();
+        let Some(reading) = shown.as_mut().filter(|s| s.step == "reading") else { return };
+        reading.source = progress.clone();
+        self.emit(app, Some(reading.clone()), false);
     }
 
+    /// A new step always reaches the window; counts within one a few times a second.
     fn set(&self, app: &AppHandle, shown: Option<Startup>, always: bool) {
-        *self.shown.lock().unwrap() = shown.clone();
-        self.emit(app, shown, always);
+        let mut current = self.shown.lock().unwrap();
+        let new_step = current.as_ref().map(|s| s.step) != shown.as_ref().map(|s| s.step);
+        *current = shown.clone();
+        self.emit(app, shown, always || new_step);
     }
 
     /// Sends `shown` to the window; counts only a few times a second, unless `always`.
