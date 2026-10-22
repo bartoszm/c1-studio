@@ -171,13 +171,13 @@
       <p>
         <b>{collection.path}</b>
         {#if doomed.length > 1}and the {doomed.length - 1} album{doomed.length === 2 ? "" : "s"} and group{doomed.length === 2 ? "" : "s"} in it{/if}
-        will be deleted from the catalog.
+        will be deleted from the {source.noun}.
       </p>
       <p class="muted">
         {#if collection.kind === "Smart"}
           A smart album holds no photos of its own: only its rule goes.
         {:else}
-          The photos stay in the catalog; only their place in {doomed.length > 1 ? "these albums" : "the album"} goes.
+          The photos stay in the {source.noun}; only their place in {doomed.length > 1 ? "these albums" : "the album"} goes.
         {/if}
         Queued until you write to {source.word}; Ctrl+Z takes it back.
       </p>

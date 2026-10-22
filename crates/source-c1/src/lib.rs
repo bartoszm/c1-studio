@@ -24,7 +24,7 @@ use c1model::source::Result;
 use c1model::{
     ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Crop, Cursor, Field, ImageFormat,
     ImageRef, ImageTier, KeywordRemap, PhotoId, PhotoSource, Removal, RemoveReport, SourceError, SourceEvent, SourceId,
-    SourceInfo, WriteStatus,
+    SourceInfo, Wording, WriteStatus,
 };
 
 pub use catalog::EXPECTED_ZVERSION;
@@ -133,6 +133,15 @@ impl PhotoSource for CaptureOne {
             rescan: false,
             makes_images: false,
             removes: Removal::MarksTrashed,
+        }
+    }
+
+    fn wording(&self) -> Wording {
+        Wording {
+            name: "Capture One".into(),
+            word: "Capture One".into(),
+            noun: "catalog".into(),
+            owner: Some("Capture One".into()),
         }
     }
 

@@ -13,7 +13,7 @@ use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
     ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoId, PhotoSource, Pick, Place, Removal, SourceProgress,
-    SourceSpec, WriteStatus,
+    SourceSpec, Wording, WriteStatus,
 };
 use events::Log;
 use serde::{Deserialize, Serialize};
@@ -760,8 +760,10 @@ fn text(e: impl std::fmt::Display) -> String {
 struct Status {
     catalog: String,
     source: String,
+    /// How the UI names the source in its text.
+    wording: Wording,
     photos: u64,
-    writes: String,
+    writes: WriteStatus,
     sync_error: Option<String>,
     /// What made the source and how far the app is checked against it.
     compatibility: Compatibility,
@@ -775,6 +777,8 @@ struct Status {
     progress: Option<SourceProgress>,
     /// What emptying the trash does at the source.
     removes: Removal,
+    /// A position belongs to the image, so moving one variant moves the others (Capture One).
+    geo_per_asset: bool,
     /// Photos in the app's trash.
     binned: usize,
 }
@@ -785,8 +789,9 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
     Ok(Status {
         catalog: s.spec.location.clone(),
         source: s.source.info().name,
+        wording: s.source.wording(),
         photos: s.library.len(),
-        writes: format!("{:?}", s.source.write_status()),
+        writes: s.source.write_status(),
         sync_error: s.sync_error.lock().unwrap().clone(),
         compatibility: s.source.info().compatibility,
         provider: s.spec.provider.clone(),
@@ -794,6 +799,7 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         offline_roots: s.source.offline_places(),
         progress: s.source.progress(),
         removes: s.source.capabilities().removes,
+        geo_per_asset: s.source.capabilities().geo_per_asset,
         binned: s.library.bin_count(),
     })
 }

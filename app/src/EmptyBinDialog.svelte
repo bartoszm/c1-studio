@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import { removalText } from "./lib/bin";
 
   // Deleting photos in the trash for good: the whole trash, or the photos picked in it
@@ -52,7 +53,7 @@
     <h2 id="empty-title">{rows ? "Delete for good" : "Empty trash"}</h2>
     {#if done}
       <p class="ok">{done.removed.toLocaleString()} photo{done.removed === 1 ? "" : "s"} deleted for good.</p>
-      {#if done.backup}<p class="muted">The catalog was backed up first: <small>{done.backup}</small></p>{/if}
+      {#if done.backup}<p class="muted">The {source.noun} was backed up first: <small>{done.backup}</small></p>{/if}
       {#if done.failed.length}
         <p class="warn">{done.failed.length.toLocaleString()} stayed in the trash:</p>
         <ul>
@@ -65,9 +66,9 @@
         Delete <b>{going.toLocaleString()} photo{going === 1 ? "" : "s"}</b> {rows ? "picked in the trash" : "in the trash"} for good?
         This cannot be undone here.
       </p>
-      <p class="muted">{removalText(going, removes)}</p>
+      <p class="muted">{removalText(going, removes, source.wording)}</p>
       {#if locked}
-        <p class="warn">Close Capture One first: it keeps the catalog in memory and would write it back over the change. <span class="muted">(Held by {locked}.)</span></p>
+        <p class="warn">Close {source.owner ?? "the program that has it open"} first: it keeps the {source.noun} in memory and would write it back over the change. <span class="muted">(Held by {locked}.)</span></p>
       {:else if status === "ReadOnly"}
         <p class="warn">This source is not written by the app, so nothing can be deleted in it.</p>
       {/if}

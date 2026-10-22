@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import type { Accept, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
   let {
@@ -390,7 +391,7 @@
                     class="kw"
                     class:new={s.keywords_new.includes(k)}
                     class:has={already}
-                    title={already ? "The photo has it already" : s.keywords_new.includes(k) ? "New: added to the catalog" : k}
+                    title={already ? "The photo has it already" : s.keywords_new.includes(k) ? `New: added to the ${source.noun}` : k}
                   >
                     <input type="checkbox" checked={already || d.keywords[k]} disabled={already} onchange={(e) => (d.keywords[k] = e.currentTarget.checked)} />{leaf(k)}
                   </label>

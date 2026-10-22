@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import type { AiView } from "./lib/api";
 
   // How photos are described (the AI tab): Claude through the API with a key or through
@@ -32,8 +33,8 @@
     { key: "caption", label: "Caption", hint: "two or three sentences, in the language below" },
     { key: "headline", label: "Headline", hint: "at most five words" },
     { key: "subject", label: "Subject", hint: "the main subject, shown on the card" },
-    { key: "keywords", label: "Keywords", hint: "chosen from the catalog's own" },
-    { key: "keywords_new", label: "New keywords", hint: "at most three the catalog lacks" },
+    { key: "keywords", label: "Keywords", hint: `chosen from the ${source.noun}'s own` },
+    { key: "keywords_new", label: "New keywords", hint: `at most three the ${source.noun} lacks` },
     { key: "rating", label: "Rating", hint: "1 to 5 stars, never taken unless ticked" },
     { key: "scores", label: "Quality and composition", hint: "1 to 5 each, shown on the card" },
     { key: "place", label: "Place guess", hint: "city and country from landmarks or signs; never applied" },
@@ -174,7 +175,7 @@
   </h3>
   {#if showPrompt}
     <p class="muted small">
-      The instructions the model gets first. The list of fields ticked above, the caption language and the catalog's keyword
+      The instructions the model gets first. The list of fields ticked above, the caption language and the {source.noun}'s keyword
       vocabulary are added after them, so the answer always fits the review.
     </p>
     <textarea class="prompt" rows="10" bind:value={draft} spellcheck="false"></textarea>
@@ -195,7 +196,7 @@
 
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
-    sent to Anthropic as previews of at most 1568 pixels. These settings belong to this catalog.
+    sent to Anthropic as previews of at most 1568 pixels. These settings belong to this {source.noun}.
   </p>
 {/if}
 

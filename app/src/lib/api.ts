@@ -180,11 +180,24 @@ export type QueryResult = {
   micros: number;
 };
 
+/** How the app names the open source in its text. */
+export type Wording = {
+  /** As a label: "Capture One", "Photo folders". */
+  name: string;
+  /** In a sentence: "Write to Capture One", "write to the photo folders". */
+  word: string;
+  /** What holds the photos, after "the": "catalog", "library". */
+  noun: string;
+  /** The program that keeps the source open and has to be closed before writing. */
+  owner: string | null;
+};
+
 export type Status = {
   catalog: string;
   source: string;
+  wording: Wording;
   photos: number;
-  writes: string;
+  writes: WriteStatus;
   sync_error: string | null;
   compatibility: Compatibility;
   /** The provider's id: `capture-one`, `folders`. */
@@ -197,6 +210,8 @@ export type Status = {
   progress: SourceProgress | null;
   /** What emptying the trash does at the source. */
   removes: Removal;
+  /** A position belongs to the image, so moving one variant moves the others (Capture One). */
+  geo_per_asset: boolean;
   /** Photos in the app's trash. */
   binned: number;
 };

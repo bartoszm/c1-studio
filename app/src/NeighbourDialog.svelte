@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import { placeText } from "./lib/tree";
 
   // Photos placed from the photos taken just before and after them. Fill missing: photos
@@ -104,7 +105,7 @@
     </div>
     {#if mode === "fill"}
       <p class="muted small">
-        For the photos the filter selects (the map's area aside) that have no position: the photos taken just before and after, by any camera in the catalog, say where
+        For the photos the filter selects (the map's area aside) that have no position: the photos taken just before and after, by any camera in the {source.noun}, say where
         they were.
       </p>
       <label class="row">
@@ -119,7 +120,7 @@
       </label>
     {:else}
       <p class="muted small">
-        For the photos the filter selects (the map's area aside) that are placed only roughly: the photos taken just before and after, by any camera in the catalog,
+        For the photos the filter selects (the map's area aside) that are placed only roughly: the photos taken just before and after, by any camera in the {source.noun},
         say more.
       </p>
       <div class="row">

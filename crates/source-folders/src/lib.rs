@@ -35,7 +35,7 @@ use std::sync::{Mutex, RwLock};
 use c1model::{
     ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Compatibility, Cursor, Field, ImageRef,
     ImageTier, KeywordRemap, PhotoId, PhotoSource, Removal, RemoveReport, Result, SourceError, SourceEvent, SourceInfo,
-    SourceProgress, WriteStatus,
+    SourceProgress, Wording, WriteStatus,
 };
 
 pub use definition::{Definition, ImageStore, RootDef, SidecarNaming};
@@ -201,6 +201,10 @@ impl PhotoSource for FolderSource {
             makes_images: true,
             removes: Removal::Files,
         }
+    }
+
+    fn wording(&self) -> Wording {
+        Wording { name: "Photo folders".into(), word: "the photo folders".into(), noun: "library".into(), owner: None }
     }
 
     fn snapshot(&self, since: Option<&Cursor>, sink: &mut dyn FnMut(SourceEvent) -> Result<()>) -> Result<()> {

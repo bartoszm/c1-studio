@@ -238,10 +238,35 @@ pub enum SourceEvent {
 
 /// A place photos come from. Implementations are blocking; callers that must not block
 /// (the UI) run them on a worker thread.
+/// How the app names a source in its text, so the UI need not know the provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wording {
+    /// As a label: "Capture One", "Photo folders".
+    pub name: String,
+    /// In a sentence: "Write to Capture One", "write to the photo folders".
+    pub word: String,
+    /// What holds the photos, after "the": "catalog", "library".
+    pub noun: String,
+    /// The program that keeps the source open and has to be closed before the app writes
+    /// to it: "Capture One". `None` when nothing does.
+    pub owner: Option<String>,
+}
+
+impl Default for Wording {
+    fn default() -> Self {
+        Wording { name: "Source".into(), word: "the source".into(), noun: "library".into(), owner: None }
+    }
+}
+
 pub trait PhotoSource: Send + Sync {
     fn info(&self) -> SourceInfo;
 
     fn capabilities(&self) -> Capabilities;
+
+    /// How the app names this source in its text.
+    fn wording(&self) -> Wording {
+        Wording::default()
+    }
 
     /// Streams the source's state into `sink`. With `since` set to a cursor from an
     /// earlier call, a source may send only what changed; if nothing changed it sends
