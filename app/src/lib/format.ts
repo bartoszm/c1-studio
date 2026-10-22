@@ -186,8 +186,8 @@ export function geoText(geo: { lat: number; lon: number } | null): string {
 }
 
 /** Typed GPS: `50.0614, 19.9366`, `33.8688S 151.2093E`, `44°58′N 14°45′E`,
- *  `N44°58' E14°45'`, `44 58 N 14 45 E` (see `parsePoint`). Empty clears (null); a
- *  string says what is wrong. */
-export function parseGeo(text: string): [number, number] | null | string {
-  return text.trim() ? parsePoint(text) : null;
+ *  `N44°58' E14°45'`, `44 58 N 14 45 E`, a plus code (`9G8F+6X` near `near`; see
+ *  `parsePoint`). Empty clears (null); a string says what is wrong. */
+export function parseGeo(text: string, near?: [number, number] | null): [number, number] | null | string {
+  return text.trim() ? parsePoint(text, near) : null;
 }

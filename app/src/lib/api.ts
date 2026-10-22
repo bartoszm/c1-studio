@@ -31,6 +31,8 @@ export type Filter = {
   gps?: boolean;
   /** Photos with a place (any of country, state, city, location), or without one. */
   placed?: boolean;
+  /** Photos with a location (the place's finest level), or without one. */
+  located?: boolean;
   /** Photos without a position of their own (none, or one given from their place's name). */
   approx?: boolean;
   /** Capture time. */
@@ -433,6 +435,9 @@ export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", 
 /** Offers these kinds of source from now on (at least one); the source open stays open. */
 export const setProviders = (ids: string[]) => invoke<void>("set_providers", { ids });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
+/** Where a photo is among those the filter selects, in that order (null: not among them). */
+export const position = (filter: Filter, options: { sort: Sort }, row: number) =>
+  invoke<number | null>("position", { filter, options, row });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
 export type Approx = { lat: number; lon: number; level: Level };

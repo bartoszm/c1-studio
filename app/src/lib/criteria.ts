@@ -100,6 +100,10 @@ export function compile(f: Filter, mode: Match): Filter {
     groups.push({ placed: base.placed });
     delete base.placed;
   }
+  if (base.located !== undefined) {
+    groups.push({ located: base.located });
+    delete base.located;
+  }
   // One alternative is no choice: leave the filter as it was.
   if (groups.length < 2) return f;
   return { ...base, all_of: [...(base.all_of ?? []), { any_of: groups }] };
@@ -115,7 +119,8 @@ export function criteriaCount(f: Filter): number {
     (f.collections?.length ?? 0) +
     (f.unkeyworded ? 1 : 0) +
     (f.uncollected !== undefined ? 1 : 0) +
-    (f.placed !== undefined ? 1 : 0)
+    (f.placed !== undefined ? 1 : 0) +
+    (f.located !== undefined ? 1 : 0)
   );
 }
 

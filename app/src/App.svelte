@@ -1,6 +1,6 @@
 <script lang="ts">
   import { listen } from "@tauri-apps/api/event";
-  import { onMount, untrack } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
@@ -131,26 +131,26 @@
     followTimer = setTimeout(() => {
       if (!mapOn || !follow) return;
       filter = { ...filter, within: bounds };
-      run(true);
+      run(true, true);
     }, 250);
   }
   /** Picking a tile (its photos' bounds: tiles never overlap, so exactly its photos), or
    *  letting go of it (null): the grid goes back to the map's area. */
-  function mapTilePick(bounds: api.BBox | null, row: number | null) {
+  async function mapTilePick(bounds: api.BBox | null, row: number | null) {
     clearTimeout(followTimer);
     if (bounds) {
       if (!mapTile) beforeTile = filter.within;
       mapTile = bounds;
       filter = { ...filter, within: bounds };
-      if (row !== null) mapPick(row);
     } else {
       if (!mapTile) return;
       mapTile = null;
       filter = { ...filter, within: follow ? (mapView ?? undefined) : beforeTile };
     }
     // Other photos altogether: a selection kept by its place in the grid would land on
-    // one nobody chose, so it starts afresh.
-    run();
+    // one nobody chose, so it starts afresh, on the photo when one was clicked.
+    await run();
+    if (row !== null) await mapSelect(row);
   }
   function sameBox(a: api.BBox | undefined | null, b: api.BBox | undefined | null): boolean {
     return !!a && !!b && a.min_lat === b.min_lat && a.max_lat === b.max_lat && a.min_lon === b.min_lon && a.max_lon === b.max_lon;
@@ -171,7 +171,7 @@
       // The map's own report of this view, waiting to be followed, would only run it again.
       clearTimeout(followTimer);
       filter = following(filter);
-      run(true);
+      run(true, true);
     });
   });
   /** Letting go of the map's area. */
@@ -179,7 +179,7 @@
     clearTimeout(followTimer);
     if (filter.within) {
       filter = { ...filter, within: undefined };
-      run(true);
+      run(true, true);
     }
   }
   function showTab(next: Tab) {
@@ -195,7 +195,7 @@
     else if (mapView && !mapTile && filter.within) {
       // A drawn area gives way to what the map shows.
       filter = { ...filter, within: undefined };
-      run(true);
+      run(true, true);
     }
   }
   /** Photos the map cannot show by position (no GPS): the grid lets go of the map's area. */
@@ -210,13 +210,39 @@
     follow = false;
     clearTimeout(followTimer);
     filter = { ...filter, within: bounds };
-    run(true);
+    run(true, true);
   }
   function mapPick(row: number) {
     picked.clear();
     selected = null;
     mapRow = row;
   }
+  /** The map's photo picked on it: the map does not move to what is under the pointer. */
+  let pickedOnMap: number | null = null;
+  /** A photo picked on the map: picked in the grid too, scrolled to; one the grid does not
+   *  show is only in the panel. */
+  async function mapSelect(row: number) {
+    const mine = generation;
+    const i = await api.position(asking($state.snapshot(filter)), { sort: sortBy }, row).catch(() => null);
+    if (mine !== generation) return;
+    if (i === null) return mapPick(row);
+    await need(i, i + 1);
+    if (mine !== generation) return;
+    pickedOnMap = row;
+    await pick(i);
+    grid?.reveal(i);
+  }
+  /** With the grid and map in sync, the map centres on the photo picked in the grid. */
+  let mapCenter = $state.raw<{ row: number; lat: number; lon: number } | null>(null);
+  $effect(() => {
+    const row = focusRow;
+    if (row === undefined || !mapOn || !follow) return;
+    if (untrack(() => pickedOnMap) === row) return;
+    pickedOnMap = null;
+    api.photo(row).then((p) => {
+      if (focusRow === row && p?.geo) mapCenter = { row, lat: p.geo.lat, lon: p.geo.lon };
+    }).catch(() => {});
+  });
   async function mapSetGeo(rows: number[], lat: number, lon: number, from?: api.BBox) {
     dragging = null;
     const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
@@ -480,11 +506,16 @@
   let pages = $state.raw(new SvelteMap<number, number[]>());
   let loading = new Map<number, Promise<void>>();
 
-  /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks. */
-  async function run(keep = false) {
+  /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks.
+   *  `byRow`: a single pick stays on its photo, wherever it now is (the map moved),
+   *  rather than on its place in the grid. */
+  async function run(keep = false, byRow = false) {
     const mine = ++generation;
     untrack(() => (filter = following(filter)));
     const asked = asking($state.snapshot(filter));
+    const keepRow = keep && byRow && picked.size <= 1 && selected !== null ? focusRow : undefined;
+    const kept = keepRow === undefined ? null : api.position(asked, { sort: sortBy }, keepRow).catch(() => null);
+    let where: number | null = null;
     const groups = dims;
     // Which of the photos shown are hidden, to mark their tiles: none are while hidden.
     if (showHidden || inBin) api.hiddenRows(asked).then((rows) => { if (mine === generation) hiddenHere = new Set(rows); }).catch(() => {});
@@ -495,6 +526,10 @@
       const first = api.query(asked, {
         sort: sortBy, limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
+      if (kept) {
+        where = await kept;
+        if (mine !== generation) return;
+      }
       // In place, the pages on screen and the focused photo's (and the next, for the viewer)
       // are read again alongside the first and swapped in with the result in one go: until
       // then the grid and the details panel keep the old ones.
@@ -503,7 +538,7 @@
         ? await refreshPages(
             first,
             (total) => {
-              const at = Math.min(selected ?? 0, total - 1);
+              const at = Math.min(where ?? selected ?? 0, total - 1);
               return [shown, [at, at + 2]];
             },
             result?.total ?? 0,
@@ -517,7 +552,15 @@
       loading = new Map();
       error = null;
       showOffline(mine, asked);
-      if (keep) {
+      if (keepRow !== undefined && where !== null) {
+        // Set with the pages, so the focus never passes over the photo now at its old place.
+        selected = where;
+        anchor = where;
+        picked.clear();
+        picked.add(keepRow);
+        await tick();
+        if (mine === generation) grid?.reveal(where);
+      } else if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
         await followPicks(mine, asked);
       } else {
@@ -1234,9 +1277,9 @@
     if (was) filter = { ...filter, rating: ratingFor(op, was.n) };
     run();
   }
-  /** "No album" / "No place" rows: off → none → has some → off. */
-  function toggleNone(key: "uncollected" | "placed") {
-    const none = key === "placed" ? false : true;
+  /** "No album" / "No place" / "No location" rows: off → none → has some → off. */
+  function toggleNone(key: "uncollected" | "placed" | "located") {
+    const none = key === "uncollected";
     const v = filter[key];
     filter = { ...filter, [key]: v === undefined ? none : v === none ? !none : undefined };
     run();
@@ -1805,6 +1848,7 @@
     place_under: (v) => [{ what: "Place", text: placeText(v) }],
     gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
     placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
+    located: (v) => [{ what: "Location", text: v ? "has a location" : "no location" }],
     approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
@@ -2120,6 +2164,13 @@
               title="Photos without a place · click again for photos with one"
               onclick={() => toggleNone("placed")}
             ><span class="name">{filter.placed === true ? "With a place" : "No place"}</span></button>
+            <button
+              class="none-row"
+              class:on={filter.located === false}
+              class:out={filter.located === true}
+              title="Photos with nothing in the Location field · click again for photos with a location"
+              onclick={() => toggleNone("located")}
+            ><span class="name">{filter.located === true ? "With a location" : "No location"}</span></button>
             <Tree
               nodes={places}
               selected={filter.place_under && "p:" + filter.place_under}
@@ -2270,8 +2321,8 @@
   {#if mapOn}
     <!-- The map's own tools, by the map: the header has no room for them beside the rest. -->
     <div class="map-tools" role="toolbar" aria-label="Map">
-      <label class="follow" title="The grid shows only the photos the map shows. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
-        <input type="checkbox" checked={follow} onchange={toggleFollow} /> grid follows map
+      <label class="follow" title="The grid shows only the photos the map shows, and the map centres on the photo picked in the grid. Off: the grid keeps its own filter, and the map is just a place to look and to drop photos.">
+        <input type="checkbox" checked={follow} onchange={toggleFollow} /> sync grid and map
       </label>
       <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
       <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
@@ -2286,8 +2337,9 @@
       trip={shownTrip && { name: tripName(shownTrip) }}
       onbox={mapBox}
       onview={mapMoved}
+      center={mapCenter}
       ontile={mapTilePick}
-      onpick={mapPick}
+      onselect={mapSelect}
       onsetgeo={mapSetGeo}
       onerror={(text) => (editError = text)}
       onplace={(path) => showOffMap({ place_under: path, approx: true, gps: undefined, placed: undefined })}

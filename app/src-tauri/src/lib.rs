@@ -735,6 +735,20 @@ async fn query(app: State<'_, App>, filter: Filter, options: QueryOptions) -> Re
     app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))
 }
 
+/// Where `row` is among the photos `filter` selects, in `options`' order; None when it is
+/// not one of them.
+#[tauri::command]
+async fn position(
+    app: State<'_, App>,
+    filter: Filter,
+    options: QueryOptions,
+    row: u64,
+) -> Result<Option<usize>, String> {
+    let all = QueryOptions { limit: None, offset: 0, facets: vec![], ..options };
+    let r = app.session()?.library.query(&filter, &all).map_err(|e| format!("{e:#}"))?;
+    Ok(r.rows.iter().position(|&r| r == row))
+}
+
 /// The map's markers for the photos `filter` selects, clustered for what the map shows.
 #[tauri::command]
 async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Result<c1index::MapResult, String> {
@@ -2286,6 +2300,7 @@ pub fn run() {
             status,
             startup_progress,
             query,
+            position,
             smart_counts,
             trips,
             timeline,

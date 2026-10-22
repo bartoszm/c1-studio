@@ -114,7 +114,10 @@ export function suggest(level: Level, typed: string, context: Partial<Place>, so
   const q = looseKey(typed);
   const inContext = (s: Suggestion) =>
     LEVELS.slice(0, depth - 1).every((l) => !(context[l] ?? "").trim() || same(s.path[l], context[l]!));
+  // A location is in a city: with the city known, only that city's are offered.
+  const city = level === "location" ? (context.city ?? "").trim() : "";
   return [...found.values()]
+    .filter((s) => !city || same(s.path.city, city))
     .filter((s) => !q || looseKey(s.value).includes(q))
     .map((s) => ({ s, rank: [RANK[s.source], +!inContext(s), +!(q && looseKey(s.value).startsWith(q)), -s.n] }))
     .sort((a, b) => order(a.rank, b.rank) || a.s.value.localeCompare(b.s.value))

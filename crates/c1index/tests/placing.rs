@@ -330,3 +330,20 @@ fn a_position_for_a_city_the_gazetteer_lacks_is_not_refined() {
     let plan = lib.refine_plan(&Filter::default(), &wider).unwrap();
     assert_eq!((plan.approx, plan.positions), (1, 0), "Kraków is in Malopolska, but is it Xyzzyville?");
 }
+
+#[test]
+fn photos_with_a_location_or_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let at = |location: &str, place: Place| Place { location: Some(location.into()), ..place };
+    let photos = vec![
+        photo(1, 0, krakow(), None),
+        photo(2, 10, at("Rynek", krakow()), None),
+        photo(3, 20, Place::default(), None),
+        // Levels above left empty: still a location.
+        photo(4, 30, at("Beach", place("Poland", "", "")), None),
+    ];
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    assert_eq!(numbers(&lib, &Filter { located: Some(true), ..Filter::default() }), [2, 4]);
+    assert_eq!(numbers(&lib, &Filter { located: Some(false), ..Filter::default() }), [1, 3]);
+}

@@ -189,6 +189,8 @@ pub struct Filter {
     pub place_under: Option<String>,
     /// Photos with a place (any of country, state, city, location), or without one.
     pub placed: Option<bool>,
+    /// Photos with a location (the place's finest level), or without one.
+    pub located: Option<bool>,
     /// Only photos with a country but no ISO country code.
     pub no_country_code: bool,
     /// Substring, case-insensitive.
@@ -398,6 +400,12 @@ impl Filter {
             Some(true) => must.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
             Some(false) => must_not.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
             None => {}
+        }
+        if let Some(located) = self.located {
+            // The place tree goes down to the last level a photo has: the fourth, the
+            // location, is there exactly when the location is.
+            let deepest = Box::new(RegexQuery::from_pattern(r"[^|]*\|[^|]*\|[^|]*\|.+", f.dim(Dim::PlaceTree))?);
+            if located { must.push(deepest) } else { must_not.push(deepest) }
         }
         if self.no_country_code {
             must.push(has(flag::NO_COUNTRY_CODE));

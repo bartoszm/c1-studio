@@ -1,6 +1,9 @@
 //! Coordinates as people type or paste them: `50.0614, 19.9366`, `33.8688S 151.2093E`,
-//! `44°58′N 14°45′E`, `N44°58' E14°45'`, `44 58 N 14 45 E`, `50°3'41.0"N 19°56'12"E`.
-//! The same forms `parseGeo` in the app's `lib/format.ts` reads.
+//! `44°58′N 14°45′E`, `N44°58' E14°45'`, `44 58 N 14 45 E`, `50°3'41.0"N 19°56'12"E`, and
+//! full plus codes, `8FVC9G8F+6X`. The same forms `parseGeo` in the app's `lib/format.ts`
+//! reads (which takes short plus codes too, near a point it knows).
+
+use crate::pluscode::{self, Kind};
 
 /// What a number in typed coordinates was marked as.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,9 +89,19 @@ fn value(numbers: &[Num]) -> Option<f64> {
     Some(if numbers[0].2 { -v } else { v })
 }
 
-/// A typed position as `(lat, lon)`, or what is wrong with it.
+/// A typed position as `(lat, lon)`, or what is wrong with it. A full plus code
+/// (`8FVC9G8F+6X`) is read too; a short one, which needs a place near it, is not.
 pub fn parse_point(text: &str) -> Result<(f64, f64), &'static str> {
-    const HOW: &str = "type latitude and longitude, e.g. 50.0614, 19.9366 or 44°58′N 14°45′E";
+    const HOW: &str = "type latitude and longitude, e.g. 50.0614, 19.9366 or 44°58′N 14°45′E, or a full plus code";
+    // A town after the code, as Google Maps gives them, says nothing a full code doesn't.
+    let first = text.split(|c: char| c.is_whitespace() || c == ',').find(|w| !w.is_empty()).unwrap_or("");
+    match pluscode::kind_of(first) {
+        Some(Kind::Full) => return pluscode::decode(first).ok_or(HOW),
+        Some(Kind::Short) => {
+            return Err("a short plus code needs the place it is near: type the full code (8FVC9G8F+6X)");
+        }
+        None => {}
+    }
     let tokens = tokens(text.trim()).ok_or(HOW)?;
     let letters: Vec<(usize, char)> = tokens
         .iter()
@@ -201,6 +214,13 @@ mod tests {
         close("50°3′41″N 19°56′12″W", 50.0 + 3.0 / 60.0 + 41.0 / 3600.0, -(19.0 + 56.0 / 60.0 + 12.0 / 3600.0));
         close("50°3'41''N 19°56'12''E", 50.0 + 3.0 / 60.0 + 41.0 / 3600.0, 19.0 + 56.0 / 60.0 + 12.0 / 3600.0);
         close("50°2.25′N 19°56.5′E", 50.0 + 2.25 / 60.0, 19.0 + 56.5 / 60.0);
+    }
+
+    #[test]
+    fn full_plus_codes() {
+        close("8FVC9G8F+6X", 47.3655625, 8.5249375);
+        close(" 8fvc9g8f+6x Zürich, Switzerland", 47.3655625, 8.5249375);
+        assert!(parse_point("9G8F+6X Zürich").unwrap_err().contains("short plus code"));
     }
 
     #[test]
