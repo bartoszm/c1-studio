@@ -100,7 +100,7 @@
       <label for="ai-sheets">Send</label>
       <div>
         <select id="ai-sheets" value={view.settings.sheets ? "sheets" : "photo"} disabled={busy} onchange={(e) => save({ sheets: e.currentTarget.value === "sheets" })}>
-          <option value="photo">One photo per call: its preview</option>
+          <option value="photo">One photo per call: its thumbnail, else its preview</option>
           <option value="sheets">Contact sheets: 36 thumbnails per call, numbered</option>
         </select>
         <small class="muted">Sheets take far fewer calls for a first pass over many photos; each photo is seen smaller.</small>
@@ -237,7 +237,7 @@
 
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
-    sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as previews of at most 1568 pixels{view.settings.access === "gemini" && view.settings.sheets ? ", or as contact sheets of thumbnails" : ""}. These settings belong to this {source.noun}.
+    sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as thumbnails (previews where there is none) of at most 1568 pixels{view.settings.access === "gemini" && view.settings.sheets ? ", or as contact sheets of thumbnails" : ""}. These settings belong to this {source.noun}.
   </p>
 {/if}
 

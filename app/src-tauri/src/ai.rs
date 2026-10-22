@@ -13,7 +13,7 @@ use c1ai::keys::{self, ANTHROPIC};
 use c1ai::{AiError, Brief, Failed, Fields, Language, PhotoRequest, SheetRequest, VisionProvider, Vocabulary};
 use c1index::ai::{Entry, Status};
 use c1index::{Accept, Accepted};
-use c1model::{ImageTier, Photo, Place};
+use c1model::{ImageRef, ImageTier, Photo, PhotoId, Place};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -432,17 +432,40 @@ fn context(photo: &Photo) -> String {
 const CONTEXT_TEXT: usize = 600;
 const CONTEXT_KEYWORDS: usize = 60;
 
-/// The photo as the model sees it: its preview (else its thumbnail), at most
-/// [`claude::LONG_EDGE`] on the long side.
+/// The photo as the model sees it, at most [`claude::LONG_EDGE`] on the long side.
 fn request(s: &Session, row: u64) -> anyhow::Result<Option<PhotoRequest>> {
     let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { return Ok(None) };
-    let image = match s.source.image_or_make(&id, ImageTier::Preview)? {
-        Some(image) => Some(image),
-        None => s.thumbs.get_or_make(s.source.as_ref(), &id)?.map(|made| made.image),
-    };
-    let Some(image) = image else { return Ok(None) };
-    let pixels = c1image::load_fitted(&image, claude::LONG_EDGE)?;
+    let Some(pixels) = pixels(s, &id, claude::LONG_EDGE)? else { return Ok(None) };
     Ok(Some(PhotoRequest { jpeg: c1image::encode_jpeg(&pixels, 85), context: context(&photo) }))
+}
+
+/// A photo's pixels for a model, at most `long_edge` on the long side: the source's own
+/// thumbnail first, which for Capture One is its render of the edits (the colours of a
+/// preview read from its cache can be off); else the preview, made if need be; else a
+/// thumbnail made here. An image that will not load gives way to the next.
+fn pixels(s: &Session, id: &PhotoId, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+    let mut why = None;
+    let mut fitted = |image: Option<ImageRef>| match image.map(|r| c1image::load_fitted(&r, long_edge)) {
+        Some(Ok(pixels)) => Some(pixels),
+        Some(Err(e)) => {
+            why.get_or_insert(e);
+            None
+        }
+        None => None,
+    };
+    if let Some(pixels) = fitted(s.source.image(id, ImageTier::Thumb)?) {
+        return Ok(Some(pixels));
+    }
+    if let Some(pixels) = fitted(s.source.image_or_make(id, ImageTier::Preview)?) {
+        return Ok(Some(pixels));
+    }
+    if let Some(pixels) = fitted(s.thumbs.get_or_make(s.source.as_ref(), id)?.map(|made| made.image)) {
+        return Ok(Some(pixels));
+    }
+    match why {
+        Some(e) => Err(e.into()),
+        None => Ok(None),
+    }
 }
 
 /// Describes these photos in the background, a few at a time, unless a run is under way.
@@ -621,13 +644,8 @@ fn describe_sheet(s: &Session, provider: &dyn VisionProvider, rows: &[u64]) -> a
     let mut on_sheet = Vec::new();
     for &row in rows {
         let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { continue };
-        // The thumbnail is enough for a cell; the preview only where there is none.
-        let image = match s.thumbs.get_or_make(s.source.as_ref(), &id)? {
-            Some(made) => Some(made.image),
-            None => s.source.image_or_make(&id, ImageTier::Preview)?,
-        };
-        let Some(image) = image else { continue };
-        cells.push(c1image::load_fitted(&image, c1image::SHEET_CELL)?);
+        let Some(cell) = pixels(s, &id, c1image::SHEET_CELL)? else { continue };
+        cells.push(cell);
         contexts.push(context(&photo));
         on_sheet.push(row);
     }

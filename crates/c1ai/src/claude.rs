@@ -43,10 +43,11 @@ pub fn model(id: &str) -> Option<Model> {
 /// The long edge of the JPEG sent: past it the API scales the image down anyway.
 pub const LONG_EDGE: u32 = 1568;
 
-/// Tokens a photo takes, roughly, for estimating a run before it starts: the image
-/// (a 3:2 frame at [`LONG_EDGE`]), the line of context, the cached instructions read
-/// back, and the answer with a little thinking.
-const PHOTO_INPUT: f64 = 2300.0;
+/// Tokens a photo takes, roughly, for estimating a run before it starts: the image (most
+/// go as their thumbnail, about 450 by 300; a preview at [`LONG_EDGE`] would take about
+/// 2200), the line of context, the cached instructions read back, and the answer with a
+/// little thinking.
+const PHOTO_INPUT: f64 = 400.0;
 const CACHED_INPUT: f64 = 1500.0;
 const PHOTO_OUTPUT: f64 = 700.0;
 
