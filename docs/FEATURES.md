@@ -169,14 +169,13 @@ after. Drag the line under the map to give the photo strip more room.
 ## Places from neighbours in time
 
 *New in 0.4.0.* Photos taken moments apart were taken in the same place. **Neighbours…**
-fills in the photos with no position from the ones shot just before and after. Its
-**Refine** side improves rough ones: a photo placed only in *London* takes
-*London › Barbican* from its neighbour, and a ≈ position (from the place's name)
-moves to the GPS of a photo taken within two minutes, but only if it lies in the photo's
-own place. You see the counts and every from → to before anything changes, and Ctrl+Z
-undoes it.
+gives the photos with no position, or only a ≈ one from their place's name, a position
+from the GPS photos shot just before and after, if it lies in the photo's own place. A
+photo placed only in *London* takes *London › Barbican* from a neighbour, even past
+others that only say London, as long as no neighbour says somewhere else. You see the
+counts and every from → to before anything changes, and Ctrl+Z undoes it.
 
-![Neighbours, Refine: rough places made more specific, every change listed, applied and undone](media/features/refine.gif)
+![Neighbours: rough places made more specific, every change listed, applied and undone](media/features/refine.gif)
 
 [In the guide: Map](GUIDE.md#map)
 
