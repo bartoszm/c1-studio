@@ -67,6 +67,8 @@ pub struct FolderSource {
     pub(crate) busy: Mutex<()>,
     last_scan: Mutex<Option<ScanOutcome>>,
     recycler: RwLock<remove::Recycler>,
+    backup_heads: write::BackupHeads,
+    trees: Mutex<snapshot::Trees>,
 }
 
 impl FolderSource {
@@ -90,6 +92,8 @@ impl FolderSource {
             scan_due: AtomicBool::new(true),
             busy: Mutex::new(()),
             last_scan: Mutex::new(None),
+            backup_heads: Default::default(),
+            trees: Default::default(),
             recycler: RwLock::new(remove::recycle_bin),
         })
     }
@@ -249,6 +253,10 @@ impl PhotoSource for FolderSource {
 
     fn check_remap(&self, earlier: &[KeywordRemap], remap: &KeywordRemap) -> Result<Option<String>> {
         write::check_remap(self, earlier, remap)
+    }
+
+    fn check_remaps(&self, remaps: &[KeywordRemap]) -> Result<Vec<Option<String>>> {
+        write::check_remaps(self, remaps)
     }
 
     fn check_collection(&self, earlier: &[CollectionChange], change: &CollectionChange) -> Result<Option<String>> {

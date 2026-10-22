@@ -1726,9 +1726,10 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), 
     let changes: Vec<Change> = ready.iter().map(|p| p.pending.change.clone()).collect();
     let mut remaps = Vec::new();
     let mut blocked_remaps = Vec::new();
-    for (seq, queued) in s.library.remaps().map_err(|e| format!("{e:#}"))? {
-        let earlier: Vec<KeywordRemap> = remaps.iter().map(|(_, r): &(u64, KeywordRemap)| r.clone()).collect();
-        match s.source.check_remap(&earlier, &queued.remap).map_err(text)? {
+    let queued = s.library.remaps().map_err(|e| format!("{e:#}"))?;
+    let whys = s.source.check_remaps(&queued.iter().map(|(_, q)| q.remap.clone()).collect::<Vec<_>>()).map_err(text)?;
+    for ((seq, queued), why) in queued.into_iter().zip(whys) {
+        match why {
             None => remaps.push((seq, queued.remap)),
             Some(why) => blocked_remaps.push((seq, queued.remap.label, why)),
         }

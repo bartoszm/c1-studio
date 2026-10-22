@@ -364,6 +364,21 @@ pub trait PhotoSource: Send + Sync {
         Ok(None)
     }
 
+    /// [`PhotoSource::check_remap`] for remaps queued one after another: each checked once
+    /// the ones before it that can be written are applied. One answer per remap.
+    fn check_remaps(&self, remaps: &[KeywordRemap]) -> Result<Vec<Option<String>>> {
+        let mut ok = Vec::new();
+        let mut whys = Vec::new();
+        for remap in remaps {
+            let why = self.check_remap(&ok, remap)?;
+            if why.is_none() {
+                ok.push(remap.clone());
+            }
+            whys.push(why);
+        }
+        Ok(whys)
+    }
+
     /// Why an album change can no longer be written (the album or its parent is gone),
     /// or `None` if it can, once the `earlier` ones have been applied.
     fn check_collection(&self, _earlier: &[CollectionChange], _change: &CollectionChange) -> Result<Option<String>> {

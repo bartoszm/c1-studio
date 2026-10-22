@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -24,7 +24,7 @@ use crate::FolderSource;
 use crate::definition::{Definition, ImageStore};
 use crate::meta::FileKind;
 use crate::pattern::{self, Pattern, Preset, Tokens};
-use crate::store::{FileRec, FileState, ImageRec, Writer};
+use crate::store::{FileRec, FileState, ImageRec, State, Writer};
 
 /// Long edge of a thumbnail, in pixels.
 pub const THUMB_EDGE: u32 = 450;
@@ -255,6 +255,11 @@ pub(crate) struct Images {
     /// One maker per photo: two threads making the same photo would write the same files.
     making: Making,
     made: AtomicU32,
+    /// When the source was opened: a central file older than that with no record was left by
+    /// a crash ([`Images::drop_strays`]).
+    opened: SystemTime,
+    /// The central store was looked through for such files this session.
+    strays_checked: AtomicBool,
 }
 
 impl Images {
@@ -264,6 +269,8 @@ impl Images {
             generated: Mutex::new(None),
             making: Making { busy: Mutex::new(HashSet::new()), free: Condvar::new() },
             made: AtomicU32::new(0),
+            opened: SystemTime::now(),
+            strays_checked: AtomicBool::new(false),
         }
     }
 
@@ -600,18 +607,48 @@ impl Images {
     /// belong. An image that travelled with the photo (a folder renamed with its `.previews`
     /// in it) is found at its new path, the same size, and kept there; any other has its
     /// record dropped (its file deleted by [`Images::sweep`]), to be made again when asked
-    /// for. Returns the new paths of the images kept. Called inside a store write.
+    /// for. `landed` holds the new paths where an image was found ([`Images::landed`], read
+    /// before the write). Returns the new paths of the images kept. Called inside a store
+    /// write.
     pub(crate) fn relocate(
         &self,
         w: &mut Writer,
         src: &FolderSource,
         def: &Definition,
         moves: &[Moved],
+        landed: &HashSet<PathBuf>,
     ) -> Result<HashSet<PathBuf>> {
         let mut kept = HashSet::new();
+        for (ext, tier, to, image) in self.destinations(w.state(), src, def, moves) {
+            if !landed.contains(&to) {
+                self.drop_image(w, &ext, tier, &image)?;
+                continue;
+            }
+            // What is left at the old path (in a copy of the root) is no longer this source's.
+            self.generated_update(|set| {
+                set.remove(&image.path);
+                set.insert(to.clone());
+            });
+            w.put_image(&ext, tier, Some(ImageRec { path: to.clone(), ..image }))?;
+            kept.insert(to);
+        }
+        Ok(kept)
+    }
+
+    /// Where the patterns that follow a photo's place put the images of the photos in
+    /// `moves`, for each image whose path that changes: (photo, tier, new path, the image as
+    /// recorded).
+    pub(crate) fn destinations(
+        &self,
+        state: &State,
+        src: &FolderSource,
+        def: &Definition,
+        moves: &[Moved],
+    ) -> Vec<(String, ImageTier, PathBuf, ImageRec)> {
+        let mut out = Vec::new();
         let patterns = SPECS.map(|s| pattern_for(&def.images, s));
         if !patterns.iter().any(Pattern::depends_on_location) {
-            return Ok(kept);
+            return out;
         }
         let data = src.work_dir().to_string_lossy().into_owned();
         for Moved { ext, root, relpath } in moves {
@@ -620,28 +657,28 @@ impl Images {
                 if !pattern.depends_on_location() {
                     continue;
                 }
-                let Some(image) = w.state().images.get(&(ext.clone(), spec.tier)).cloned() else { continue };
+                let Some(image) = state.images.get(&(ext.clone(), spec.tier)) else { continue };
                 let tokens =
                     Tokens { data: &data, root: &root.path, relpath, hash: ext, tier: spec.name, size: spec.edge };
                 let to = pattern.render(&tokens);
-                if to == image.path {
-                    continue;
+                if to != image.path {
+                    out.push((ext.clone(), spec.tier, to, image.clone()));
                 }
-                let travelled = std::fs::metadata(&to).is_ok_and(|m| m.is_file() && m.len() == image.bytes);
-                if !travelled {
-                    self.drop_image(w, ext, spec.tier, &image)?;
-                    continue;
-                }
-                // What is left at the old path (in a copy of the root) is no longer this source's.
-                self.generated_update(|set| {
-                    set.remove(&image.path);
-                    set.insert(to.clone());
-                });
-                w.put_image(ext, spec.tier, Some(ImageRec { path: to.clone(), ..image }))?;
-                kept.insert(to);
             }
         }
-        Ok(kept)
+        out
+    }
+
+    /// The new paths of `wanted` ([`Images::destinations`]) where the image already is: it
+    /// travelled with its photo (a folder renamed with its `.previews` in it), the same size.
+    /// Reads the disk, so it is called before the store's lock is taken.
+    pub(crate) fn landed(wanted: Vec<(String, ImageTier, PathBuf, ImageRec)>) -> HashSet<PathBuf> {
+        use rayon::prelude::*;
+        wanted
+            .into_par_iter()
+            .filter(|(_, _, to, image)| std::fs::metadata(to).is_ok_and(|m| m.is_file() && m.len() == image.bytes))
+            .map(|(_, _, to, _)| to)
+            .collect()
     }
 
     /// `path` is an image this source made (so a walk leaves it out). The first call reads
@@ -654,13 +691,46 @@ impl Images {
         self.generated.lock().unwrap().as_ref().is_some_and(|set| set.contains(path))
     }
 
-    /// Drops least recently used images until the central store is under its limit.
+    /// Drops least recently used images until the central store is under its limit. The
+    /// first time after the source was opened, also the files no record names.
     pub fn evict(&self, src: &FolderSource) -> Result<()> {
+        if !self.strays_checked.swap(true, Ordering::Relaxed) {
+            self.drop_strays(src);
+        }
         let limit = src.def.read().unwrap().images.limit_bytes();
         match limit {
             Some(limit) => self.evict_to(src, limit).map(|_| ()),
             None => Ok(()),
         }
+    }
+
+    /// Deletes the files in the central store's folder that no record names, made before the
+    /// source was opened: image records there are written lazily, so a crash can lose the
+    /// last few while their files stay, and [`Images::evict_to`] only counts recorded
+    /// images. A file made since may still be waiting for its record, so it is left. Returns
+    /// how many files went.
+    pub(crate) fn drop_strays(&self, src: &FolderSource) -> usize {
+        let central = src.work_dir().join("images");
+        if !central.is_dir() {
+            return 0;
+        }
+        let recorded: HashSet<PathBuf> = {
+            let state = src.store().read();
+            let images = state.images.values().map(|i| &i.path);
+            images.chain(state.doomed.keys()).filter(|p| p.starts_with(&central)).cloned().collect()
+        };
+        let mut gone = 0;
+        for entry in walkdir::WalkDir::new(&central).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() || recorded.contains(entry.path()) {
+                continue;
+            }
+            let before = entry.metadata().ok().and_then(|m| m.modified().ok()).is_some_and(|t| t < self.opened);
+            if before && remove_file(entry.path()).is_ok() {
+                tidy(entry.path());
+                gone += 1;
+            }
+        }
+        gone
     }
 
     /// If the images in the central store's folder (`{data}/images`; images kept anywhere
@@ -687,15 +757,27 @@ impl Images {
             let access = self.access.lock().unwrap();
             images.iter().map(|(ext, tier, _)| access.get(ext).map_or(0, |at| at[index(*tier)])).collect()
         };
+        // An image not used yet counts from its file's time, read once: kept as its use.
+        let used: Vec<u64> = images
+            .iter()
+            .zip(used)
+            .map(|((_, _, image), used)| if used > 0 { used } else { modified_ms(&image.path).max(1) })
+            .collect();
+        {
+            let mut access = self.access.lock().unwrap();
+            for ((ext, tier, _), &at) in images.iter().zip(&used) {
+                let slot = &mut access.entry(ext.clone()).or_default()[index(*tier)];
+                if *slot == 0 {
+                    *slot = at;
+                }
+            }
+        }
         // (a thumbnail, last used, which): previews sort first.
         let mut order: Vec<(bool, u64, usize)> = images
             .iter()
             .zip(used)
             .enumerate()
-            .map(|(i, ((_, tier, image), used))| {
-                let used = if used > 0 { used } else { modified_ms(&image.path) };
-                (*tier == ImageTier::Thumb, used, i)
-            })
+            .map(|(i, ((_, tier, _), used))| (*tier == ImageTier::Thumb, used, i))
             .collect();
         order.sort_unstable();
         let mut total: u64 = images.iter().map(|(_, _, i)| i.bytes).sum();
@@ -1515,6 +1597,41 @@ mod tests {
         assert_eq!(fx.src.images.evict_to(&fx.src, fx.bytes(None) - 1).unwrap(), 1);
         assert!(fx.recorded(C, ImageTier::Preview).is_none());
         assert!(fx.recorded(B, ImageTier::Preview).is_some());
+    }
+
+    #[test]
+    fn files_a_crash_left_without_a_record_are_dropped_once() {
+        let fx = fixture(Preset::Central);
+        fx.three();
+        let set_old = |path: &Path| {
+            let file = std::fs::File::options().write(true).open(path).unwrap();
+            file.set_modified(UNIX_EPOCH + std::time::Duration::from_secs(1000)).unwrap();
+        };
+        // A's preview lost its record in a crash; its file stays, from before the opening.
+        let lost = fx.recorded(A, ImageTier::Preview).unwrap().path;
+        fx.src.store().write(|w| w.put_image(A, ImageTier::Preview, None)).unwrap();
+        set_old(&lost);
+        // B's preview is recorded and old: kept. A file made since the opening: kept.
+        set_old(&fx.recorded(B, ImageTier::Preview).unwrap().path);
+        let fresh = fx.src.work_dir().join("images").join("fresh.jpg");
+        std::fs::write(&fresh, b"x").unwrap();
+
+        assert_eq!(fx.src.images.drop_strays(&fx.src), 1);
+        assert!(!lost.exists());
+        assert!(fresh.is_file());
+        assert!(fx.files(B).iter().chain(&fx.files(C)).all(|p| p.is_file()));
+
+        // Trimming does it once a session.
+        let again = |path: &Path| {
+            std::fs::write(path, b"x").unwrap();
+            set_old(path);
+        };
+        again(&lost);
+        fx.src.images.evict(&fx.src).unwrap();
+        assert!(!lost.exists(), "the first trim looks");
+        again(&lost);
+        fx.src.images.evict(&fx.src).unwrap();
+        assert!(lost.exists(), "the next ones do not");
     }
 
     #[test]

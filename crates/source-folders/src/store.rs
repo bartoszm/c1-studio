@@ -246,6 +246,23 @@ impl Store {
         Ok(())
     }
 
+    /// The rows of `table`, one kept beside the state (the scan's roots), read outside any
+    /// write. None while the table is not made yet.
+    pub fn rows(&self, table: TableDefinition<&str, &str>) -> Result<Vec<(String, String)>> {
+        let tx = self.db.begin_read().map_err(other)?;
+        let table = match tx.open_table(table) {
+            Ok(table) => table,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(other(e)),
+        };
+        let rows = table.iter().map_err(other)?;
+        rows.map(|row| {
+            let (key, value) = row.map_err(other)?;
+            Ok((key.value().to_owned(), value.value().to_owned()))
+        })
+        .collect()
+    }
+
     fn load(&self) -> Result<State> {
         let tx = self.db.begin_read().map_err(other)?;
         let mut state = State::default();
