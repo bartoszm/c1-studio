@@ -371,6 +371,13 @@
   let autosaveOn = $state(false);
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
+  // An error stays a while (longer than a note), then goes: what went wrong before is no
+  // longer what the footer says now. A click lets it go sooner.
+  $effect(() => {
+    if (!editError) return;
+    const gone = setTimeout(() => (editError = null), 10_000);
+    return () => clearTimeout(gone);
+  });
   /** A word on what an edit did, shown a few seconds in the footer. */
   let editNote = $state<string | null>(null);
   let noteTimer: ReturnType<typeof setTimeout>;
@@ -2488,7 +2495,7 @@
         <button onclick={() => (fillOffer = null)}>No</button>
       </span>
     {/if}
-    {#if busy}<span class="busy">{busy}</span>{:else if editError}<span class="edit-error">{editError}</span>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
+    {#if busy}<span class="busy">{busy}</span>{:else if editError}<button class="edit-error" title="Click to dismiss" onclick={() => (editError = null)}>{editError}</button>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     {#if thumbs?.running}
       <span class="sync" title="From each photo's preview, or its original when there is no preview">
