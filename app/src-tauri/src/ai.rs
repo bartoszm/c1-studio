@@ -109,6 +109,8 @@ pub(crate) struct ModelView {
 struct GeminiView {
     installed: bool,
     models: Vec<(String, String)>,
+    /// Why its models could not be listed (offline, not signed in).
+    error: Option<String>,
 }
 
 /// Claude Code as a plan run would use it.
@@ -141,6 +143,8 @@ pub(crate) struct AiView {
     plan: Option<PlanView>,
     /// With Gemini chosen: whether agy is installed.
     gemini: Option<bool>,
+    /// Why agy's models could not be listed.
+    gemini_error: Option<String>,
     /// Whether a run can start: a key, Claude Code signed in, or agy there.
     ready: bool,
     /// Calls made in this library and what they cost in all.
@@ -164,8 +168,10 @@ fn view(s: &Session) -> Result<AiView, String> {
     // agy is asked for its models only when Gemini is chosen: it takes a moment.
     let gemini = (settings.access == Access::Gemini).then(|| {
         let program = agy::find();
-        let models = program.as_deref().map(agy::models).transpose().unwrap_or_default().unwrap_or_default();
-        GeminiView { installed: program.is_some(), models }
+        let listed = program.as_deref().map(agy::models);
+        let error = listed.as_ref().and_then(|l| l.as_ref().err()).map(|e| e.to_string());
+        let models = listed.and_then(Result::ok).unwrap_or_default();
+        GeminiView { installed: program.is_some(), models, error }
     });
     let ready = match (&plan, &gemini) {
         (Some(plan), _) => on_plan(&plan.status),
@@ -187,6 +193,7 @@ fn view(s: &Session) -> Result<AiView, String> {
     Ok(AiView {
         settings,
         models,
+        gemini_error: gemini.as_ref().and_then(|g| g.error.clone()),
         gemini: gemini.map(|g| g.installed),
         key: key.map(|k| (keys::masked(&k), keys::origin(&ANTHROPIC).unwrap_or("stored"))),
         plan,
@@ -641,6 +648,7 @@ fn describe_sheet(s: &Session, provider: &dyn VisionProvider, rows: &[u64]) -> a
         s.log.event(&format!("A sheet of {} photos: {}", on_sheet.len(), reply.warnings.join("; ")), &[]);
     }
     let mut missing = rows.len() - on_sheet.len();
+    let mut first = Some(());
     for (&row, answer) in on_sheet.iter().zip(reply.replies) {
         let Some((suggestion, warnings)) = answer else {
             missing += 1;
@@ -656,8 +664,14 @@ fn describe_sheet(s: &Session, provider: &dyn VisionProvider, rows: &[u64]) -> a
             cost: 0.0,
             status: Status::Proposed,
         };
-        // Each photo keeps the sheet's call with it: the record says what the call took.
-        s.library.put_suggestion(row, &entry, &reply.record)?;
+        // The call is recorded once, with the first photo it gave a suggestion for.
+        match first.take() {
+            Some(()) => s.library.put_suggestion(row, &entry, &reply.record)?,
+            None => s.library.put_suggestion_only(row, &entry)?,
+        }
+    }
+    if first.is_some() {
+        s.library.record_call(on_sheet[0], &reply.record)?;
     }
     Ok((missing, reply.record.cost))
 }

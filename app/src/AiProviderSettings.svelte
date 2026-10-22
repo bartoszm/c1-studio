@@ -86,7 +86,9 @@
     {#if view.settings.access === "gemini"}
       <span class="label">agy</span>
       <div>
-        {#if view.gemini}
+        {#if view.gemini && view.gemini_error}
+          <span class="warn">Installed, but {view.gemini_error}</span>
+        {:else if view.gemini}
           <span>Installed{view.models.length ? `: ${view.models.length} Gemini models` : ""}</span>
         {:else}
           <span class="warn">Not found. Install the Antigravity CLI and run <code>agy</code> once to sign in.</span>

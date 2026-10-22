@@ -52,10 +52,41 @@ fn command(program: &Path) -> Command {
     command
 }
 
+/// How long `agy models` may take: offline, it would wait on the network.
+const MODELS_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// The Gemini models agy offers (`agy models`), id and name.
 pub fn models(program: &Path) -> Result<Vec<(String, String)>, AiError> {
-    let out = command(program).arg("models").output().map_err(|e| AiError::Cli(format!("agy: {e}")))?;
-    Ok(parse_models(&String::from_utf8_lossy(&out.stdout)))
+    let mut child = command(program)
+        .arg("models")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| AiError::Cli(format!("agy: {e}")))?;
+    let mut stdout = child.stdout.take().expect("piped");
+    let read = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if started.elapsed() < MODELS_TIMEOUT => std::thread::sleep(Duration::from_millis(100)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(AiError::Network("agy did not list its models in time".into()));
+            }
+        }
+    }
+    let models = parse_models(&read.join().unwrap_or_default());
+    if models.is_empty() {
+        return Err(AiError::BadReply("agy listed no Gemini models: is it signed in?".into()));
+    }
+    Ok(models)
 }
 
 fn parse_models(text: &str) -> Vec<(String, String)> {
@@ -144,9 +175,15 @@ impl Agy {
         let _gone = RemoveOnDrop(dir.clone());
         let image = dir.join("image.jpg");
         std::fs::write(&image, jpeg).map_err(|e| AiError::Cli(format!("agy: the photo's file: {e}")))?;
+        // The prompt (instructions, vocabulary, schema, a sheet's 36 lines of context) can
+        // pass what a Windows command line holds, so it goes in a file beside the photo.
+        let instructions = dir.join("prompt.md");
+        std::fs::write(&instructions, prompt(&image))
+            .map_err(|e| AiError::Cli(format!("agy: the prompt's file: {e}")))?;
+        let ask = format!("Follow the instructions in {} exactly.", instructions.display());
         let started = Instant::now();
         let mut child = command(&self.program)
-            .args(self.args(&prompt(&image), &dir))
+            .args(self.args(&ask, &dir))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -273,28 +310,31 @@ pub(crate) fn extract_json(text: &str) -> Option<Value> {
         let body = block.trim_start().strip_prefix("json").unwrap_or(block);
         serde_json::from_str::<Value>(body.trim()).ok().filter(Value::is_object)
     });
-    fenced.or_else(|| {
-        let start = text.find('{')?;
-        let mut depth = 0i32;
-        let mut quoted = false;
-        let mut escaped = false;
-        for (i, c) in text[start..].char_indices() {
-            match c {
-                _ if escaped => escaped = false,
-                '\\' if quoted => escaped = true,
-                '"' => quoted = !quoted,
-                '{' if !quoted => depth += 1,
-                '}' if !quoted => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return serde_json::from_str(&text[start..=start + i]).ok();
-                    }
+    // Else the first balanced `{…}` that reads, prose braces before it skipped.
+    fenced.or_else(|| text.match_indices('{').find_map(|(start, _)| balanced(&text[start..])))
+}
+
+/// The object `text` starts with, if it closes and reads.
+fn balanced(text: &str) -> Option<Value> {
+    let mut depth = 0i32;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in text.char_indices() {
+        match c {
+            _ if escaped => escaped = false,
+            '\\' if quoted => escaped = true,
+            '"' => quoted = !quoted,
+            '{' if !quoted => depth += 1,
+            '}' if !quoted => {
+                depth -= 1;
+                if depth == 0 {
+                    return serde_json::from_str::<Value>(&text[..=i]).ok().filter(Value::is_object);
                 }
-                _ => {}
             }
+            _ => {}
         }
-        None
-    })
+    }
+    None
 }
 
 /// The answer for each numbered photo of a sheet: `photos[i]` for photo `i + 1`, `None`
@@ -394,6 +434,7 @@ mod tests {
         let bare = r#"Sure. {"a": {"b": "x\"}"}, "c": 3} trailing"#;
         assert_eq!(extract_json(bare).unwrap()["c"], 3);
         assert!(extract_json("no json here").is_none());
+        assert_eq!(extract_json(r#"Use {curly} braces. {"d": 4}"#).unwrap()["d"], 4);
     }
 
     #[test]

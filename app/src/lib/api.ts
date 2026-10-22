@@ -773,6 +773,8 @@ export type AiView = {
   plan: AiPlan | null;
   /** With Gemini chosen: whether agy is installed. */
   gemini: boolean | null;
+  /** Why agy's models could not be listed. */
+  gemini_error: string | null;
   /** A run can start: a key, Claude Code signed in, or agy there. */
   ready: boolean;
   calls: number;
