@@ -2365,7 +2365,7 @@
         <input type="checkbox" checked={follow} onchange={toggleFollow} /> sync grid and map
       </label>
       <button class="toggle" title="Give the photos in view positions from a recorded GPX track, by when they were taken" onclick={() => (importingGpx = true)}>GPX…</button>
-      <button class="toggle" title="Give the filtered photos with no position the position (or place) of the photos taken just before and after them" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
+      <button class="toggle" title="Place the filtered photos from the photos taken just before and after them: positions from their GPS, places from theirs" onclick={() => (placingFromNeighbours = true)}>Neighbours…</button>
     </div>
     <MapPane
       filter={eff}

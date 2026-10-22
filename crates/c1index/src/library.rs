@@ -39,9 +39,7 @@ mod selection;
 
 pub use describing::{Accept, Accepted, Seen};
 
-pub use placing::{
-    FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,
-};
+pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
 pub use selection::{Merged, Selection, group_places};
 
 /// Dimensions whose values substring filters match against.

@@ -818,26 +818,6 @@ async fn neighbour_apply(
     s.library.neighbour_apply(&filter, &settings).map_err(|e| format!("{e:#}"))
 }
 
-#[tauri::command]
-async fn refine_plan(
-    app: State<'_, App>,
-    filter: Filter,
-    settings: c1index::RefineSettings,
-) -> Result<c1index::RefinePlan, String> {
-    app.session()?.library.refine_plan(&filter, &settings).map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-async fn refine_apply(
-    app: State<'_, App>,
-    filter: Filter,
-    settings: c1index::RefineSettings,
-) -> Result<Vec<(u64, Op)>, String> {
-    let s = app.session()?;
-    s.touched();
-    s.library.refine_apply(&filter, &settings).map_err(|e| format!("{e:#}"))
-}
-
 /// Smart album id → how many photos it holds under `filter` (its album pick aside).
 #[tauri::command]
 async fn smart_counts(app: State<'_, App>, filter: Filter) -> Result<Vec<(String, u64)>, String> {
@@ -2311,8 +2291,6 @@ pub fn run() {
             fill_places,
             neighbour_plan,
             neighbour_apply,
-            refine_plan,
-            refine_apply,
             set_trip_settings,
             class_settings,
             default_class_settings,
