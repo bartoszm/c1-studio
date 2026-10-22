@@ -833,7 +833,7 @@ export type SuggestionRow = {
   } | null;
 };
 /** What the review showed a photo to have: a field taken is set only while it still has it. */
-export type Seen = { caption: string | null; headline: string | null; rating: number | null; place: PlaceNames | null };
+export type Seen = { caption: string | null; headline: string | null; rating: number | null; place: PlaceNames };
 /** What the user takes from a suggestion; fields left out are not touched. */
 export type Accept = {
   row: number; keywords: string[]; caption?: string; headline?: string; rating?: number;

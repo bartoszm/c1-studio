@@ -2573,6 +2573,14 @@ fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
     assert_eq!(place.city.unwrap().p, 0.9);
     assert!(stored.warnings.is_empty(), "{:?}", stored.warnings);
 
+    // A country it does not know is doubted, though the city is known (and brings its own).
+    let mut misspelt = guess("Kraków", 0.9);
+    misspelt.country = Some(Guess { name: "Narnia".into(), p: 0.95 });
+    lib.put_suggestion(eight, &entry(misspelt), &c1ai::RunRecord::default()).unwrap();
+    let place = lib.suggestion(eight).unwrap().unwrap().suggestion.place.unwrap();
+    assert_eq!((place.country.unwrap().p, place.country_code), (0.5, None));
+    lib.put_suggestion(eight, &entry(guess("Kraków", 0.9)), &c1ai::RunRecord::default()).unwrap();
+
     // A city the gazetteer does not have in that country is doubted; a point elsewhere too.
     lib.put_suggestion(seven, &entry(guess("Atlantis", 0.9)), &c1ai::RunRecord::default()).unwrap();
     let doubted = lib.suggestion(seven).unwrap().unwrap();

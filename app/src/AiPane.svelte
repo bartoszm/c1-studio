@@ -122,7 +122,7 @@
     caption: r.current?.caption ?? null,
     headline: r.current?.headline ?? null,
     rating: r.current?.rating ?? null,
-    place: r.current?.place ?? null,
+    place: r.current?.place ?? { country: null, country_code: null, state: null, city: null, location: null },
   });
   const samePlace = (a: api.PlaceNames | null, b: api.PlaceNames | null) =>
     LEVELS.every((l) => (a?.[l] ?? null) === (b?.[l] ?? null));

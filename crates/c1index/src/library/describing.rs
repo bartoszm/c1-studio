@@ -84,6 +84,10 @@ fn taken_place(now: &Place, pick: &Accept) -> (Place, bool) {
             stale = true;
         }
     }
+    // Another country taken without a code: the code the photo had was the old country's.
+    if text(&out[0]) != text(&had[0]) && text(&taken[1]).is_none() {
+        out[1] = None;
+    }
     let [country, country_code, state, city, location] = out;
     place.country = country;
     place.country_code = country_code;
@@ -103,11 +107,25 @@ pub fn check_place(guess: &mut PlaceGuess) -> Vec<String> {
         Place { country: name(&guess.country), state: name(&guess.state), city: name(&guess.city), ..Place::default() };
     let g = gazetteer();
     let found = g.resolve(&place);
-    guess.country_code = found.country.and_then(|id| g.country_code(id)).map(str::to_owned);
+    // A city found brings its own country and state, so each level is looked up by its
+    // own name too: a country the gazetteer does not know is not taken as known through
+    // the city.
+    let alone = |p: Place| g.resolve(&p);
+    let country_known = guess.country.is_none()
+        || alone(Place { country: place.country.clone(), ..Place::default() }).country.is_some();
+    let state_known = guess.state.is_none()
+        || alone(Place { country: place.country.clone(), state: place.state.clone(), ..Place::default() })
+            .state
+            .is_some();
+    guess.country_code = found
+        .country
+        .filter(|_| country_known && guess.country.is_some())
+        .and_then(|id| g.country_code(id))
+        .map(str::to_owned);
     let mut why = Vec::new();
     for (level, known, cap) in [
-        (&mut guess.country, found.country.is_some(), true),
-        (&mut guess.state, found.state.is_some(), false),
+        (&mut guess.country, country_known, true),
+        (&mut guess.state, state_known, false),
         (&mut guess.city, found.city.is_some(), true),
     ] {
         let Some(level) = level.as_mut().filter(|_| !known) else { continue };

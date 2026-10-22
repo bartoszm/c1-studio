@@ -58,6 +58,10 @@ impl SuggestionBook {
             let old = tx.open_table(SUGGESTIONS_V1)?;
             for row in old.iter()? {
                 let (key, bytes) = row?;
+                // One already in the new table is newer (an older build ran in between).
+                if table.get(key.value())?.is_some() {
+                    continue;
+                }
                 if let Ok(entry) = postcard::from_bytes::<v1::Entry>(bytes.value()) {
                     table.insert(key.value(), postcard::to_stdvec(&Entry::from(entry))?.as_slice())?;
                 }
