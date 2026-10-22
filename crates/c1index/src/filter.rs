@@ -353,7 +353,12 @@ impl Filter {
             Dim::Ext => f.ext.clear(),
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
-            Dim::PlaceTree => f.place_under = None,
+            // A city's "(no location)" is the city with `located` off: counted without it,
+            // the city's locations stay listed beside it.
+            Dim::PlaceTree => {
+                f.place_under = None;
+                f.located = None;
+            }
             Dim::Shape => f.shape.clear(),
             Dim::Hue => f.hues.clear(),
             Dim::Light => f.light.clear(),
@@ -725,6 +730,13 @@ mod tests {
         }
         let range = Filter { captured: Some(TimeRange { from: Some(0), to: None }), ..Filter::default() };
         assert_eq!(range.without(Dim::Year), Filter::default());
+    }
+
+    #[test]
+    fn the_place_tree_counts_as_if_no_location_were_picked() {
+        let f = Filter { place_under: Some("Japan|Kanto|Tokyo".into()), located: Some(false), ..Filter::default() };
+        assert_eq!(f.without(Dim::PlaceTree), Filter::default());
+        assert_eq!(f.without(Dim::City).located, Some(false));
     }
 
     #[test]

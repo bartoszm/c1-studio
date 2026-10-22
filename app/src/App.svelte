@@ -6,7 +6,7 @@
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
-  import { albumTree, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
+  import { albumTree, cityWithoutLocation, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import {
@@ -1327,9 +1327,23 @@
     run();
   }
   function pickPlace(n: Node) {
-    filter = { ...filter, place_under: filter.place_under === n.value ? undefined : n.value };
+    const city = cityWithoutLocation(n.value);
+    if (city) {
+      // A city's photos with no location: the city, and No location.
+      const on = filter.place_under === city && filter.located === false;
+      filter = { ...filter, place_under: on ? undefined : city, located: on ? undefined : false };
+    } else filter = { ...filter, place_under: filter.place_under === n.value ? undefined : n.value };
     run();
   }
+  /** The place tree's entry the filter picks: a city with No location is its "(no location)". */
+  let placePicked = $derived.by(() => {
+    const p = filter.place_under;
+    if (!p) return undefined;
+    const noLocation = filter.located === false && places.some(function has(n): boolean {
+      return n.value === `${p}|—` || n.children.some(has);
+    });
+    return "p:" + (noLocation ? `${p}|—` : p);
+  });
   /** Photos in view with a country but no ISO code (from the index's flags). */
   let missingCodes = $derived(result?.facets.flag?.find(([v]) => v === "no_country_code")?.[1] ?? 0);
   let importingGpx = $state(false);
@@ -2180,10 +2194,10 @@
             ><span class="name">{filter.located === true ? "With a location" : "No location"}</span></button>
             <Tree
               nodes={places}
-              selected={filter.place_under && "p:" + filter.place_under}
+              selected={placePicked}
               {expanded}
               onpick={pickPlace}
-              oncontext={(node, e) => (placeMenu = { x: e.clientX, y: e.clientY, node })}
+              oncontext={(node, e) => { if (!cityWithoutLocation(node.value)) placeMenu = { x: e.clientX, y: e.clientY, node }; }}
             />
             {#if missingCodes}
               <button class="tree-action" onclick={() => (fillingCodes = true)} title="Fill in the ISO codes of these photos' countries">
