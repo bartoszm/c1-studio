@@ -58,6 +58,8 @@ export type Filter = {
   /** Each also holds / at least one of these holds. */
   all_of?: Filter[];
   any_of?: Filter[];
+  /** The photos a part of the change log is about (the History tab). */
+  history?: HistoryPick;
   /** Folder subtree, `H:/fotos/2026`. */
   folder?: string;
   /** From the analysis, each any of its values. */
@@ -324,7 +326,14 @@ export type Change = { photo: { source: string; ext: string }; op: Op };
 export type Origin = "App" | "Source" | "Gpx" | "Restore" | "Ai";
 type PhotoRef = { photo: { source: string; ext: string }; name: string };
 /** One entry of the change log (`c1index::Event`). */
-export type LogEvent = { at: number; origin: Origin } & (
+export type LogEvent = {
+  /** Its place in the log, when the read knew it. */
+  seq?: number;
+  at: number;
+  origin: Origin;
+  /** The entry kept what it replaced (a removed photo, an album, rewritten keywords). */
+  has_before?: boolean;
+} & (
   | { change: Change }
   | { added: PhotoRef }
   | { removed: PhotoRef }
@@ -334,6 +343,69 @@ export type LogEvent = { at: number; origin: Origin } & (
   | { written: { photos: number; changes: number; albums: number; keywords: number } }
   | { undone: { label: string } }
 );
+/** What sort of entry the log holds (`c1index::LogKind`). */
+export type LogKind =
+  | "rating" | "color" | "keywords" | "iptc" | "place" | "geo" | "albums"
+  | "added" | "removed" | "deleted" | "collection" | "remap" | "written" | "undone";
+/** Which entries to list (`c1index::LogQuery`). Times are inclusive milliseconds. */
+export type LogQuery = { before?: number; from?: number; to?: number; origins?: Origin[]; kinds?: LogKind[]; limit?: number };
+/** Consecutive entries of one batch: the same time, origin and kind. */
+export type LogGroup = {
+  first: number;
+  last: number;
+  at: number;
+  origin: Origin;
+  kind: LogKind;
+  entries: number;
+  photos: number;
+  /** The newest entry, for wording a group of one. */
+  sample: LogEvent;
+  /** The photo's row, when the group is about one that is still in the library. */
+  row: number | null;
+};
+export type LogPage = { groups: LogGroup[]; albums: Record<string, string>; next: number | null };
+export type LogDays = { start: number | null; days: [number, number][] };
+/** What a pick of "changed between two dates" is about (`c1index::NetWhat`). */
+export type NetWhat =
+  | "Any"
+  | "Added"
+  | { Field: LogKind }
+  | { KeywordAdded: string }
+  | { KeywordRemoved: string }
+  | { AlbumIn: string }
+  | { AlbumOut: string };
+/** The photos a part of the change log is about: the filter's `history`. `to` of null is now. */
+export type HistoryPick =
+  | { Changed: { from: number; to: number | null; what: NetWhat } }
+  | { Entries: { first: number; last: number; kind: LogKind | null; origin: Origin | null } };
+export type Compare = {
+  from: number | null;
+  to: number | null;
+  entries: number;
+  /** Photos that ended up different in any way, or added. */
+  changed: number;
+  by_origin: Partial<Record<Origin, number>>;
+  added: number;
+  removed: number;
+  deleted: number;
+  /** Photos whose field ended up different, by field. */
+  fields: [LogKind, number][];
+  keywords_added: [string, number][];
+  keywords_removed: [string, number][];
+  albums: { id: string; name: string | null; photos_in: number; photos_out: number }[];
+  album_changes: LogEvent[];
+  keyword_changes: LogEvent[];
+  /** Keyword tree changes in range that did not keep their photos: the keyword counts fall short by what they did. */
+  keywords_unkept: number;
+  written: number;
+  /** When the log starts: nothing before is known. */
+  log_start: number | null;
+  /** Entries among them logged while History was off: they kept nothing of what they
+   *  replaced, so keyword tree changes and album deletes among them are not counted by photo. */
+  logged_off: number;
+};
+/** A stretch of the log written while History was off; `to` is null while it still is. */
+export type HistoryOff = { from: number; to: number | null; entries: number };
 export type PendingEdit = {
   key: string;
   row: number | null;
@@ -581,10 +653,19 @@ export const setBinned = (rows: number[], binned: boolean) => invoke<number[]>("
 export const emptyBin = (rows?: number[]) => invoke<EmptyReport>("empty_bin", { rows: rows ?? null });
 /** What the change log holds about a photo, newest first. */
 /** `albums`: what the albums the entries name were called when last seen, by id. */
+/** `history_off`: when History was off, oldest first. */
 export const photoHistory = (row: number) =>
-  invoke<{ events: LogEvent[]; albums: Record<string, string> }>("photo_history", { row });
+  invoke<{ events: LogEvent[]; albums: Record<string, string>; history_off: HistoryOff[] }>("photo_history", { row });
 /** The newest entries of the change log. */
 export const changeLog = (limit: number) => invoke<LogEvent[]>("change_log", { limit });
+/** A page of the change log, newest first, in groups of one batch each. */
+export const changeLogPage = (query: LogQuery) => invoke<LogPage>("change_log_page", { query });
+/** What changed between two times (inclusive); `to` of null is now. */
+export const historyCompare = (from: number, to: number | null) => invoke<Compare>("history_compare", { from, to });
+/** Photos per import day under `filter`: [local midnight in ms, count], in date order. */
+export const growth = (filter: Filter) => invoke<[number, number][]>("growth", { filter });
+/** Entries logged per day, and when the log starts. */
+export const logDays = () => invoke<LogDays>("log_days");
 export const collections = () => invoke<Collection[]>("collections");
 export const sync = () => invoke("sync");
 /** Returns the ops that undo it. */
@@ -776,6 +857,12 @@ export type AutosaveState =
 /** Whether autosave is on, and what it last reported. */
 export const autosave = () => invoke<[boolean, AutosaveState]>("autosave");
 export const setAutosave = (on: boolean) => invoke<void>("set_autosave", { on });
+/** Whether the History tab is on for the open catalog (it is unless turned off). */
+export const historyEnabled = () => invoke<boolean>("history_enabled");
+/** Off, the change log stops keeping what changes replaced and nothing reads it as history. */
+export const setHistory = (on: boolean) => invoke<void>("set_history", { on });
+/** Why the catalog's settings file could not be read when it was opened, if it could not. */
+export const settingsProblem = () => invoke<string | null>("settings_problem");
 export type WriteReport = { written: number; backup: string | null; warnings: string[] };
 export const writeApply = () => invoke<WriteReport>("write_apply");
 

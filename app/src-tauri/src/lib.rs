@@ -2,7 +2,7 @@
 //! protocol (`c1img://localhost/thumb/<row>`, `c1img://localhost/preview/<row>`).
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
@@ -42,6 +42,8 @@ struct Session {
     synced: AtomicBool,
     /// `settings.json` beside the library.
     settings_path: PathBuf,
+    /// Why `settings.json` could not be read when the catalog was opened, for the window.
+    settings_problem: Option<String>,
     /// Write the queue to the source by itself (off unless the user turns it on).
     autosave: AtomicBool,
     /// When the queue last changed, so autosave waits until the user pauses.
@@ -154,11 +156,60 @@ impl Session {
     }
 }
 
-/// The app's own settings, kept per catalog.
+/// The app's own settings, kept per catalog. The History tab is not one of them: it is
+/// the library's own ([`Library::set_history`]), so `c1cat` follows it too.
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Settings {
     autosave: bool,
+    /// Where the first builds with the History tab kept it: carried over into the library
+    /// once, and not written again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history: Option<bool>,
+}
+
+/// The settings in `path`, and what went wrong reading them. None there yet is the
+/// defaults. One that does not parse is set aside as `settings.json.bad` rather than taken
+/// for the user's choice: the defaults (autosave off) apply, and the window is told.
+fn read_settings(path: &Path) -> (Settings, Option<String>) {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Settings::default(), None),
+        Err(e) => return (Settings::default(), Some(format!("could not read {}: {e}", path.display()))),
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(settings) => (settings, None),
+        Err(e) => {
+            let bad = path.with_extension("json.bad");
+            let kept = match std::fs::rename(path, &bad) {
+                Ok(()) => format!("set aside as {}", bad.display()),
+                Err(e) => format!("could not set it aside: {e}"),
+            };
+            (Settings::default(), Some(format!("{} is unreadable ({e}); {kept}. Autosave is off.", path.display())))
+        }
+    }
+}
+
+/// Writes the settings whole or not at all: into a file beside it, then over it.
+fn write_settings(path: &Path, settings: &Settings) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec_pretty(settings)?;
+    let tmp = path.with_extension("json.tmp");
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        std::io::Write::write_all(&mut file, &bytes)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+impl Session {
+    /// Writes the settings with autosave `autosave`.
+    fn save_settings(&self, autosave: bool) -> Result<(), String> {
+        write_settings(&self.settings_path, &Settings { autosave, history: None })
+            .map_err(|e| format!("could not save {}: {e}", self.settings_path.display()))
+    }
 }
 
 /// The source asked for and its session, or why there is none (nothing chosen yet, the
@@ -248,8 +299,16 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
     let source = provider.open(&spec.location, &dir.join("work"))?;
     let library = Library::open(dir.join("library"))?;
     let settings_path = dir.join("settings.json");
-    let settings: Settings =
-        std::fs::read(&settings_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    let (settings, settings_problem) = read_settings(&settings_path);
+    // History turned off where the first builds kept it moves into the library, before
+    // the first sync, so what that logs follows it; the file then drops it.
+    let mut carried = None;
+    if let Some(history) = settings.history {
+        if !history && library.history_on() {
+            library.set_history(false)?;
+        }
+        carried = Some(write_settings(&settings_path, &Settings { history: None, ..settings }));
+    }
     let session = Session {
         spec: spec.clone(),
         source,
@@ -259,6 +318,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         sync_error: Mutex::new(None),
         synced: AtomicBool::new(false),
         settings_path,
+        settings_problem,
         autosave: AtomicBool::new(settings.autosave),
         last_edit: Mutex::new(Instant::now()),
         autosave_state: Mutex::new(AutosaveState::Off),
@@ -277,6 +337,14 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         log: Log::new(dir.join("events.log")),
     };
     session.log.event(&format!("Opened {}", spec.location), &[]);
+    if let Some(problem) = &session.settings_problem {
+        session.log.event(&format!("Settings: {problem}"), &[]);
+    }
+    if let Some(Err(e)) = carried {
+        session
+            .log
+            .event(&format!("Settings: History moved into the library, but settings.json still has it: {e}"), &[]);
+    }
     Ok(session)
 }
 
@@ -1087,25 +1155,54 @@ fn refresh_loop(app: AppHandle) {
 /// were called when last seen (for albums since deleted, or made here and since written).
 #[derive(Serialize)]
 struct PhotoHistory {
-    events: Vec<c1index::Event>,
+    events: Vec<c1index::EventView>,
     albums: BTreeMap<String, String>,
+    /// When History was off: entries from then kept nothing of what they replaced, and a
+    /// keyword tree change or album delete from then is not in a photo's history.
+    history_off: Vec<c1index::HistoryOff>,
 }
 
 #[tauri::command]
 async fn photo_history(app: State<'_, App>, row: u64) -> Result<PhotoHistory, String> {
     let s = app.session()?;
     let Some(id) = s.library.photo_id(row) else {
-        return Ok(PhotoHistory { events: Vec::new(), albums: BTreeMap::new() });
+        return Ok(PhotoHistory { events: Vec::new(), albums: BTreeMap::new(), history_off: Vec::new() });
     };
     let events = s.library.photo_events(&id).map_err(text)?;
     let albums = s.library.album_names(&events).map_err(text)?.into_iter().map(|(id, name)| (id.0, name)).collect();
-    Ok(PhotoHistory { events, albums })
+    let history_off = s.library.history_off().map_err(text)?;
+    Ok(PhotoHistory { events: events.iter().map(c1index::EventView::of).collect(), albums, history_off })
 }
 
 /// The newest `limit` entries of the change log.
 #[tauri::command]
-async fn change_log(app: State<'_, App>, limit: usize) -> Result<Vec<c1index::Event>, String> {
-    app.session()?.library.events(limit).map_err(text)
+async fn change_log(app: State<'_, App>, limit: usize) -> Result<Vec<c1index::EventView>, String> {
+    let events = app.session()?.library.events(limit).map_err(text)?;
+    Ok(events.iter().map(c1index::EventView::of).collect())
+}
+
+/// A page of the change log, newest first, in groups of one batch each.
+#[tauri::command]
+async fn change_log_page(app: State<'_, App>, query: c1index::LogQuery) -> Result<c1index::LogPage, String> {
+    app.session()?.library.log_page(&query).map_err(text)
+}
+
+/// What changed between two times (inclusive, in ms; `to` of null is now).
+#[tauri::command]
+async fn history_compare(app: State<'_, App>, from: i64, to: Option<i64>) -> Result<c1index::Compare, String> {
+    app.session()?.library.compare(from, to).map_err(text)
+}
+
+/// Photos per import day under `filter`: (local midnight in ms, count), in date order.
+#[tauri::command]
+async fn growth(app: State<'_, App>, filter: Filter) -> Result<Vec<(i64, usize)>, String> {
+    app.session()?.library.growth(&filter).map_err(text)
+}
+
+/// Entries logged per day, and when the log starts.
+#[tauri::command]
+async fn log_days(app: State<'_, App>) -> Result<c1index::LogDays, String> {
+    app.session()?.library.log_days().map_err(text)
 }
 
 /// An edit from the UI, applied to every photo it names.
@@ -1907,11 +2004,32 @@ async fn autosave(app: State<'_, App>) -> Result<(bool, AutosaveState), String> 
 #[tauri::command]
 async fn set_autosave(app: State<'_, App>, on: bool) -> Result<(), String> {
     let s = app.session()?;
+    // Saved first: a setting that could not be saved is not taken up either.
+    s.save_settings(on)?;
     s.autosave.store(on, Ordering::Relaxed);
     // Turning it on waits for the usual pause, so the first write is never a surprise.
     s.touched();
-    let bytes = serde_json::to_vec_pretty(&Settings { autosave: on }).map_err(text)?;
-    std::fs::write(&s.settings_path, bytes).map_err(text)
+    Ok(())
+}
+
+/// Why the open catalog's `settings.json` could not be read, if it could not.
+#[tauri::command]
+async fn settings_problem(app: State<'_, App>) -> Result<Option<String>, String> {
+    Ok(app.session()?.settings_problem.clone())
+}
+
+/// Whether the History tab is on for the open catalog.
+#[tauri::command]
+async fn history_enabled(app: State<'_, App>) -> Result<bool, String> {
+    Ok(app.session()?.library.history_on())
+}
+
+/// Turns the History tab on or off for the open catalog. Off, the change log goes on as
+/// 0.5 kept it (without what changes replaced), and nothing reads it as history. Kept in
+/// the library, so `c1cat` follows it too; nothing changes when it cannot be saved.
+#[tauri::command]
+async fn set_history(app: State<'_, App>, on: bool) -> Result<(), String> {
+    app.session()?.library.set_history(on).map_err(text)
 }
 
 /// `/thumb/<row>` serves the source's own thumbnail (Capture One's): a JPEG with every edit, cut to the crop;
@@ -2360,9 +2478,16 @@ pub fn run() {
             write_apply,
             autosave,
             set_autosave,
+            history_enabled,
+            set_history,
+            settings_problem,
             selection_summary,
             photo_history,
             change_log,
+            change_log_page,
+            history_compare,
+            growth,
+            log_days,
             ai::ai_settings,
             ai::set_ai_settings,
             ai::set_ai_key,
@@ -2385,6 +2510,37 @@ mod tests {
     use super::*;
     use c1index::group_places;
     use c1model::{AssetId, EditInfo, Exif, FileInfo, PhotoId, SourceId};
+
+    #[test]
+    fn settings_read_whatever_build_wrote_them() {
+        let old: Settings = serde_json::from_str(r#"{"autosave":true}"#).unwrap();
+        assert!(old.autosave && old.history.is_none());
+        let none: Settings = serde_json::from_str("{}").unwrap();
+        assert!(!none.autosave && none.history.is_none());
+        let off: Settings = serde_json::from_str(r#"{"autosave":false,"history":false}"#).unwrap();
+        assert_eq!(off.history, Some(false));
+        // History is no longer written: the library keeps it.
+        let json = serde_json::to_string(&Settings { autosave: true, history: None }).unwrap();
+        assert_eq!(json, r#"{"autosave":true}"#);
+    }
+
+    #[test]
+    fn settings_are_written_whole_and_an_unreadable_file_is_set_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        assert!(read_settings(&path).1.is_none(), "none yet is no problem");
+        write_settings(&path, &Settings { autosave: true, history: None }).unwrap();
+        assert!(!dir.path().join("settings.json.tmp").exists());
+        let (read, problem) = read_settings(&path);
+        assert!(read.autosave && problem.is_none());
+
+        std::fs::write(&path, br#"{"autosave": tr"#).unwrap();
+        let (read, problem) = read_settings(&path);
+        assert!(!read.autosave);
+        assert!(problem.is_some_and(|p| p.contains("unreadable")));
+        assert_eq!(std::fs::read(dir.path().join("settings.json.bad")).unwrap(), br#"{"autosave": tr"#);
+        assert!(!path.exists());
+    }
 
     fn photo(n: u32, keywords: &[&str], city: Option<&str>) -> Photo {
         Photo {

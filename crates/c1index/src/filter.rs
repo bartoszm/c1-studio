@@ -13,6 +13,8 @@ use tantivy::query::{
 use tantivy::schema::{Field, IndexRecordOption};
 use tantivy::{Index, Term};
 
+use crate::edits::Origin;
+use crate::history::{LogKind, NetWhat};
 use crate::schema::{Dim, Fields, flag, normalise_folder};
 
 /// A numeric constraint: `>=4`, `<=2.8`, `2-4`, `3`.
@@ -119,6 +121,19 @@ impl BBox {
         let dlon = km / (111.0 * lat.to_radians().cos().abs()).max(1e-6);
         BBox { min_lat: lat - dlat, max_lat: lat + dlat, min_lon: lon - dlon, max_lon: lon + dlon }
     }
+}
+
+/// A pick from the History tab: the photos some part of the change log is about.
+/// The library turns it into `rows` before the filter is compiled.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum HistoryPick {
+    /// Photos that ended up different between two dates (inclusive, in milliseconds;
+    /// `to` of `None` is now).
+    Changed { from: i64, to: Option<i64>, what: NetWhat },
+    /// The photos some entries of the log are about: those with these sequence numbers
+    /// (inclusive), of this kind and from this origin if given. A batch picked from a list
+    /// narrowed by origin or kind has other entries between its first and last.
+    Entries { first: u64, last: u64, kind: Option<LogKind>, origin: Option<Origin> },
 }
 
 /// Fields left out of a JSON filter take their defaults, so callers send only what they set.
@@ -233,6 +248,12 @@ pub struct Filter {
     pub stacked_in: Option<Vec<String>>,
     /// Detail in the sharpest part of the picture (see `c1analysis::Analysis::sharpness`).
     pub sharpness: Option<Range>,
+    /// The photos a part of the change log is about. The only one the UI sends: the
+    /// library makes `rows` of it.
+    pub history: Option<HistoryPick>,
+    /// Only these rows, and none of these (a pick made into rows).
+    pub rows: Option<Vec<u64>>,
+    pub rows_not: Vec<u64>,
     /// Each of these too.
     pub all_of: Vec<Filter>,
     /// At least one of these, when any are given.
@@ -248,6 +269,10 @@ fn term(field: Field, value: &str) -> Box<dyn Query> {
 
 fn any_of(field: Field, values: impl IntoIterator<Item = String>) -> Box<dyn Query> {
     Box::new(TermSetQuery::new(values.into_iter().map(|v| Term::from_field_text(field, &v))))
+}
+
+fn row_set(field: Field, rows: &[u64]) -> Box<dyn Query> {
+    Box::new(TermSetQuery::new(rows.iter().map(|&row| Term::from_field_u64(field, row))))
 }
 
 fn range_u64(field: Field, r: &Range) -> Box<dyn Query> {
@@ -382,6 +407,12 @@ impl Filter {
         let flag_field = f.dim(Dim::Flag);
         let has = |name: &str| term(flag_field, name);
 
+        if let Some(rows) = &self.rows {
+            must.push(if rows.is_empty() { Box::new(BooleanQuery::new(vec![])) } else { row_set(f.row, rows) });
+        }
+        if !self.rows_not.is_empty() {
+            must_not.push(row_set(f.row, &self.rows_not));
+        }
         if !self.ids.is_empty() {
             must.push(any_of(f.ext_id, self.ids.iter().cloned()));
         }

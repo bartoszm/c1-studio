@@ -3,6 +3,7 @@
   import * as api from "./lib/api";
   import type { Filter, TimeRange, Trip } from "./lib/api";
   import { tripName, tripDates } from "./lib/trips";
+  import { bar, unitFor, type Unit } from "./lib/dates";
 
   // A strip above the grid: photos per day, week or month over the whole span (or the
   // picked trip's), with the trips as bands under the bars. Dragging across it picks a
@@ -46,16 +47,6 @@
     });
   });
 
-  type Unit = "day" | "week" | "month";
-  /** The start of the bar holding `ms`, and of the next one. */
-  function bar(ms: number, unit: Unit): [number, number] {
-    const d = new Date(ms);
-    if (unit === "month") return [new Date(d.getFullYear(), d.getMonth(), 1).getTime(), new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime()];
-    const start = new Date(d.getFullYear(), d.getMonth(), d.getDate() - (unit === "week" ? (d.getDay() + 6) % 7 : 0));
-    const next = new Date(start.getFullYear(), start.getMonth(), start.getDate() + (unit === "week" ? 7 : 1));
-    return [start.getTime(), next.getTime()];
-  }
-
   /** What the strip spans: the trip's days with a little either side, else every day with photos. */
   let span = $derived.by((): [number, number] | null => {
     if (trip) {
@@ -66,12 +57,7 @@
     return [days[0][0], bar(days[days.length - 1][0], "day")[1]];
   });
   let unit = $derived.by((): Unit => {
-    if (!span) return "day";
-    const n = (span[1] - span[0]) / DAY;
-    // About as many bars as there is room for, three pixels each at least.
-    if (n <= width / 3) return "day";
-    if (n / 7 <= width / 3) return "week";
-    return "month";
+    return span ? unitFor(span[1] - span[0], width) : "day";
   });
   let bars = $derived.by(() => {
     if (!span) return [];

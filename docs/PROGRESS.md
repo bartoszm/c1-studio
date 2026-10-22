@@ -1149,6 +1149,100 @@ written before the kinds below existed still read.
 - **Known limit:** what Capture One changed between the last sync and a store wipe shows
   up as a fresh state, not as changes.
 
+### Time travel, part 1: the History tab
+
+The log is read as history. The next part (state on a date, restore) builds on what is
+recorded here, so recording came first.
+
+- **The log keeps what a change replaced.** `Event` has `has_before` (only written when
+  true) and a `before: Before` that is not part of the entry's JSON: it is stored in its
+  own table `event_before`, by sequence number. So reading the log does not read it (reads
+  ask for it: a photo's history, a keyword tree change in a compare, picking an entry's
+  photos), and a copy this build cannot read (a later `Photo` shape) costs only itself:
+  the entry still reads, with `before` empty and a line on stderr. An old entry is read
+  and written back byte for byte, and a build from before reads a new one as the entry it
+  was (a test holds a copy of the 0.5 `Event`).
+  - **Size:** a read of a source that finds more than 5,000 photos gone in one go (a drive
+    unplugged, a catalog that failed to open) keeps the first 5,000 whole; the rest are
+    logged without a copy. The count covers photos removed one by one and those missing
+    from a full read alike. Nothing prunes the log.
+  - **Entries from the first History builds** held `before` in the entry itself. It is
+    still read (into `inline_before`, then decoded leniently like the table's copy), so a
+    log written by those builds keeps what it kept.
+  - **It can be turned off:** *Settings › History* (per catalog, on by default) calls
+    `Library::set_history`, which keeps it in the edits file itself, in `meta`:
+    `history_off` (1 off, 0 or absent on) and, while off, `history_off_from` (the first
+    entry logged since). Every opener of the library (the app, `c1cat` and the plugin
+    through it) reads it in `Edits::open`, each `EditsBatch` reads it again in its own
+    transaction, and it is stored before it takes effect. Turning it back on moves the
+    stretch into the `history_off_spans` table (first seq → one past the last), so
+    `Compare::logged_off` and a photo's history (`Library::history_off`) can say a range
+    includes entries that kept nothing. The first builds kept the flag as `history` in
+    `settings.json`: off there is carried into the library once and the key dropped;
+    `settings.json` (autosave only now) is written to a temp file and renamed, and one that
+    does not parse is set aside as `settings.json.bad` and reported rather than read as the
+    defaults silently. Off, `Edits` logs entries as 0.5 did (no
+    `has_before`, nothing in `event_before`; the library does not even gather albums'
+    members or a remap's old keywords), `log_page`, `compare`, `growth` and `log_days`
+    refuse, `resolve_history` sets a pick aside, and the caches are dropped. The UI hides
+    the tab, leaves it, and clears a pick.
+  - **Compare says what it cannot count:** `Compare.keywords_unkept` is the number of keyword
+    tree changes in range that kept no photos (logged while History was off, or before it
+    existed); the pane says the keyword numbers fall short. A remap that rewrote no photo
+    still keeps an empty list, so it is not mistaken for one. An `Entries` pick reads the
+    kept copy only for album and keyword tree entries: the others name their photos.
+  - **`at` never goes down along the log:** `EditsBatch::log` raises an entry's time to the
+    newest's, so a clock set back cannot break `seq_after`.
+  - `Before::Photo` for a removed or deleted photo (the sync's `Removed`, a full read that
+    no longer has it, `emptied`);
+  - `Before::Albums { albums, members }` for an album renamed, moved, given a rule or
+    deleted: the albums as they were (the subtree for a delete) and, for a delete made
+    here, who was in each (trashed, hidden and binned photos too). A delete seen in the
+    source keeps the albums only: the photos leaving it are logged one by one;
+  - `Before::Keywords` for a keyword tree change: each rewritten photo's keywords before.
+  - `Event::photos()` lists the photos an entry is about, those in `before` too, so
+    `events_by_photo` (and a photo's History section) now shows a keyword tree change or an
+    album delete that touched it. The UI gets `EventView` (no `before`, a `has_before` flag).
+- **Reading the log** (`edits.rs`): `last_seq`, `seq_after(ms)` (a binary search: keys have
+  no gaps and `at` never goes down along them), `range`, which skips what it cannot read.
+  Times are inclusive in the API (`from ≤ at ≤ to`).
+- **`c1index::history`** (pure, unit-tested):
+  - `Grouper`: consecutive entries with the same time, origin and kind are one `LogGroup`
+    ("rating changed on 1,240 photos"). Album, keyword tree, written and undone entries
+    stand alone;
+  - `Net`: what a run of entries came to. Set fields compare the first base with the last
+    value (a rating set and set back is nothing); keywords and albums add +1/−1 per
+    photo and keyword or album; a photo's presence is judged by its first and last entry
+    (added then removed is nothing). `Net::compare` is the numbers of the compare panel
+    (the 20 keywords most photos gained and lost, photos in and out of each album,
+    album and keyword tree changes as lists).
+- **`Library`** (`library/history.rs`): `log_page` (groups, walking back a chunk at a time,
+  with the album names and the cursor for the next page), `compare(from, to)`,
+  `growth(filter)` (photos per import day, the `imported` fast column), `log_days()`
+  (entries per day and where the log starts, counted once and then only what was added
+  since).
+- **A pick filters the grid.** `Filter.history: Option<HistoryPick>` (`Changed { from, to,
+  what }` or `Entries { first, last, kind }`) is the only field the UI sends; the library
+  turns it into `Filter.rows` (a `TermSetQuery` over the indexed `row` field; `rows_not`
+  is the same under `must_not`) at the top of `query`, `compile` and `smart_counts`,
+  nested filters too. The rows of the last 8 picks are kept; a pick of entries, or of days
+  that are over, stays good, the others last until the log grows, and a sync forgets them
+  all (the first read of a source adds photos without logging them). A pick of entries
+  also keeps the origin, as the list may have left other origins between a batch's first
+  and last entry. Compare and picks count a keyword tree change's effect on the photos it
+  rewrote, and leave out photos removed since.
+- **UI:** a **History** tab. `GrowthChart` (import bars on a square-root scale, the
+  running total, a tick row for log activity, a "log starts" marker; drag to pick days),
+  the compare panel (every number is a button that sends a `Changed` pick) and `LogList`
+  (origin and kind chips, paged, a row picks its entries). The pick shows as a chip
+  (`pickText`). `lib/dates.ts` holds the bar and unit choice the timeline shares.
+- **Tauri:** `change_log_page`, `history_compare`, `growth`, `log_days`, `history_enabled`, `set_history`.
+- **Known limits:** `log_page` still reads every entry of a group to its end (one big
+  sync is one group), and a filter that matches rarely reads the log to find a page: no
+  timing was measured on a large log. A batch id in the entry would make a group one
+  lookup. The `rows` of a pick are rebuilt into a term set for each query.
+- **Not done yet** (part 2): state on a date (`state_at`), `Existed` picks, restore.
+
 ### Settings: sidebar sections, main colour, offline map
 
 - **Settings dialog** (⚙ in the header, or right-click a sidebar section's title):
@@ -1547,7 +1641,8 @@ country) and 68k have neither.
 
 ### Next
 
-1. Time travel views on the change log: state on a date, growth of the collection, compare
-   two dates, restore a past state as a set of `Change`s.
+1. Time travel, part 2: the state on a date (counts rewound from the log), photos that
+   existed then, and restore a past state as a set of `Change`s. The History tab, the
+   growth chart and compare two dates are in.
 2. Trips found by positions alone could be named with `c1geo::reverse`.
 3. Stage 4, rest: photo direction, lasso.
