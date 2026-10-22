@@ -2495,8 +2495,18 @@ pub fn run() {
             ai::accept_suggestions,
             ai::set_suggestion_status
         ])
-        .run(tauri::generate_context!())
-        .expect("C1 Studio failed to start");
+        .build(tauri::generate_context!())
+        .expect("C1 Studio failed to start")
+        .run(|app, event| {
+            // The process ends without dropping the session: what the source writes lazily
+            // (a folder source's image records) is made durable here, or it is lost and its
+            // thumbnails made again at the next start.
+            if let tauri::RunEvent::Exit = event
+                && let Ok(s) = app.state::<App>().session()
+            {
+                let _ = s.source.flush();
+            }
+        });
 }
 
 #[cfg(test)]

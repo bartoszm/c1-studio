@@ -335,6 +335,12 @@ pub trait PhotoSource: Send + Sync {
 
     /// Where a long-running snapshot or rescan has got, while it runs. `None` between runs.
     ///
+    /// Makes what the source keeps for itself durable, for a program about to exit
+    /// without dropping it (records written lazily, such as a folder source's images).
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Polled from another thread while `snapshot` runs, so it is cheap and never waits on
     /// a lock the run holds for long. Advisory: a reading may be a little behind.
     fn progress(&self) -> Option<SourceProgress> {

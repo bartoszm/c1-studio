@@ -295,6 +295,10 @@ impl PhotoSource for FolderSource {
         self.last_scan().map(|scan| scan.offline_roots).unwrap_or_default()
     }
 
+    fn flush(&self) -> Result<()> {
+        self.store.flush_lazy()
+    }
+
     fn progress(&self) -> Option<SourceProgress> {
         self.progress.lock().unwrap().clone()
     }

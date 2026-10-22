@@ -364,7 +364,7 @@ impl Store {
 impl Store {
     /// Makes the lazy writes durable: a durable commit, even an empty one, makes the
     /// non-durable ones before it durable too.
-    fn flush_lazy(&self) -> Result<()> {
+    pub fn flush_lazy(&self) -> Result<()> {
         let _state = self.state.write().unwrap();
         if self.lazy.load(Ordering::Relaxed) == 0 {
             return Ok(());
