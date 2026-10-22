@@ -101,6 +101,10 @@ pub struct Capabilities {
     /// What [`PhotoSource::remove`] does to a photo deleted for good.
     #[serde(default)]
     pub removes: Removal,
+    /// [`PhotoSource::progress`] says how far a snapshot has got (a folder scan), so it is
+    /// worth asking while one runs.
+    #[serde(default)]
+    pub progress: bool,
 }
 
 /// What deleting a photo for good does at the source.

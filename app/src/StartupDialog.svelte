@@ -1,19 +1,29 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import type { Startup } from "./lib/api";
+  import { progressText } from "./lib/folders";
 
   // Shown while a source opens: the window would otherwise sit empty for as long as the
   // index takes to open, or a first fill takes to read. Cannot be closed: it ends itself.
   let { progress }: { progress: Startup } = $props();
 
-  const steps: { step: Startup["step"]; label: string }[] = [
+  let noun = $derived(progress.noun ?? "library");
+  let steps: { step: Startup["step"]; label: string }[] = $derived([
     { step: "opening", label: "Opening the library" },
-    { step: "reading", label: "Reading the catalog" },
+    { step: "reading", label: `Reading the ${noun}` },
     { step: "indexing", label: "Indexing the photos" },
     { step: "saving", label: "Saving the index" },
-  ];
+  ]);
   let at = $derived(steps.findIndex((s) => s.step === progress.step));
-  let fraction = $derived(progress.total ? progress.done / progress.total : 0);
+  // Indexing counts photos; while reading, the source may count its own work (a scan).
+  let counted: [number, number] | null = $derived(
+    progress.step === "indexing" && progress.total
+      ? [progress.done, progress.total]
+      : progress.step === "reading" && progress.source?.total
+        ? [progress.source.done, progress.source.total]
+        : null,
+  );
+  let fraction = $derived(counted ? counted[0] / counted[1] : 0);
 
   const began = Date.now();
   let elapsed = $state(0);
@@ -31,26 +41,27 @@
         <li class:done={i < at} class:now={i === at}>
           <span class="mark" aria-hidden="true">{i < at ? "✓" : i === at ? "●" : "○"}</span>
           <span>{s.label}{#if i === at && s.step === "indexing" && progress.total}
-              <span class="muted"> · {progress.done.toLocaleString()} of {progress.total.toLocaleString()}</span>{/if}</span>
+              <span class="muted"> · {progress.done.toLocaleString()} of {progress.total.toLocaleString()}</span>{/if}{#if i === at && s.step === "reading" && progress.source}
+              <span class="muted"> · {progressText(progress.source)}</span>{/if}</span>
         </li>
       {/each}
     </ol>
     <div
       class="bar"
-      class:wait={!(progress.step === "indexing" && progress.total)}
+      class:wait={!counted}
       role="progressbar"
       aria-valuemin="0"
       aria-valuemax="100"
-      aria-valuenow={progress.step === "indexing" && progress.total ? Math.round(fraction * 100) : undefined}
+      aria-valuenow={counted ? Math.round(fraction * 100) : undefined}
     >
       <span style:width="{Math.round(fraction * 100)}%"></span>
     </div>
     <p id="startup-note" class="muted">
       {#if progress.step === "reading"}
-        A catalog is read in full the first time, and again when Capture One changed it. This can take a minute or two for a
-        big one.
+        A {noun} is read in full the first time, and again when it changed outside the app. This can take a minute or two for
+        a big one.
       {:else}
-        This happens when the app opens a catalog it has not indexed yet, or after an update.
+        This happens when the app opens a {noun} it has not indexed yet, or after an update.
       {/if}
       <span class="time">{time(elapsed)}</span>
     </p>

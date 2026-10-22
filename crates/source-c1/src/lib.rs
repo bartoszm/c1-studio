@@ -133,6 +133,7 @@ impl PhotoSource for CaptureOne {
             rescan: false,
             makes_images: false,
             removes: Removal::MarksTrashed,
+            progress: false,
         }
     }
 

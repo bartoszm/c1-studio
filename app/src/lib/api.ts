@@ -176,6 +176,8 @@ export type QueryOptions = {
 export type QueryResult = {
   total: number;
   rows: number[];
+  /** Positions in `rows` of the photos whose file is offline. */
+  offline: number[];
   facets: Partial<Record<Dim, [string, number][]>>;
   micros: number;
 };
@@ -476,7 +478,15 @@ export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | Pla
 export const status = () => invoke<Status>("status");
 /** How far opening a source has got; null once it is ready to use. Also sent as the
  *  `startup-progress` event. */
-export type Startup = { step: "opening" | "reading" | "indexing" | "saving"; done: number; total: number };
+export type Startup = {
+  step: "opening" | "reading" | "indexing" | "saving";
+  done: number;
+  total: number;
+  /** While reading: how far the source has got by its own count (a folder scan). */
+  source: SourceProgress | null;
+  /** What holds the photos ("catalog", "library"), once the source is open. */
+  noun: string | null;
+};
 export const startupProgress = () => invoke<Startup | null>("startup_progress");
 export const sources = () => invoke<SourcesView>("sources");
 /** The system dialog for a provider's kind of source; null if cancelled. */

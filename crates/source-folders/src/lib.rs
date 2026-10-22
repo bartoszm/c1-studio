@@ -204,6 +204,7 @@ impl PhotoSource for FolderSource {
             rescan: true,
             makes_images: true,
             removes: Removal::Files,
+            progress: true,
         }
     }
 
