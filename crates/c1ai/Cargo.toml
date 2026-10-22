@@ -13,3 +13,6 @@ xxhash-rust.workspace = true
 base64 = "0.22"
 ureq = { version = "3", features = ["json"] }
 keyring = { version = "3", features = ["windows-native"] }
+
+[dev-dependencies]
+c1image.workspace = true

@@ -16,6 +16,7 @@ mod jxl;
 mod look;
 mod lut;
 mod raw;
+mod sheet;
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,7 @@ pub use image::RgbImage;
 pub use jxl::{Matching, decode_linear, jxl_size, render_preview};
 pub use look::Look;
 pub use lut::Lut;
+pub use sheet::{CELL as SHEET_CELL, PER_SHEET, contact_sheet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -105,6 +107,11 @@ pub fn encode_jpeg(image: &RgbImage, quality: u8) -> Vec<u8> {
         .encode_image(image)
         .expect("encoding into memory does not fail");
     out
+}
+
+/// A JPEG file's pixels.
+pub fn load_jpeg_file(path: &Path) -> Result<RgbImage> {
+    load_jpeg(path)
 }
 
 pub(crate) fn load_jpeg(path: &Path) -> Result<RgbImage> {

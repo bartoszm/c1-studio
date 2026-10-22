@@ -6,10 +6,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use c1ai::agy::{self, Agy};
 use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
-use c1ai::{AiError, Brief, Failed, Fields, Language, PhotoRequest, VisionProvider, Vocabulary};
+use c1ai::{AiError, Brief, Failed, Fields, Language, PhotoRequest, SheetRequest, VisionProvider, Vocabulary};
 use c1index::ai::{Entry, Status};
 use c1index::{Accept, Accepted};
 use c1model::{ImageTier, Photo, Place};
@@ -18,14 +19,16 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{App, Lowers, Session, is_current, text};
 
-/// How Claude is reached: the API with a key, billed per token, or Claude Code signed
-/// in with a Claude plan, counted against the plan's limits.
+/// How a model is reached: Claude through the API with a key, billed per token; Claude
+/// Code signed in with a Claude plan, counted against the plan's limits; or Gemini
+/// through agy, counted against the Google account's quota.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Access {
     #[default]
     Api,
     Plan,
+    Gemini,
 }
 
 /// What the user chose for describing photos, kept per catalog in `ai.json`.
@@ -46,6 +49,10 @@ pub(crate) struct AiSettings {
     /// A place level (or position) guessed at least this likely (%) is ticked in the review
     /// where the photo has none.
     place_tick: u8,
+    /// The Gemini model agy is asked for.
+    gemini_model: String,
+    /// Gemini gets contact sheets of up to 36 photos rather than one photo per call.
+    sheets: bool,
 }
 
 impl Default for AiSettings {
@@ -59,6 +66,8 @@ impl Default for AiSettings {
             fields: Fields::default(),
             instructions: None,
             place_tick: 80,
+            gemini_model: agy::DEFAULT_MODEL.into(),
+            sheets: false,
         }
     }
 }
@@ -90,10 +99,16 @@ pub(crate) struct DescribeState {
 
 #[derive(Serialize)]
 pub(crate) struct ModelView {
-    id: &'static str,
-    name: &'static str,
+    id: String,
+    name: String,
     input: f64,
     output: f64,
+}
+
+/// agy as a Gemini run would use it: whether it is there, and its Gemini models.
+struct GeminiView {
+    installed: bool,
+    models: Vec<(String, String)>,
 }
 
 /// Claude Code as a plan run would use it.
@@ -124,7 +139,9 @@ pub(crate) struct AiView {
     key: Option<(String, &'static str)>,
     /// Claude Code, looked at only when the plan is chosen: it takes a second to ask.
     plan: Option<PlanView>,
-    /// Whether a run can start: a key, or Claude Code signed in.
+    /// With Gemini chosen: whether agy is installed.
+    gemini: Option<bool>,
+    /// Whether a run can start: a key, Claude Code signed in, or agy there.
     ready: bool,
     /// Calls made in this library and what they cost in all.
     calls: u64,
@@ -144,17 +161,33 @@ fn view(s: &Session) -> Result<AiView, String> {
     let settings = load_settings(s);
     let key = keys::get(&ANTHROPIC).map_err(text)?;
     let plan = (settings.access == Access::Plan).then(plan_view);
-    let ready = match &plan {
-        Some(plan) => on_plan(&plan.status),
-        None => key.is_some(),
+    // agy is asked for its models only when Gemini is chosen: it takes a moment.
+    let gemini = (settings.access == Access::Gemini).then(|| {
+        let program = agy::find();
+        let models = program.as_deref().map(agy::models).transpose().unwrap_or_default().unwrap_or_default();
+        GeminiView { installed: program.is_some(), models }
+    });
+    let ready = match (&plan, &gemini) {
+        (Some(plan), _) => on_plan(&plan.status),
+        (_, Some(gemini)) => gemini.installed,
+        _ => key.is_some(),
     };
     let (calls, spent) = s.library.ai_spent().map_err(text)?;
+    let models = match &gemini {
+        Some(g) => g
+            .models
+            .iter()
+            .map(|(id, name)| ModelView { id: id.clone(), name: name.clone(), input: 0.0, output: 0.0 })
+            .collect(),
+        None => claude::MODELS
+            .iter()
+            .map(|m| ModelView { id: m.id.into(), name: m.name.into(), input: m.input, output: m.output })
+            .collect(),
+    };
     Ok(AiView {
         settings,
-        models: claude::MODELS
-            .iter()
-            .map(|m| ModelView { id: m.id, name: m.name, input: m.input, output: m.output })
-            .collect(),
+        models,
+        gemini: gemini.map(|g| g.installed),
         key: key.map(|k| (keys::masked(&k), keys::origin(&ANTHROPIC).unwrap_or("stored"))),
         plan,
         ready,
@@ -175,6 +208,9 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     let s = app.session()?;
     if claude::model(&settings.model).is_none() {
         return Err(format!("unknown model {}", settings.model));
+    }
+    if settings.gemini_model.trim().is_empty() {
+        return Err("Choose a Gemini model".into());
     }
     if !settings.fields.any() {
         return Err("Pick at least one thing to describe".into());
@@ -216,9 +252,13 @@ pub(crate) struct Estimate {
     skipped: usize,
     /// US dollars, roughly; nothing on a plan.
     cost: f64,
-    model: &'static str,
-    /// Counted against the Claude plan's limits instead.
+    model: String,
+    /// Counted against the Claude plan's (or the Google account's) limits instead.
     plan: bool,
+    /// The calls it takes: one per photo, or per contact sheet.
+    calls: usize,
+    /// What the calls go to: "Claude", "Gemini".
+    via: &'static str,
 }
 
 /// The instructions for a run with these settings, and the vocabulary answers are
@@ -277,9 +317,17 @@ fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider
             let key = keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())?;
             Box::new(Claude::new(key, options, &brief, vocabulary).map_err(text)?)
         }
+        Access::Gemini => {
+            let program = agy::find().ok_or_else(|| {
+                AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()).to_string()
+            })?;
+            let options = claude::Options { model: settings.gemini_model.clone(), ..options };
+            Box::new(Agy::new(program, options, &brief, vocabulary, settings.sheets))
+        }
         Access::Plan => {
             let program = claude_code::find().ok_or_else(|| {
-                AiError::Cli("not installed: get it from claude.com/claude-code and sign in".into()).to_string()
+                AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into())
+                    .to_string()
             })?;
             let status = claude_code::status(&program).map_err(text)?;
             if !on_plan(&status) {
@@ -300,18 +348,30 @@ fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider
 /// too), and what that would cost.
 fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), String> {
     let settings = load_settings(s);
-    let model = claude::model(&settings.model).ok_or("unknown model")?;
-    // Both ways send the same prompt, so a photo described one way counts for the other.
-    let prompt = c1ai::prompt_hash(&brief(s, &settings)?.0);
-    let done = if again { Default::default() } else { s.library.described(rows, model.id, prompt).map_err(text)? };
+    let brief = brief(s, &settings)?.0;
+    let (id, name, prompt, price) = match settings.access {
+        Access::Gemini => {
+            let id = settings.gemini_model.clone();
+            (id.clone(), id, agy::prompt_hash(&brief, settings.sheets), None)
+        }
+        // Both ways send the same prompt, so a photo described one way counts for the other.
+        _ => {
+            let model = claude::model(&settings.model).ok_or("unknown model")?;
+            let price = (settings.access == Access::Api).then_some(model);
+            (model.id.to_string(), model.name.to_string(), c1ai::prompt_hash(&brief), price)
+        }
+    };
+    let done = if again { Default::default() } else { s.library.described(rows, &id, prompt).map_err(text)? };
     let todo: Vec<u64> = rows.iter().copied().filter(|r| !done.contains(r)).collect();
-    let on_plan = settings.access == Access::Plan;
+    let sheets = settings.access == Access::Gemini && settings.sheets;
     let estimate = Estimate {
         photos: todo.len(),
         skipped: rows.len() - todo.len(),
-        cost: if on_plan { 0.0 } else { claude::estimate(&model, todo.len()) },
-        model: model.name,
-        plan: on_plan,
+        cost: price.map_or(0.0, |model| claude::estimate(&model, todo.len())),
+        model: name,
+        plan: price.is_none(),
+        calls: if sheets { todo.len().div_ceil(c1image::PER_SHEET) } else { todo.len() },
+        via: if settings.access == Access::Gemini { "Gemini" } else { "Claude" },
     };
     Ok((todo, estimate))
 }
@@ -412,6 +472,12 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
     *lock(&s.describe) = first.clone();
     // Shown at once: the first answer can take half a minute.
     let _ = app.emit("describe", first.clone());
+    // One photo per call, or a contact sheet of up to 36.
+    let units: Vec<Vec<u64>> = if provider.sheets() {
+        todo.chunks(c1image::PER_SHEET).map(<[u64]>::to_vec).collect()
+    } else {
+        todo.iter().map(|&row| vec![row]).collect()
+    };
     std::thread::spawn(move || {
         let _done = Lowers(&s.describing);
         let next = AtomicUsize::new(0);
@@ -425,35 +491,42 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
             }
         };
         std::thread::scope(|scope| {
-            for _ in 0..parallel.min(todo.len().max(1)) {
+            for _ in 0..parallel.min(units.len().max(1)) {
                 scope.spawn(|| {
                     while !s.describe_stop.load(Ordering::SeqCst) && is_current(&app, &s) {
-                        let Some(&row) = todo.get(next.fetch_add(1, Ordering::SeqCst)) else { break };
+                        let Some(unit) = units.get(next.fetch_add(1, Ordering::SeqCst)) else { break };
                         {
                             let mut st = lock(&state);
-                            st.working.push(row);
+                            st.working.extend(unit);
                             report(&st);
                         }
                         // A panic is this photo's failure, not the run's end with the
                         // state left saying it runs.
-                        let outcome =
-                            std::panic::catch_unwind(AssertUnwindSafe(|| describe_one(&s, provider.as_ref(), row)))
-                                .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
+                        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match unit.as_slice() {
+                            [row] if !provider.sheets() => describe_one(&s, provider.as_ref(), *row).map(|c| (0, c)),
+                            rows => describe_sheet(&s, provider.as_ref(), rows),
+                        }))
+                        .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
                         let mut st = lock(&state);
-                        st.working.retain(|&r| r != row);
+                        st.working.retain(|r| !unit.contains(r));
                         match outcome {
-                            Ok(cost) => {
-                                st.done += 1;
+                            Ok((missing, cost)) => {
+                                st.done += unit.len();
+                                st.failed += missing;
                                 st.cost += cost;
                                 failing.store(0, Ordering::SeqCst);
                             }
                             // Stopped mid-call: neither done nor failed.
                             Err(e) if matches!(failed_with(&e), Some(AiError::Stopped)) => {}
                             Err(e) => {
-                                st.done += 1;
-                                st.failed += 1;
+                                st.done += unit.len();
+                                st.failed += unit.len();
                                 let message = format!("{e:#}");
-                                s.log.event(&format!("Describing photo {row} failed: {message}"), &[]);
+                                let what = match unit.as_slice() {
+                                    [row] => format!("photo {row}"),
+                                    rows => format!("a sheet of {} photos", rows.len()),
+                                };
+                                s.log.event(&format!("Describing {what} failed: {message}"), &[]);
                                 let in_a_row = failing.fetch_add(1, Ordering::SeqCst) + 1;
                                 // Without a working key, Claude Code, credit or what is left
                                 // of the plan no photo will do: the run stops.
@@ -531,6 +604,62 @@ fn describe_one(s: &Session, provider: &dyn VisionProvider, row: u64) -> anyhow:
     };
     s.library.put_suggestion(row, &entry, &reply.record)?;
     Ok(reply.record.cost)
+}
+
+/// Describes a contact sheet of `rows` in one call and stores each photo's suggestion.
+/// Returns how many photos the answer left out, and what the call cost.
+fn describe_sheet(s: &Session, provider: &dyn VisionProvider, rows: &[u64]) -> anyhow::Result<(usize, f64)> {
+    let mut cells = Vec::new();
+    let mut contexts = Vec::new();
+    let mut on_sheet = Vec::new();
+    for &row in rows {
+        let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { continue };
+        // The thumbnail is enough for a cell; the preview only where there is none.
+        let image = match s.thumbs.get_or_make(s.source.as_ref(), &id)? {
+            Some(made) => Some(made.image),
+            None => s.source.image_or_make(&id, ImageTier::Preview)?,
+        };
+        let Some(image) = image else { continue };
+        cells.push(c1image::load_fitted(&image, c1image::SHEET_CELL)?);
+        contexts.push(context(&photo));
+        on_sheet.push(row);
+    }
+    if on_sheet.is_empty() {
+        anyhow::bail!("no preview or thumbnail");
+    }
+    let request = SheetRequest { jpeg: c1image::encode_jpeg(&c1image::contact_sheet(&cells), 85), contexts };
+    let reply = match provider.describe_sheet(&request) {
+        Ok(reply) => reply,
+        Err(failed) => {
+            if let Some(record) = &failed.record {
+                s.library.record_call(on_sheet[0], record)?;
+            }
+            return Err(failed.into());
+        }
+    };
+    if !reply.warnings.is_empty() {
+        s.log.event(&format!("A sheet of {} photos: {}", on_sheet.len(), reply.warnings.join("; ")), &[]);
+    }
+    let mut missing = rows.len() - on_sheet.len();
+    for (&row, answer) in on_sheet.iter().zip(reply.replies) {
+        let Some((suggestion, warnings)) = answer else {
+            missing += 1;
+            continue;
+        };
+        let entry = Entry {
+            at: chrono::Utc::now().timestamp_millis(),
+            provider: provider.id().to_string(),
+            model: provider.model().to_string(),
+            prompt: provider.prompt_hash(),
+            suggestion,
+            warnings,
+            cost: 0.0,
+            status: Status::Proposed,
+        };
+        // Each photo keeps the sheet's call with it: the record says what the call took.
+        s.library.put_suggestion(row, &entry, &reply.record)?;
+    }
+    Ok((missing, reply.record.cost))
 }
 
 /// Stops the run: calls under way end as soon as they can.

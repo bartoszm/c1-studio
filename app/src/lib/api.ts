@@ -743,7 +743,7 @@ export const openLog = () => invoke<void>("open_log");
 // Describing photos with a vision model (crates/c1ai, app/src-tauri/src/ai.rs).
 export type AiLanguage = "en" | "pl" | "both";
 /** The API with a key, or Claude Code signed in with a Claude plan. */
-export type AiAccess = "api" | "plan";
+export type AiAccess = "api" | "plan" | "gemini";
 /** What a description holds (crates/c1ai/src/prompt.rs, `Fields`). */
 export type AiFields = {
   caption: boolean; headline: boolean; subject: boolean; keywords: boolean; keywords_new: boolean;
@@ -756,6 +756,10 @@ export type AiSettings = {
   instructions: string | null;
   /** A place level guessed at least this likely (%) starts ticked where the photo has none. */
   place_tick: number;
+  /** The Gemini model agy is asked for. */
+  gemini_model: string;
+  /** Gemini gets contact sheets of up to 36 photos rather than one photo per call. */
+  sheets: boolean;
 };
 export type AiModel = { id: string; name: string; input: number; output: number };
 /** Claude Code as a plan run would use it. */
@@ -767,7 +771,9 @@ export type AiView = {
   key: [string, "stored" | "environment"] | null;
   /** Only when the plan is chosen. */
   plan: AiPlan | null;
-  /** A run can start: a key, or Claude Code signed in. */
+  /** With Gemini chosen: whether agy is installed. */
+  gemini: boolean | null;
+  /** A run can start: a key, Claude Code signed in, or agy there. */
   ready: boolean;
   calls: number;
   /** US dollars spent in this library. */
@@ -776,7 +782,12 @@ export type AiView = {
 };
 /** The prompt a run would send now. */
 export type AiPrompt = { system: string; schema: unknown };
-export type AiEstimate = { photos: number; skipped: number; cost: number; model: string; plan: boolean };
+export type AiEstimate = {
+  photos: number; skipped: number; cost: number; model: string; plan: boolean;
+  /** One per photo, or per contact sheet. */
+  calls: number;
+  via: "Claude" | "Gemini";
+};
 export type DescribeState = {
   running: boolean; done: number; total: number; failed: number;
   /** Rows being described now. */
