@@ -22,6 +22,7 @@ use tauri::http::{Response, StatusCode, header};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+mod ai;
 mod events;
 mod folders;
 mod sources;
@@ -52,6 +53,12 @@ struct Session {
     analysing: AtomicBool,
     analysis_stop: AtomicBool,
     analysis: Mutex<AnalysisState>,
+    /// Describing photos with a vision model (stage 5): one run at a time, stopped when
+    /// asked or when another source opens.
+    describing: AtomicBool,
+    /// Shared with the run's provider, so a call under way ends on Stop.
+    describe_stop: Arc<AtomicBool>,
+    describe: Mutex<ai::DescribeState>,
     /// Thumbnails made here for photos the source has none for, and the run that makes
     /// them all (one at a time, stopped when another source opens).
     thumbs: Thumbs,
@@ -258,6 +265,9 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         analysing: AtomicBool::new(false),
         analysis_stop: AtomicBool::new(false),
         analysis: Mutex::new(AnalysisState::default()),
+        describing: AtomicBool::new(false),
+        describe_stop: Arc::default(),
+        describe: Mutex::new(ai::DescribeState::default()),
         thumbs: Thumbs::new(dir.join("thumbs")),
         filling: AtomicBool::new(false),
         fill_stop: AtomicBool::new(false),
@@ -2339,7 +2349,19 @@ pub fn run() {
             set_autosave,
             selection_summary,
             photo_history,
-            change_log
+            change_log,
+            ai::ai_settings,
+            ai::set_ai_settings,
+            ai::set_ai_key,
+            ai::ai_prompt,
+            ai::ai_estimate,
+            ai::start_describe,
+            ai::stop_describe,
+            ai::describe_state,
+            ai::suggestions,
+            ai::suggestion,
+            ai::accept_suggestions,
+            ai::set_suggestion_status
         ])
         .run(tauri::generate_context!())
         .expect("C1 Studio failed to start");

@@ -25,6 +25,7 @@
   import Info from "./Info.svelte";
   import MapPane from "./MapPane.svelte";
   import AnalysisPane from "./AnalysisPane.svelte";
+  import AiPane from "./AiPane.svelte";
   import GpxDialog from "./GpxDialog.svelte";
   import NeighbourDialog from "./NeighbourDialog.svelte";
   import SourceMenu from "./SourceMenu.svelte";
@@ -67,7 +68,7 @@
   /** How far opening a source has got, while it is under way. */
   let startup = $state<api.Startup | null>(null);
   /** The window has read the source the app started with. It may start before it is open. */
-  let loaded = false;
+  let loaded = $state(false);
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
@@ -87,13 +88,14 @@
   let syncFailed = $state<string | null>(null);
   let grid = $state<Grid>();
 
-  // Three views of the same filter: the grid, the map (with a strip of photos under it)
-  // and the analysis. While the map follows, the grid shows what the map shows.
-  type Tab = "photos" | "map" | "analysis";
+  // Four views of the same filter: the grid, the map (with a strip of photos under it),
+  // the analysis and the AI suggestions. While the map follows, the grid shows what the
+  // map shows.
+  type Tab = "photos" | "map" | "analysis" | "ai";
   function rememberedTab(): Tab {
     try {
       const t = localStorage.getItem("tab");
-      if (t === "map" || t === "analysis") return t;
+      if (t === "map" || t === "analysis" || t === "ai") return t;
     } catch {
       // Opens on the photos.
     }
@@ -101,6 +103,8 @@
   }
   let tab = $state<Tab>(rememberedTab());
   let mapOn = $derived(tab === "map");
+  /** The grid is a strip under the view: on the map, the analysis and the AI tab. */
+  let stripped = $derived(mapOn || tab === "analysis" || tab === "ai");
   let follow = $state(!remembered("map").includes("free"));
   /** A photo picked on the map: the panel shows it and edits reach it when nothing else is picked. */
   let mapRow = $state<number | null>(null);
@@ -351,6 +355,13 @@
   }
   /** The background analysis, for the footer. */
   let analysis = $state<api.AnalysisState | null>(null);
+  /** Photos being described by a vision model, for the footer and the AI tab. */
+  let describing = $state<api.DescribeState | null>(null);
+  /** The photos an AI run would describe: what an edit would reach. */
+  let aiTargets = $derived.by(() => {
+    void picked.size;
+    return targets();
+  });
   let thumbs = $state<api.ThumbsState | null>(null);
   let thumbsRetried = 0;
   let countsAt = 0;
@@ -452,6 +463,8 @@
   });
   $effect(() => allowPlaceLookups(settings.onlineMap));
   let showSettings = $state(false);
+  /** The Settings tab it opens on: AI from the AI tab, else the sidebar's sections. */
+  let settingsTab = $state<"sidebar" | "ai">("sidebar");
   /** A section header's right-click menu. */
   let sectionMenu = $state<{ x: number; y: number; key: SectionKey } | null>(null);
   function hideSection(key: SectionKey) {
@@ -627,6 +640,7 @@
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
+    api.describeState().then((s) => (describing = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
   }
 
@@ -664,6 +678,8 @@
         }
       }),
       listen("analysis-done", () => { version++; analysed++; refresh(true); }),
+      listen<api.DescribeState>("describe", (e) => { describing = e.payload; }),
+      listen("describe-done", () => { version++; }),
     ];
     // Listening first, so the end of start-up is not missed between the question and the answer.
     Promise.all(off)
@@ -1668,7 +1684,7 @@
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
     // On Analysis the page keys scroll the charts and groups; arrows move in the strip.
-    else if (tab === "analysis" && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
+    else if ((tab === "analysis" || tab === "ai") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
@@ -1951,6 +1967,7 @@
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
+      <button class:on={tab === "ai"} title="Captions, keywords and ratings suggested by a vision model, to review" onclick={() => showTab("ai")}>AI</button>
     </nav>
     <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
       <SortControl
@@ -2022,7 +2039,7 @@
     >Hidden</button>
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
-    <button class="toggle settings" title="Settings: the sidebar's sections, online map services" aria-label="Settings" onclick={() => (showSettings = true)}>
+    <button class="toggle settings" title="Settings: the sidebar's sections, online map services, AI" aria-label="Settings" onclick={() => (showSettings = true)}>
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
         <circle cx="8" cy="8" r="2.2" />
         <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round" />
@@ -2238,8 +2255,8 @@
     </div>
   {/if}
 
-  <div class="pane" class:strip={mapOn || tab === "analysis"} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
-  {#if showTimeline && tab !== "analysis" && status}
+  <div class="pane" class:strip={stripped} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
+  {#if showTimeline && tab !== "analysis" && tab !== "ai" && status}
     <Timeline
       filter={eff}
       {version}
@@ -2304,7 +2321,28 @@
       onallof={toggleAllOf}
     />
   {/if}
-  {#if mapOn || tab === "analysis"}
+  <!-- Once the source is open: before, there is no library to read the settings from. -->
+  {#if tab === "ai" && loaded}
+    <AiPane
+      picked={aiTargets}
+      describe={describing}
+      {version}
+      settingsOpen={showSettings}
+      onsettings={() => { settingsTab = "ai"; showSettings = true; }}
+      onselect={(row) => { picked.clear(); selected = null; mapRow = row; }}
+      onaccepted={async (undo) => {
+        if (undo.length) {
+          undoStack.push({ ops: undo });
+          redoStack = [];
+          note(`Queued suggestions for ${opRows(undo).toLocaleString()} photo${opRows(undo) === 1 ? "" : "s"}`);
+        }
+        editError = null;
+        await edited();
+      }}
+      onerror={(m) => (editError = m)}
+    />
+  {/if}
+  {#if stripped}
     <!-- A window splitter: a separator that can be focused and moved with the arrow keys. -->
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
     <div
@@ -2429,6 +2467,11 @@
       <span class="sync" title="Shape, colours, light, focus and a likeness hash, from each photo's thumbnail">
         measuring photos {analysis.done.toLocaleString()} / {analysis.total.toLocaleString()}
       </span>
+    {/if}
+    {#if describing?.running && describing.total}
+      <button class="sync" title="Photos described by the vision model; the AI tab shows what it suggests" onclick={() => showTab("ai")}>
+        describing photos {describing.done.toLocaleString()} / {describing.total.toLocaleString()}{describing.working.length ? ` · ${describing.working.length} at work` : ""}
+      </button>
     {/if}
     <span class="autosave" class:alone={!syncNote}>
       {#if autosaveOn}
@@ -2620,7 +2663,8 @@
 {#if showSettings}
   <SettingsDialog
     titles={TITLES}
-    onclose={() => (showSettings = false)}
+    initial={settingsTab}
+    onclose={() => { showSettings = false; settingsTab = "sidebar"; }}
     onclasses={() => { version++; analysed++; refresh(true); }}
   />
 {/if}

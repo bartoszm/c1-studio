@@ -21,6 +21,7 @@ use tantivy::{
     DocAddress, DocId, Index, IndexReader, IndexWriter, Order, ReloadPolicy, Score, Searcher, SegmentReader, Term,
 };
 
+use crate::ai::SuggestionBook;
 use crate::edits::{self, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key};
 use crate::facets::{Counts, FacetCollector};
 use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, Trashed};
@@ -32,8 +33,11 @@ use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
 
+mod describing;
 mod placing;
 mod selection;
+
+pub use describing::{Accept, Accepted, Seen};
 
 pub use placing::{
     FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,
@@ -276,6 +280,8 @@ pub struct Library {
     /// Photos the user deleted, in the app's trash, by photo key (also in `bin_book`).
     bin_book: MarkBook,
     binned: RwLock<HashSet<String>>,
+    /// What a vision model suggested for photos, until accepted or rejected (stage 5).
+    suggestions: SuggestionBook,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -371,6 +377,7 @@ impl Library {
         let hidden = RwLock::new(hidden_book.all()?);
         let bin_book = MarkBook::bin(&dir.join("bin.redb"))?;
         let binned = RwLock::new(bin_book.all()?);
+        let suggestions = SuggestionBook::open(&dir.join("ai.redb"))?;
         // A photo moved since it was given its place's position is placed for real: its
         // mark goes. (One with no position keeps it: an undo can be redone.)
         let mut marks = place_book.coarse()?;
@@ -421,6 +428,7 @@ impl Library {
             hidden,
             bin_book,
             binned,
+            suggestions,
         };
         // Groups as worked out now: the index is told of any that differ from last time.
         let regrouped = library.group_looks()?;
@@ -1261,6 +1269,16 @@ impl Library {
         rows: &[u64],
         ops: impl Fn(u64, &Photo) -> anyhow::Result<Vec<Op>>,
     ) -> anyhow::Result<Vec<(u64, Op)>> {
+        self.edit_photos_as(rows, ops, Origin::App)
+    }
+
+    /// [`Library::edit_photos`], logged as coming from `origin`.
+    pub fn edit_photos_as(
+        &self,
+        rows: &[u64],
+        ops: impl Fn(u64, &Photo) -> anyhow::Result<Vec<Op>>,
+        origin: Origin,
+    ) -> anyhow::Result<Vec<(u64, Op)>> {
         let made = |batch: &crate::store::Batch| {
             let mut changes = Vec::new();
             for &row in rows {
@@ -1270,7 +1288,7 @@ impl Library {
             }
             Ok(changes)
         };
-        self.edit_made(made, Origin::App)
+        self.edit_made(made, origin)
     }
 
     fn edit_made(
