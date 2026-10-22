@@ -207,8 +207,9 @@ fn says(own: Option<&str>, other: &str) -> Says {
 
 /// The place a photo at `own` (none: no place), taken at `at`, gets from the photos with a
 /// place around it (`placed`, by time): on each side, the nearest within `gap` that says
-/// more, past those saying the same; one saying somewhere else ends that side. Both sides
-/// saying more, they must agree. The new path, with the neighbour's path and row.
+/// more or somewhere else, past those saying the same. Both sides must agree: one saying
+/// somewhere else, or both more but not the same, gives nothing. The new path, with the
+/// neighbour's path and row.
 fn place_from(
     placed: &[(i64, Arc<str>, u64)],
     (row, at): (u64, i64),
@@ -231,15 +232,15 @@ fn place_from(
                 Some(own) => memo.entry((own.clone(), p.1.clone())).or_insert_with(|| says(Some(own), &p.1)).clone(),
             };
             match said {
-                Says::More(to) => return Some((to, p.1.clone(), p.2)),
+                Says::More(to) => return Ok(Some((to, p.1.clone(), p.2))),
                 Says::Same => continue,
-                Says::Else => return None,
+                Says::Else => return Err(()),
             }
         }
-        None
+        Ok(None)
     };
-    let before = side(&mut placed[..i].iter().rev());
-    let after = side(&mut placed[i..].iter());
+    let before = side(&mut placed[..i].iter().rev()).ok()?;
+    let after = side(&mut placed[i..].iter()).ok()?;
     match (before, after) {
         (Some(b), Some(a)) if a.0 != b.0 => None,
         (Some(p), _) | (None, Some(p)) => Some(p),
@@ -310,17 +311,25 @@ fn between(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
 }
 
 /// Where a photo taken at `at` was: [`between`] the fixes either side (at most `gap`
-/// apart), or, failing that, at the nearest fix if within `near`.
+/// apart), or, failing that, at the nearest fix if within `near`; not when the fixes either
+/// side are within `gap` but were taken from a plane, the photo somewhere on the way.
 fn position_at(fixes: &[Fix], at: i64, gap: i64, near: i64) -> Option<(f64, f64)> {
-    between(fixes, at, gap).or_else(|| {
-        let i = fixes.partition_point(|f| f.at < at);
-        [i.checked_sub(1).and_then(|i| fixes.get(i)), fixes.get(i)]
-            .into_iter()
-            .flatten()
-            .filter(|f| (f.at - at).abs() <= near)
-            .min_by_key(|f| (f.at - at).abs())
-            .map(|f| (f.lat, f.lon))
-    })
+    if let Some(p) = between(fixes, at, gap) {
+        return Some(p);
+    }
+    let i = fixes.partition_point(|f| f.at < at);
+    let (prev, next) = (i.checked_sub(1).and_then(|i| fixes.get(i)), fixes.get(i));
+    if let (Some(p), Some(n)) = (prev, next)
+        && n.at - p.at <= gap
+    {
+        return None;
+    }
+    [prev, next]
+        .into_iter()
+        .flatten()
+        .filter(|f| (f.at - at).abs() <= near)
+        .min_by_key(|f| (f.at - at).abs())
+        .map(|f| (f.lat, f.lon))
 }
 
 impl Library {
@@ -931,6 +940,16 @@ mod tests {
         // Kraków to Lisbon in 20 minutes: a flight.
         assert_eq!(between(&[fix(0, 50.06, 19.94), fix(20, 38.72, -9.13)], 10 * 60_000, 30 * 60_000), None);
         assert!(between(&[fix(0, 50.06, 19.94), fix(20, 50.08, 19.95)], 10 * 60_000, 30 * 60_000).is_some());
+    }
+
+    #[test]
+    fn a_photo_between_fixes_taken_from_a_plane_is_not_put_at_the_nearest() {
+        let fix = |min: i64, lat: f64, lon: f64| Fix { at: min * 60_000, lat, lon };
+        let flight = [fix(0, 50.06, 19.94), fix(20, 38.72, -9.13)];
+        assert_eq!(position_at(&flight, 2 * 60_000, 30 * 60_000, 15 * 60_000), None);
+        // Fixes further apart than the gap: the nearest one, if near enough.
+        assert_eq!(position_at(&flight, 2 * 60_000, 10 * 60_000, 5 * 60_000), Some((50.06, 19.94)));
+        assert_eq!(position_at(&flight[..1], 2 * 60_000, 30 * 60_000, 15 * 60_000), Some((50.06, 19.94)));
     }
 
     #[test]

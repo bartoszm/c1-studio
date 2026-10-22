@@ -74,7 +74,7 @@
       <input class="short" bind:value={positionGap} inputmode="numeric" aria-label="GPS neighbours at most this far apart, minutes" />
     </div>
     <p class="muted small indent">
-      For photos with no position, or only their place's (≈): between two neighbours with GPS, or at the nearest within half that. Only if it lies in the photo's own place.
+      For photos with no position, or only their place's (≈): between two neighbours with GPS, or at the nearest within half that (not between two taken from a plane). Only if it lies in the photo's own place.
     </p>
     {#if positions && plan && settings}
       <p class="result indent">Of {plan.unpositioned.toLocaleString()} photos with no position of their own, <b>{plan.positions.toLocaleString()}</b> get one.</p>
@@ -85,7 +85,7 @@
       <input class="short" bind:value={placeGap} inputmode="numeric" aria-label="Place neighbours at most this far apart, minutes" />
     </div>
     <p class="muted small indent">
-      For photos with no place, or no location: the nearest neighbour each side that says the same and more (Kraków → Kraków › Wawel), past those that say the same; one somewhere else ends the search that side.
+      For photos with no place, or no location: the nearest neighbour each side that says the same and more (Kraków → Kraków › Wawel), past those that say the same. Both sides must agree: a neighbour somewhere else gives nothing.
     </p>
     {#if places && plan && settings}
       <p class="result indent">Of {plan.unlocated.toLocaleString()} photos with no location, <b>{plan.places.toLocaleString()}</b> get a more specific place.</p>

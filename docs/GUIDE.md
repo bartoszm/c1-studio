@@ -388,14 +388,16 @@ network; everything else works without one).
   alone, as are photos that already have a position unless you tick *Also move…*.
   Positions between two points are interpolated. One undoable edit.
 - **Neighbours…** (Map tab) places the photos the filter selects from the photos taken
-  just before and after them, by any camera. *Fill missing* gives photos with no
-  position one between their neighbours' (or the nearest one's, if close), and photos
-  with no place their neighbours' shared place. *Refine* improves rough ones: a photo
-  whose place a neighbour within 15 minutes names more specifically (London › Barbican
-  for London) takes that place, and a ≈ position (from the place's name) moves to the
-  GPS of a neighbour within 2 minutes, if it lies in the photo's own place. The dialog
-  shows the counts and every from → to before anything changes; Apply queues one
-  undoable edit.
+  just before and after them, by any camera. It has two parts, each with its own window
+  and a box to leave it out. *Position* (30 minutes) gives photos with no position, or
+  only a ≈ one from their place's name, a position between two neighbours with GPS, or
+  the nearest one's if within half the window; not between two taken from a plane, and
+  only if it lies in the photo's own place. *Place* (15 minutes) gives photos with no
+  place, or no location, the place of a neighbour that names it more specifically
+  (London › Barbican for London), looking past neighbours that only say London again.
+  Both sides must agree: a neighbour somewhere else, on either side, gives nothing. The
+  dialog shows the counts and every from → to before anything changes; **Apply N
+  changes** queues one undoable edit.
 - **Setting a position:** drag a single photo's tile to a new place, or drag photos
   (one or several picked) from the grid onto the map. This is a Location edit like any
   other: queued, undoable, written with *Write to Capture One*. A position belongs to

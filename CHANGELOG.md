@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **Neighbours… is one dialog:** the *Fill missing* and *Refine* tabs are gone. **Position** gives photos with no position, or only their place's (≈), one from the GPS photos taken around them (30 minutes by default), and only if it lies in the photo's own place, which *Fill missing* did not check. **Place** gives photos with no place, or no location, the place of a neighbour that says the same and more (15 minutes). It now looks past neighbours that only repeat the photo's place, so a city's photos get the location of a photo taken at a named spot nearby, not just the one next to it; a neighbour somewhere else stops it.
+- **Neighbours… is one dialog:** the *Fill missing* and *Refine* tabs are gone. **Position** gives photos with no position, or only their place's (≈), one from the GPS photos taken around them (30 minutes by default): between two, or at the nearest within half the window, but not between two taken from a plane, and only if it lies in the photo's own place, which *Fill missing* did not check. A ≈ position now moves like a missing one, no longer only to GPS taken within 2 minutes. **Place** gives photos with no place, or no location, the place of a neighbour that says the same and more (15 minutes). It now looks past neighbours that only repeat the photo's place, so a city's photos get the location of a photo taken at a named spot nearby, not just the one next to it. Both sides must agree: a neighbour somewhere else, on either side, gives nothing.
 
 ## 0.5.0 — 2026-10-21
 
