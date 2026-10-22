@@ -18,6 +18,10 @@ class OpenSource {
   get noun(): string {
     return this.wording.noun;
   }
+  /** What a backup holds, after "a copy of the". */
+  get backup(): string {
+    return this.wording.backup;
+  }
   /** The program to close before the app writes ("Capture One"), if any. */
   get owner(): string | null {
     return this.wording.owner;

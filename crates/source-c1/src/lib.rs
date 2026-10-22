@@ -141,6 +141,7 @@ impl PhotoSource for CaptureOne {
             name: "Capture One".into(),
             word: "Capture One".into(),
             noun: "catalog".into(),
+            backup: "catalog".into(),
             owner: Some("Capture One".into()),
         }
     }

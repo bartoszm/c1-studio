@@ -188,6 +188,8 @@ export type Wording = {
   word: string;
   /** What holds the photos, after "the": "catalog", "library". */
   noun: string;
+  /** What a backup holds, after "a copy of the": "catalog", "edits and albums kept for the folders". */
+  backup: string;
   /** The program that keeps the source open and has to be closed before writing. */
   owner: string | null;
 };

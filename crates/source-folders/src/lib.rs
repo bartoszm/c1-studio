@@ -208,7 +208,14 @@ impl PhotoSource for FolderSource {
     }
 
     fn wording(&self) -> Wording {
-        Wording { name: "Photo folders".into(), word: "the photo folders".into(), noun: "library".into(), owner: None }
+        Wording {
+            name: "Photo folders".into(),
+            word: "the photo folders".into(),
+            noun: "library".into(),
+            // A backup holds what the app keeps beside the files, never the files.
+            backup: "edits and albums kept for the folders".into(),
+            owner: None,
+        }
     }
 
     fn snapshot(&self, since: Option<&Cursor>, sink: &mut dyn FnMut(SourceEvent) -> Result<()>) -> Result<()> {

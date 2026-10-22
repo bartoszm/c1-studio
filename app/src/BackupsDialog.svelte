@@ -61,12 +61,12 @@
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="backups-title">
     <h2 id="backups-title">Backups</h2>
     <p class="muted">
-      The {source.noun} is copied before the app writes to it; the newest five are kept. Restoring one puts the {source.noun}
-      back as it was then.
+      Before the app writes, it keeps a copy of the {source.backup}; the newest five are kept. Restoring one brings that copy
+      back.
     </p>
 
     {#if done}
-      <p class="ok">Restored. The {source.noun} it replaced is kept as the newest backup below, so this can be undone the same way.</p>
+      <p class="ok">Restored. What it replaced is kept as the newest backup below, so this can be undone the same way.</p>
     {/if}
     {#if locked}
       <p class="warn">Close {source.owner ?? "the program that has it open"} to restore: it keeps the {source.noun} in memory and would write it back over the restored one. <span class="muted">(Held by {locked}.)</span></p>
@@ -94,11 +94,11 @@
           {#if asking?.id === b.id}
             <li class="confirm">
               <p>
-                Put the {source.noun} back as it was on <b>{when(b.created_ms)}</b>? Everything changed in it since, in {source.word}
-                or written from here, is undone.
+                Go back to the {source.backup} as of <b>{when(b.created_ms)}</b>? Everything changed since{#if source.owner}, in
+                {source.owner} or written from here,{/if} is undone.
               </p>
               <p class="muted">
-                The {source.noun} as it is now is backed up first and listed here. Edits queued in this app stay queued.
+                What is there now is backed up first and listed here. Edits queued in this app stay queued.
               </p>
               <div class="buttons">
                 <button onclick={() => (asking = null)} disabled={busy}>Cancel</button>

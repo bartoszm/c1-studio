@@ -51,7 +51,7 @@
   );
 
   async function write() {
-    busy = `Backing up the ${source.noun} and writing…`;
+    busy = "Backing up and writing…";
     error = null;
     try {
       done = await api.writeApply();
@@ -125,7 +125,7 @@
 
     {#if done}
       <p class="ok">Written: {done.written.toLocaleString()} edit{done.written === 1 ? "" : "s"}.</p>
-      {#if done.backup}<p class="muted">The {source.noun} as it was is backed up in <code>{done.backup}</code>.</p>{/if}
+      {#if done.backup}<p class="muted">A copy of the {source.backup} from before is kept in <code>{done.backup}</code>.</p>{/if}
       {#if done.warnings.length}
         <p class="warn">The edits are written, but:</p>
         <ul class="labels">
@@ -139,7 +139,7 @@
     {:else if plan}
       <p class:warn={!writable}>
         {#if writable}
-          {#if source.owner}{source.owner} is closed. {/if}The {source.noun} is backed up before anything is written.
+          {#if source.owner}{source.owner} is closed. {/if}A copy of the {source.backup} is made before anything is written.
         {:else if locked}
           Close {source.word} to write: it keeps the {source.noun} in memory and would overwrite these changes.
           <span class="muted">(Held by {locked}.)</span> Your edits stay queued meanwhile.

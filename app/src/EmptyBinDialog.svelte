@@ -53,7 +53,7 @@
     <h2 id="empty-title">{rows ? "Delete for good" : "Empty trash"}</h2>
     {#if done}
       <p class="ok">{done.removed.toLocaleString()} photo{done.removed === 1 ? "" : "s"} deleted for good.</p>
-      {#if done.backup}<p class="muted">The {source.noun} was backed up first: <small>{done.backup}</small></p>{/if}
+      {#if done.backup}<p class="muted">A copy of the {source.backup} was made first: <small>{done.backup}</small></p>{/if}
       {#if done.failed.length}
         <p class="warn">{done.failed.length.toLocaleString()} stayed in the trash:</p>
         <ul>

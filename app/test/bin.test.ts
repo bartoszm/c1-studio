@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { binNote, deleteAction, removalText, withBin } from "../src/lib/bin";
 import type { Wording } from "../src/lib/api";
 
-const C1: Wording = { name: "Capture One", word: "Capture One", noun: "catalog", owner: "Capture One" };
+const C1: Wording = { name: "Capture One", word: "Capture One", noun: "catalog", backup: "catalog", owner: "Capture One" };
 
 test("the trash's photos are asked for only while it is shown", () => {
   assert.deepEqual(withBin({ hues: ["red"] }, false), { hues: ["red"] });

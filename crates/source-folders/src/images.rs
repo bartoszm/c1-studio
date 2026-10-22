@@ -260,6 +260,9 @@ pub(crate) struct Images {
     opened: SystemTime,
     /// The central store was looked through for such files this session.
     strays_checked: AtomicBool,
+    /// Held while images are migrated: a moved file keeps its time and gets its record
+    /// after, so the stray sweep would take it for one a crash left.
+    migrating: Mutex<()>,
 }
 
 impl Images {
@@ -271,6 +274,7 @@ impl Images {
             made: AtomicU32::new(0),
             opened: SystemTime::now(),
             strays_checked: AtomicBool::new(false),
+            migrating: Mutex::new(()),
         }
     }
 
@@ -714,6 +718,7 @@ impl Images {
         if !central.is_dir() {
             return 0;
         }
+        let _migrating = self.migrating.lock().unwrap_or_else(|e| e.into_inner());
         let recorded: HashSet<PathBuf> = {
             let state = src.store().read();
             let images = state.images.values().map(|i| &i.path);
@@ -832,6 +837,7 @@ impl Images {
         new: &ImageStore,
         how: Migrate,
     ) -> Result<MigrateReport> {
+        let _migrating = self.migrating.lock().unwrap_or_else(|e| e.into_inner());
         let plan = self.migration_plan(src, new, how);
         let mut report = MigrateReport::default();
         // (photo, tier, where its record goes: the new path, or nowhere)

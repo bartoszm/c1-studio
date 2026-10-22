@@ -247,6 +247,9 @@ pub struct Wording {
     pub word: String,
     /// What holds the photos, after "the": "catalog", "library".
     pub noun: String,
+    /// What a backup holds, after "a copy of the": "catalog", "edits and albums kept for
+    /// the folders".
+    pub backup: String,
     /// The program that keeps the source open and has to be closed before the app writes
     /// to it: "Capture One". `None` when nothing does.
     pub owner: Option<String>,
@@ -254,7 +257,13 @@ pub struct Wording {
 
 impl Default for Wording {
     fn default() -> Self {
-        Wording { name: "Source".into(), word: "the source".into(), noun: "library".into(), owner: None }
+        Wording {
+            name: "Source".into(),
+            word: "the source".into(),
+            noun: "library".into(),
+            backup: "library".into(),
+            owner: None,
+        }
     }
 }
 

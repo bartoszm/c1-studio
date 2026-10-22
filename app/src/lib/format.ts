@@ -97,7 +97,7 @@ export function opText(op: Op, albumName: (id: string) => string = (id) => id): 
 }
 
 /** The wording before the source has said its own. */
-export const GENERAL: Wording = { name: "Source", word: "the source", noun: "library", owner: null };
+export const GENERAL: Wording = { name: "Source", word: "the source", noun: "library", backup: "library", owner: null };
 
 /** Who made a logged change, for the history list. */
 export function originLabel(origin: Origin, wording: Wording = GENERAL): string {
