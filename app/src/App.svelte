@@ -25,6 +25,8 @@
   import Info from "./Info.svelte";
   import MapPane from "./MapPane.svelte";
   import AnalysisPane from "./AnalysisPane.svelte";
+  import HistoryPane from "./HistoryPane.svelte";
+  import { pickText } from "./lib/history";
   import AiPane from "./AiPane.svelte";
   import GpxDialog from "./GpxDialog.svelte";
   import NeighbourDialog from "./NeighbourDialog.svelte";
@@ -89,13 +91,13 @@
   let grid = $state<Grid>();
 
   // Four views of the same filter: the grid, the map (with a strip of photos under it),
-  // the analysis and the AI suggestions. While the map follows, the grid shows what the
-  // map shows.
-  type Tab = "photos" | "map" | "analysis" | "ai";
+  // the analysis, the history and the AI suggestions. While the map follows, the grid shows
+  // what the map shows.
+  type Tab = "photos" | "map" | "analysis" | "history" | "ai";
   function rememberedTab(): Tab {
     try {
       const t = localStorage.getItem("tab");
-      if (t === "map" || t === "analysis" || t === "ai") return t;
+      if (t === "map" || t === "analysis" || t === "history" || t === "ai") return t;
     } catch {
       // Opens on the photos.
     }
@@ -103,8 +105,8 @@
   }
   let tab = $state<Tab>(rememberedTab());
   let mapOn = $derived(tab === "map");
-  /** The grid is a strip under the view: on the map, the analysis and the AI tab. */
-  let stripped = $derived(mapOn || tab === "analysis" || tab === "ai");
+  /** The grid is a strip under the view: on the map, the analysis, the history and the AI tab. */
+  let stripped = $derived(mapOn || tab === "analysis" || tab === "history" || tab === "ai");
   let follow = $state(!remembered("map").includes("free"));
   /** A photo picked on the map: the panel shows it and edits reach it when nothing else is picked. */
   let mapRow = $state<number | null>(null);
@@ -343,6 +345,10 @@
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
   let autosaveOn = $state(false);
+  /** The History tab is on for this catalog (Settings › History). Off, the tab is hidden, a
+   *  History pick leaves the filter, and the log keeps only what 0.5 kept. Shown once the
+   *  catalog says it is on, so a tab remembered from last time asks nothing of it before. */
+  let historyOn = $state(false);
   let autosaveState = $state<api.AutosaveState>({ state: "off" });
   let editError = $state<string | null>(null);
   /** A word on what an edit did, shown a few seconds in the footer. */
@@ -639,6 +645,8 @@
     loaded = true;
     refresh();
     api.autosave().then(([on, state]) => { autosaveOn = on; autosaveState = state; }).catch(() => {});
+    api.historyEnabled().then(showsHistory).catch(() => {});
+    api.settingsProblem().then((p) => { if (p) editError = `Settings: ${p}`; }).catch(() => {});
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
     api.describeState().then((s) => (describing = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
@@ -1592,6 +1600,25 @@
     viewing = false;
   }
 
+  /** The History tab shown or not; hidden, it is left, and a pick from it goes. */
+  function showsHistory(on: boolean) {
+    historyOn = on;
+    if (on) return;
+    if (tab === "history") showTab("photos");
+    if (filter.history) {
+      filter = { ...filter, history: undefined };
+      run();
+    }
+  }
+  async function toggleHistory(on: boolean) {
+    try {
+      await api.setHistory(on);
+      showsHistory(on);
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+
   async function toggleAutosave(on: boolean) {
     autosaveOn = on;
     try {
@@ -1683,8 +1710,8 @@
       const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
     } else if (e.key === "Enter" && selected !== null) viewing = true;
-    // On Analysis the page keys scroll the charts and groups; arrows move in the strip.
-    else if ((tab === "analysis" || tab === "ai") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
+    // On Analysis, History and AI the page keys scroll the view; arrows move in the strip.
+    else if ((tab === "analysis" || tab === "history" || tab === "ai") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
@@ -1698,6 +1725,12 @@
   function showGroup(group: string) {
     filter = { ...filter, group };
     if (tab !== "analysis") showTab("photos");
+    run();
+  }
+  /** The photos a part of the change log is about, from the History tab: within the other
+   *  filters, which stay. The tab keeps them in its strip. */
+  function showHistory(history: api.HistoryPick) {
+    filter = { ...filter, history };
     run();
   }
   function showKeyword(path: string) {
@@ -1811,6 +1844,7 @@
     hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
     light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
+    history: (v) => [{ what: "History", text: pickText(v, (id) => (byId.get(id) ? `“${byId.get(id)?.name}”` : id)), title: "Photos the change log says changed" }],
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
     duplicates: (v) => (v ? [{ text: "duplicates" }] : []),
     series: (v) => (v ? [{ text: "in a series" }] : []),
@@ -1967,6 +2001,9 @@
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
+      {#if historyOn}
+        <button class:on={tab === "history"} title="The catalog over time: what changed between two dates, and the change log" onclick={() => showTab("history")}>History</button>
+      {/if}
       <button class:on={tab === "ai"} title="Captions, keywords and ratings suggested by a vision model, to review" onclick={() => showTab("ai")}>AI</button>
     </nav>
     <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
@@ -2039,7 +2076,7 @@
     >Hidden</button>
     <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
     <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
-    <button class="toggle settings" title="Settings: the sidebar's sections, online map services, AI" aria-label="Settings" onclick={() => (showSettings = true)}>
+    <button class="toggle settings" title="Settings: the sidebar's sections, online map services, the History tab, AI" aria-label="Settings" onclick={() => (showSettings = true)}>
       <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
         <circle cx="8" cy="8" r="2.2" />
         <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round" />
@@ -2256,7 +2293,7 @@
   {/if}
 
   <div class="pane" class:strip={stripped} class:splitting bind:this={paneEl} bind:clientHeight={paneH} style:--strip="{stripShown}px">
-  {#if showTimeline && tab !== "analysis" && tab !== "ai" && status}
+  {#if showTimeline && tab !== "analysis" && tab !== "history" && tab !== "ai" && status}
     <Timeline
       filter={eff}
       {version}
@@ -2319,6 +2356,17 @@
       onstack={toggleStack}
       onclasses={() => { version++; analysed++; refresh(true); }}
       onallof={toggleAllOf}
+    />
+  {/if}
+  {#if tab === "history" && historyOn}
+    <HistoryPane
+      filter={eff}
+      {version}
+      provider={source.provider}
+      albumName={(id) => byId.get(id)?.name}
+      picked={filter.history}
+      onpick={showHistory}
+      onerror={(text) => (editError = text)}
     />
   {/if}
   <!-- Once the source is open: before, there is no library to read the settings from. -->
@@ -2663,6 +2711,8 @@
 {#if showSettings}
   <SettingsDialog
     titles={TITLES}
+    history={historyOn}
+    onhistory={toggleHistory}
     initial={settingsTab}
     onclose={() => { showSettings = false; settingsTab = "sidebar"; }}
     onclasses={() => { version++; analysed++; refresh(true); }}

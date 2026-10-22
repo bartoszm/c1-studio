@@ -84,8 +84,8 @@ up at the next of these, or on the next start.
   Settings, and the number of matching photos with how long the query took. On a narrow
   window the search box gives way first; the map's own tools sit in a row above the map.
 - **Settings** (⚙): *Sidebar* (which sections show, in what order), *Map & places*
-  (online map services, places by name) and *Analysis* (the lines between classes; see
-  [Look](#look)).
+  (online map services, places by name), *Analysis* (the lines between classes; see
+  [Look](#look)) and *History* (the History tab on or off; see [History](#history)).
 - **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera and
   Country. Click a section's title to fold it. Which sections are folded and which
   branches are open is remembered.
@@ -446,6 +446,55 @@ the order they were taken. ▶ plays it photo by photo, about twenty seconds for
 way (no faster than three photos a second): the way travelled is drawn in amber and the
 photo of the moment rides at its head. The slider moves along it by hand; ⤢ shows the
 whole route. A trip needs two photos with a position for a route.
+
+## History
+
+The **History** tab shows the catalog over time. It needs the change log, which starts the
+day the app first read the catalog: the chart marks where it starts, and anything before
+is not known.
+
+- **The chart.** Photos imported per day (the bars grow with the square root of the count,
+  so one big import does not flatten the rest), a green line for the running total, and
+  under the bars a row of marks for the days with log entries. It follows the filters
+  (picks from the sidebar narrow it). Drag across it to pick days, or click a bar; *⤢ all*
+  lets go.
+- **Compare.** With days picked, the panel says how many log entries there are (by who
+  made them), and how many photos ended up different: changed, added, removed, deleted
+  for good, per field, the 20 keywords gained and lost the most, and per album the photos
+  put in and taken out. Changes that cancelled out do not count. Click any number to show
+  those photos in the grid; the chip *History: …* above the grid drops the pick.
+- **The log.** Newest first. Entries made together (a rating on 1,240 photos from one
+  action, or one read of Capture One) are one row. The chips limit it by who (here,
+  Capture One, GPX, backup) and by kind; *More* reads the next page. Click a row to show
+  its photos. A keyword tree change or an album delete shows the photos it touched, when
+  the app recorded them (from this version on).
+- Each photo's own history, in the details panel, now also shows keyword tree changes and
+  album deletes that touched it.
+
+For the tab, the change log also keeps what a change replaced: a photo as it was when it
+was removed or deleted, an album as it was before a rename, move or delete (and who was
+in it), and the keywords a keyword tree change rewrote. One read of the catalog keeps at
+most 5,000 removed photos whole; past that, they are logged without it, so a catalog that
+comes back empty for a moment does not fill the log.
+
+**Turning it off.** *Settings › History › Show the History tab* (on unless you turn it
+off) is kept per catalog, in the catalog's library itself, so `c1cat` (and the Claude
+plugin through it) follows it too. Off, the tab is hidden and a pick from it leaves the
+grid; the change log goes on as before this version, every change logged but nothing of
+what it replaced, and the app does no history work (no compare, no log pages, no day
+counts). The details panel still shows each photo's history. Entries logged so far stay
+as they are, so turning it back on finds them; what happened while it was off is in the
+log too, only without what those changes replaced.
+
+That leaves a gap: a keyword tree change or an album delete made while History was off
+counts as a change when two dates are compared, but not by the photos it touched (their
+keywords gained and lost, who was in the album), and it is missing from those photos' own
+history. The library remembers when History was off, so the History tab says how many of
+the entries it compares were logged then, and a photo's history in the details panel says
+when it was off. A keyword tree change logged before History existed is flagged too: the
+keyword numbers fall short by what it did.
+
+Restoring a past state is not in this version.
 
 ## Look
 

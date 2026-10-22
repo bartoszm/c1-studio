@@ -4,6 +4,7 @@
   import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText, parseGeo } from "./lib/format";
   import { allFields, fieldValues, isEmpty, keyOf, treeKeys, withCode, type Place } from "./lib/places";
   import { placeText } from "./lib/tree";
+  import { offText } from "./lib/history";
   import PlaceInput from "./PlaceInput.svelte";
   import { tick } from "svelte";
   import { collapse, mergedField, scrollFix } from "./lib/batch";
@@ -130,6 +131,8 @@
   let historyError = $state<string | null>(null);
   /** Names the log knows for albums no longer listed (deleted, or since written). */
   let historyAlbums = $state<Record<string, string>>({});
+  /** When History was off: what changes then replaced was not kept. */
+  let historyOff = $state<api.HistoryOff[]>([]);
   // Not state: which photo `history` is about, and the newest read asked for.
   let historyOf: number | undefined;
   let historyAsked = 0;
@@ -149,6 +152,7 @@
         if (asked !== historyAsked) return;
         history = h.events;
         historyAlbums = h.albums;
+        historyOff = h.history_off;
         historyError = null;
       },
       (e) => {
@@ -742,6 +746,7 @@
       <p class="hint">Reading…</p>
     {:else if !history.length}
       <p class="hint">No changes seen since the app started keeping a history.</p>
+      {@render offNote()}
     {:else}
       <ol>
         {#each history as e}
@@ -752,8 +757,18 @@
           </li>
         {/each}
       </ol>
+      {@render offNote()}
     {/if}
   </details>
+{/snippet}
+
+{#snippet offNote()}
+  {#if historyOff.length}
+    <p class="hint">
+      History was off {offText(historyOff)}: changes from then are listed without what they replaced, and keyword tree
+      changes and album deletes from then may be missing here.
+    </p>
+  {/if}
 {/snippet}
 
 <aside class="info-panel" bind:this={panel}>
