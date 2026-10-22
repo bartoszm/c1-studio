@@ -744,9 +744,7 @@ async fn position(
     options: QueryOptions,
     row: u64,
 ) -> Result<Option<usize>, String> {
-    let all = QueryOptions { limit: None, offset: 0, facets: vec![], ..options };
-    let r = app.session()?.library.query(&filter, &all).map_err(|e| format!("{e:#}"))?;
-    Ok(r.rows.iter().position(|&r| r == row))
+    app.session()?.library.position(&filter, &options, row).map_err(|e| format!("{e:#}"))
 }
 
 /// The map's markers for the photos `filter` selects, clustered for what the map shows.

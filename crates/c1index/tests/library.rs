@@ -330,6 +330,35 @@ fn sorting_and_paging() {
 }
 
 #[test]
+fn a_photos_position_is_its_place_in_the_sorted_result() {
+    // Names repeat within and across two segments: equal names go by address.
+    let make = |source: &str, n: u32| -> Photo {
+        let mut p = photo(n);
+        p.id = PhotoId::new(&SourceId(source.into()), n.to_string());
+        p.file.name = format!("IMG_{:04}.RAF", (n * 7) % 900);
+        p.trashed = false;
+        p
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&MemorySource::new("a", (0..1200).map(|n| make("a", n)).collect(), vec![])).unwrap();
+    lib.sync(&MemorySource::new("b", (1200..2400).map(|n| make("b", n)).collect(), vec![])).unwrap();
+    assert!(lib.searcher().segment_readers().len() >= 2);
+
+    let rated = Filter { rating: Some(parse_rating(">=2").unwrap()), ..Filter::default() };
+    let unrated = Filter { rating: Some(parse_rating("none").unwrap()), ..Filter::default() };
+    let outside = lib.query(&unrated, &QueryOptions::default()).unwrap().rows[0];
+    for sort in [Sort::Filename, Sort::FilenameDesc, Sort::DateDesc] {
+        let options = QueryOptions { sort, ..QueryOptions::default() };
+        let rows = lib.query(&rated, &options).unwrap().rows;
+        for (i, &row) in rows.iter().enumerate().step_by(7) {
+            assert_eq!(lib.position(&rated, &options, row).unwrap(), Some(i), "{sort:?}");
+        }
+        assert_eq!(lib.position(&rated, &options, outside).unwrap(), None, "{sort:?}");
+    }
+}
+
+#[test]
 fn facets_match_brute_force_across_segments() {
     // Thousands of distinct keyword paths span many dictionary blocks, and two sources
     // synced separately give two segments: the case where ordinals are easiest to mix up.

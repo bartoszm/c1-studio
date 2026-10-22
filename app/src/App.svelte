@@ -217,8 +217,9 @@
     selected = null;
     mapRow = row;
   }
-  /** The map's photo picked on it: the map does not move to what is under the pointer. */
-  let pickedOnMap: number | null = null;
+  /** A photo focused that the map does not move to: one picked on it (it is under the
+   *  pointer), or kept while the map moved. Only for that change of focus. */
+  let holdMap: number | null = null;
   /** A photo picked on the map: picked in the grid too, scrolled to; one the grid does not
    *  show is only in the panel. */
   async function mapSelect(row: number) {
@@ -228,8 +229,10 @@
     if (i === null) return mapPick(row);
     await need(i, i + 1);
     if (mine !== generation) return;
-    pickedOnMap = row;
+    holdMap = row;
     await pick(i);
+    await tick();
+    holdMap = null;
     grid?.reveal(i);
   }
   /** With the grid and map in sync, the map centres on the photo picked in the grid. */
@@ -237,8 +240,7 @@
   $effect(() => {
     const row = focusRow;
     if (row === undefined || !mapOn || !follow) return;
-    if (untrack(() => pickedOnMap) === row) return;
-    pickedOnMap = null;
+    if (untrack(() => holdMap) === row) return;
     api.photo(row).then((p) => {
       if (focusRow === row && p?.geo) mapCenter = { row, lat: p.geo.lat, lon: p.geo.lon };
     }).catch(() => {});
@@ -533,9 +535,18 @@
       const first = api.query(asked, {
         sort: sortBy, limit: PAGE, offset: 0, facets: groups, facets_ignore_own: true,
       });
+      // A photo picked while this ran is the one kept: by its row, as the grid it was picked
+      // in goes. Several picked go as after an edit.
+      let keptRow = keepRow;
       if (kept) {
         where = await kept;
         if (mine !== generation) return;
+        if (picked.size > 1) keptRow = undefined;
+        else if (focusRow !== keepRow) {
+          keptRow = focusRow;
+          where = keptRow === undefined ? null : await api.position(asked, { sort: sortBy }, keptRow).catch(() => null);
+          if (mine !== generation) return;
+        }
       }
       // In place, the pages on screen and the focused photo's (and the next, for the viewer)
       // are read again alongside the first and swapped in with the result in one go: until
@@ -559,13 +570,21 @@
       loading = new Map();
       error = null;
       showOffline(mine, asked);
-      if (keepRow !== undefined && where !== null) {
-        // Set with the pages, so the focus never passes over the photo now at its old place.
-        selected = where;
-        anchor = where;
+      if (keptRow !== undefined) {
+        // Set with the pages, so the focus never passes over the photo now at its old place;
+        // one gone from the result leaves nothing picked, not whatever took its place.
         picked.clear();
-        picked.add(keepRow);
+        selected = anchor = null;
+        if (where === null) return;
+        if (rowAt(where) === undefined) {
+          await need(where, where + 1);
+          if (mine !== generation) return;
+        }
+        holdMap = keptRow;
+        selected = anchor = where;
+        picked.add(keptRow);
         await tick();
+        holdMap = null;
         if (mine === generation) grid?.reveal(where);
       } else if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;

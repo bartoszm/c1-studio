@@ -528,10 +528,11 @@
     if (c) untrack(() => map?.easeTo({ center: [c.lon, c.lat], padding }));
   });
   /** Where a short plus code is taken to be: the middle of the map, when it shows no more
-   *  than a degree or so (the code repeats every degree); zoomed out, it needs its town. */
+   *  than a degree each way (the code repeats every degree, and is found within half of one
+   *  of the middle); zoomed out, it needs its town. */
   const middle = (): [number, number] | null => {
     const b = map?.getBounds();
-    if (!b || b.getNorth() - b.getSouth() > 1.5) return null;
+    if (!b || b.getNorth() - b.getSouth() > 1 || b.getEast() - b.getWest() > 1) return null;
     const c = b.getCenter();
     return [c.lat, c.lng];
   };
