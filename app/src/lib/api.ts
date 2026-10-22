@@ -319,9 +319,9 @@ export type Op =
   | { SetColor: { base: Color | null; value: Color | null } }
   | Record<string, unknown>;
 export type Change = { photo: { source: string; ext: string }; op: Op };
-/** Who made a logged change: this app, Capture One (seen by a sync), a GPX track, or a
- * backup restored from this app. */
-export type Origin = "App" | "Source" | "Gpx" | "Restore";
+/** Who made a logged change: this app, Capture One (seen by a sync), a GPX track, a
+ * backup restored from this app, or a vision model's suggestion accepted here. */
+export type Origin = "App" | "Source" | "Gpx" | "Restore" | "Ai";
 type PhotoRef = { photo: { source: string; ext: string }; name: string };
 /** One entry of the change log (`c1index::Event`). */
 export type LogEvent = {
@@ -712,6 +712,99 @@ export const thumbsState = () => invoke<ThumbsState>("thumbs_state");
 export const fillThumbnails = () => invoke<void>("fill_thumbnails");
 /** Opens the events log (background work and what failed) in the system's text viewer. */
 export const openLog = () => invoke<void>("open_log");
+
+// Describing photos with a vision model (crates/c1ai, app/src-tauri/src/ai.rs).
+export type AiLanguage = "en" | "pl" | "both";
+/** The API with a key, or Claude Code signed in with a Claude plan. */
+export type AiAccess = "api" | "plan";
+/** What a description holds (crates/c1ai/src/prompt.rs, `Fields`). */
+export type AiFields = {
+  caption: boolean; headline: boolean; subject: boolean; keywords: boolean; keywords_new: boolean;
+  rating: boolean; scores: boolean; place: boolean;
+};
+export type AiSettings = {
+  access: AiAccess; model: string; language: AiLanguage; effort: "low" | "medium" | "high"; parallel: number;
+  fields: AiFields;
+  /** The user's own instructions; null: the default ones. */
+  instructions: string | null;
+};
+export type AiModel = { id: string; name: string; input: number; output: number };
+/** Claude Code as a plan run would use it. */
+export type AiPlan = { installed: boolean; loggedIn: boolean; authMethod: string | null; subscriptionType: string | null; error: string | null };
+export type AiView = {
+  settings: AiSettings;
+  models: AiModel[];
+  /** The key in use, masked, and where it comes from. */
+  key: [string, "stored" | "environment"] | null;
+  /** Only when the plan is chosen. */
+  plan: AiPlan | null;
+  /** A run can start: a key, or Claude Code signed in. */
+  ready: boolean;
+  calls: number;
+  /** US dollars spent in this library. */
+  spent: number;
+  default_instructions: string;
+};
+/** The prompt a run would send now. */
+export type AiPrompt = { system: string; schema: unknown };
+export type AiEstimate = { photos: number; skipped: number; cost: number; model: string; plan: boolean };
+export type DescribeState = {
+  running: boolean; done: number; total: number; failed: number;
+  /** Rows being described now. */
+  working: number[];
+  /** Unix ms. */
+  started: number;
+  cost: number; error: string | null;
+};
+export type Suggestion = {
+  caption_en: string | null;
+  caption_pl: string | null;
+  headline: string | null;
+  subject: string | null;
+  /** Pipe paths the catalog has. */
+  keywords: string[];
+  /** Keywords the catalog lacks. */
+  keywords_new: string[];
+  rating: number | null;
+  quality: number | null;
+  composition: number | null;
+  confidence: number;
+  place: { city: string | null; country: string | null; confidence: number } | null;
+};
+export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
+export type SuggestionRow = {
+  row: number;
+  at: number;
+  provider: string;
+  model: string;
+  suggestion: Suggestion;
+  warnings: string[];
+  cost: number;
+  status: SuggestionStatus;
+  /** What the photo has now, for comparing. */
+  current: { caption: string | null; headline: string | null; rating: number | null; keywords: string[] } | null;
+};
+/** What the review showed a photo to have: a field taken is set only while it still has it. */
+export type Seen = { caption: string | null; headline: string | null; rating: number | null };
+/** What the user takes from a suggestion; fields left out are not touched. */
+export type Accept = { row: number; keywords: string[]; caption?: string; headline?: string; rating?: number; seen: Seen };
+/** The ops that undo it, and the photos whose taken field changed since shown (left as is). */
+export type Accepted = { undo: [number, Op][]; changed: number[] };
+export const aiSettings = () => invoke<AiView>("ai_settings");
+export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
+/** Stores the key in the Windows Credential Manager; an empty one removes it. */
+export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
+export const aiPrompt = () => invoke<AiPrompt>("ai_prompt");
+export const aiEstimate = (rows: number[], again: boolean) => invoke<AiEstimate>("ai_estimate", { rows, again });
+/** Describes the photos in the background ("describe" events, then "describe-done"). */
+export const startDescribe = (rows: number[], again: boolean) => invoke<void>("start_describe", { rows, again });
+export const stopDescribe = () => invoke<void>("stop_describe");
+export const describeState = () => invoke<DescribeState>("describe_state");
+export const suggestions = (status: SuggestionStatus | null) => invoke<SuggestionRow[]>("suggestions", { status });
+/** Queues what was taken. */
+export const acceptSuggestions = (picks: Accept[]) => invoke<Accepted>("accept_suggestions", { picks });
+export const setSuggestionStatus = (rows: number[], status: SuggestionStatus) =>
+  invoke<void>("set_suggestion_status", { rows, status });
 
 /** Thumbnails that failed to load try again: one may have been made for them since. */
 let retries = 0;

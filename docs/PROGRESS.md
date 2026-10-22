@@ -1566,6 +1566,79 @@ country) and 68k have neither.
   `Page custom` line added. The page itself is in `windows/hooks.nsh`. A test in
   `c1sources` checks that every provider id is on the page.
 
+## Stage 5: AI suggestions
+
+### Describing photos with Claude (first slice)
+
+- **`crates/c1ai`:** `VisionProvider` (one photo per call → `Reply`: a checked
+  `Suggestion`, warnings, and a `RunRecord` of tokens, cost, time and the raw answer).
+  The prompt and the answer's fields come from the legacy `vision.py` (caption EN/PL,
+  headline, subject, keywords from the catalog's vocabulary plus at most three new ones,
+  rating, quality, composition, confidence, a place guess). `validate` maps keyword
+  names onto the catalog's own paths (the most used path for a name), drops ones with a
+  comma or a pipe, keeps scores in range.
+- **Claude** (`claude.rs`): the Messages API over `ureq` (no official Rust SDK). The
+  instructions and the vocabulary (400 most used names) are a cached system prompt; the
+  photo goes as a base64 JPEG of its preview at 1568 px. The answer is held to a JSON
+  Schema by structured output (`output_config.format`), not a forced tool: Opus 5.5 and
+  Sonnet 5.5 refuse a forced `tool_choice`. Effort `low` by default. Opus and Sonnet ask
+  for server-side fallbacks on a declined photo (`fallbacks: "default"`); a refusal or a
+  cut answer is an error for that photo. 408, 429, 5xx and network errors are tried
+  again (four times, after `retry-after` or 2, 4, 8 s). Cost from the list prices
+  (cache writes ×1.25, reads ×0.1), at the price of the model that answered.
+- **Keys** (`keys.rs`): the Windows Credential Manager (`keyring`, service `c1studio`),
+  never a file; `$ANTHROPIC_API_KEY` overrides it.
+- **Claude plan** (`claude_code.rs`): the same prompt, schema and photo through Claude
+  Code (`claude -p`) signed in with a Pro/Max plan, so runs count against the plan's
+  limits instead of an API bill. One process per photo: the photo as a stream-json user
+  message on stdin, the answer as `structured_output` of the final `result` event
+  (`--json-schema`), the system prompt from a file (`--system-prompt-file`), no tools,
+  `--safe-mode` (none of the user's hooks, plugins, MCP servers or CLAUDE.md). An
+  `ANTHROPIC_API_KEY` in the environment is removed for the child so the plan is used.
+  The API is not called with the plan's own token: Anthropic allows those only in
+  Claude Code and claude.ai. `claude auth status` shows the plan in the settings; a 429
+  (the plan's limit), a sign-in error or a missing CLI stops the run. Cost recorded as
+  0. `cargo run -p c1ai --example describe -- photo.jpg [model] [--api]` checks either
+  way live.
+- **Library:** suggestions in `ai.redb` (newest per photo, status proposed / accepted /
+  rejected) and every call's record, apart from the store like the analyses. Accepting
+  queues keywords, caption, headline and rating through `edit_photos_as` as
+  `Origin::Ai` (shown as "AI" in the history), made from the photo as it is then; new
+  keywords are added to the catalog. A place guess is never applied.
+- **What is asked:** Settings > AI ticks the fields a description holds (caption,
+  headline, subject, keywords, new keywords, rating, quality and composition, place
+  guess); the schema and the prompt's list of fields follow (`Fields`). The opening
+  instructions can be rewritten (kept as `instructions`, `null` for the default), with
+  the full prompt and schema shown; fields, language and vocabulary are always appended,
+  so the answer fits the review whatever the instructions say. Any change gives a new
+  prompt hash, so photos can be described again.
+- **What the photo has:** its title, headline, caption, rating and keywords go with it as
+  context; the default instructions tell the model to build on them and not to repeat
+  keywords. Each review card shows the photo's current values ("Now") beside the
+  suggestion; a caption or headline it already has is not taken unless ticked (struck
+  through when it would be replaced, with "replaces the … it has now" by Accept), keywords
+  it has are dimmed, its rating shown beside the suggested one. Bulk accept follows the
+  cards, so it never overwrites what is there.
+- **Progress:** the run's state is sent as it starts, with the photos at work (shown
+  pulsing in the AI tab), the start time, elapsed and, once a photo is back, the time
+  left; the footer counts the photos at work too.
+- **App:** `ai.rs` commands. Settings per catalog in `ai.json` (access: API key or
+  Claude plan, model, caption language, effort, photos at once, fields, instructions). A run first shows its estimate (photos × ~2.3k input, ~0.7k
+  output tokens) and leaves out photos described with the same model and prompt unless
+  *again* is ticked. Up to 8 calls at a time; each answer is stored as it comes, so a
+  stopped run keeps what it got; a refused key stops the run.
+- **AI tab:** the run's bar (Describe N photos… → estimate → Describe; Stop), the
+  settings, and the review: a card per photo with the headline and caption editable,
+  keywords to tick (known ticked, new ones dashed and not ticked), the rating offered
+  but not taken, confidence, quality, composition, the place guess, the call's cost.
+  Accept / Reject per card, *Accept N* above a confidence, *Reject all*. The grid is a
+  strip under the tab, as on the map; a card's thumbnail shows its photo in the panel.
+  Accepting is one undo step.
+- Deferred: an `/ai/` facet for the grid, the Gemini/agy provider (sheets, port of
+  `sheets.py`), search over AI captions.
+- Tests: `c1ai` (answer reading, cost, the request's shape, validation) and
+  `accepted_suggestions_are_queued_as_the_model_s_edits`.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that

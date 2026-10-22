@@ -259,6 +259,7 @@ fn origin_name(origin: Origin) -> &'static str {
         Origin::Source => "Source",
         Origin::Gpx => "Gpx",
         Origin::Restore => "Restore",
+        Origin::Ai => "Ai",
     }
 }
 

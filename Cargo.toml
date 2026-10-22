@@ -17,6 +17,7 @@ c1index = { path = "crates/c1index" }
 c1image = { path = "crates/c1image" }
 c1geo = { path = "crates/c1geo" }
 c1analysis = { path = "crates/c1analysis" }
+c1ai = { path = "crates/c1ai" }
 
 anyhow = "1"
 thiserror = "2"

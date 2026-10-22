@@ -1,0 +1,335 @@
+//! Photos described by a vision model: a caption, a headline, keywords taken from the
+//! catalog's own vocabulary (and a few new ones), a rating and a guess at the place.
+//!
+//! A [`VisionProvider`] answers one photo at a time with a [`Reply`]: the checked
+//! [`Suggestion`] and a [`RunRecord`] of what it cost. Nothing here writes anywhere; the
+//! library keeps suggestions until the user accepts them into the edit queue.
+//! [`claude::Claude`] calls the Claude API with a key; [`claude_code::ClaudeCode`] asks
+//! the same of Claude Code signed in with a Claude plan. Gemini through `agy` follows
+//! behind the same trait.
+
+pub mod claude;
+pub mod claude_code;
+pub mod keys;
+mod prompt;
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+
+pub use prompt::{Brief, Fields, INSTRUCTIONS, Language, prompt_hash, schema, system_prompt};
+
+/// Bumped when the prompt or the schema changes: photos described by another version are
+/// described again when asked.
+pub const PROMPT_VERSION: u32 = 1;
+
+/// One photo to describe: a JPEG of it and one line of what the catalog already knows
+/// (file name, date, camera, place), which helps the model and costs a few tokens.
+pub struct PhotoRequest {
+    pub jpeg: Vec<u8>,
+    pub context: String,
+}
+
+/// What the model answered, as the schema asks for it ([`schema`]). Unchecked.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RawAnswer {
+    pub caption_en: String,
+    pub caption_pl: String,
+    pub headline: String,
+    pub subject: String,
+    pub keywords: Vec<String>,
+    pub keywords_new: Vec<String>,
+    pub rating: i64,
+    pub quality: i64,
+    pub composition: i64,
+    pub confidence: f64,
+    pub location_guess: RawPlace,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RawPlace {
+    pub city: String,
+    pub country: String,
+    pub confidence: f64,
+}
+
+/// A suggestion for one photo, checked: empty texts are `None`, numbers are in range,
+/// keywords are split into ones the catalog has (by their full path) and new ones.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Suggestion {
+    pub caption_en: Option<String>,
+    pub caption_pl: Option<String>,
+    pub headline: Option<String>,
+    pub subject: Option<String>,
+    /// Keywords the catalog already has, as pipe paths (`places|Poland|Kraków`).
+    pub keywords: Vec<String>,
+    /// Keywords the catalog does not have yet.
+    pub keywords_new: Vec<String>,
+    /// 1..=5.
+    pub rating: Option<u8>,
+    pub quality: Option<u8>,
+    pub composition: Option<u8>,
+    /// 0..1.
+    pub confidence: f32,
+    pub place: Option<PlaceGuess>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlaceGuess {
+    pub city: Option<String>,
+    pub country: Option<String>,
+    pub confidence: f32,
+}
+
+/// What one call cost and took, kept with the suggestion: the set to judge prompts and
+/// models by later.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct RunRecord {
+    pub provider: String,
+    pub model: String,
+    /// Hash of the system prompt and schema the call was made with.
+    pub prompt: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub cache_read_tokens: u64,
+    /// US dollars, from the model's list price.
+    pub cost: f64,
+    pub millis: u64,
+    /// The answer as the model gave it, before checking.
+    pub raw: String,
+}
+
+#[derive(Debug)]
+pub struct Reply {
+    pub suggestion: Suggestion,
+    pub warnings: Vec<String>,
+    pub record: RunRecord,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum AiError {
+    #[error("no API key: add one in Settings > AI")]
+    NoKey,
+    #[error("the API key was refused: {0}")]
+    BadKey(String),
+    #[error("{status}: {message}")]
+    Http { status: u16, message: String, retry_after: Option<u64> },
+    #[error("network: {0}")]
+    Network(String),
+    #[error("the model declined this photo{}", .0.as_deref().map(|c| format!(" ({c})")).unwrap_or_default())]
+    Refused(Option<String>),
+    #[error("the answer was cut off")]
+    Truncated,
+    #[error("the answer could not be read: {0}")]
+    BadReply(String),
+    #[error("key store: {0}")]
+    Keys(String),
+    /// Claude Code is missing or would not start.
+    #[error("Claude Code: {0}")]
+    Cli(String),
+    #[error("the Claude plan's usage limit is reached: {0}")]
+    Limit(String),
+    #[error("stopped")]
+    Stopped,
+}
+
+impl AiError {
+    /// Worth trying again after a pause: rate limits, overload, server errors, the network.
+    pub fn retryable(&self) -> bool {
+        match self {
+            AiError::Http { status, .. } => *status == 408 || *status == 429 || *status >= 500,
+            AiError::Network(_) => true,
+            _ => false,
+        }
+    }
+
+    /// No other photo would fare better (no key, no Claude Code, no credit, a model the
+    /// account cannot use): a run stops rather than fail every photo the same way.
+    pub fn stops_run(&self) -> bool {
+        match self {
+            AiError::NoKey | AiError::BadKey(_) | AiError::Cli(_) | AiError::Limit(_) | AiError::Stopped => true,
+            AiError::Http { status, message, .. } => {
+                *status == 404 || message.to_lowercase().contains("credit balance")
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A photo that got no suggestion, with the call's record when one was made and paid
+/// for (a refusal, a cut or unreadable answer): spending counts it all the same.
+#[derive(Debug, thiserror::Error)]
+#[error("{error}")]
+pub struct Failed {
+    pub error: AiError,
+    pub record: Option<Box<RunRecord>>,
+}
+
+impl From<AiError> for Failed {
+    fn from(error: AiError) -> Self {
+        Failed { error, record: None }
+    }
+}
+
+pub trait VisionProvider: Send + Sync {
+    /// `claude`, `gemini`.
+    fn id(&self) -> &str;
+    fn model(&self) -> &str;
+    /// Hash of the prompt and schema in use: with [`VisionProvider::model`], says whether
+    /// a stored suggestion was made the same way.
+    fn prompt_hash(&self) -> u64;
+    fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed>;
+}
+
+/// The keywords a catalog has, by name: what a model's answer is matched against.
+/// A name used on several paths maps to the one most photos carry.
+#[derive(Default)]
+pub struct Vocabulary {
+    by_name: HashMap<String, String>,
+}
+
+impl Vocabulary {
+    /// `paths` are pipe paths with their photo counts.
+    pub fn new<'a>(paths: impl IntoIterator<Item = (&'a str, u64)>) -> Self {
+        let mut best: HashMap<String, (String, u64)> = HashMap::new();
+        for (path, count) in paths {
+            let Some(leaf) = path.rsplit('|').next() else { continue };
+            let key = fold(leaf);
+            match best.get(&key) {
+                Some((_, n)) if *n >= count => {}
+                _ => {
+                    best.insert(key, (path.to_string(), count));
+                }
+            }
+        }
+        Vocabulary { by_name: best.into_iter().map(|(k, (p, _))| (k, p)).collect() }
+    }
+
+    pub fn path(&self, name: &str) -> Option<&str> {
+        self.by_name.get(&fold(name)).map(String::as_str)
+    }
+}
+
+fn fold(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+fn text(s: &str) -> Option<String> {
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+fn score(n: i64) -> Option<u8> {
+    (1..=5).contains(&n).then_some(n as u8)
+}
+
+/// At most this many new keywords per photo: more is noise to review.
+pub const MAX_NEW_KEYWORDS: usize = 3;
+
+/// Checks an answer (as the legacy `vision.validate` did): drops keywords with a comma
+/// or a pipe (either would split into several keywords in the catalog), maps names onto
+/// the catalog's own paths, keeps scores in range. Returns the warnings with it.
+pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut keywords: Vec<String> = Vec::new();
+    let mut new: Vec<String> = Vec::new();
+    for (name, proposed) in raw.keywords.iter().map(|k| (k, false)).chain(raw.keywords_new.iter().map(|k| (k, true))) {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.contains(',') || name.contains('|') {
+            warnings.push(format!("dropped keyword {name:?}: a comma or a pipe would split it"));
+            continue;
+        }
+        if let Some(path) = vocabulary.path(name) {
+            if !keywords.iter().any(|k| k == path) {
+                keywords.push(path.to_string());
+            }
+        } else if !new.iter().any(|k| fold(k) == fold(name)) {
+            if !proposed {
+                warnings.push(format!("{name:?} is not in the catalog: suggested as new"));
+            }
+            new.push(name.to_string());
+        }
+    }
+    if new.len() > MAX_NEW_KEYWORDS {
+        warnings.push(format!("{} new keywords, kept {MAX_NEW_KEYWORDS}", new.len()));
+        new.truncate(MAX_NEW_KEYWORDS);
+    }
+    let guess = &raw.location_guess;
+    let place = (!guess.city.trim().is_empty() || !guess.country.trim().is_empty()).then(|| PlaceGuess {
+        city: text(&guess.city),
+        country: text(&guess.country),
+        confidence: guess.confidence.clamp(0.0, 1.0) as f32,
+    });
+    let suggestion = Suggestion {
+        caption_en: text(&raw.caption_en),
+        caption_pl: text(&raw.caption_pl),
+        headline: text(&raw.headline),
+        subject: text(&raw.subject),
+        keywords,
+        keywords_new: new,
+        rating: score(raw.rating),
+        quality: score(raw.quality),
+        composition: score(raw.composition),
+        confidence: raw.confidence.clamp(0.0, 1.0) as f32,
+        place,
+    };
+    (suggestion, warnings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vocabulary() -> Vocabulary {
+        Vocabulary::new([("street", 40), ("places|Poland|Kraków", 12), ("old|Kraków", 2), ("people|child", 7)])
+    }
+
+    #[test]
+    fn keywords_map_onto_the_catalog_paths() {
+        let raw = RawAnswer {
+            keywords: vec!["Street".into(), "kraków".into(), "tram".into()],
+            keywords_new: vec!["Tram".into(), "dusk".into()],
+            ..Default::default()
+        };
+        let (s, warnings) = validate(&raw, &vocabulary());
+        assert_eq!(s.keywords, vec!["street", "places|Poland|Kraków"]);
+        assert_eq!(s.keywords_new, vec!["tram", "dusk"]);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn commas_pipes_and_too_many_new_keywords_are_dropped() {
+        let raw = RawAnswer {
+            keywords_new: vec!["a, b".into(), "x|y".into(), "one".into(), "two".into(), "three".into(), "four".into()],
+            ..Default::default()
+        };
+        let (s, warnings) = validate(&raw, &vocabulary());
+        assert_eq!(s.keywords_new, vec!["one", "two", "three"]);
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+    }
+
+    #[test]
+    fn scores_and_texts_are_checked() {
+        let raw = RawAnswer {
+            caption_en: "  A tram at dusk. ".into(),
+            headline: " ".into(),
+            rating: 9,
+            quality: 4,
+            composition: 0,
+            confidence: 1.7,
+            ..Default::default()
+        };
+        let (s, _) = validate(&raw, &vocabulary());
+        assert_eq!(s.caption_en.as_deref(), Some("A tram at dusk."));
+        assert_eq!(s.headline, None);
+        assert_eq!((s.rating, s.quality, s.composition), (None, Some(4), None));
+        assert_eq!(s.confidence, 1.0);
+        assert_eq!(s.place, None);
+    }
+}

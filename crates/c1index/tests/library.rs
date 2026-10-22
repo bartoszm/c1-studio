@@ -2420,3 +2420,109 @@ fn compare_says_when_a_keyword_tree_change_kept_no_photos() {
     // The one that kept its photos counts; the other is not in the numbers.
     assert_eq!(c.keywords_added, [("top|best2018".to_owned(), 3)]);
 }
+
+#[test]
+fn accepted_suggestions_are_queued_as_the_model_s_edits() {
+    use c1index::ai::{Entry, Status};
+    let (_d, lib, _s) = setup();
+    let row = row_of(&lib, 7);
+    let suggestion = c1ai::Suggestion { headline: Some("Market square".into()), ..c1ai::Suggestion::default() };
+    let entry = Entry {
+        at: 1,
+        provider: "claude".into(),
+        model: "claude-haiku-5-5".into(),
+        prompt: 7,
+        suggestion,
+        warnings: vec![],
+        cost: 0.001,
+        status: Status::Proposed,
+    };
+    lib.put_suggestion(row, &entry, &c1ai::RunRecord::default()).unwrap();
+    assert_eq!(lib.described(&[row, row_of(&lib, 8)], "claude-haiku-5-5", 7).unwrap().len(), 1);
+    assert!(lib.described(&[row], "claude-opus-5-5", 7).unwrap().is_empty());
+    assert_eq!(lib.vocabulary().unwrap()[0].0, "street");
+
+    let before = lib.photo(row).unwrap().unwrap();
+    let pick = c1index::Accept {
+        row,
+        keywords: vec!["street".into(), "market".into()],
+        headline: Some("Market square".into()),
+        rating: Some(5),
+        seen: c1index::Seen {
+            caption: before.iptc.description.clone(),
+            headline: before.iptc.headline.clone(),
+            rating: before.rating,
+        },
+        ..c1index::Accept::default()
+    };
+    let accepted = lib.accept_suggestions(&[pick]).unwrap();
+    assert!(accepted.changed.is_empty());
+    let undo = accepted.undo;
+    let photo = lib.photo(row).unwrap().unwrap();
+    assert_eq!(photo.rating, Some(5));
+    assert_eq!(photo.iptc.headline.as_deref(), Some("Market square"));
+    assert_eq!(photo.iptc.description.as_deref(), Some("Rynek we Wrocławiu"), "the caption is left as it was");
+    assert!(photo.keywords.contains(&KeywordPath::from_pipe("street")));
+    assert!(photo.keywords.contains(&KeywordPath::from_pipe("market")));
+    assert!(!undo.is_empty());
+    assert!(lib.events(10).unwrap().iter().any(|e| e.origin == Origin::Ai));
+    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
+    assert!(lib.suggestions(Some(Status::Proposed)).unwrap().is_empty());
+}
+
+/// A caption written after the review showed the photo is not replaced by accepting: the
+/// field is left, the rest is taken, and the suggestion stays to review again.
+#[test]
+fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
+    use c1index::ai::{Entry, Status};
+    let (_d, lib, _s) = setup();
+    let row = row_of(&lib, 7);
+    let entry = Entry {
+        at: 1,
+        provider: "claude".into(),
+        model: "claude-haiku-5-5".into(),
+        prompt: 7,
+        suggestion: c1ai::Suggestion::default(),
+        warnings: vec![],
+        cost: 0.0,
+        status: Status::Proposed,
+    };
+    lib.put_suggestion(row, &entry, &c1ai::RunRecord::default()).unwrap();
+    let before = lib.photo(row).unwrap().unwrap();
+    assert_eq!(before.iptc.description.as_deref(), Some("Rynek we Wrocławiu"));
+    // The card was shown when the photo had no caption, and no rating.
+    let pick = c1index::Accept {
+        row,
+        keywords: vec!["market".into()],
+        caption: Some("A market square at dusk.".into()),
+        rating: Some(4),
+        seen: c1index::Seen { headline: before.iptc.headline.clone(), ..c1index::Seen::default() },
+        ..c1index::Accept::default()
+    };
+    let rated = before.rating.is_some();
+    let accepted = lib.accept_suggestions(&[pick]).unwrap();
+    assert_eq!(accepted.changed, vec![row]);
+    let photo = lib.photo(row).unwrap().unwrap();
+    assert_eq!(photo.iptc.description.as_deref(), Some("Rynek we Wrocławiu"), "the caption written since is kept");
+    if rated {
+        assert_eq!(photo.rating, before.rating, "the rating set since is kept");
+    }
+    assert!(photo.keywords.contains(&KeywordPath::from_pipe("market")), "the rest is taken");
+    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Proposed);
+
+    // Shown as it is now, it is taken.
+    let pick = c1index::Accept {
+        row,
+        caption: Some("A market square at dusk.".into()),
+        seen: c1index::Seen {
+            caption: photo.iptc.description.clone(),
+            headline: photo.iptc.headline.clone(),
+            rating: photo.rating,
+        },
+        ..c1index::Accept::default()
+    };
+    assert!(lib.accept_suggestions(&[pick]).unwrap().changed.is_empty());
+    let photo = lib.photo(row).unwrap().unwrap();
+    assert_eq!(photo.iptc.description.as_deref(), Some("A market square at dusk."));
+    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
+}

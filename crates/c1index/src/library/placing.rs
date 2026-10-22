@@ -323,7 +323,7 @@ impl Library {
     }
 
     /// The photo key of a row.
-    fn key_of(&self, row: u64) -> Option<String> {
+    pub(super) fn key_of(&self, row: u64) -> Option<String> {
         self.keys.read().unwrap().get(row as usize)?.clone()
     }
 

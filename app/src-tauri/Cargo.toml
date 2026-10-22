@@ -19,6 +19,7 @@ c1sources.workspace = true
 source-folders.workspace = true
 c1index.workspace = true
 c1analysis.workspace = true
+c1ai.workspace = true
 c1image.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

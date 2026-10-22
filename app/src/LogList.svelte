@@ -19,7 +19,7 @@
     onerror: (text: string) => void;
   } = $props();
 
-  const ORIGINS: Origin[] = ["App", "Source", "Gpx", "Restore"];
+  const ORIGINS: Origin[] = ["App", "Source", "Gpx", "Restore", "Ai"];
   let origins = $state<Origin[]>([]);
   let kinds = $state<LogKind[]>([]);
   let groups = $state.raw<LogGroup[]>([]);

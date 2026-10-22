@@ -121,6 +121,7 @@ export function originLabel(origin: Origin, provider = ""): string {
     case "Source": return sourceName(provider);
     case "Gpx": return "GPX";
     case "Restore": return "backup";
+    case "Ai": return "AI";
   }
 }
 

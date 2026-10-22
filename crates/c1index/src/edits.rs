@@ -91,6 +91,8 @@ pub enum Origin {
     Gpx,
     /// Put back by restoring a backup of the source from this app.
     Restore,
+    /// Suggested by a vision model and accepted in this app.
+    Ai,
 }
 
 /// One entry of the change log: when, from where, and what.
