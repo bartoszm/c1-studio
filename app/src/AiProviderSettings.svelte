@@ -37,7 +37,7 @@
     { key: "keywords_new", label: "New keywords", hint: `at most three the ${source.noun} lacks` },
     { key: "rating", label: "Rating", hint: "1 to 5 stars, never taken unless ticked" },
     { key: "scores", label: "Quality and composition", hint: "1 to 5 each, shown on the card" },
-    { key: "place", label: "Place guess", hint: "city and country from landmarks or signs; never applied" },
+    { key: "place", label: "Place", hint: "country, region, city, location and a position, each with how likely it is" },
   ];
   function toggleField(key: keyof api.AiFields, on: boolean) {
     if (!view) return;
@@ -150,6 +150,12 @@
     <div>
       <input id="ai-parallel" type="number" min="1" max="8" value={view.settings.parallel} disabled={busy} onchange={(e) => save({ parallel: Number(e.currentTarget.value) })} />
       <span class="muted">photos described in parallel</span>
+    </div>
+
+    <label for="ai-place-tick">Place</label>
+    <div>
+      <input id="ai-place-tick" type="number" min="1" max="100" value={view.settings.place_tick} disabled={busy} onchange={(e) => save({ place_tick: Number(e.currentTarget.value) })} />
+      <span class="muted">% likely or more: ticked in the review where the photo has none</span>
     </div>
   </div>
   {#if error}<p class="warn">{error}</p>{/if}

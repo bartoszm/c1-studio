@@ -280,7 +280,7 @@ mod tests {
     /// The last line Claude Code prints, as it printed it for a photo (trimmed).
     const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"stop_reason":"tool_use","api_error_status":null,"total_cost_usd":0.0012,
       "usage":{"input_tokens":2,"cache_creation_input_tokens":3671,"cache_read_input_tokens":0,"output_tokens":905},
-      "result":"","structured_output":{"caption_en":"Three men play xiangqi at a stone table.","caption_pl":"","headline":"Street chess","subject":"xiangqi","keywords":["street"],"keywords_new":["xiangqi"],"rating":3,"quality":4,"composition":3,"confidence":0.9,"location_guess":{"city":"Hong Kong","country":"China","confidence":0.5}}}"#;
+      "result":"","structured_output":{"caption_en":"Three men play xiangqi at a stone table.","caption_pl":"","headline":"Street chess","subject":"xiangqi","keywords":["street"],"keywords_new":["xiangqi"],"rating":3,"quality":4,"composition":3,"confidence":0.9,"location_guess":{"country":{"name":"China","p":0.5},"state":{"name":"","p":0},"city":{"name":"Hong Kong","p":0.5},"location":{"name":"","p":0},"coordinates":{"lat":0,"lon":0,"p":0,"radius_km":0}}}}"#;
 
     #[test]
     fn reads_the_structured_answer() {

@@ -2464,6 +2464,7 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
             caption: before.iptc.description.clone(),
             headline: before.iptc.headline.clone(),
             rating: before.rating,
+            ..c1index::Seen::default()
         },
         ..c1index::Accept::default()
     };
@@ -2530,6 +2531,7 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
             caption: photo.iptc.description.clone(),
             headline: photo.iptc.headline.clone(),
             rating: photo.rating,
+            ..c1index::Seen::default()
         },
         ..c1index::Accept::default()
     };
@@ -2537,4 +2539,73 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
     let photo = lib.photo(row).unwrap().unwrap();
     assert_eq!(photo.iptc.description.as_deref(), Some("A market square at dusk."));
     assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
+}
+
+/// A place guessed level by level is checked against the gazetteer when stored, and taken
+/// as edits from the model: the ticked levels, and a position only where there is none,
+/// marked approximate.
+#[test]
+fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
+    use c1ai::{Guess, PlaceGuess, PointGuess};
+    use c1index::ai::{Entry, Status};
+    let (_d, lib, _s) = setup();
+    let guess = |city: &str, p: f32| PlaceGuess {
+        country: Some(Guess { name: "Poland".into(), p: 0.95 }),
+        city: Some(Guess { name: city.into(), p }),
+        point: Some(PointGuess { lat: 50.06, lon: 19.94, p: 0.9, radius_km: 5.0 }),
+        ..PlaceGuess::default()
+    };
+    let entry = |place: PlaceGuess| Entry {
+        at: 1,
+        provider: "claude".into(),
+        model: "claude-haiku-5-5".into(),
+        prompt: 7,
+        suggestion: c1ai::Suggestion { place: Some(place), ..c1ai::Suggestion::default() },
+        warnings: vec![],
+        cost: 0.0,
+        status: Status::Proposed,
+    };
+    let (eight, seven) = (row_of(&lib, 8), row_of(&lib, 7));
+    lib.put_suggestion(eight, &entry(guess("Kraków", 0.9)), &c1ai::RunRecord::default()).unwrap();
+    let stored = lib.suggestion(eight).unwrap().unwrap();
+    let place = stored.suggestion.place.unwrap();
+    assert_eq!(place.country_code.as_deref(), Some("PL"));
+    assert_eq!(place.city.unwrap().p, 0.9);
+    assert!(stored.warnings.is_empty(), "{:?}", stored.warnings);
+
+    // A city the gazetteer does not have in that country is doubted; a point elsewhere too.
+    lib.put_suggestion(seven, &entry(guess("Atlantis", 0.9)), &c1ai::RunRecord::default()).unwrap();
+    let doubted = lib.suggestion(seven).unwrap().unwrap();
+    let place = doubted.suggestion.place.unwrap();
+    assert_eq!(place.city.unwrap().p, 0.5);
+    assert_eq!(doubted.warnings.len(), 1, "{:?}", doubted.warnings);
+
+    let taken = Place {
+        country: Some("Poland".into()),
+        country_code: Some("PL".into()),
+        city: Some("Kraków".into()),
+        ..Place::default()
+    };
+    let pick = |row: u64| c1index::Accept {
+        row,
+        place: taken.clone(),
+        point: Some([50.06, 19.94]),
+        seen: c1index::Seen { place: lib.photo(row).unwrap().unwrap().place, ..c1index::Seen::default() },
+        ..c1index::Accept::default()
+    };
+    let before = lib.photo(seven).unwrap().unwrap();
+    let accepted = lib.accept_suggestions(&[pick(eight), pick(seven)]).unwrap();
+    assert!(accepted.changed.is_empty());
+
+    let eight_now = lib.photo(eight).unwrap().unwrap();
+    assert_eq!(eight_now.place, taken);
+    let geo = eight_now.geo.unwrap();
+    assert_eq!((geo.lat, geo.lon, geo.origin), (50.06, 19.94, GeoOrigin::Geocoded));
+    let approx = Filter { gps: Some(true), approx: Some(true), ..Filter::default() };
+    assert_eq!(ids(&lib, &approx), [8], "shown as ≈");
+
+    let seven_now = lib.photo(seven).unwrap().unwrap();
+    assert_eq!(seven_now.geo, before.geo, "a position the photo has stays");
+    assert_eq!(seven_now.place.city.as_deref(), Some("Kraków"), "the city shown was replaced, as ticked");
+    assert!(lib.events(10).unwrap().iter().any(|e| e.origin == Origin::Ai));
 }

@@ -754,6 +754,8 @@ export type AiSettings = {
   fields: AiFields;
   /** The user's own instructions; null: the default ones. */
   instructions: string | null;
+  /** A place level guessed at least this likely (%) starts ticked where the photo has none. */
+  place_tick: number;
 };
 export type AiModel = { id: string; name: string; input: number; output: number };
 /** Claude Code as a plan run would use it. */
@@ -796,7 +798,21 @@ export type Suggestion = {
   quality: number | null;
   composition: number | null;
   confidence: number;
-  place: { city: string | null; country: string | null; confidence: number } | null;
+  place: PlaceGuess | null;
+};
+/** A photo's place names. */
+export type PlaceNames = Photo["place"];
+/** A place level guessed, with the probability (0..1) that it is right. */
+export type Guess = { name: string; p: number };
+/** Where the model thinks the photo was taken, level by level, and a position. */
+export type PlaceGuess = {
+  country: Guess | null;
+  state: Guess | null;
+  city: Guess | null;
+  location: Guess | null;
+  /** Known when the gazetteer knows the country. */
+  country_code: string | null;
+  point: { lat: number; lon: number; p: number; radius_km: number } | null;
 };
 export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
 export type SuggestionRow = {
@@ -809,12 +825,24 @@ export type SuggestionRow = {
   cost: number;
   status: SuggestionStatus;
   /** What the photo has now, for comparing. */
-  current: { caption: string | null; headline: string | null; rating: number | null; keywords: string[] } | null;
+  current: {
+    caption: string | null; headline: string | null; rating: number | null; keywords: string[];
+    place: PlaceNames;
+    /** It has a position: a guessed one is never given. */
+    placed: boolean;
+  } | null;
 };
 /** What the review showed a photo to have: a field taken is set only while it still has it. */
-export type Seen = { caption: string | null; headline: string | null; rating: number | null };
+export type Seen = { caption: string | null; headline: string | null; rating: number | null; place: PlaceNames | null };
 /** What the user takes from a suggestion; fields left out are not touched. */
-export type Accept = { row: number; keywords: string[]; caption?: string; headline?: string; rating?: number; seen: Seen };
+export type Accept = {
+  row: number; keywords: string[]; caption?: string; headline?: string; rating?: number;
+  /** The place levels taken. */
+  place?: Partial<PlaceNames>;
+  /** A position taken, given only to a photo with none (marked ≈). */
+  point?: [number, number];
+  seen: Seen;
+};
 /** The ops that undo it, and the photos whose taken field changed since shown (left as is). */
 export type Accepted = { undo: [number, Op][]; changed: number[] };
 export const aiSettings = () => invoke<AiView>("ai_settings");

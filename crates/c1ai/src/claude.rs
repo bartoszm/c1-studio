@@ -275,7 +275,7 @@ mod tests {
       "id": "msg_01", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
       "content": [
         {"type": "thinking", "thinking": "", "signature": "x"},
-        {"type": "text", "text": "{\"caption_en\":\"A tram turns into Basztowa street at dusk.\",\"caption_pl\":\"\",\"headline\":\"Tram at dusk\",\"subject\":\"tram\",\"keywords\":[\"street\",\"Kraków\"],\"keywords_new\":[\"tram\"],\"rating\":4,\"quality\":4,\"composition\":3,\"confidence\":0.8,\"location_guess\":{\"city\":\"Kraków\",\"country\":\"Poland\",\"confidence\":0.6}}"}
+        {"type": "text", "text": "{\"caption_en\":\"A tram turns into Basztowa street at dusk.\",\"caption_pl\":\"\",\"headline\":\"Tram at dusk\",\"subject\":\"tram\",\"keywords\":[\"street\",\"Kraków\"],\"keywords_new\":[\"tram\"],\"rating\":4,\"quality\":4,\"composition\":3,\"confidence\":0.8,\"location_guess\":{\"country\":{\"name\":\"Poland\",\"p\":0.9},\"state\":{\"name\":\"\",\"p\":0},\"city\":{\"name\":\"Kraków\",\"p\":0.6},\"location\":{\"name\":\"\",\"p\":0},\"coordinates\":{\"lat\":50.06,\"lon\":19.94,\"p\":0.4,\"radius_km\":5}}}"}
       ],
       "stop_reason": "end_turn", "stop_details": null,
       "usage": {"input_tokens": 2210, "output_tokens": 640, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 1480}
@@ -287,7 +287,7 @@ mod tests {
         let (_, answer) = read(&message).unwrap();
         assert_eq!(answer.headline, "Tram at dusk");
         assert_eq!(answer.keywords, vec!["street", "Kraków"]);
-        assert_eq!(answer.location_guess.city, "Kraków");
+        assert_eq!(answer.location_guess.city.name, "Kraków");
         let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap();
         let opus = model("claude-opus-5-5").unwrap();
         let expected = ((2210.0 + 1480.0 * 0.1) * 4.0 + 640.0 * 20.0) / 1e6;
