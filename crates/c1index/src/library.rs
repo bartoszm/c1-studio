@@ -43,9 +43,7 @@ mod selection;
 pub use describing::{Accept, Accepted, Seen};
 pub use history::{HistoryOff, LogDays, LogPage};
 
-pub use placing::{
-    FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,
-};
+pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
 pub use selection::{Merged, Selection, group_places};
 
 /// How many photos one read of a source may keep whole in the log when it finds them gone
