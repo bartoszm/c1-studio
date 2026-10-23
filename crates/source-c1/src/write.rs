@@ -85,10 +85,11 @@ fn journal_present(catalog: &Path) -> bool {
 fn held_elsewhere(catalog: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
     match holders(catalog) {
-        Some(pids) => pids.iter().any(|&pid| pid != std::process::id()),
-        // Without the Restart Manager: can the file be opened with no sharing at all?
-        // That fails against the app's own reads too.
-        None => fs::OpenOptions::new().read(true).write(true).share_mode(0).open(catalog).is_err(),
+        Some(pids) if !pids.is_empty() => pids.iter().any(|&pid| pid != std::process::id()),
+        // Nobody listed, or no answer: the Restart Manager sees only this machine's
+        // handles, so a catalog on a share another machine holds lists nobody. Can the file
+        // be opened with no sharing at all? That fails against the app's own reads too.
+        _ => fs::OpenOptions::new().read(true).write(true).share_mode(0).open(catalog).is_err(),
     }
 }
 
@@ -702,8 +703,10 @@ pub(crate) mod tests {
         fs::write(&file, b"x").unwrap();
         assert!(!held_elsewhere(&file));
 
+        // Listed (with nothing else, unless a scanner looks at the new file just then), so
+        // the exclusive open, which would fail against it, is not what decides.
         let ours = fs::File::open(&file).unwrap();
-        assert_eq!(holders(&file), Some(vec![std::process::id()]));
+        assert!(holders(&file).unwrap().contains(&std::process::id()));
         assert!(!held_elsewhere(&file));
         drop(ours);
 
