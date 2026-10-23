@@ -30,7 +30,7 @@ export default {
         if (apply) {
           await d.clickAt(apply.x, apply.y);
           applied = true;
-          await d.waitFor("footer button", /edits? waiting/, { timeout: 60000 }).catch(() => {});
+          await d.cut(() => d.waitFor("footer button", /edits? waiting/, { timeout: 300000 }).catch(() => {}));
           await d.sleep(2600);
         } else {
           await d.click(".dialog .buttons button", /^Cancel$/);

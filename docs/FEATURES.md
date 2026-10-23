@@ -3,8 +3,8 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.6.0: [describe photos with AI](#describe-photos-with-ai) and
-[History](#history-the-catalog-over-time). New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
+New in 0.6.0: [describe photos with AI](#describe-photos-with-ai),
+[History](#history-the-catalog-over-time) and [plus codes, map and grid in sync](#no-location-plus-codes-map-and-grid-in-sync). New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
 [photo folders](#photo-folders) and [places from neighbours in time](#places-from-neighbours-in-time).
 
 - [Find anything, instantly](#find-anything-instantly)
@@ -20,6 +20,7 @@ New in 0.6.0: [describe photos with AI](#describe-photos-with-ai) and
 - [See what your photos look like](#see-what-your-photos-look-like)
 - [Duplicates, bursts and stacking](#duplicates-bursts-and-stacking)
 - [On the map](#on-the-map)
+- [No location, plus codes, map and grid in sync](#no-location-plus-codes-map-and-grid-in-sync)
 - [Places from neighbours in time](#places-from-neighbours-in-time)
 - [Trips and the timeline](#trips-and-the-timeline)
 - [Write, history and backups](#write-history-and-backups)
@@ -169,6 +170,19 @@ after. Drag the line under the map to give the photo strip more room.
 
 [In the guide: Map](GUIDE.md#map)
 
+## No location, plus codes, map and grid in sync
+
+*New in 0.6.0.* **Places › No location** shows the photos with nothing in the Location
+field (click again for those with one), and with a city known, the Location field offers
+only that city's locations. A Google plus code is taken wherever GPS is typed: a full one,
+a short one near the photo or the map's middle, or a short one with a town. With *sync grid
+and map* on, a photo's pin picks it in the grid, and the photo picked in the grid centres
+the map; the details panel shows a photo's plus code.
+
+![No location, a plus code typed into the map, a pin picking its photo, and the map following the grid](media/features/places.gif)
+
+[In the guide: Map](GUIDE.md#map)
+
 ## Places from neighbours in time
 
 *New in 0.4.0.* Photos taken moments apart were taken in the same place. **Neighbours…**
@@ -215,6 +229,8 @@ out of. Every number shows those photos in the grid. Under it, the change log in
 Not wanted? *Settings › History* turns the tab off for a catalog: the change log then
 keeps only the changes themselves, as before, and the app does no history work.
 
+![The History tab: two dates compared, a number showing its photos, and the change log](media/features/changes.gif)
+
 [In the guide: History](GUIDE.md#history)
 
 ## Describe photos with AI
@@ -227,6 +243,8 @@ each is. Tick what fits and accept it; it becomes edits in the queue like any of
 what the photo already has is replaced only when you tick it. Gemini can take contact
 sheets of 36 photos in one call for a quick first pass, and **Details** shows each call as
 it goes, down to the sheet that was sent.
+
+![Describing four photos with Claude, the cards, and one accepted into the edit queue](media/features/ai.gif)
 
 [In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
 
