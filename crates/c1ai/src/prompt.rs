@@ -92,8 +92,11 @@ const RATING: &str = "- rating: 1 to 5, how strong the photo is within a photogr
 (3 is a sound keeper, 5 a portfolio piece, 1 a reject: missed focus, blur, a closed eye).";
 const SCORES: &str = "- quality: 1 to 5 for the technical side (focus where it matters, exposure, noise).
 - composition: 1 to 5 for framing and timing.";
-const PLACE: &str = "- location_guess: city and country only when a landmark, a sign or unmistakable architecture shows where it is; \
-otherwise empty strings and confidence 0.";
+const PLACE: &str = "- location_guess: where the photo was taken, level by level: country, state (the region or province), \
+city, and location (a district, a landmark or a venue), each a name and p, the probability from 0 to 1 that it is right. \
+A deeper level is never more likely than the one above it. Name a level only from what the photo shows (a landmark, a sign, \
+the script, the architecture, the landscape) or from the catalog data given; otherwise an empty name and p 0. \
+coordinates: lat and lon in decimal degrees, radius_km how far off they may be, and p; all 0 when you cannot place it.";
 const CONFIDENCE: &str = "- confidence: 0 to 1, how sure you are of the whole answer.";
 
 pub fn system_prompt(brief: &Brief) -> String {
@@ -144,14 +147,28 @@ pub fn schema(fields: &Fields) -> Value {
     let int = json!({"type": "integer"});
     let text = json!({"type": "string"});
     let words = json!({"type": "array", "items": {"type": "string"}});
+    let number = json!({"type": "number"});
+    let level = json!({
+        "type": "object",
+        "properties": {"name": text, "p": number},
+        "required": ["name", "p"],
+        "additionalProperties": false
+    });
     let place = json!({
         "type": "object",
         "properties": {
-            "city": {"type": "string"},
-            "country": {"type": "string"},
-            "confidence": {"type": "number"}
+            "country": level,
+            "state": level,
+            "city": level,
+            "location": level,
+            "coordinates": {
+                "type": "object",
+                "properties": {"lat": number, "lon": number, "p": number, "radius_km": number},
+                "required": ["lat", "lon", "p", "radius_km"],
+                "additionalProperties": false
+            }
         },
-        "required": ["city", "country", "confidence"],
+        "required": ["country", "state", "city", "location", "coordinates"],
         "additionalProperties": false
     });
     let f = fields;
@@ -194,6 +211,16 @@ pub fn prompt_hash(brief: &Brief) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_place_is_asked_level_by_level_with_a_position() {
+        let schema = schema(&Fields::default());
+        let place = &schema["properties"]["location_guess"];
+        let required: Vec<&str> = place["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(required, ["country", "state", "city", "location", "coordinates"]);
+        assert_eq!(place["properties"]["city"]["required"], json!(["name", "p"]));
+        assert_eq!(place["properties"]["coordinates"]["required"], json!(["lat", "lon", "p", "radius_km"]));
+    }
 
     #[test]
     fn fields_left_out_are_neither_asked_for_nor_in_the_schema() {

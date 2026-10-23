@@ -12,7 +12,7 @@ use c1ai::keys::{self, ANTHROPIC};
 use c1ai::{AiError, Brief, Failed, Fields, Language, PhotoRequest, VisionProvider, Vocabulary};
 use c1index::ai::{Entry, Status};
 use c1index::{Accept, Accepted};
-use c1model::{ImageTier, Photo};
+use c1model::{ImageTier, Photo, Place};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -43,6 +43,9 @@ pub(crate) struct AiSettings {
     fields: Fields,
     /// The user's own instructions in place of [`c1ai::INSTRUCTIONS`].
     instructions: Option<String>,
+    /// A place level (or position) guessed at least this likely (%) is ticked in the review
+    /// where the photo has none.
+    place_tick: u8,
 }
 
 impl Default for AiSettings {
@@ -55,6 +58,7 @@ impl Default for AiSettings {
             parallel: 4,
             fields: Fields::default(),
             instructions: None,
+            place_tick: 80,
         }
     }
 }
@@ -182,7 +186,12 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     // version of them then reaches this catalog too.
     let instructions =
         settings.instructions.map(|i| i.trim().to_string()).filter(|i| !i.is_empty() && i != c1ai::INSTRUCTIONS.trim());
-    let settings = AiSettings { parallel: settings.parallel.clamp(1, 8), instructions, ..settings };
+    let settings = AiSettings {
+        parallel: settings.parallel.clamp(1, 8),
+        place_tick: settings.place_tick.clamp(1, 100),
+        instructions,
+        ..settings
+    };
     std::fs::write(settings_path(&s), serde_json::to_vec_pretty(&settings).map_err(text)?).map_err(text)?;
     tauri::async_runtime::spawn_blocking(move || view(&s)).await.map_err(text)?
 }
@@ -545,6 +554,9 @@ pub(crate) struct Current {
     rating: Option<u8>,
     /// Pipe paths.
     keywords: Vec<String>,
+    place: Place,
+    /// It has a position: a guessed one is never given.
+    placed: bool,
 }
 
 impl Current {
@@ -555,6 +567,8 @@ impl Current {
             headline: text(&photo.iptc.headline),
             rating: photo.rating,
             keywords: photo.keywords.iter().map(|k| k.to_pipe()).collect(),
+            place: photo.place.clone(),
+            placed: photo.geo.is_some(),
         }
     }
 }

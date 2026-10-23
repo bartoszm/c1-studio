@@ -14,7 +14,9 @@ use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
 /// photo key → postcard [`Entry`]: the newest suggestion per photo.
-const SUGGESTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("suggestions");
+const SUGGESTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("suggestions_v2");
+/// The same with a place of a city and a country ([`v1::Entry`]), moved over on opening.
+const SUGGESTIONS_V1: TableDefinition<&str, &[u8]> = TableDefinition::new("suggestions");
 /// sequence → postcard (photo key, [`RunRecord`]): every call, never rewritten.
 const RECORDS: TableDefinition<u64, &[u8]> = TableDefinition::new("records");
 
@@ -48,8 +50,24 @@ impl SuggestionBook {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
         let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
         let tx = db.begin_write()?;
-        tx.open_table(SUGGESTIONS)?;
-        tx.open_table(RECORDS)?;
+        {
+            let mut table = tx.open_table(SUGGESTIONS)?;
+            tx.open_table(RECORDS)?;
+            // Postcard does not say what it holds, so the older entries are read as they
+            // were written and stored again in the new shape.
+            let old = tx.open_table(SUGGESTIONS_V1)?;
+            for row in old.iter()? {
+                let (key, bytes) = row?;
+                // One already in the new table is newer (an older build ran in between).
+                if table.get(key.value())?.is_some() {
+                    continue;
+                }
+                if let Ok(entry) = postcard::from_bytes::<v1::Entry>(bytes.value()) {
+                    table.insert(key.value(), postcard::to_stdvec(&Entry::from(entry))?.as_slice())?;
+                }
+            }
+        }
+        tx.delete_table(SUGGESTIONS_V1)?;
         tx.commit()?;
         Ok(Self { db })
     }
@@ -133,6 +151,78 @@ impl SuggestionBook {
     }
 }
 
+/// Entries as stored by the first builds of the AI tab, whose place was a city and a
+/// country with one confidence.
+mod v1 {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    pub struct Entry {
+        pub at: i64,
+        pub provider: String,
+        pub model: String,
+        pub prompt: u64,
+        pub suggestion: Suggestion,
+        pub warnings: Vec<String>,
+        pub cost: f64,
+        pub status: super::Status,
+    }
+
+    #[derive(Deserialize)]
+    pub struct Suggestion {
+        pub caption_en: Option<String>,
+        pub caption_pl: Option<String>,
+        pub headline: Option<String>,
+        pub subject: Option<String>,
+        pub keywords: Vec<String>,
+        pub keywords_new: Vec<String>,
+        pub rating: Option<u8>,
+        pub quality: Option<u8>,
+        pub composition: Option<u8>,
+        pub confidence: f32,
+        pub place: Option<PlaceGuess>,
+    }
+
+    #[derive(Deserialize)]
+    pub struct PlaceGuess {
+        pub city: Option<String>,
+        pub country: Option<String>,
+        pub confidence: f32,
+    }
+}
+
+impl From<v1::Entry> for Entry {
+    fn from(e: v1::Entry) -> Self {
+        let s = e.suggestion;
+        let place = s.place.map(|p| {
+            let guess = |name: Option<String>| name.map(|name| c1ai::Guess { name, p: p.confidence });
+            c1ai::PlaceGuess { country: guess(p.country), city: guess(p.city), ..c1ai::PlaceGuess::default() }
+        });
+        Entry {
+            at: e.at,
+            provider: e.provider,
+            model: e.model,
+            prompt: e.prompt,
+            suggestion: Suggestion {
+                caption_en: s.caption_en,
+                caption_pl: s.caption_pl,
+                headline: s.headline,
+                subject: s.subject,
+                keywords: s.keywords,
+                keywords_new: s.keywords_new,
+                rating: s.rating,
+                quality: s.quality,
+                composition: s.composition,
+                confidence: s.confidence,
+                place,
+            },
+            warnings: e.warnings,
+            cost: e.cost,
+            status: e.status,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +255,70 @@ mod tests {
 
         book.set_status(&["c1:1", "c1:9"], Status::Rejected).unwrap();
         assert_eq!(book.get("c1:1").unwrap().unwrap().status, Status::Rejected);
+    }
+
+    #[test]
+    fn suggestions_from_the_first_builds_are_kept() {
+        // Written as the first builds did: the same fields, the place a city and a country.
+        #[derive(Serialize)]
+        struct OldPlace(Option<String>, Option<String>, f32);
+        #[derive(Serialize)]
+        #[allow(clippy::type_complexity)]
+        struct OldSuggestion(
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Vec<String>,
+            Vec<String>,
+            Option<u8>,
+            Option<u8>,
+            Option<u8>,
+            f32,
+            Option<OldPlace>,
+        );
+        #[derive(Serialize)]
+        struct OldEntry(i64, String, String, u64, OldSuggestion, Vec<String>, f64, Status);
+        let old = OldEntry(
+            1,
+            "claude".into(),
+            "claude-haiku-5-5".into(),
+            7,
+            OldSuggestion(
+                None,
+                None,
+                Some("Tram at dusk".into()),
+                None,
+                vec![],
+                vec![],
+                Some(4),
+                None,
+                None,
+                0.8,
+                Some(OldPlace(Some("Kraków".into()), Some("Poland".into()), 0.6)),
+            ),
+            vec![],
+            0.002,
+            Status::Accepted,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ai.redb");
+        {
+            let db = Database::create(&path).unwrap();
+            let tx = db.begin_write().unwrap();
+            tx.open_table(SUGGESTIONS_V1)
+                .unwrap()
+                .insert("c1:1", postcard::to_stdvec(&old).unwrap().as_slice())
+                .unwrap();
+            tx.commit().unwrap();
+        }
+        let book = SuggestionBook::open(&path).unwrap();
+        let entry = book.get("c1:1").unwrap().expect("moved over");
+        assert_eq!((entry.status, entry.suggestion.rating), (Status::Accepted, Some(4)));
+        let place = entry.suggestion.place.unwrap();
+        assert_eq!(place.city, Some(c1ai::Guess { name: "Kraków".into(), p: 0.6 }));
+        assert_eq!(place.country.map(|g| g.name).as_deref(), Some("Poland"));
+        drop(book);
+        assert_eq!(SuggestionBook::open(&path).unwrap().all().unwrap().len(), 1, "opened again: still there");
     }
 }

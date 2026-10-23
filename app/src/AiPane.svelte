@@ -1,6 +1,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import * as api from "./lib/api";
+  import { LEVELS, percent, placeReplaces, placeTicks, takenPlace, type PlaceTicks } from "./lib/aiPlace";
   import { source } from "./lib/source.svelte";
   import type { Accept, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
@@ -113,14 +114,20 @@
     at: number; seen: api.Seen;
     caption: string; headline: string; rating: number | null; keywords: Record<string, boolean>;
     takeCaption: boolean; takeHeadline: boolean; takeRating: boolean;
+    /** The place levels and the position taken. */
+    place: PlaceTicks | null;
   };
   let drafts = $state<Record<number, Draft>>({});
   const seenOf = (r: SuggestionRow): api.Seen => ({
     caption: r.current?.caption ?? null,
     headline: r.current?.headline ?? null,
     rating: r.current?.rating ?? null,
+    place: r.current?.place ?? { country: null, country_code: null, state: null, city: null, location: null },
   });
-  const sameSeen = (a: api.Seen, b: api.Seen) => a.caption === b.caption && a.headline === b.headline && a.rating === b.rating;
+  const samePlace = (a: api.PlaceNames | null, b: api.PlaceNames | null) =>
+    LEVELS.every((l) => (a?.[l] ?? null) === (b?.[l] ?? null));
+  const sameSeen = (a: api.Seen, b: api.Seen) =>
+    a.caption === b.caption && a.headline === b.headline && a.rating === b.rating && samePlace(a.place, b.place);
   let asked = 0;
   async function loadRows() {
     const mine = ++asked;
@@ -178,6 +185,7 @@
       takeCaption: !!caption && !now?.caption,
       takeHeadline: !!s.headline && !now?.headline,
       takeRating: false,
+      place: s.place && placeTicks(s.place, now?.place ?? null, !!now?.placed, (view?.settings.place_tick ?? 80) / 100),
     };
   }
 
@@ -194,12 +202,17 @@
       d.takeCaption && now.caption && d.caption.trim() !== now.caption && "caption",
       d.takeHeadline && now.headline && d.headline.trim() !== now.headline && "headline",
       d.takeRating && now.rating && d.rating !== now.rating && `rating (${now.rating}★)`,
+      ...(r.suggestion.place && d.place ? placeReplaces(r.suggestion.place, d.place, now.place) : []),
     ].filter((x): x is string => !!x);
   }
 
   function pickOf(row: number): Accept {
     const d = drafts[row];
+    const guess = rows.find((r) => r.row === row)?.suggestion.place;
+    const point = guess?.point && d.place?.point ? ([guess.point.lat, guess.point.lon] as [number, number]) : undefined;
     return {
+      place: guess && d.place ? takenPlace(guess, d.place) : undefined,
+      point,
       row,
       keywords: Object.entries(d.keywords).filter(([, on]) => on).map(([k]) => k),
       caption: d.takeCaption ? d.caption : undefined,
@@ -220,7 +233,7 @@
       const { undo, changed } = await api.acceptSuggestions(list.map(pickOf));
       onaccepted(undo);
       if (changed.length) {
-        notice = `${changed.length} photo${changed.length === 1 ? "" : "s"} changed since shown: the caption, headline or rating written since was kept. The card shows it now; accept again to replace it.`;
+        notice = `${changed.length} photo${changed.length === 1 ? "" : "s"} changed since shown: the caption, headline, rating or place written since was kept. The card shows it now; accept again to replace it.`;
       }
       await loadRows();
     } catch (e) {
@@ -398,6 +411,34 @@
                 {/each}
               </div>
             {/if}
+            {#if s.place && d.place}
+              {@const g = s.place}
+              {@const ticks = d.place}
+              <div class="place" title="Where the model thinks it was taken, with how likely each is right">
+                {#each LEVELS as level (level)}
+                  {@const guess = g[level]}
+                  {@const has = now?.place[level]}
+                  {#if guess}
+                    <label
+                      class="level"
+                      class:over={ticks[level] && !!has && has !== guess.name}
+                      title={has ? `${level}: the photo has ${has}` : `${level}: the photo has none`}
+                    >
+                      <input type="checkbox" bind:checked={ticks[level]} />{guess.name} <span class="muted">{percent(guess.p)}</span>
+                    </label>
+                  {/if}
+                {/each}
+                {#if g.point}
+                  <label
+                    class="level"
+                    title={now?.placed ? "The photo has a position: a guessed one is never given" : `About here, within ${g.point.radius_km} km: shown as ≈`}
+                  >
+                    <input type="checkbox" disabled={!!now?.placed} bind:checked={ticks.point} />≈ {g.point.lat.toFixed(3)}, {g.point.lon.toFixed(3)}
+                    <span class="muted">{percent(g.point.p)}</span>
+                  </label>
+                {/if}
+              </div>
+            {/if}
             <div class="facts muted">
               {#if s.rating}
                 <label title={now?.rating ? "Replace the photo's rating" : "Take the rating"}>
@@ -409,7 +450,6 @@
               {#if s.quality}<span>quality {s.quality}/5</span>{/if}
               {#if s.composition}<span>composition {s.composition}/5</span>{/if}
               {#if s.subject && s.headline}<span>subject: {s.subject}</span>{/if}
-              {#if s.place}<span title="A guess, never applied">place? {[s.place.city, s.place.country].filter(Boolean).join(", ")} ({Math.round(s.place.confidence * 100)}%)</span>{/if}
               <span title={r.model}>{money(r.cost)}</span>
             </div>
             {#if r.warnings.length}
@@ -470,6 +510,9 @@
   .facts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .facts label { display: inline-flex; align-items: center; gap: 4px; }
   .stars { color: #e8b03a; letter-spacing: 1px; }
+  .place { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+  .place .level { display: inline-flex; align-items: center; gap: 4px; }
+  .place .over { text-decoration: line-through; text-decoration-color: #e8b03a; }
   .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .replace-note { color: #e8b03a; font-size: 12px; }
   .notice { margin: 0 0 10px; padding: 6px 10px; font-size: 12px; border: 1px solid #e8b03a; border-radius: 3px; }

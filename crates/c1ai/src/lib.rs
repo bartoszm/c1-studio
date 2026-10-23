@@ -21,7 +21,7 @@ pub use prompt::{Brief, Fields, INSTRUCTIONS, Language, prompt_hash, schema, sys
 
 /// Bumped when the prompt or the schema changes: photos described by another version are
 /// described again when asked.
-pub const PROMPT_VERSION: u32 = 1;
+pub const PROMPT_VERSION: u32 = 2;
 
 /// One photo to describe: a JPEG of it and one line of what the catalog already knows
 /// (file name, date, camera, place), which helps the model and costs a few tokens.
@@ -47,12 +47,33 @@ pub struct RawAnswer {
     pub location_guess: RawPlace,
 }
 
+/// Where the photo was taken, level by level, as the model gave it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RawPlace {
-    pub city: String,
-    pub country: String,
-    pub confidence: f64,
+    pub country: RawLevel,
+    pub state: RawLevel,
+    pub city: RawLevel,
+    pub location: RawLevel,
+    pub coordinates: RawPoint,
+}
+
+/// One level of a place: its name and the probability it is right.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RawLevel {
+    pub name: String,
+    pub p: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RawPoint {
+    pub lat: f64,
+    pub lon: f64,
+    pub p: f64,
+    /// How far off the point may be.
+    pub radius_km: f64,
 }
 
 /// A suggestion for one photo, checked: empty texts are `None`, numbers are in range,
@@ -76,11 +97,101 @@ pub struct Suggestion {
     pub place: Option<PlaceGuess>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Where the model thinks the photo was taken: each level it named, from the country
+/// down to a location (a district, a landmark), with the probability that it is right, and
+/// a point. A deeper level is never more likely than the one above it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlaceGuess {
-    pub city: Option<String>,
-    pub country: Option<String>,
-    pub confidence: f32,
+    pub country: Option<Guess>,
+    pub state: Option<Guess>,
+    pub city: Option<Guess>,
+    pub location: Option<Guess>,
+    /// The country's ISO code, once the gazetteer knows the country.
+    pub country_code: Option<String>,
+    pub point: Option<PointGuess>,
+}
+
+/// A place level guessed: a name and the probability that it is right (0..1].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Guess {
+    pub name: String,
+    pub p: f32,
+}
+
+/// A position guessed, within `radius_km`, with the probability that it is right.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PointGuess {
+    pub lat: f64,
+    pub lon: f64,
+    pub p: f32,
+    pub radius_km: f32,
+}
+
+impl PlaceGuess {
+    /// The levels, country first.
+    pub fn levels(&self) -> [&Option<Guess>; 4] {
+        [&self.country, &self.state, &self.city, &self.location]
+    }
+
+    pub fn levels_mut(&mut self) -> [&mut Option<Guess>; 4] {
+        [&mut self.country, &mut self.state, &mut self.city, &mut self.location]
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.levels().iter().all(|l| l.is_none()) && self.point.is_none()
+    }
+
+    /// Lowers each level to the probability of the one above it, where it was higher.
+    /// Returns the levels lowered, with what they had.
+    pub fn coherent(&mut self) -> Vec<(String, f32, f32)> {
+        let mut lowered = Vec::new();
+        let mut above = 1.0f32;
+        for level in self.levels_mut().into_iter().flatten() {
+            if level.p > above {
+                lowered.push((level.name.clone(), level.p, above));
+                level.p = above;
+            }
+            above = level.p;
+        }
+        lowered
+    }
+}
+
+/// Checks a place as the model gave it: names trimmed, probabilities in range, a level
+/// no more likely than the one above it, a point on the globe. `None` when nothing is left.
+fn place_guess(raw: &RawPlace, warnings: &mut Vec<String>) -> Option<PlaceGuess> {
+    let level = |l: &RawLevel| {
+        let name = l.name.trim();
+        let p = l.p.clamp(0.0, 1.0) as f32;
+        (!name.is_empty() && p > 0.0).then(|| Guess { name: name.to_string(), p })
+    };
+    let c = &raw.coordinates;
+    let on_globe = (-90.0..=90.0).contains(&c.lat) && (-180.0..=180.0).contains(&c.lon);
+    let point = (c.p > 0.0 && on_globe && (c.lat, c.lon) != (0.0, 0.0)).then(|| PointGuess {
+        lat: c.lat,
+        lon: c.lon,
+        p: c.p.clamp(0.0, 1.0) as f32,
+        radius_km: c.radius_km.max(0.0) as f32,
+    });
+    if c.p > 0.0 && !on_globe {
+        warnings.push(format!("dropped the position {}, {}: not on the globe", c.lat, c.lon));
+    }
+    let mut guess = PlaceGuess {
+        country: level(&raw.country),
+        state: level(&raw.state),
+        city: level(&raw.city),
+        location: level(&raw.location),
+        country_code: None,
+        point,
+    };
+    for (name, was, now) in guess.coherent() {
+        warnings.push(format!(
+            "{name}: {:.0}% lowered to {:.0}%, as likely as the level above",
+            was * 100.0,
+            now * 100.0
+        ));
+    }
+    (!guess.is_empty()).then_some(guess)
 }
 
 /// What one call cost and took, kept with the suggestion: the set to judge prompts and
@@ -260,12 +371,7 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
         warnings.push(format!("{} new keywords, kept {MAX_NEW_KEYWORDS}", new.len()));
         new.truncate(MAX_NEW_KEYWORDS);
     }
-    let guess = &raw.location_guess;
-    let place = (!guess.city.trim().is_empty() || !guess.country.trim().is_empty()).then(|| PlaceGuess {
-        city: text(&guess.city),
-        country: text(&guess.country),
-        confidence: guess.confidence.clamp(0.0, 1.0) as f32,
-    });
+    let place = place_guess(&raw.location_guess, &mut warnings);
     let suggestion = Suggestion {
         caption_en: text(&raw.caption_en),
         caption_pl: text(&raw.caption_pl),
@@ -331,5 +437,39 @@ mod tests {
         assert_eq!((s.rating, s.quality, s.composition), (None, Some(4), None));
         assert_eq!(s.confidence, 1.0);
         assert_eq!(s.place, None);
+    }
+
+    #[test]
+    fn a_place_keeps_named_levels_no_likelier_than_the_one_above() {
+        let level = |name: &str, p: f64| RawLevel { name: name.into(), p };
+        let raw = RawAnswer {
+            location_guess: RawPlace {
+                country: level(" Poland ", 0.9),
+                state: level("", 0.8),
+                city: level("Kraków", 1.4),
+                location: level("Kazimierz", 0.0),
+                coordinates: RawPoint { lat: 50.05, lon: 19.94, p: 0.5, radius_km: 3.0 },
+            },
+            ..Default::default()
+        };
+        let (s, warnings) = validate(&raw, &vocabulary());
+        let place = s.place.unwrap();
+        assert_eq!(place.country, Some(Guess { name: "Poland".into(), p: 0.9 }));
+        assert_eq!(place.state, None, "no name");
+        assert_eq!(place.city, Some(Guess { name: "Kraków".into(), p: 0.9 }), "capped at the country's");
+        assert_eq!(place.location, None, "p 0");
+        assert_eq!(place.point.as_ref().map(|p| (p.lat, p.p)), Some((50.05, 0.5)));
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+        let off = RawAnswer {
+            location_guess: RawPlace {
+                coordinates: RawPoint { lat: 95.0, lon: 0.0, p: 0.5, radius_km: 1.0 },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (s, warnings) = validate(&off, &vocabulary());
+        assert_eq!(s.place, None);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 }
