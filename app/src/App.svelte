@@ -64,7 +64,6 @@
   /** How far the source's scan has got (`source-progress` events), while one runs. */
   let progress = $state<api.SourceProgress | null>(null);
   /** Rows of photos whose originals are out of reach, for dimming their tiles. */
-  let offlineRows = $state.raw(new Set<number>());
   /** The source menu in the header; open by itself when nothing could be opened. */
   let choosingSource = $state(false);
   /** How far opening a source has got, while it is under way. */
@@ -484,6 +483,8 @@
   // swaps in a new map, so the variable itself must be reactive too: cells already on
   // screen would otherwise keep reading the old one and show the previous result's photos.
   let pages = $state.raw(new SvelteMap<number, number[]>());
+  /** Page → positions in it of the photos whose file is offline; swapped with `pages`. */
+  let offlinePages = $state.raw(new SvelteMap<number, Set<number>>());
   let loading = new Map<number, Promise<void>>();
 
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks. */
@@ -505,6 +506,7 @@
       // are read again alongside the first and swapped in with the result in one go: until
       // then the grid and the details panel keep the old ones.
       const shown = grid?.range() ?? [0, 0];
+      const offline = new Map<number, Set<number>>();
       const { result: r, pages: fresh } = keep
         ? await refreshPages(
             first,
@@ -513,16 +515,20 @@
               return [shown, [at, at + 2]];
             },
             result?.total ?? 0,
-            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => {
+              if (p.offline.length) offline.set(page, new Set(p.offline));
+              return p.rows;
+            }),
           )
         : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
+      if (r.offline.length) offline.set(0, new Set(r.offline));
       result = r;
       counted = groups;
       pages = new SvelteMap(fresh);
+      offlinePages = new SvelteMap(offline);
       loading = new Map();
       error = null;
-      showOffline(mine, asked);
       if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
         await followPicks(mine, asked);
@@ -536,17 +542,6 @@
     } catch (e) {
       if (mine === generation) error = String(e);
     }
-  }
-
-  /** Finds which photos of the result are offline; only asked once a root is out of reach. */
-  function showOffline(mine: number, asked: Filter) {
-    if (!status?.offline_roots.length) {
-      if (offlineRows.size) offlineRows = new Set();
-      return;
-    }
-    api.query({ ...asked, offline: true }, { sort: "DateDesc", limit: 50000 })
-      .then((r) => { if (mine === generation) offlineRows = new Set(r.rows); })
-      .catch(() => {});
   }
 
   /**
@@ -584,8 +579,13 @@
     if (pending) return pending;
     const mine = generation;
     const into = pages;
+    const intoOffline = offlinePages;
     const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
-      .then((r) => { if (mine === generation) into.set(page, r.rows); })
+      .then((r) => {
+        if (mine !== generation) return;
+        if (r.offline.length) intoOffline.set(page, new Set(r.offline));
+        into.set(page, r.rows);
+      })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
     return p;
@@ -2417,7 +2417,7 @@
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     hidden={(i) => hiddenHere.has(rowAt(i) ?? -1)}
-    offline={(i) => offlineRows.has(rowAt(i) ?? -1)}
+    offline={(i) => offlinePages.get(Math.floor(i / PAGE))?.has(i % PAGE) ?? false}
     onselect={pick}
     ondragcell={dragCell}
     onopen={(i) => { pick(i); viewing = true; }}

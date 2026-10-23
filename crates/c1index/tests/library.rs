@@ -1778,6 +1778,18 @@ fn offline_photos_are_told_apart() {
     assert_eq!(ids(&library, &Filter { offline: Some(false), ..Filter::default() }), [1, 3]);
     assert_eq!(ids(&library, &Filter::default()), [1, 2, 3, 4]);
     assert!(library.photo(0).unwrap().is_some());
+
+    // A page says which of its rows are offline, by position, an offset page too.
+    let offline_on_page = |offset: usize| {
+        let options = QueryOptions { sort: Sort::Row, limit: Some(2), offset, ..QueryOptions::default() };
+        let page = library.query(&Filter::default(), &options).unwrap();
+        let ext = |i: u32| library.photo_id(page.rows[i as usize]).unwrap().ext.parse::<u32>().unwrap();
+        page.offline.iter().map(|&i| ext(i)).collect::<Vec<_>>()
+    };
+    assert_eq!(offline_on_page(0), [2]);
+    assert_eq!(offline_on_page(2), [4]);
+    let none = Filter { offline: Some(false), ..Filter::default() };
+    assert!(library.query(&none, &QueryOptions::default()).unwrap().offline.is_empty());
 }
 
 #[test]

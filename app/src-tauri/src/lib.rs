@@ -231,6 +231,16 @@ struct Startup {
     step: &'static str,
     done: u64,
     total: u64,
+    /// While reading: how far the source has got by its own count (a folder scan).
+    source: Option<SourceProgress>,
+    /// What holds the photos ("catalog", "library"), once the source is open.
+    noun: Option<String>,
+}
+
+impl Startup {
+    fn at(step: &'static str) -> Self {
+        Startup { step, done: 0, total: 0, source: None, noun: None }
+    }
 }
 
 /// The start-up dialog's state: set from when a source starts opening until it is ready
@@ -241,12 +251,15 @@ struct Boot {
     shown: Mutex<Option<Startup>>,
     active: AtomicBool,
     last_emit: Mutex<Option<Instant>>,
+    /// The open source's noun, for the steps that follow.
+    noun: Mutex<Option<String>>,
 }
 
 impl Boot {
     fn begin(&self, app: &AppHandle) {
         self.active.store(true, Ordering::SeqCst);
-        self.set(app, Some(Startup { step: "opening", done: 0, total: 0 }), true);
+        *self.noun.lock().unwrap() = None;
+        self.set(app, Some(Startup::at("opening")), true);
     }
 
     fn finish(&self, app: &AppHandle) {
@@ -260,17 +273,46 @@ impl Boot {
             return;
         }
         let (shown, counting) = match step {
-            SyncStep::Reading => (Startup { step: "reading", done: 0, total: 0 }, false),
+            SyncStep::Reading => (Startup::at("reading"), false),
             SyncStep::Indexing { done, total } => {
-                (Startup { step: "indexing", done: done as u64, total: total as u64 }, true)
+                (Startup { done: done as u64, total: total as u64, ..Startup::at("indexing") }, true)
             }
-            SyncStep::Saving => (Startup { step: "saving", done: 0, total: 0 }, false),
+            SyncStep::Saving => (Startup::at("saving"), false),
         };
-        self.set(app, Some(shown), !counting);
+        let noun = self.noun.lock().unwrap().clone();
+        self.set(app, Some(Startup { noun, ..shown }), !counting);
     }
 
+    /// The source is open: later steps name what it holds.
+    fn named(&self, noun: String) {
+        if self.active.load(Ordering::SeqCst) {
+            *self.noun.lock().unwrap() = Some(noun);
+        }
+    }
+
+    /// How far the source has got by its own count, shown while the step is reading. One
+    /// stream: the footer gets the same once the dialog is gone.
+    fn source_progress(&self, app: &AppHandle, progress: &Option<SourceProgress>) {
+        if !self.active.load(Ordering::SeqCst) {
+            return;
+        }
+        // Sent with `shown` held, as in `set`: what reaches the window keeps its order.
+        let mut shown = self.shown.lock().unwrap();
+        let Some(reading) = shown.as_mut().filter(|s| s.step == "reading") else { return };
+        reading.source = progress.clone();
+        self.emit(app, Some(reading.clone()), false);
+    }
+
+    /// A new step always reaches the window; counts within one a few times a second.
     fn set(&self, app: &AppHandle, shown: Option<Startup>, always: bool) {
-        *self.shown.lock().unwrap() = shown.clone();
+        let mut current = self.shown.lock().unwrap();
+        let new_step = current.as_ref().map(|s| s.step) != shown.as_ref().map(|s| s.step);
+        *current = shown.clone();
+        self.emit(app, shown, always || new_step);
+    }
+
+    /// Sends `shown` to the window; counts only a few times a second, unless `always`.
+    fn emit(&self, app: &AppHandle, shown: Option<Startup>, always: bool) {
         let mut last = self.last_emit.lock().unwrap();
         if always || last.is_none_or(|t| t.elapsed() >= Duration::from_millis(100)) {
             *last = Some(Instant::now());
@@ -1059,9 +1101,13 @@ fn run_sync(app: &AppHandle) -> Result<SyncReport, String> {
 /// the catalog changed.
 fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Result<SyncReport, String> {
     let boot = app.state::<Boot>();
+    boot.named(s.source.wording().noun);
     let done = Finish::default();
     let report = std::thread::scope(|scope| {
-        scope.spawn(|| report_progress(app, s, &done));
+        // Only a source that counts its own work is asked how far it got.
+        if s.source.capabilities().progress {
+            scope.spawn(|| report_progress(app, s, &done));
+        }
         // Ends the poller also if the sync panics, or the scope would wait for it for ever.
         let _ends = FinishOnDrop(&done);
         s.library
@@ -2154,14 +2200,16 @@ impl Drop for FinishOnDrop<'_> {
 /// How often a running sync is asked how far the source has got.
 const PROGRESS_EVERY: Duration = Duration::from_millis(250);
 
-/// Until `done`, tells the window how far the source's work has got (`source-progress`),
-/// then that there is none.
+/// Until `done`, tells the window how far the source's work has got (`source-progress`,
+/// and the start-up dialog while it shows), then that there is none.
 fn report_progress(app: &AppHandle, s: &Session, done: &Finish) {
+    let boot = app.state::<Boot>();
     let mut last = None;
     loop {
         let now = s.source.progress();
         if now != last {
             let _ = app.emit("source-progress", &now);
+            boot.source_progress(app, &now);
             last = now;
         }
         if done.wait(PROGRESS_EVERY) {
