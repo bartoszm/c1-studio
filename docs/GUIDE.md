@@ -570,6 +570,53 @@ show it*). The link and a group's card on the Alike tab show the group's photos 
 the other filters, which stay; drop a filter's chip to see the whole group. A photo not
 measured yet says so.
 
+## Describing photos with AI
+
+The **AI** tab asks a vision model to describe photos and keeps what it suggests for you to
+review. Nothing is sent until you start a run, and nothing reaches the catalog until you
+accept a suggestion and write it.
+
+**Access** (*Settings › AI*, kept per catalog):
+
+- **Anthropic API key:** billed per token. Paste the key once; it is kept in the Windows
+  Credential Manager (or comes from `ANTHROPIC_API_KEY`). Choose the model (Opus, Sonnet,
+  Haiku) and the effort.
+- **Claude plan, through Claude Code:** uses your plan's limits instead. Claude Code must
+  be installed and signed in with the plan (`claude auth login`).
+- **Gemini, through agy:** the Antigravity CLI signed in with a Google account, counted
+  against its quota. *Send* chooses one photo per call or **contact sheets**: up to 36
+  photos, numbered, in one call, which takes far fewer calls; each photo is seen smaller.
+
+**Photo sent:** Capture One's thumbnail (its own render of your edits, about 450 pixels; the
+default) or the preview (up to 1568 pixels, more detail, but its colours are matched by the
+app and can be off). A photo without the one chosen gets the other.
+
+**What a description holds:** caption (in English, Polish or both), headline, subject,
+keywords from the catalog, up to three new keywords, a rating, quality and composition, and
+the place. **Keywords offered** chooses the keywords the model may pick from: untick one to
+leave it out with all below it, and *Leave out keywords named only with numbers* (on unless
+you turn it off) drops levels like 01, 02 or 2023. The 400 most used names go with each
+call. **Prompt** shows the instructions, which you can change, and the full prompt sent.
+
+**A run.** Pick photos in the strip and press *Describe N photos…*: the estimate says how
+many photos and calls it takes, which were described already with this model and prompt
+(left out unless *again* is ticked), and what it costs on the API. *Describe* starts it in
+the background. The run line says what is happening (for a sheet: making its image,
+waiting for the answer, trying again) and for how long; **Details** shows each call at work
+with its photos, **Show sheet** for the sheet as sent, and a log of the run that stays
+after it ends. An answer that breaks off is tried again, up to three times. *Stop* ends it;
+answers already in are kept.
+
+**Review.** Each photo gets a card: what it has now above what is suggested. Keywords from
+the catalog start ticked, new ones are dashed; a caption, headline or rating it already has
+is replaced only when ticked, and the card says what would be overwritten. The place comes
+level by level with how likely each is; levels at or above *Settings › AI › Place* (80%
+unless changed) start ticked where the photo has none, and a position is given only to a
+photo without one, marked ≈. **Accept** queues the ticked parts as edits (*AI* in the
+history; Ctrl+Z undoes them), **Reject** sets the card aside; *Accept N* above a confidence
+and *Reject all* do every card. The tabs *To review*, *Accepted*, *Rejected* and *All* keep
+them.
+
 ## Writing to Capture One
 
 Nothing is written to the catalog until you ask, or turn Autosave on.
@@ -760,7 +807,8 @@ Keys do not act while you type in a field.
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
   hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), trips and their settings (`library\trips.redb`),
-  the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+  the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
+  and calls are in `library\ai.redb` there, the AI settings in `ai.json`.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The kinds of source offered: `%APPDATA%\c1studio\providers.json`.
 - Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is

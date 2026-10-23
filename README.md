@@ -4,6 +4,11 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.6.0:** [describe photos with AI](docs/FEATURES.md#describe-photos-with-ai):
+Claude or Gemini suggest captions, keywords from your own vocabulary, ratings and places,
+and you accept what fits. A [History](docs/FEATURES.md#history-the-catalog-over-time) tab
+compares the catalog between two dates, and *No location* finds photos still to place.
+
 **New in 0.5.0:** a [trash](docs/FEATURES.md#delete-with-a-trash): **Delete** takes photos
 out of every view, and nothing leaves the catalog or the drive until you empty it. Editing
 in the full-screen viewer is fixed: stars and keywords land on the photo shown.
