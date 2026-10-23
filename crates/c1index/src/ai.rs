@@ -92,7 +92,6 @@ impl SuggestionBook {
         Ok(table.get(key)?.and_then(|b| postcard::from_bytes(b.value()).ok()))
     }
 
-    /// Stores a photo's new suggestion, replacing the one before, with the call's record.
     /// Stores a photo's new suggestion without a call of its own: one of a contact sheet's
     /// photos, the call recorded with another.
     pub fn put_entry(&self, key: &str, entry: &Entry) -> anyhow::Result<()> {
@@ -102,6 +101,7 @@ impl SuggestionBook {
         Ok(())
     }
 
+    /// Stores a photo's new suggestion, replacing the one before, with the call's record.
     pub fn put(&self, key: &str, entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
         let tx = self.db.begin_write()?;
         {
