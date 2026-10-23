@@ -238,10 +238,44 @@ pub enum SourceEvent {
 
 /// A place photos come from. Implementations are blocking; callers that must not block
 /// (the UI) run them on a worker thread.
+/// How the app names a source in its text, so the UI need not know the provider.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Wording {
+    /// As a label: "Capture One", "Photo folders".
+    pub name: String,
+    /// In a sentence: "Write to Capture One", "write to the photo folders".
+    pub word: String,
+    /// What holds the photos, after "the": "catalog", "library".
+    pub noun: String,
+    /// What a backup holds, after "a copy of the": "catalog", "edits and albums kept for
+    /// the folders".
+    pub backup: String,
+    /// The program that keeps the source open and has to be closed before the app writes
+    /// to it: "Capture One". `None` when nothing does.
+    pub owner: Option<String>,
+}
+
+impl Default for Wording {
+    fn default() -> Self {
+        Wording {
+            name: "Source".into(),
+            word: "the source".into(),
+            noun: "library".into(),
+            backup: "library".into(),
+            owner: None,
+        }
+    }
+}
+
 pub trait PhotoSource: Send + Sync {
     fn info(&self) -> SourceInfo;
 
     fn capabilities(&self) -> Capabilities;
+
+    /// How the app names this source in its text.
+    fn wording(&self) -> Wording {
+        Wording::default()
+    }
 
     /// Streams the source's state into `sink`. With `since` set to a cursor from an
     /// earlier call, a source may send only what changed; if nothing changed it sends
@@ -299,6 +333,12 @@ pub trait PhotoSource: Send + Sync {
         Err(SourceError::Unsupported("rescanning"))
     }
 
+    /// Makes what the source keeps for itself durable, for a program about to exit
+    /// without dropping it (records written lazily, such as a folder source's images).
+    fn flush(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Where a long-running snapshot or rescan has got, while it runs. `None` between runs.
     ///
     /// Polled from another thread while `snapshot` runs, so it is cheap and never waits on
@@ -337,6 +377,21 @@ pub trait PhotoSource: Send + Sync {
     /// `None` if it can, once the `earlier` ones have been applied.
     fn check_remap(&self, _earlier: &[KeywordRemap], _remap: &KeywordRemap) -> Result<Option<String>> {
         Ok(None)
+    }
+
+    /// [`PhotoSource::check_remap`] for remaps queued one after another: each checked once
+    /// the ones before it that can be written are applied. One answer per remap.
+    fn check_remaps(&self, remaps: &[KeywordRemap]) -> Result<Vec<Option<String>>> {
+        let mut ok = Vec::new();
+        let mut whys = Vec::new();
+        for remap in remaps {
+            let why = self.check_remap(&ok, remap)?;
+            if why.is_none() {
+                ok.push(remap.clone());
+            }
+            whys.push(why);
+        }
+        Ok(whys)
     }
 
     /// Why an album change can no longer be written (the album or its parent is gone),

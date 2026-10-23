@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { source } from "./lib/source.svelte";
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
   import ClassSettings from "./ClassSettings.svelte";
@@ -190,7 +191,7 @@
       <span>
         Show the History tab
         <small class="muted">
-          The catalog over time: two dates compared, the change log in groups, photos imported per day. For it, the change log
+          The {source.noun} over time: two dates compared, the change log in groups, photos imported per day. For it, the change log
           also keeps what a change replaced (a removed photo, an album as it was, the keywords a keyword tree change rewrote).
           Off, the tab is hidden and the log keeps only the changes themselves, as before; a photo's own history in the details
           panel stays. What was logged so far is kept either way. Changes made while it is off are not fully counted when
@@ -199,7 +200,7 @@
         </small>
       </span>
     </label>
-    <p class="muted small">Kept with this catalog's library, so the command line (c1cat) follows it too; another catalog has its own.</p>
+    <p class="muted small">Kept with this {source.noun}'s index, so the command line (c1cat) follows it too; another {source.noun} has its own.</p>
     </div>
 
     <div role="tabpanel" id="panel-ai" aria-labelledby="tab-ai" hidden={tab !== "ai"}>

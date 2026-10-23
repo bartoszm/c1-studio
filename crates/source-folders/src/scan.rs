@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use crate::FolderSource;
 use crate::definition::{Definition, RootDef, SidecarNaming};
 use crate::ids::{self, ContentKey};
-use crate::images::Moved;
+use crate::images::{Images, Moved};
 use crate::meta::{self, FileKind, FileMeta};
 use crate::store::{FileRec, FileState, State, Writer, other};
 
@@ -387,8 +387,8 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
     let excludes = excludes(def, &mut walked.problems);
     walked.excludes = excludes.clone();
     // Folder → its XMP files, by lower-case name.
-    let mut xmps: HashMap<PathBuf, HashMap<String, String>> = HashMap::new();
-    let mut listed: Vec<(String, String, PathBuf, FileKind)> = Vec::new();
+    let mut xmps: HashMap<PathBuf, HashMap<String, Sidecar>> = HashMap::new();
+    let mut listed: Vec<(String, String, PathBuf, FileKind, Option<Stat>)> = Vec::new();
     for root in &def.roots {
         let base = Path::new(&root.path);
         let reachable = base.is_dir();
@@ -423,14 +423,16 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
             if ext.eq_ignore_ascii_case("xmp") {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 let dir = path.parent().unwrap_or(base).to_owned();
-                xmps.entry(dir).or_default().insert(name.to_lowercase(), name);
+                let mtime = walked_meta(&entry).map(|(_, mtime)| mtime);
+                xmps.entry(dir).or_default().insert(name.to_lowercase(), (name, mtime));
                 continue;
             }
             let Some(kind) = FileKind::from_ext(ext) else { continue };
             if src.images.is_generated(src, path) {
                 continue;
             }
-            listed.push((root.id.clone(), relpath(base, path), entry.into_path(), kind));
+            let meta = walked_meta(&entry);
+            listed.push((root.id.clone(), relpath(base, path), entry.into_path(), kind, meta));
             if listed.len().is_multiple_of(256) {
                 let progress = SourceProgress {
                     phase: SCANNING.into(),
@@ -452,12 +454,16 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
     let none = HashMap::new();
     let stats: Vec<std::result::Result<Found, (String, String, String)>> = listed
         .into_par_iter()
-        .map(|(root, relpath, path, kind)| {
-            let meta = std::fs::metadata(&path)
-                .map_err(|e| (root.clone(), relpath.clone(), format!("{}: {e}", path.display())))?;
+        .map(|(root, relpath, path, kind, meta)| {
+            let (size, mtime_ns) = match meta {
+                Some(meta) => meta,
+                None => std::fs::metadata(&path)
+                    .map(|m| (m.len(), mtime_ns(&m)))
+                    .map_err(|e| (root.clone(), relpath.clone(), format!("{}: {e}", path.display())))?,
+            };
             let dir = path.parent().and_then(|d| xmps.get(d)).unwrap_or(&none);
             let sidecar = sidecar(&path, dir, def.sidecar);
-            Ok(Found { root, relpath, kind, size: meta.len(), mtime_ns: mtime_ns(&meta), sidecar, path })
+            Ok(Found { root, relpath, kind, size, mtime_ns, sidecar, path })
         })
         .collect();
     for stat in stats {
@@ -517,9 +523,22 @@ pub(crate) fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
     }
 }
 
+/// A file's size and modification time (ns).
+type Stat = (u64, i64);
+
+/// An XMP file the walk listed: its name as on disk, and its time where the walk had it.
+type Sidecar = (String, Option<i64>);
+
+/// The size and time of a file the walk listed, where the walk has them for free: on
+/// Windows the directory listing carries them, elsewhere they take a stat of their own
+/// (done later, in parallel).
+fn walked_meta(entry: &walkdir::DirEntry) -> Option<Stat> {
+    if cfg!(windows) { entry.metadata().ok().map(|m| (m.len(), mtime_ns(&m))) } else { None }
+}
+
 /// The XMP sidecar of `photo` among its folder's XMP files (`xmps`, by lower-case name),
 /// the definition's naming first, with its modification time.
-fn sidecar(photo: &Path, xmps: &HashMap<String, String>, naming: SidecarNaming) -> Option<(String, i64)> {
+fn sidecar(photo: &Path, xmps: &HashMap<String, Sidecar>, naming: SidecarNaming) -> Option<(String, i64)> {
     if xmps.is_empty() {
         return None;
     }
@@ -529,9 +548,12 @@ fn sidecar(photo: &Path, xmps: &HashMap<String, String>, naming: SidecarNaming) 
     };
     [naming, other].into_iter().find_map(|naming| {
         let wanted = naming.sidecar(photo);
-        let name = xmps.get(&wanted.file_name()?.to_string_lossy().to_lowercase())?;
-        let meta = std::fs::metadata(photo.with_file_name(name)).ok()?;
-        Some((name.clone(), mtime_ns(&meta)))
+        let (name, mtime) = xmps.get(&wanted.file_name()?.to_string_lossy().to_lowercase())?;
+        let mtime = match mtime {
+            Some(mtime) => *mtime,
+            None => mtime_ns(&std::fs::metadata(photo.with_file_name(name)).ok()?),
+        };
+        Some((name.clone(), mtime))
     })
 }
 
@@ -702,6 +724,26 @@ fn hash_whole(
 fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome> {
     let Plan { puts, removes, detach, offline, fulls, mut outcome } = plan;
     let any = !(puts.is_empty() && removes.is_empty() && detach.is_empty() && offline.is_empty() && fulls.is_empty());
+    // Whether the images of photos at a new place travelled with them, looked at before the
+    // store's lock: under a root whose path changed, that is every photo.
+    let landed = {
+        let moved = moved_roots(src, def);
+        let state = src.store().read();
+        let mut moves: Vec<Moved> = state
+            .files
+            .iter()
+            .filter(|(_, rec)| moved.contains(rec.root.as_str()) && rec.state != FileState::Detached)
+            .map(|(ext, rec)| Moved { ext: ext.clone(), root: rec.root.clone(), relpath: rec.relpath.clone() })
+            .collect();
+        moves.extend(puts.iter().filter_map(|(ext, rec, _)| {
+            let ext = ext.as_ref()?;
+            state.files.get(ext).filter(|old| old.root != rec.root || old.relpath != rec.relpath)?;
+            Some(Moved { ext: ext.clone(), root: rec.root.clone(), relpath: rec.relpath.clone() })
+        }));
+        let wanted = src.images.destinations(&state, src, def, &moves);
+        drop(state);
+        Images::landed(wanted)
+    };
     let written = src.store().write(|w| {
         let (roots, mut moves) = roots_changed(w, def)?;
         for ext in &removes {
@@ -724,7 +766,7 @@ fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome
                 moves.push(Moved { ext: ext.clone(), root: rec.root.clone(), relpath: rec.relpath.clone() });
             }
         }
-        let carried = src.images.relocate(w, src, def, &moves)?;
+        let carried = src.images.relocate(w, src, def, &moves, &landed)?;
         let now = chrono::Utc::now().timestamp_millis();
         for (ext, mut rec, invalidate) in puts {
             let ext = match ext {
@@ -759,6 +801,18 @@ fn write(src: &FolderSource, def: &Definition, plan: Plan) -> Result<ScanOutcome
     // The images it dropped (none if it failed) are deleted now, outside the store's lock.
     src.images.sweep(src);
     written
+}
+
+/// The roots whose path changed since the last walk, read outside a write.
+fn moved_roots(src: &FolderSource, def: &Definition) -> HashSet<String> {
+    let before: HashMap<String, RootDef> = src
+        .store()
+        .rows(ROOTS)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, json)| Some((id, serde_json::from_str::<RootDef>(&json).ok()?)))
+        .collect();
+    def.roots.iter().filter(|r| before.get(&r.id).is_some_and(|b| b.path != r.path)).map(|r| r.id.clone()).collect()
 }
 
 /// Compares the roots with those of the last walk. A root whose path changed has every
@@ -897,13 +951,13 @@ mod tests {
         for name in ["dscf1.XMP", "DSCF1.RAF.xmp"] {
             std::fs::write(dir.path().join(name), b"x").unwrap();
         }
-        let xmps: HashMap<String, String> =
-            ["dscf1.XMP", "DSCF1.RAF.xmp"].iter().map(|n| (n.to_lowercase(), n.to_string())).collect();
+        let xmps: HashMap<String, Sidecar> =
+            ["dscf1.XMP", "DSCF1.RAF.xmp"].iter().map(|n| (n.to_lowercase(), (n.to_string(), None))).collect();
         assert_eq!(sidecar(&photo, &xmps, SidecarNaming::Stem).unwrap().0, "dscf1.XMP");
         assert_eq!(sidecar(&photo, &xmps, SidecarNaming::Name).unwrap().0, "DSCF1.RAF.xmp");
-        let only_name: HashMap<String, String> =
-            [("dscf1.raf.xmp".to_string(), "DSCF1.RAF.xmp".to_string())].into_iter().collect();
-        assert_eq!(sidecar(&photo, &only_name, SidecarNaming::Stem).unwrap().0, "DSCF1.RAF.xmp");
+        let only_name: HashMap<String, Sidecar> =
+            [("dscf1.raf.xmp".to_string(), ("DSCF1.RAF.xmp".to_string(), Some(7)))].into_iter().collect();
+        assert_eq!(sidecar(&photo, &only_name, SidecarNaming::Stem).unwrap(), ("DSCF1.RAF.xmp".to_string(), 7));
         assert_eq!(sidecar(&dir.path().join("other.jpg"), &xmps, SidecarNaming::Stem), None);
     }
 

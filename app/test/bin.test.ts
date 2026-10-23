@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { binNote, deleteAction, removalText, withBin } from "../src/lib/bin";
+import type { Wording } from "../src/lib/api";
+
+const C1: Wording = { name: "Capture One", word: "Capture One", noun: "catalog", backup: "catalog", owner: "Capture One" };
 
 test("the trash's photos are asked for only while it is shown", () => {
   assert.deepEqual(withBin({ hues: ["red"] }, false), { hues: ["red"] });
@@ -24,6 +27,6 @@ test("the notes count the photos and say what emptying does", () => {
   assert.equal(binNote(1, true), "1 photo moved to Trash");
   assert.equal(binNote(2, false), "2 photos restored");
   assert.match(removalText(3, "Files"), /files of 3 photos go to the Windows Recycle Bin/);
-  assert.match(removalText(1, "MarksTrashed"), /^1 photo is marked deleted in Capture One and shows/);
-  assert.match(removalText(2, "MarksTrashed"), /^2 photos are marked deleted in Capture One and show /);
+  assert.match(removalText(1, "MarksTrashed", C1), /^1 photo is marked deleted in Capture One and shows/);
+  assert.match(removalText(2, "MarksTrashed", C1), /^2 photos are marked deleted in Capture One and show /);
 });

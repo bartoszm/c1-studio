@@ -8,10 +8,10 @@
   // The change log in groups, newest first: a batch of one kind from one origin is one
   // row. Limited to the days picked on the chart; "More" reads the next page. A row
   // picks the photos its entries are about.
-  let { range, version, provider, albumName, picked, onpick, onerror }: {
+  let { range, version, wording, albumName, picked, onpick, onerror }: {
     range: { from: number; to: number } | null;
     version: number;
-    provider: string;
+    wording: api.Wording;
     albumName: (id: string) => string | undefined;
     /** The pick the grid shows now. */
     picked: HistoryPick | undefined;
@@ -62,7 +62,7 @@
 <div class="log">
   <div class="chips" role="group" aria-label="Show only">
     {#each ORIGINS as o}
-      <button class="chip" class:on={origins.includes(o)} onclick={() => (origins = toggle(origins, o))}>{originLabel(o, provider)}</button>
+      <button class="chip" class:on={origins.includes(o)} onclick={() => (origins = toggle(origins, o))}>{originLabel(o, wording)}</button>
     {/each}
     <span class="gap"></span>
     {#each LIST_KINDS as k}
@@ -79,8 +79,8 @@
         <li class:on={isPicked(g)}>
           <button class="row" disabled={!pickable(g)} title={pickable(g) ? "Show the photos of this entry in the grid" : ""} onclick={() => onpick({ Entries: { first: g.first, last: g.last, kind: g.kind, origin: g.origin } })}>
             <span class="when">{date(g.at)}</span>
-            <span class="origin from-{g.origin.toLowerCase()}">{originLabel(g.origin, provider)}</span>
-            <span class="what">{groupText(g, album, provider)}</span>
+            <span class="origin from-{g.origin.toLowerCase()}">{originLabel(g.origin, wording)}</span>
+            <span class="what">{groupText(g, album, wording)}</span>
           </button>
         </li>
       {/each}

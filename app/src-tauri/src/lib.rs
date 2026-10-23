@@ -13,7 +13,7 @@ use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
     ImageTier, Iptc, KeywordPath, KeywordRemap, Op, Photo, PhotoId, PhotoSource, Pick, Place, Removal, SourceProgress,
-    SourceSpec, WriteStatus,
+    SourceSpec, Wording, WriteStatus,
 };
 use events::Log;
 use serde::{Deserialize, Serialize};
@@ -760,8 +760,10 @@ fn text(e: impl std::fmt::Display) -> String {
 struct Status {
     catalog: String,
     source: String,
+    /// How the UI names the source in its text.
+    wording: Wording,
     photos: u64,
-    writes: String,
+    writes: WriteStatus,
     sync_error: Option<String>,
     /// What made the source and how far the app is checked against it.
     compatibility: Compatibility,
@@ -775,6 +777,8 @@ struct Status {
     progress: Option<SourceProgress>,
     /// What emptying the trash does at the source.
     removes: Removal,
+    /// A position belongs to the image, so moving one variant moves the others (Capture One).
+    geo_per_asset: bool,
     /// Photos in the app's trash.
     binned: usize,
 }
@@ -785,8 +789,9 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
     Ok(Status {
         catalog: s.spec.location.clone(),
         source: s.source.info().name,
+        wording: s.source.wording(),
         photos: s.library.len(),
-        writes: format!("{:?}", s.source.write_status()),
+        writes: s.source.write_status(),
         sync_error: s.sync_error.lock().unwrap().clone(),
         compatibility: s.source.info().compatibility,
         provider: s.spec.provider.clone(),
@@ -794,6 +799,7 @@ async fn status(app: State<'_, App>) -> Result<Status, String> {
         offline_roots: s.source.offline_places(),
         progress: s.source.progress(),
         removes: s.source.capabilities().removes,
+        geo_per_asset: s.source.capabilities().geo_per_asset,
         binned: s.library.bin_count(),
     })
 }
@@ -1720,9 +1726,10 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), 
     let changes: Vec<Change> = ready.iter().map(|p| p.pending.change.clone()).collect();
     let mut remaps = Vec::new();
     let mut blocked_remaps = Vec::new();
-    for (seq, queued) in s.library.remaps().map_err(|e| format!("{e:#}"))? {
-        let earlier: Vec<KeywordRemap> = remaps.iter().map(|(_, r): &(u64, KeywordRemap)| r.clone()).collect();
-        match s.source.check_remap(&earlier, &queued.remap).map_err(text)? {
+    let queued = s.library.remaps().map_err(|e| format!("{e:#}"))?;
+    let whys = s.source.check_remaps(&queued.iter().map(|(_, q)| q.remap.clone()).collect::<Vec<_>>()).map_err(text)?;
+    for ((seq, queued), why) in queued.into_iter().zip(whys) {
+        match why {
             None => remaps.push((seq, queued.remap)),
             Some(why) => blocked_remaps.push((seq, queued.remap.label, why)),
         }
@@ -2488,8 +2495,18 @@ pub fn run() {
             ai::accept_suggestions,
             ai::set_suggestion_status
         ])
-        .run(tauri::generate_context!())
-        .expect("C1 Studio failed to start");
+        .build(tauri::generate_context!())
+        .expect("C1 Studio failed to start")
+        .run(|app, event| {
+            // The process ends without dropping the session: what the source writes lazily
+            // (a folder source's image records) is made durable here, or it is lost and its
+            // thumbnails made again at the next start.
+            if let tauri::RunEvent::Exit = event
+                && let Ok(s) = app.state::<App>().session()
+            {
+                let _ = s.source.flush();
+            }
+        });
 }
 
 #[cfg(test)]

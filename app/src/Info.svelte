@@ -350,7 +350,7 @@
       {/each}
     </span>
     {#if !batch}
-      {#if p.trashed}<span class="tag" title="In Capture One's own Trash: left out of every view">in Capture One's trash</span>{/if}
+      {#if p.trashed}<span class="tag" title="In {source.name}'s own Trash: left out of every view">in {source.name}'s trash</span>{/if}
       {#if p.binned}<span class="tag hidden-tag" title="In C1 Studio's trash: restore it, or empty the trash to delete it for good">in Trash</span>{/if}
       {#if p.hidden}<span class="tag hidden-tag" title="Hidden in C1 Studio: left out of every view unless Hidden is on">hidden</span>{/if}
       {#if p.edit.edited}<span class="tag">edited</span>{/if}
@@ -361,7 +361,7 @@
         class="hide"
         title={allHidden
           ? "Show again in every view (h)"
-          : "Hide from every view: kept in Capture One, left out here unless Hidden is on in the header (h)"}
+          : `Hide from every view: kept in ${source.word}, left out here unless Hidden is on in the header (h)`}
         aria-pressed={allHidden}
         onclick={onhide}
       >{allHidden ? "Unhide" : "Hide"}</button>
@@ -735,7 +735,7 @@
     {#if p.edit.local_layers || p.edit.retouch_layers}
       <dt>Layers</dt><dd>{p.edit.local_layers} local · {p.edit.retouch_layers} retouch</dd>
     {/if}
-    <dt>{source.isCaptureOne ? "Catalog id" : "Photo id"}</dt><dd class="muted">{p.id.ext}</dd>
+    <dt>{source.noun === "catalog" ? "Catalog id" : "Photo id"}</dt><dd class="muted">{p.id.ext}</dd>
   </dl>
 
   <details class="history" bind:open={historyOpen}>
@@ -752,8 +752,8 @@
         {#each history as e}
           <li>
             <span class="when">{date(e.at)}</span>
-            <span class="origin from-{e.origin.toLowerCase()}">{originLabel(e.origin, source.provider)}</span>
-            <span class="what">{eventText(e, loggedAlbumName, source.provider)}</span>
+            <span class="origin from-{e.origin.toLowerCase()}">{originLabel(e.origin, source.wording)}</span>
+            <span class="what">{eventText(e, loggedAlbumName, source.wording)}</span>
           </li>
         {/each}
       </ol>
