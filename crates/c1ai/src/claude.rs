@@ -43,16 +43,19 @@ pub fn model(id: &str) -> Option<Model> {
 /// The long edge of the JPEG sent: past it the API scales the image down anyway.
 pub const LONG_EDGE: u32 = 1568;
 
-/// Tokens a photo takes, roughly, for estimating a run before it starts: the image
-/// (a 3:2 frame at [`LONG_EDGE`]), the line of context, the cached instructions read
-/// back, and the answer with a little thinking.
-const PHOTO_INPUT: f64 = 2300.0;
+/// Tokens a photo takes, roughly, for estimating a run before it starts: the image (a
+/// thumbnail, about 450 by 300, or a preview at [`LONG_EDGE`]) with the line of context,
+/// the cached instructions read back, and the answer with a little thinking.
+const THUMB_INPUT: f64 = 400.0;
+const PREVIEW_INPUT: f64 = 2200.0;
 const CACHED_INPUT: f64 = 1500.0;
 const PHOTO_OUTPUT: f64 = 700.0;
 
-/// What describing `photos` photos would cost with `model`, in US dollars.
-pub fn estimate(model: &Model, photos: usize) -> f64 {
-    let per_photo = (PHOTO_INPUT + CACHED_INPUT * 0.1) * model.input + PHOTO_OUTPUT * model.output;
+/// What describing `photos` photos would cost with `model`, in US dollars, each sent as
+/// its preview or else as its thumbnail.
+pub fn estimate(model: &Model, photos: usize, preview: bool) -> f64 {
+    let input = if preview { PREVIEW_INPUT } else { THUMB_INPUT };
+    let per_photo = (input + CACHED_INPUT * 0.1) * model.input + PHOTO_OUTPUT * model.output;
     per_photo * photos as f64 / 1e6
 }
 
@@ -269,6 +272,13 @@ impl VisionProvider for Claude {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preview_costs_more_than_a_thumbnail() {
+        let model = model(DEFAULT_MODEL).unwrap();
+        assert!(estimate(&model, 10, true) > estimate(&model, 10, false));
+        assert_eq!(estimate(&model, 0, true), 0.0);
+    }
 
     /// A response in the API's shape: a thinking block, then the structured answer.
     const RESPONSE: &str = r#"{

@@ -198,6 +198,17 @@ impl Library {
         self.suggestions.put(&key, &entry, record)
     }
 
+    /// [`Library::put_suggestion`] for a photo whose call is recorded with another (a
+    /// contact sheet's).
+    pub fn put_suggestion_only(&self, row: u64, entry: &Entry) -> anyhow::Result<()> {
+        let Some(key) = self.key_of(row) else { return Ok(()) };
+        let mut entry = entry.clone();
+        if let Some(place) = entry.suggestion.place.as_mut() {
+            entry.warnings.extend(check_place(place));
+        }
+        self.suggestions.put_entry(&key, &entry)
+    }
+
     /// Records a call that gave no suggestion: it was paid for all the same.
     pub fn record_call(&self, row: u64, record: &RunRecord) -> anyhow::Result<()> {
         let Some(key) = self.key_of(row) else { return Ok(()) };

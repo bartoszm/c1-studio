@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
-  import type { AiView } from "./lib/api";
+  import type { AiImage, AiView } from "./lib/api";
 
   // How photos are described (the AI tab): Claude through the API with a key or through
   // Claude Code on a Claude plan, the model, the captions' language, effort, photos at
@@ -79,10 +79,37 @@
       <select id="ai-access" value={view.settings.access} disabled={busy} onchange={(e) => save({ access: e.currentTarget.value as api.AiAccess })}>
         <option value="api">Anthropic API key: billed per token</option>
         <option value="plan">Claude plan, through Claude Code</option>
+        <option value="gemini">Gemini, through agy (Antigravity CLI)</option>
       </select>
     </div>
 
-    {#if view.settings.access === "plan"}
+    {#if view.settings.access === "gemini"}
+      <span class="label">agy</span>
+      <div>
+        {#if view.gemini && view.gemini_error}
+          <span class="warn">Installed, but {view.gemini_error}</span>
+        {:else if view.gemini}
+          <span>Installed{view.models.length ? `: ${view.models.length} Gemini models` : ""}</span>
+        {:else}
+          <span class="warn">Not found. Install the Antigravity CLI and run <code>agy</code> once to sign in.</span>
+        {/if}
+        <button class="small-btn" disabled={busy} onclick={() => run(api.aiSettings)}>Check again</button>
+        <small class="muted">Runs count toward the Google account's Gemini quota.</small>
+      </div>
+
+      <label for="ai-sheets">Send</label>
+      <div>
+        <select id="ai-sheets" value={view.settings.sheets ? "sheets" : "photo"} disabled={busy} onchange={(e) => save({ sheets: e.currentTarget.value === "sheets" })}>
+          <option value="photo">One photo per call</option>
+          <option value="sheets">Contact sheets: 36 photos per call, numbered</option>
+        </select>
+        <small class="muted">Sheets take far fewer calls for a first pass over many photos; each photo is seen smaller.</small>
+      </div>
+    {/if}
+
+    {#if view.settings.access === "gemini"}
+      <!-- agy needs no key -->
+    {:else if view.settings.access === "plan"}
       <span class="label">Claude Code</span>
       <div>
         {#if busy && !view.plan}
@@ -121,11 +148,32 @@
 
     <label for="ai-model">Model</label>
     <div>
-      <select id="ai-model" value={view.settings.model} disabled={busy} onchange={(e) => save({ model: e.currentTarget.value })}>
+      <select
+        id="ai-model"
+        value={view.settings.access === "gemini" ? view.settings.gemini_model : view.settings.model}
+        disabled={busy}
+        onchange={(e) => save(view?.settings.access === "gemini" ? { gemini_model: e.currentTarget.value } : { model: e.currentTarget.value })}
+      >
+        {#if view.settings.access === "gemini" && !view.models.some((m) => m.id === view?.settings.gemini_model)}
+          <option value={view.settings.gemini_model}>{view.settings.gemini_model}</option>
+        {/if}
         {#each view.models as m (m.id)}
           <option value={m.id}>{m.name}{view.settings.access === "api" ? ` · $${m.input} / $${m.output} per M tokens` : ""}</option>
         {/each}
       </select>
+    </div>
+
+    <label for="ai-image">Photo sent</label>
+    <div>
+      <select id="ai-image" value={view.settings.image} disabled={busy} onchange={(e) => save({ image: e.currentTarget.value as AiImage })}>
+        <option value="thumb">Thumbnail: {source.owner ? `${source.owner}'s own render of the edits, ` : ""}about 450 pixels</option>
+        <option value="preview">Preview: up to 1568 pixels, more detail</option>
+      </select>
+      <small class="muted">
+        {view.settings.image === "thumb"
+          ? "Where a photo has none, its preview goes."
+          : `${source.owner ? `A ${source.owner} preview gets its colours matched here, and they can be off. ` : ""}Where a photo has none, its thumbnail goes.`}
+      </small>
     </div>
 
     <label for="ai-language">Captions</label>
@@ -202,7 +250,11 @@
 
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
-    sent to Anthropic as previews of at most 1568 pixels. These settings belong to this {source.noun}.
+    sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as {view.settings.access === "gemini" && view.settings.sheets
+      ? `contact sheets of their ${view.settings.image === "thumb" ? "thumbnails" : "previews"}`
+      : view.settings.image === "thumb"
+        ? "thumbnails"
+        : "previews of at most 1568 pixels"}. These settings belong to this {source.noun}.
   </p>
 {/if}
 

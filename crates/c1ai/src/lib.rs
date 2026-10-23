@@ -8,6 +8,7 @@
 //! the same of Claude Code signed in with a Claude plan. Gemini through `agy` follows
 //! behind the same trait.
 
+pub mod agy;
 pub mod claude;
 pub mod claude_code;
 pub mod keys;
@@ -238,10 +239,10 @@ pub enum AiError {
     BadReply(String),
     #[error("key store: {0}")]
     Keys(String),
-    /// Claude Code is missing or would not start.
-    #[error("Claude Code: {0}")]
+    /// The command-line tool (Claude Code, agy) is missing, not signed in or would not start.
+    #[error("{0}")]
     Cli(String),
-    #[error("the Claude plan's usage limit is reached: {0}")]
+    #[error("the plan's usage limit is reached: {0}")]
     Limit(String),
     #[error("stopped")]
     Stopped,
@@ -293,6 +294,32 @@ pub trait VisionProvider: Send + Sync {
     /// a stored suggestion was made the same way.
     fn prompt_hash(&self) -> u64;
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed>;
+
+    /// Photos go to it as contact sheets ([`VisionProvider::describe_sheet`]).
+    fn sheets(&self) -> bool {
+        false
+    }
+
+    /// Describes the numbered photos of a contact sheet in one call.
+    fn describe_sheet(&self, _sheet: &SheetRequest) -> Result<SheetReply, Failed> {
+        Err(AiError::BadReply("this provider takes one photo at a time".into()).into())
+    }
+}
+
+/// A contact sheet to describe: a JPEG of up to 36 photos numbered from 1, row by row,
+/// and what the catalog knows of each, in the same order.
+pub struct SheetRequest {
+    pub jpeg: Vec<u8>,
+    pub contexts: Vec<String>,
+}
+
+/// What a sheet's call gave: per photo (in the request's order) its checked suggestion
+/// and warnings, `None` where the answer left it out; the sheet's own warnings; the call.
+#[derive(Debug)]
+pub struct SheetReply {
+    pub replies: Vec<Option<(Suggestion, Vec<String>)>>,
+    pub warnings: Vec<String>,
+    pub record: RunRecord,
 }
 
 /// The keywords a catalog has, by name: what a model's answer is matched against.

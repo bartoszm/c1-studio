@@ -59,10 +59,11 @@ pub struct Status {
 }
 
 pub fn status(program: &Path) -> Result<Status, AiError> {
-    let out = command(program).args(["auth", "status"]).output().map_err(|e| AiError::Cli(e.to_string()))?;
+    let out =
+        command(program).args(["auth", "status"]).output().map_err(|e| AiError::Cli(format!("Claude Code: {e}")))?;
     // Signed out, it says so with a non-zero exit and the same JSON.
     serde_json::from_slice(&out.stdout)
-        .map_err(|_| AiError::Cli(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+        .map_err(|_| AiError::Cli(format!("Claude Code: {}", String::from_utf8_lossy(&out.stderr).trim())))
 }
 
 pub struct ClaudeCode {
@@ -87,7 +88,7 @@ impl ClaudeCode {
         let prompt = crate::prompt_hash(brief);
         let name = format!("c1studio-ai-{}-{}.txt", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
         let system = std::env::temp_dir().join(name);
-        std::fs::write(&system, text).map_err(|e| AiError::Cli(format!("the prompt's file: {e}")))?;
+        std::fs::write(&system, text).map_err(|e| AiError::Cli(format!("Claude Code: the prompt's file: {e}")))?;
         Ok(ClaudeCode { program, model, options, system, schema, prompt, vocabulary })
     }
 
@@ -141,7 +142,7 @@ impl ClaudeCode {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| AiError::Cli(format!("would not start: {e}")))?;
+            .map_err(|e| AiError::Cli(format!("Claude Code would not start: {e}")))?;
         let mut stdin = child.stdin.take().expect("piped");
         // Written from another thread: a photo is larger than the pipe, and Claude Code
         // starts writing before it has read it all. Dropping it closes Claude Code's input.

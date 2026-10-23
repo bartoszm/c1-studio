@@ -40,7 +40,11 @@
     if (!settingsOpen) untrack(loadView);
   });
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
-  let model = $derived(view?.models.find((m) => m.id === view?.settings.model));
+  let modelId = $derived(view?.settings.access === "gemini" ? view.settings.gemini_model : view?.settings.model);
+  let model = $derived(view?.models.find((m) => m.id === modelId) ?? (modelId ? { name: modelId } : undefined));
+  /** What to do before a run can start. */
+  const notReady = (v: AiView) =>
+    v.settings.access === "plan" ? "Sign in to Claude Code first" : v.settings.access === "gemini" ? "Install agy first" : "Add an API key in Settings > AI first";
 
   // ---- a run --------------------------------------------------------------------------
   /** The estimate shown, with the photos and choice it was made for: Describe runs those. */
@@ -280,7 +284,7 @@
         {@const e = estimate.of}
         <span>
           {e.photos.toLocaleString()} photo{e.photos === 1 ? "" : "s"} with {e.model},
-          {#if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
+          {#if e.via === "Gemini"}{e.calls.toLocaleString()} call{e.calls === 1 ? "" : "s"} to Gemini: counts toward the account's quota{:else if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
             ? ` · ${e.skipped.toLocaleString()} described already, left out`
             : ""}
         </span>
@@ -291,7 +295,7 @@
           class="btn primary"
           disabled={!picked.length || estimating || !view?.ready}
           title={!view?.ready
-            ? view?.settings.access === "plan" ? "Sign in to Claude Code first" : "Add an API key in Settings > AI first"
+            ? view ? notReady(view) : ""
             : picked.length ? "" : "Pick photos in the strip below"}
           onclick={ask}
         >Describe {picked.length ? picked.length.toLocaleString() : ""} photo{picked.length === 1 ? "" : "s"}…</button>
@@ -305,9 +309,13 @@
     </div>
     <button class="link" title="Settings > AI: access, model, language" onclick={onsettings}>
       {#if view && !view.ready}
-        {view.settings.access === "plan" ? "Sign in to Claude Code…" : "Add an API key…"}
+        {notReady(view).replace(/ first$| in Settings > AI first$/, "…")}
       {:else}
-        {model?.name ?? "Settings"}{view?.settings.access === "plan" ? " · Claude plan" : view ? ` · ${money(view.spent)} spent` : ""}
+        {model?.name ?? "Settings"}{view?.settings.access === "plan"
+          ? " · Claude plan"
+          : view?.settings.access === "gemini"
+            ? view.settings.sheets ? " · contact sheets" : ""
+            : view ? ` · ${money(view.spent)} spent` : ""}
       {/if}
     </button>
   </div>
