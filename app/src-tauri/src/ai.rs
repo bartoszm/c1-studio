@@ -193,7 +193,7 @@ fn publish(app: &AppHandle, s: &Arc<Session>) {
 
 /// Hears how call `call` goes and keeps its phase and the log up to date. A photo's call
 /// is logged only when it is tried again: one line per photo would bury the rest.
-fn progress_for(app: &AppHandle, s: &Arc<Session>, call: usize, sheet: bool, photos: usize) -> Progress {
+fn progress_for(app: &AppHandle, s: &Arc<Session>, call: usize, sheet: bool) -> Progress {
     let (app, s) = (app.clone(), Arc::clone(s));
     Arc::new(move |step| {
         {
@@ -209,7 +209,7 @@ fn progress_for(app: &AppHandle, s: &Arc<Session>, call: usize, sheet: bool, pho
                     if attempt > 1 {
                         st.note(call, true, format!("{name}: sent again, try {attempt}"));
                     } else if sheet {
-                        st.note(call, true, format!("{name}: {photos} photos sent"));
+                        st.note(call, true, format!("{name}: sent"));
                     }
                 }
                 Step::Retrying { attempt, of, why } => {
@@ -683,13 +683,12 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                             });
                         }
                         publish(&app, &s);
-                        let progress = progress_for(&app, &s, call, sheets, unit.len());
+                        let progress = progress_for(&app, &s, call, sheets);
                         // A panic is this photo's failure, not the run's end with the
                         // state left saying it runs.
                         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match unit.as_slice() {
-                            [row] if !sheets => {
-                                describe_one(&s, provider.as_ref(), image, *row, progress).map(|c| (0, c))
-                            }
+                            [row] if !sheets => describe_one(&s, provider.as_ref(), image, *row, progress)
+                                .map(|cost| Described { no_image: 0, unanswered: 0, cost }),
                             rows => describe_sheet(&s, provider.as_ref(), image, rows, call, progress),
                         }))
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
@@ -699,19 +698,22 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                         st.working.retain(|r| !unit.contains(r));
                         st.units.retain(|u| u.call != call);
                         match outcome {
-                            Ok((missing, cost)) => {
+                            Ok(Described { no_image, unanswered, cost }) => {
                                 st.done += unit.len();
-                                st.failed += missing;
+                                st.failed += no_image + unanswered;
                                 st.cost += cost;
                                 st.calls_done += 1;
                                 failing.store(0, Ordering::SeqCst);
                                 if sheets {
-                                    let left_out =
-                                        if missing > 0 { format!(", {missing} left out") } else { String::new() };
-                                    let described = unit.len() - missing;
+                                    let left_out = if unanswered > 0 {
+                                        format!(", {unanswered} missing from the answer")
+                                    } else {
+                                        String::new()
+                                    };
+                                    let described = unit.len() - no_image - unanswered;
                                     st.note(
                                         call,
-                                        missing == 0,
+                                        unanswered == 0,
                                         format!("{name}: answered in {took} s, {described} described{left_out}"),
                                     );
                                 }
@@ -823,8 +825,16 @@ fn describe_one(
     Ok(reply.record.cost)
 }
 
+/// What a call gave: photos that got no suggestion, for want of an image or of an answer,
+/// and what it cost.
+struct Described {
+    no_image: usize,
+    unanswered: usize,
+    cost: f64,
+}
+
 /// Describes a contact sheet of `rows` in one call (number `call`) and stores each photo's
-/// suggestion. Returns how many photos the answer left out, and what the call cost.
+/// suggestion.
 fn describe_sheet(
     s: &Session,
     provider: &dyn VisionProvider,
@@ -832,7 +842,7 @@ fn describe_sheet(
     rows: &[u64],
     call: usize,
     progress: Progress,
-) -> anyhow::Result<(usize, f64)> {
+) -> anyhow::Result<Described> {
     let mut cells = Vec::new();
     let mut contexts = Vec::new();
     let mut on_sheet = Vec::new();
@@ -847,7 +857,14 @@ fn describe_sheet(
         anyhow::bail!("no preview or thumbnail");
     }
     let jpeg = c1image::encode_jpeg(&c1image::contact_sheet(&cells), 85);
+    let no_image = rows.len() - on_sheet.len();
     {
+        let left_off = match no_image {
+            0 => String::new(),
+            1 => "; 1 photo has no image and is left off".into(),
+            n => format!("; {n} photos have no image and are left off"),
+        };
+        lock(&s.describe).note(call, no_image == 0, format!("Sheet {call}: made, {} photos{left_off}", on_sheet.len()));
         let mut kept = lock(&s.describe_sheets);
         kept.push_back((call, jpeg.clone()));
         while kept.len() > SHEETS_KEPT {
@@ -867,11 +884,11 @@ fn describe_sheet(
     if !reply.warnings.is_empty() {
         s.log.event(&format!("A sheet of {} photos: {}", on_sheet.len(), reply.warnings.join("; ")), &[]);
     }
-    let mut missing = rows.len() - on_sheet.len();
+    let mut unanswered = 0;
     let mut first = Some(());
     for (&row, answer) in on_sheet.iter().zip(reply.replies) {
         let Some((suggestion, warnings)) = answer else {
-            missing += 1;
+            unanswered += 1;
             continue;
         };
         let entry = Entry {
@@ -893,7 +910,7 @@ fn describe_sheet(
     if first.is_some() {
         s.library.record_call(on_sheet[0], &reply.record)?;
     }
-    Ok((missing, reply.record.cost))
+    Ok(Described { no_image, unanswered, cost: reply.record.cost })
 }
 
 /// Stops the run: calls under way end as soon as they can.
