@@ -760,7 +760,11 @@ export type AiSettings = {
   gemini_model: string;
   /** Gemini gets contact sheets of up to 36 photos rather than one photo per call. */
   sheets: boolean;
+  /** The image sent of each photo, alone or on a sheet. */
+  image: AiImage;
 };
+/** The source's thumbnail (for Capture One its render of the edits) or the preview. */
+export type AiImage = "thumb" | "preview";
 export type AiModel = { id: string; name: string; input: number; output: number };
 /** Claude Code as a plan run would use it. */
 export type AiPlan = { installed: boolean; loggedIn: boolean; authMethod: string | null; subscriptionType: string | null; error: string | null };

@@ -31,6 +31,19 @@ pub(crate) enum Access {
     Gemini,
 }
 
+/// The image a model is sent of each photo.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum AiImage {
+    /// The source's thumbnail: for Capture One its own render of the edits, about 450 by
+    /// 300, so the colours are the ones the user sees there.
+    #[default]
+    Thumb,
+    /// The preview, up to [`claude::LONG_EDGE`]: more detail, but for Capture One its
+    /// colours are matched here and can be off.
+    Preview,
+}
+
 /// What the user chose for describing photos, kept per catalog in `ai.json`.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -53,6 +66,8 @@ pub(crate) struct AiSettings {
     gemini_model: String,
     /// Gemini gets contact sheets of up to 36 photos rather than one photo per call.
     sheets: bool,
+    /// The image sent of each photo, alone or on a sheet.
+    image: AiImage,
 }
 
 impl Default for AiSettings {
@@ -68,6 +83,7 @@ impl Default for AiSettings {
             place_tick: 80,
             gemini_model: agy::DEFAULT_MODEL.into(),
             sheets: false,
+            image: AiImage::Thumb,
         }
     }
 }
@@ -374,7 +390,7 @@ fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), 
     let estimate = Estimate {
         photos: todo.len(),
         skipped: rows.len() - todo.len(),
-        cost: price.map_or(0.0, |model| claude::estimate(&model, todo.len())),
+        cost: price.map_or(0.0, |model| claude::estimate(&model, todo.len(), settings.image == AiImage::Preview)),
         model: name,
         plan: price.is_none(),
         calls: if sheets { todo.len().div_ceil(c1image::PER_SHEET) } else { todo.len() },
@@ -433,17 +449,18 @@ const CONTEXT_TEXT: usize = 600;
 const CONTEXT_KEYWORDS: usize = 60;
 
 /// The photo as the model sees it, at most [`claude::LONG_EDGE`] on the long side.
-fn request(s: &Session, row: u64) -> anyhow::Result<Option<PhotoRequest>> {
+fn request(s: &Session, image: AiImage, row: u64) -> anyhow::Result<Option<PhotoRequest>> {
     let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { return Ok(None) };
-    let Some(pixels) = pixels(s, &id, claude::LONG_EDGE)? else { return Ok(None) };
+    let Some(pixels) = pixels(s, &id, image, claude::LONG_EDGE)? else { return Ok(None) };
     Ok(Some(PhotoRequest { jpeg: c1image::encode_jpeg(&pixels, 85), context: context(&photo) }))
 }
 
-/// A photo's pixels for a model, at most `long_edge` on the long side: the source's own
-/// thumbnail first, which for Capture One is its render of the edits (the colours of a
-/// preview read from its cache can be off); else the preview, made if need be; else a
-/// thumbnail made here. An image that will not load gives way to the next.
-fn pixels(s: &Session, id: &PhotoId, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+/// A photo's pixels for a model, at most `long_edge` on the long side: the image chosen
+/// first, then the other one, then a thumbnail made here. The source's own thumbnail is
+/// for Capture One its render of the edits (the colours of a preview read from its cache
+/// can be off); a missing preview is made if need be. An image that will not load gives
+/// way to the next.
+fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
     let mut why = None;
     let mut fitted = |image: Option<ImageRef>| match image.map(|r| c1image::load_fitted(&r, long_edge)) {
         Some(Ok(pixels)) => Some(pixels),
@@ -453,11 +470,19 @@ fn pixels(s: &Session, id: &PhotoId, long_edge: u32) -> anyhow::Result<Option<c1
         }
         None => None,
     };
-    if let Some(pixels) = fitted(s.source.image(id, ImageTier::Thumb)?) {
-        return Ok(Some(pixels));
-    }
-    if let Some(pixels) = fitted(s.source.image_or_make(id, ImageTier::Preview)?) {
-        return Ok(Some(pixels));
+    let tiers = match image {
+        AiImage::Thumb => [ImageTier::Thumb, ImageTier::Preview],
+        AiImage::Preview => [ImageTier::Preview, ImageTier::Thumb],
+    };
+    for tier in tiers {
+        // Only a preview is made: a thumbnail made here comes last, below.
+        let found = match tier {
+            ImageTier::Preview => s.source.image_or_make(id, tier)?,
+            _ => s.source.image(id, tier)?,
+        };
+        if let Some(pixels) = fitted(found) {
+            return Ok(Some(pixels));
+        }
     }
     if let Some(pixels) = fitted(s.thumbs.get_or_make(s.source.as_ref(), id)?.map(|made| made.image)) {
         return Ok(Some(pixels));
@@ -483,9 +508,10 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
             Arc::<dyn VisionProvider>::from(provider(&s, &settings)?),
             todo,
             settings.parallel.clamp(1, 8),
+            settings.image,
         ))
     })();
-    let (provider, todo, parallel) = match started {
+    let (provider, todo, parallel, image) = match started {
         Ok(started) => started,
         Err(e) => {
             s.describing.store(false, Ordering::SeqCst);
@@ -533,8 +559,10 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                         // A panic is this photo's failure, not the run's end with the
                         // state left saying it runs.
                         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match unit.as_slice() {
-                            [row] if !provider.sheets() => describe_one(&s, provider.as_ref(), *row).map(|c| (0, c)),
-                            rows => describe_sheet(&s, provider.as_ref(), rows),
+                            [row] if !provider.sheets() => {
+                                describe_one(&s, provider.as_ref(), image, *row).map(|c| (0, c))
+                            }
+                            rows => describe_sheet(&s, provider.as_ref(), image, rows),
                         }))
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
                         let mut st = lock(&state);
@@ -609,8 +637,8 @@ fn failed_with(e: &anyhow::Error) -> Option<&AiError> {
 
 /// Describes one photo and stores the suggestion. Returns what the call cost. A call
 /// that was paid for but gave nothing is recorded all the same.
-fn describe_one(s: &Session, provider: &dyn VisionProvider, row: u64) -> anyhow::Result<f64> {
-    let Some(request) = request(s, row)? else { anyhow::bail!("no preview or thumbnail") };
+fn describe_one(s: &Session, provider: &dyn VisionProvider, image: AiImage, row: u64) -> anyhow::Result<f64> {
+    let Some(request) = request(s, image, row)? else { anyhow::bail!("no preview or thumbnail") };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
         Err(failed) => {
@@ -638,13 +666,18 @@ fn describe_one(s: &Session, provider: &dyn VisionProvider, row: u64) -> anyhow:
 
 /// Describes a contact sheet of `rows` in one call and stores each photo's suggestion.
 /// Returns how many photos the answer left out, and what the call cost.
-fn describe_sheet(s: &Session, provider: &dyn VisionProvider, rows: &[u64]) -> anyhow::Result<(usize, f64)> {
+fn describe_sheet(
+    s: &Session,
+    provider: &dyn VisionProvider,
+    image: AiImage,
+    rows: &[u64],
+) -> anyhow::Result<(usize, f64)> {
     let mut cells = Vec::new();
     let mut contexts = Vec::new();
     let mut on_sheet = Vec::new();
     for &row in rows {
         let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { continue };
-        let Some(cell) = pixels(s, &id, c1image::SHEET_CELL)? else { continue };
+        let Some(cell) = pixels(s, &id, image, c1image::SHEET_CELL)? else { continue };
         cells.push(cell);
         contexts.push(context(&photo));
         on_sheet.push(row);

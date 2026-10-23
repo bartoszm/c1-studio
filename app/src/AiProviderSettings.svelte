@@ -2,7 +2,7 @@
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
-  import type { AiView } from "./lib/api";
+  import type { AiImage, AiView } from "./lib/api";
 
   // How photos are described (the AI tab): Claude through the API with a key or through
   // Claude Code on a Claude plan, the model, the captions' language, effort, photos at
@@ -100,8 +100,8 @@
       <label for="ai-sheets">Send</label>
       <div>
         <select id="ai-sheets" value={view.settings.sheets ? "sheets" : "photo"} disabled={busy} onchange={(e) => save({ sheets: e.currentTarget.value === "sheets" })}>
-          <option value="photo">One photo per call: its thumbnail, else its preview</option>
-          <option value="sheets">Contact sheets: 36 thumbnails per call, numbered</option>
+          <option value="photo">One photo per call</option>
+          <option value="sheets">Contact sheets: 36 photos per call, numbered</option>
         </select>
         <small class="muted">Sheets take far fewer calls for a first pass over many photos; each photo is seen smaller.</small>
       </div>
@@ -161,6 +161,19 @@
           <option value={m.id}>{m.name}{view.settings.access === "api" ? ` · $${m.input} / $${m.output} per M tokens` : ""}</option>
         {/each}
       </select>
+    </div>
+
+    <label for="ai-image">Photo sent</label>
+    <div>
+      <select id="ai-image" value={view.settings.image} disabled={busy} onchange={(e) => save({ image: e.currentTarget.value as AiImage })}>
+        <option value="thumb">Thumbnail: the {source.noun}'s own render of the edits, about 450 pixels</option>
+        <option value="preview">Preview: up to 1568 pixels, more detail</option>
+      </select>
+      <small class="muted">
+        {view.settings.image === "thumb"
+          ? "Where a photo has none, its preview goes."
+          : "A Capture One preview gets its colours matched here, and they can be off. Where a photo has none, its thumbnail goes."}
+      </small>
     </div>
 
     <label for="ai-language">Captions</label>
@@ -237,7 +250,11 @@
 
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
-    sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as thumbnails (previews where there is none) of at most 1568 pixels{view.settings.access === "gemini" && view.settings.sheets ? ", or as contact sheets of thumbnails" : ""}. These settings belong to this {source.noun}.
+    sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as {view.settings.access === "gemini" && view.settings.sheets
+      ? `contact sheets of their ${view.settings.image === "thumb" ? "thumbnails" : "previews"}`
+      : view.settings.image === "thumb"
+        ? "thumbnails"
+        : "previews of at most 1568 pixels"}. These settings belong to this {source.noun}.
   </p>
 {/if}
 
