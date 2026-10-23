@@ -316,7 +316,11 @@ fn a_place_is_refined_past_neighbours_saying_the_same_but_not_past_one_elsewhere
     assert_eq!(plan.places, 0, "2 still has Warsaw 3 minutes after it: {plan:?}");
     lib.edit(&[(row(&lib, 3), Op::SetPlace { base: place("Poland", "Mazowieckie", "Warszawa"), value: krakow() })])
         .unwrap();
-    assert_eq!(lib.neighbour_plan(&Filter::default(), &close).unwrap().places, 1, "only 2 is within 3 minutes of Wawel");
+    assert_eq!(
+        lib.neighbour_plan(&Filter::default(), &close).unwrap().places,
+        1,
+        "only 2 is within 3 minutes of Wawel"
+    );
 }
 
 #[test]
