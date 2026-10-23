@@ -61,6 +61,8 @@ struct Session {
     /// Shared with the run's provider, so a call under way ends on Stop.
     describe_stop: Arc<AtomicBool>,
     describe: Mutex<ai::DescribeState>,
+    /// The contact sheets of the run's latest calls, by call number, to look at on demand.
+    describe_sheets: Mutex<std::collections::VecDeque<(usize, Vec<u8>)>>,
     /// Thumbnails made here for photos the source has none for, and the run that makes
     /// them all (one at a time, stopped when another source opens).
     thumbs: Thumbs,
@@ -370,6 +372,7 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         describing: AtomicBool::new(false),
         describe_stop: Arc::default(),
         describe: Mutex::new(ai::DescribeState::default()),
+        describe_sheets: Mutex::default(),
         thumbs: Thumbs::new(dir.join("thumbs")),
         filling: AtomicBool::new(false),
         fill_stop: AtomicBool::new(false),
@@ -2076,11 +2079,19 @@ async fn set_history(app: State<'_, App>, on: bool) -> Result<(), String> {
 /// `/thumb/<row>` serves the source's own thumbnail (Capture One's): a JPEG with every edit, cut to the crop;
 /// for a photo without one, one made here (from its preview or original) the first time.
 /// `/preview/<row>` renders the large preview (~300 ms), framed alike, and sends it as JPEG.
+/// `/sheet/<run>/<call>` is the contact sheet an AI run sent in that call, while it is kept
+/// (the run's start in the path keeps a cached one from passing for another run's).
 fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let mut parts = path.trim_start_matches('/').split('/');
     let tier = match parts.next() {
         Some("thumb") => ImageTier::Thumb,
         Some("preview") => ImageTier::Preview,
+        Some("sheet") => {
+            let Some(call) = parts.nth(1).and_then(|c| c.parse::<usize>().ok()) else { return Ok(None) };
+            let s = app.state::<App>().session().map_err(anyhow::Error::msg)?;
+            let sheets = s.describe_sheets.lock().unwrap_or_else(|e| e.into_inner());
+            return Ok(sheets.iter().find(|(n, _)| *n == call).map(|(_, jpeg)| jpeg.clone()));
+        }
         _ => return Ok(None),
     };
     let Some(row) = parts.next().and_then(|r| r.parse::<u64>().ok()) else { return Ok(None) };

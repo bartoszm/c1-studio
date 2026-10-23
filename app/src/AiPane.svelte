@@ -95,12 +95,55 @@
     return () => clearInterval(timer);
   });
   let elapsed = $derived(describe?.running && describe.started ? Math.max(0, now - describe.started) : 0);
-  /** From the pace so far, once a photo is back; the photos at work count as half done. */
+  /** Photos go as contact sheets: a call is a sheet of many. */
+  let bySheet = $derived(!!describe && (describe.units[0]?.sheet ?? describe.calls_total < describe.total));
+  /** From the pace so far, once a call is back; the calls at work count as half done. */
   let left = $derived.by(() => {
-    if (!describe?.running || describe.done < 1) return null;
-    const done = describe.done + describe.working.length / 2;
-    return (elapsed / done) * (describe.total - done);
+    if (!describe?.running || describe.calls_done < 1) return null;
+    const done = describe.calls_done + describe.units.length / 2;
+    return (elapsed / done) * (describe.calls_total - done);
   });
+  /** The call at work longest: what the run line tells of. */
+  let lead = $derived(describe?.running ? describe.units[0] : undefined);
+  const PHASES: Record<api.DescribeUnit["phase"], string> = {
+    preparing: "making its image",
+    waiting: "waiting for the answer",
+    retrying: "trying again shortly",
+  };
+  const phase = (u: api.DescribeUnit) =>
+    u.phase === "waiting" && u.attempt > 1 ? `waiting for the answer, try ${u.attempt}` : PHASES[u.phase];
+  const clock = (ms: number) => new Date(ms).toLocaleTimeString();
+
+  // ---- what the run is doing, shown on demand -----------------------------------------
+  let details = $state(readFlag("ai-details"));
+  function readFlag(key: string): boolean {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  }
+  $effect(() => {
+    const open = details;
+    try {
+      localStorage.setItem("ai-details", open ? "1" : "0");
+    } catch {
+      // Not kept: it opens closed next time.
+    }
+  });
+  /** The contact sheet shown large, by its call. */
+  let sheetShown = $state<number | null>(null);
+  let sheetGone = $state(false);
+  function showSheet(call: number) {
+    sheetGone = false;
+    sheetShown = call;
+  }
+  function closeSheet(e: KeyboardEvent) {
+    if (sheetShown === null || e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    sheetShown = null;
+  }
   function duration(ms: number): string {
     const s = Math.round(ms / 1000);
     if (s < 60) return `${s} s`;
@@ -266,6 +309,8 @@
   const stars = (n: number | null) => (n ? "★".repeat(n) + "☆".repeat(5 - n) : "—");
 </script>
 
+<svelte:window onkeydowncapture={closeSheet} />
+
 <div class="ai">
   <div class="bar">
     <div class="run">
@@ -273,12 +318,27 @@
         <span>
           Describing <b>{describe.done.toLocaleString()}</b> of {describe.total.toLocaleString()}
           <span class="muted">
-            · {describe.working.length} at work · {duration(elapsed)}
-            {left === null ? "· the first answers take a few seconds" : `· about ${duration(left)} left`}
+            {#if bySheet && lead}
+              · sheet {lead.call} of {describe.calls_total.toLocaleString()} ({lead.rows.length} photos): {phase(lead)}, {duration(now - lead.since)}{describe.units.length > 1
+                ? ` · ${describe.units.length - 1} more at work`
+                : ""}
+            {:else}
+              · {describe.working.length} at work
+            {/if}
+            · {duration(elapsed)}
+            {#if left !== null}
+              · about {duration(left)} left
+            {:else if !lead || now - lead.since < 10_000}
+              {bySheet ? "· a sheet's answer takes a minute or two" : "· the first answers take a few seconds"}
+            {/if}
             {describe.failed ? `· ${describe.failed} failed` : ""}{describe.cost ? ` · ${money(describe.cost)}` : ""}
           </span>
         </span>
-        <progress max={describe.total} value={describe.done}></progress>
+        {#if bySheet}
+          <progress max={describe.calls_total} value={describe.calls_done}></progress>
+        {:else}
+          <progress max={describe.total} value={describe.done}></progress>
+        {/if}
         <button class="btn" onclick={() => api.stopDescribe().catch((e) => onerror(String(e)))}>Stop</button>
       {:else if estimate}
         {@const e = estimate.of}
@@ -304,7 +364,12 @@
         </label>
       {/if}
       {#if describe && !describe.running && describe.failed}
-        <span class="warn" title={describe.error ?? ""}>⚠ {describe.failed} failed{describe.error ? `: ${describe.error}` : ""}</span>
+        <button class="warn" title="What happened, call by call" onclick={() => (details = true)}>
+          ⚠ {describe.failed} failed{describe.error ? `: ${describe.error}` : ""}
+        </button>
+      {/if}
+      {#if describe?.running || describe?.log.length}
+        <button class="link" aria-expanded={details} onclick={() => (details = !details)}>Details {details ? "▾" : "▸"}</button>
       {/if}
     </div>
     <button class="link" title="Settings > AI: access, model, language" onclick={onsettings}>
@@ -324,7 +389,60 @@
     <p class="notice">{notice} <button class="link" onclick={() => (notice = "")}>OK</button></p>
   {/if}
 
-  {#if describe?.running && describe.working.length}
+  {#if details && describe && (describe.running || describe.log.length)}
+    <section class="details" aria-label="What the run is doing">
+      {#each describe.units as u (u.call)}
+        <div class="unit">
+          <div class="unit-head">
+            <b>{u.sheet ? "Sheet" : "Photo"} {u.call}</b>
+            {#if u.sheet}<span class="muted">{u.rows.length} photos</span>{/if}
+            <span class:warn={u.phase === "retrying"}>{phase(u)} · {duration(now - u.since)}</span>
+            <span class="muted">· started {duration(now - u.began)} ago</span>
+            {#if u.sheet && u.phase !== "preparing"}
+              <button class="link" onclick={() => showSheet(u.call)}>Show sheet</button>
+            {/if}
+          </div>
+          {#if u.note}<p class="muted note">{u.note}</p>{/if}
+          <div class="strip">
+            {#each u.rows as row (row)}
+              <button class="busy" onclick={() => onselect(row)} title="Being described: show this photo">
+                <img src={api.thumbUrl(row)} alt="" decoding="async" loading="lazy" />
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/each}
+      {#if describe.log.length}
+        <ol class="log" aria-label="What the run did, newest first">
+          {#each [...describe.log].reverse() as line, i (describe.log.length - i)}
+            <li class:fail={!line.ok}>
+              <time class="muted">{clock(line.at)}</time>
+              {line.text}
+              {#if bySheet && line.call && !describe.units.some((u) => u.call === line.call) && /sent$/.test(line.text)}
+                <button class="link" onclick={() => showSheet(line.call)}>sheet</button>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </section>
+  {/if}
+
+  {#if sheetShown !== null && describe}
+    <div class="overlay" role="dialog" aria-modal="true" aria-label="Contact sheet {sheetShown}">
+      <button class="overlay-close" aria-label="Close" onclick={() => (sheetShown = null)}></button>
+      <figure>
+        {#if sheetGone}
+          <p>This sheet is no longer kept: only the last few are.</p>
+        {:else}
+          <img src={api.sheetUrl(describe.started, sheetShown)} alt="Contact sheet {sheetShown}" onerror={() => (sheetGone = true)} />
+        {/if}
+        <figcaption class="muted">Sheet {sheetShown}, as sent · Esc or a click closes it</figcaption>
+      </figure>
+    </div>
+  {/if}
+
+  {#if describe?.running && describe.working.length && !details}
     <div class="at-work" aria-label="Photos being described">
       <span class="muted">Now:</span>
       {#each describe.working as row (row)}
@@ -534,4 +652,19 @@
   .busy img { display: block; width: 56px; height: 56px; object-fit: cover; border-radius: 3px; }
   @keyframes pulse { 50% { outline-color: rgb(91 141 239 / 25%); } }
   @media (prefers-reduced-motion: reduce) { .busy { animation: none; } }
+  .details { margin: 0 0 12px; padding: 8px 10px; border: 1px solid var(--line, #333); border-radius: 4px; background: rgba(255, 255, 255, 0.03); font-size: 12px; }
+  .unit { padding: 4px 0 8px; border-bottom: 1px solid var(--line, #333); margin-bottom: 6px; }
+  .unit-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .unit .note { margin: 2px 0 0; }
+  .strip { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+  .strip .busy img { width: 36px; height: 36px; }
+  .log { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow-y: auto; }
+  .log li { padding: 1px 0; }
+  .log li.fail { color: #e8b03a; }
+  .log time { margin-right: 6px; font-variant-numeric: tabular-nums; }
+  .overlay { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgb(0 0 0 / 80%); }
+  .overlay-close { position: absolute; inset: 0; cursor: zoom-out; }
+  .overlay figure { position: relative; margin: 0; pointer-events: none; text-align: center; }
+  .overlay img { max-width: 92vw; max-height: 86vh; display: block; }
+  .overlay p { color: #ddd; }
 </style>

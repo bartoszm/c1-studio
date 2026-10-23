@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collect::<Result<Vec<_>, _>>()?;
         let jpeg = c1image::encode_jpeg(&c1image::contact_sheet(&cells), 85);
         let contexts = paths.iter().map(|p| format!("Catalog data: {p}")).collect();
-        let reply = provider.describe_sheet(&SheetRequest { jpeg, contexts })?;
+        let reply = provider.describe_sheet(&SheetRequest { jpeg, contexts, progress: None })?;
         for (path, answer) in paths.iter().zip(&reply.replies) {
             match answer {
                 Some((suggestion, warnings)) => println!("{path}: {suggestion:#?}\nwarnings: {warnings:?}"),
@@ -53,7 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     for path in paths {
-        let photo = PhotoRequest { jpeg: std::fs::read(path)?, context: format!("Catalog data: {path}") };
+        let photo =
+            PhotoRequest { jpeg: std::fs::read(path)?, context: format!("Catalog data: {path}"), progress: None };
         let reply = provider.describe(&photo)?;
         println!("{path}: {:#?}", reply.suggestion);
         println!("warnings: {:?}", reply.warnings);

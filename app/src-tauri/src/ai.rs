@@ -10,7 +10,9 @@ use c1ai::agy::{self, Agy};
 use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
-use c1ai::{AiError, Brief, Failed, Fields, Language, PhotoRequest, SheetRequest, VisionProvider, Vocabulary};
+use c1ai::{
+    AiError, Brief, Failed, Fields, Language, PhotoRequest, Progress, SheetRequest, Step, VisionProvider, Vocabulary,
+};
 use c1index::ai::{Entry, Status};
 use c1index::{Accept, Accepted};
 use c1model::{ImageRef, ImageTier, Photo, PhotoId, Place};
@@ -111,6 +113,118 @@ pub(crate) struct DescribeState {
     cost: f64,
     /// Why the run stopped early (no key, a refused key), or the last photo's failure.
     error: Option<String>,
+    /// Calls made and to make: one per photo, or one per contact sheet.
+    calls_done: usize,
+    calls_total: usize,
+    /// The calls under way, in the order they began.
+    units: Vec<UnitView>,
+    /// What the run did, oldest first, at most [`LOG_LINES`]; kept after the run ends and
+    /// cleared when the next one starts.
+    log: Vec<LogLine>,
+}
+
+/// A call under way: one photo, or a contact sheet of several.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct UnitView {
+    /// From 1, in the run's order: a sheet's number.
+    call: usize,
+    rows: Vec<u64>,
+    sheet: bool,
+    /// `preparing` (its image being made), `waiting` (sent, the answer awaited) or
+    /// `retrying` (a try failed in a way that may pass; another follows after a pause).
+    phase: &'static str,
+    /// When it entered the phase, Unix ms.
+    since: i64,
+    /// When the call began, Unix ms.
+    began: i64,
+    /// The try under way, from 1; 0 while preparing.
+    attempt: u32,
+    /// Why it is trying again.
+    note: Option<String>,
+}
+
+/// A line of what a run did.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct LogLine {
+    /// Unix ms.
+    at: i64,
+    /// The call it is about; 0 for the run as a whole.
+    call: usize,
+    /// False for a failure, or a try that failed.
+    ok: bool,
+    text: String,
+}
+
+/// Lines a run's log keeps.
+const LOG_LINES: usize = 200;
+
+/// Contact sheets kept to look at: those of the calls under way and the last few before.
+const SHEETS_KEPT: usize = 8;
+
+impl DescribeState {
+    fn note(&mut self, call: usize, ok: bool, text: String) {
+        self.log.push(LogLine { at: now(), call, ok, text });
+        if self.log.len() > LOG_LINES {
+            self.log.drain(..self.log.len() - LOG_LINES);
+        }
+    }
+
+    fn unit(&mut self, call: usize) -> Option<&mut UnitView> {
+        self.units.iter_mut().find(|u| u.call == call)
+    }
+}
+
+fn now() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// How the log names a call: "Sheet 2", "Photo 7".
+fn call_name(call: usize, sheet: bool) -> String {
+    format!("{} {call}", if sheet { "Sheet" } else { "Photo" })
+}
+
+/// Shows the run's state where it is looked at: the AI tab and the footer.
+fn publish(app: &AppHandle, s: &Arc<Session>) {
+    let state = lock(&s.describe).clone();
+    if is_current(app, s) {
+        let _ = app.emit("describe", state);
+    }
+}
+
+/// Hears how call `call` goes and keeps its phase and the log up to date. A photo's call
+/// is logged only when it is tried again: one line per photo would bury the rest.
+fn progress_for(app: &AppHandle, s: &Arc<Session>, call: usize, sheet: bool, photos: usize) -> Progress {
+    let (app, s) = (app.clone(), Arc::clone(s));
+    Arc::new(move |step| {
+        {
+            let mut st = lock(&s.describe);
+            let name = call_name(call, sheet);
+            match step {
+                Step::Sent { attempt } => {
+                    if let Some(unit) = st.unit(call) {
+                        unit.phase = "waiting";
+                        unit.since = now();
+                        unit.attempt = attempt;
+                    }
+                    if attempt > 1 {
+                        st.note(call, true, format!("{name}: sent again, try {attempt}"));
+                    } else if sheet {
+                        st.note(call, true, format!("{name}: {photos} photos sent"));
+                    }
+                }
+                Step::Retrying { attempt, of, why } => {
+                    let note = format!("try {attempt} of {of} failed: {why}");
+                    if let Some(unit) = st.unit(call) {
+                        unit.phase = "retrying";
+                        unit.since = now();
+                        unit.note = Some(note.clone());
+                    }
+                    st.note(call, false, format!("{name}: {note}; trying again"));
+                }
+            }
+        }
+        publish(&app, &s);
+    })
 }
 
 #[derive(Serialize)]
@@ -449,10 +563,14 @@ const CONTEXT_TEXT: usize = 600;
 const CONTEXT_KEYWORDS: usize = 60;
 
 /// The photo as the model sees it, at most [`claude::LONG_EDGE`] on the long side.
-fn request(s: &Session, image: AiImage, row: u64) -> anyhow::Result<Option<PhotoRequest>> {
+fn request(s: &Session, image: AiImage, row: u64, progress: Progress) -> anyhow::Result<Option<PhotoRequest>> {
     let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { return Ok(None) };
     let Some(pixels) = pixels(s, &id, image, claude::LONG_EDGE)? else { return Ok(None) };
-    Ok(Some(PhotoRequest { jpeg: c1image::encode_jpeg(&pixels, 85), context: context(&photo) }))
+    Ok(Some(PhotoRequest {
+        jpeg: c1image::encode_jpeg(&pixels, 85),
+        context: context(&photo),
+        progress: Some(progress),
+    }))
 }
 
 /// A photo's pixels for a model, at most `long_edge` on the long side: the image chosen
@@ -520,67 +638,98 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
         }
     };
     s.describe_stop.store(false, Ordering::SeqCst);
-    let first = DescribeState {
-        running: true,
-        total: todo.len(),
-        started: chrono::Utc::now().timestamp_millis(),
-        ..DescribeState::default()
-    };
-    *lock(&s.describe) = first.clone();
-    // Shown at once: the first answer can take half a minute.
-    let _ = app.emit("describe", first.clone());
+    let sheets = provider.sheets();
     // One photo per call, or a contact sheet of up to 36.
-    let units: Vec<Vec<u64>> = if provider.sheets() {
+    let units: Vec<Vec<u64>> = if sheets {
         todo.chunks(c1image::PER_SHEET).map(<[u64]>::to_vec).collect()
     } else {
         todo.iter().map(|&row| vec![row]).collect()
     };
+    *lock(&s.describe) = DescribeState {
+        running: true,
+        total: todo.len(),
+        started: now(),
+        calls_total: units.len(),
+        ..Default::default()
+    };
+    lock(&s.describe_sheets).clear();
+    // Shown at once: the first answer can take half a minute, a sheet's a minute or two.
+    publish(&app, &s);
     std::thread::spawn(move || {
         let _done = Lowers(&s.describing);
         let next = AtomicUsize::new(0);
-        let state = Mutex::new(first);
         // Photos failed one after another: past FAILING, the rest would fail the same way.
         let failing = AtomicUsize::new(0);
-        let report = |state: &DescribeState| {
-            *lock(&s.describe) = state.clone();
-            if is_current(&app, &s) {
-                let _ = app.emit("describe", state.clone());
-            }
-        };
         std::thread::scope(|scope| {
             for _ in 0..parallel.min(units.len().max(1)) {
                 scope.spawn(|| {
                     while !s.describe_stop.load(Ordering::SeqCst) && is_current(&app, &s) {
-                        let Some(unit) = units.get(next.fetch_add(1, Ordering::SeqCst)) else { break };
+                        let index = next.fetch_add(1, Ordering::SeqCst);
+                        let Some(unit) = units.get(index) else { break };
+                        let call = index + 1;
+                        let began = now();
                         {
-                            let mut st = lock(&state);
+                            let mut st = lock(&s.describe);
                             st.working.extend(unit);
-                            report(&st);
+                            st.units.push(UnitView {
+                                call,
+                                rows: unit.clone(),
+                                sheet: sheets,
+                                phase: "preparing",
+                                since: began,
+                                began,
+                                attempt: 0,
+                                note: None,
+                            });
                         }
+                        publish(&app, &s);
+                        let progress = progress_for(&app, &s, call, sheets, unit.len());
                         // A panic is this photo's failure, not the run's end with the
                         // state left saying it runs.
                         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match unit.as_slice() {
-                            [row] if !provider.sheets() => {
-                                describe_one(&s, provider.as_ref(), image, *row).map(|c| (0, c))
+                            [row] if !sheets => {
+                                describe_one(&s, provider.as_ref(), image, *row, progress).map(|c| (0, c))
                             }
-                            rows => describe_sheet(&s, provider.as_ref(), image, rows),
+                            rows => describe_sheet(&s, provider.as_ref(), image, rows, call, progress),
                         }))
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
-                        let mut st = lock(&state);
+                        let name = call_name(call, sheets);
+                        let took = (now() - began) / 1000;
+                        let mut st = lock(&s.describe);
                         st.working.retain(|r| !unit.contains(r));
+                        st.units.retain(|u| u.call != call);
                         match outcome {
                             Ok((missing, cost)) => {
                                 st.done += unit.len();
                                 st.failed += missing;
                                 st.cost += cost;
+                                st.calls_done += 1;
                                 failing.store(0, Ordering::SeqCst);
+                                if sheets {
+                                    let left_out =
+                                        if missing > 0 { format!(", {missing} left out") } else { String::new() };
+                                    let described = unit.len() - missing;
+                                    st.note(
+                                        call,
+                                        missing == 0,
+                                        format!("{name}: answered in {took} s, {described} described{left_out}"),
+                                    );
+                                }
                             }
                             // Stopped mid-call: neither done nor failed.
-                            Err(e) if matches!(failed_with(&e), Some(AiError::Stopped)) => {}
+                            Err(e) if matches!(failed_with(&e), Some(AiError::Stopped)) => {
+                                st.note(call, true, format!("{name}: stopped"));
+                            }
                             Err(e) => {
                                 st.done += unit.len();
                                 st.failed += unit.len();
-                                let message = format!("{e:#}");
+                                st.calls_done += 1;
+                                let mut message = format!("{e:#}");
+                                // Its tries are in the log; the error says they were made.
+                                if failed_with(&e).is_some_and(AiError::retryable) {
+                                    message.push_str(" (tried again, to no avail)");
+                                }
+                                st.note(call, false, format!("{name}: failed after {took} s: {message}"));
                                 let what = match unit.as_slice() {
                                     [row] => format!("photo {row}"),
                                     rows => format!("a sheet of {} photos", rows.len()),
@@ -601,21 +750,24 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                                 }
                             }
                         }
-                        report(&st);
+                        drop(st);
+                        publish(&app, &s);
                     }
                 });
             }
         });
-        let last = DescribeState {
-            running: false,
-            working: Vec::new(),
-            ..state.into_inner().unwrap_or_else(|e| e.into_inner())
+        let summary = {
+            let mut st = lock(&s.describe);
+            st.running = false;
+            st.working.clear();
+            st.units.clear();
+            let summary = format!("Described {} photos, {} failed", st.done - st.failed, st.failed);
+            let ok = st.failed == 0;
+            st.note(0, ok, summary.clone());
+            format!("{summary}, ${:.4}", st.cost)
         };
-        s.log.event(
-            &format!("Described {} photos, {} failed, ${:.4}", last.done - last.failed, last.failed, last.cost),
-            &[],
-        );
-        report(&last);
+        s.log.event(&summary, &[]);
+        publish(&app, &s);
         if is_current(&app, &s) {
             let _ = app.emit("describe-done", ());
         }
@@ -638,8 +790,14 @@ fn failed_with(e: &anyhow::Error) -> Option<&AiError> {
 
 /// Describes one photo and stores the suggestion. Returns what the call cost. A call
 /// that was paid for but gave nothing is recorded all the same.
-fn describe_one(s: &Session, provider: &dyn VisionProvider, image: AiImage, row: u64) -> anyhow::Result<f64> {
-    let Some(request) = request(s, image, row)? else { anyhow::bail!("no preview or thumbnail") };
+fn describe_one(
+    s: &Session,
+    provider: &dyn VisionProvider,
+    image: AiImage,
+    row: u64,
+    progress: Progress,
+) -> anyhow::Result<f64> {
+    let Some(request) = request(s, image, row, progress)? else { anyhow::bail!("no preview or thumbnail") };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
         Err(failed) => {
@@ -665,13 +823,15 @@ fn describe_one(s: &Session, provider: &dyn VisionProvider, image: AiImage, row:
     Ok(reply.record.cost)
 }
 
-/// Describes a contact sheet of `rows` in one call and stores each photo's suggestion.
-/// Returns how many photos the answer left out, and what the call cost.
+/// Describes a contact sheet of `rows` in one call (number `call`) and stores each photo's
+/// suggestion. Returns how many photos the answer left out, and what the call cost.
 fn describe_sheet(
     s: &Session,
     provider: &dyn VisionProvider,
     image: AiImage,
     rows: &[u64],
+    call: usize,
+    progress: Progress,
 ) -> anyhow::Result<(usize, f64)> {
     let mut cells = Vec::new();
     let mut contexts = Vec::new();
@@ -686,7 +846,15 @@ fn describe_sheet(
     if on_sheet.is_empty() {
         anyhow::bail!("no preview or thumbnail");
     }
-    let request = SheetRequest { jpeg: c1image::encode_jpeg(&c1image::contact_sheet(&cells), 85), contexts };
+    let jpeg = c1image::encode_jpeg(&c1image::contact_sheet(&cells), 85);
+    {
+        let mut kept = lock(&s.describe_sheets);
+        kept.push_back((call, jpeg.clone()));
+        while kept.len() > SHEETS_KEPT {
+            kept.pop_front();
+        }
+    }
+    let request = SheetRequest { jpeg, contexts, progress: Some(progress) };
     let reply = match provider.describe_sheet(&request) {
         Ok(reply) => reply,
         Err(failed) => {

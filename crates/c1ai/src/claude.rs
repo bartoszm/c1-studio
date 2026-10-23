@@ -10,7 +10,9 @@ use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::{AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, VisionProvider, Vocabulary, validate};
+use crate::{
+    AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, Step, VisionProvider, Vocabulary, tell, validate,
+};
 
 const URL: &str = "https://api.anthropic.com/v1/messages";
 const VERSION: &str = "2023-06-01";
@@ -230,9 +232,11 @@ impl VisionProvider for Claude {
             if self.options.stopped() {
                 return Err(AiError::Stopped.into());
             }
+            tell(&photo.progress, Step::Sent { attempt });
             match self.call(&body) {
                 Ok(done) => break done,
                 Err(e) if e.retryable() && attempt < self.options.attempts => {
+                    tell(&photo.progress, Step::Retrying { attempt, of: self.options.attempts, why: e.to_string() });
                     let wait = match &e {
                         AiError::Http { retry_after: Some(s), .. } => *s,
                         _ => 2u64.pow(attempt),
@@ -316,13 +320,18 @@ mod tests {
     fn the_request_caches_the_instructions_and_asks_for_the_schema() {
         let brief = Brief { vocabulary: vec!["street".into()], ..Default::default() };
         let claude = Claude::new("k".into(), Options::default(), &brief, Vocabulary::default()).unwrap();
-        let body = claude.body(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into() });
+        let body = claude.body(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into(), progress: None });
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["messages"][0]["content"][0]["source"]["data"], "AQID");
         assert_eq!(body["fallbacks"], "default");
         let haiku = Options { model: "claude-haiku-5-5".into(), ..Options::default() };
         let claude = Claude::new("k".into(), haiku, &brief, Vocabulary::default()).unwrap();
-        assert!(claude.body(&PhotoRequest { jpeg: vec![], context: String::new() }).get("fallbacks").is_none());
+        assert!(
+            claude
+                .body(&PhotoRequest { jpeg: vec![], context: String::new(), progress: None })
+                .get("fallbacks")
+                .is_none()
+        );
     }
 }

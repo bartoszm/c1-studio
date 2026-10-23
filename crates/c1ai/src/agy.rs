@@ -18,14 +18,17 @@ use serde_json::Value;
 
 use crate::claude::Options;
 use crate::{
-    AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, SheetReply, SheetRequest, VisionProvider,
-    Vocabulary, validate,
+    AiError, Brief, Failed, PhotoRequest, Progress, RawAnswer, Reply, RunRecord, SheetReply, SheetRequest, Step,
+    VisionProvider, Vocabulary, tell, validate,
 };
 
 /// How long one call may take: a sheet of 36 photos takes a minute or two.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 pub const DEFAULT_MODEL: &str = "gemini-3.8-flash-low";
+
+/// Tries per call: an answer that broke off (a sheet's especially) mostly comes the next time.
+const ATTEMPTS: u32 = 3;
 
 /// Where agy is: on `PATH`, else where its installer puts it.
 pub fn find() -> Option<PathBuf> {
@@ -219,11 +222,12 @@ impl Agy {
         }
         let millis = started.elapsed().as_millis() as u64;
         let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
+        // No envelope: agy ended early (its connection dropped, it crashed); worth another try.
         let envelope = serde_json::from_str::<Envelope>(stdout.trim()).map_err(|_| {
             let stderr = stderr.join().unwrap_or_default();
             let said = String::from_utf8_lossy(&stderr);
             let last = said.lines().chain(stdout.lines()).rfind(|l| !l.trim().is_empty()).unwrap_or("").trim();
-            AiError::BadReply(format!("agy gave no answer: {last}"))
+            AiError::Network(format!("agy gave no answer: {last}"))
         })?;
         Ok((envelope, stdout, millis))
     }
@@ -243,17 +247,26 @@ impl Agy {
         }
     }
 
-    /// Calls, trying again after a pause on what may pass (the network, a busy server).
-    fn call_again(&self, prompt: &dyn Fn(&Path) -> String, jpeg: &[u8]) -> Result<(Envelope, String, u64), AiError> {
+    /// Calls, trying again after a pause on what may pass (the network, a busy server, an
+    /// answer that broke off), and tells `progress` how it goes.
+    fn call_again(
+        &self,
+        prompt: &dyn Fn(&Path) -> String,
+        jpeg: &[u8],
+        progress: &Option<Progress>,
+    ) -> Result<(Envelope, String, u64), AiError> {
+        let attempts = self.options.attempts.min(ATTEMPTS);
         let mut attempt = 0;
         loop {
             attempt += 1;
+            tell(progress, Step::Sent { attempt });
             match self
                 .call(prompt, jpeg)
                 .and_then(|(envelope, stdout, millis)| failure(&envelope).map_or(Ok((envelope, stdout, millis)), Err))
             {
                 Ok(done) => return Ok(done),
-                Err(e) if e.retryable() && attempt < self.options.attempts.min(2) && !self.options.stopped() => {
+                Err(e) if e.retryable() && attempt < attempts && !self.options.stopped() => {
+                    tell(progress, Step::Retrying { attempt, of: attempts, why: e.to_string() });
                     std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
                 }
                 Err(e) => return Err(e),
@@ -277,6 +290,24 @@ impl Drop for RemoveOnDrop {
     }
 }
 
+/// Words in an error that say it may pass: the service busy, the answer's stream broken off.
+const TRANSIENT: [&str; 14] = [
+    "unavailable",
+    "overloaded",
+    "timeout",
+    "timed out",
+    "interrupted",
+    "stream",
+    "connection",
+    "reset",
+    "eof",
+    "deadline",
+    "internal",
+    "500",
+    "502",
+    "503",
+];
+
 /// What a failed envelope means: no sign-in and an exhausted quota stop a run.
 fn failure(envelope: &Envelope) -> Option<AiError> {
     if envelope.status.eq_ignore_ascii_case("SUCCESS") {
@@ -292,7 +323,7 @@ fn failure(envelope: &Envelope) -> Option<AiError> {
         AiError::Limit(format!("Gemini: {message}"))
     } else if lower.contains("sign in") || lower.contains("login") || lower.contains("unauthenticated") {
         AiError::Cli(format!("agy is not signed in: run agy once to sign in ({message})"))
-    } else if lower.contains("unavailable") || lower.contains("overloaded") || lower.contains("timeout") {
+    } else if TRANSIENT.iter().any(|word| lower.contains(word)) {
         AiError::Network(message)
     } else {
         AiError::BadReply(message)
@@ -381,7 +412,7 @@ impl VisionProvider for Agy {
         let prompt = |image: &Path| {
             format!("{}\n\nRead the image at {}.\n{}\n\n{}", self.system, image.display(), photo.context, self.shape())
         };
-        let (envelope, stdout, millis) = self.call_again(&prompt, &photo.jpeg)?;
+        let (envelope, stdout, millis) = self.call_again(&prompt, &photo.jpeg, &photo.progress)?;
         let record = self.record(&envelope.usage, millis, envelope.response.clone());
         let answer = extract_json(&envelope.response)
             .and_then(|v| serde_json::from_value::<RawAnswer>(v).ok())
@@ -408,7 +439,7 @@ impl VisionProvider for Agy {
                 self.schema
             )
         };
-        let (envelope, stdout, millis) = self.call_again(&prompt, &sheet.jpeg)?;
+        let (envelope, stdout, millis) = self.call_again(&prompt, &sheet.jpeg, &sheet.progress)?;
         let record = self.record(&envelope.usage, millis, envelope.response.clone());
         let Some(value) = extract_json(&envelope.response) else {
             return Err(Failed {
@@ -449,6 +480,10 @@ mod tests {
         let signed_out = failure(&envelope("ERROR", "please sign in")).unwrap();
         assert!(matches!(signed_out, AiError::Cli(_)) && signed_out.stops_run());
         assert!(failure(&envelope("ERROR", "503 UNAVAILABLE")).unwrap().retryable());
+        // A sheet's answer that broke off is tried again, not failed for all its photos.
+        assert!(failure(&envelope("ERROR", "The stream was interrupted")).unwrap().retryable());
+        assert!(failure(&envelope("ERROR", "connection reset by peer")).unwrap().retryable());
+        assert!(!failure(&envelope("ERROR", "the request was invalid")).unwrap().retryable());
         let reply: Envelope = serde_json::from_str(
             r#"{"conversation_id":"x","status":"SUCCESS","response":"```json\n{\"headline\":\"Tram\"}\n```\n","duration_seconds":7.6,"num_turns":1,"usage":{"input_tokens":15029,"output_tokens":111,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":15140}}"#,
         )
