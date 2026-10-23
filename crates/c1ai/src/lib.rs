@@ -15,6 +15,7 @@ pub mod keys;
 mod prompt;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +30,26 @@ pub const PROMPT_VERSION: u32 = 2;
 pub struct PhotoRequest {
     pub jpeg: Vec<u8>,
     pub context: String,
+    /// Told when the call goes out and before it is tried again.
+    pub progress: Option<Progress>,
+}
+
+/// Where a call has got to, for a run to show while it waits.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Step {
+    /// The request went out (`attempt` from 1); the answer is awaited.
+    Sent { attempt: u32 },
+    /// Attempt `attempt` of at most `of` failed in a way that may pass; another follows.
+    Retrying { attempt: u32, of: u32, why: String },
+}
+
+/// Hears a call's [`Step`]s. Called on the thread making the call.
+pub type Progress = Arc<dyn Fn(Step) + Send + Sync>;
+
+pub(crate) fn tell(progress: &Option<Progress>, step: Step) {
+    if let Some(progress) = progress {
+        progress(step);
+    }
 }
 
 /// What the model answered, as the schema asks for it ([`schema`]). Unchecked.
@@ -311,6 +332,8 @@ pub trait VisionProvider: Send + Sync {
 pub struct SheetRequest {
     pub jpeg: Vec<u8>,
     pub contexts: Vec<String>,
+    /// Told when the call goes out and before it is tried again.
+    pub progress: Option<Progress>,
 }
 
 /// What a sheet's call gave: per photo (in the request's order) its checked suggestion

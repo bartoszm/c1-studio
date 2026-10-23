@@ -15,7 +15,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::claude::{Model, Options, Usage, model};
-use crate::{AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, VisionProvider, Vocabulary, validate};
+use crate::{
+    AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, Step, VisionProvider, Vocabulary, tell, validate,
+};
 
 /// How long one photo may take before Claude Code is stopped: answers take seconds, a
 /// minute at high effort; past this it is stuck (a prompt it waits on, a network gone).
@@ -245,9 +247,12 @@ impl VisionProvider for ClaudeCode {
         let mut attempt = 0;
         let (result, millis) = loop {
             attempt += 1;
+            tell(&photo.progress, Step::Sent { attempt });
+            let attempts = self.options.attempts.min(2);
             match self.call(photo) {
                 Ok(done) => break done,
-                Err(e) if e.retryable() && attempt < self.options.attempts.min(2) && !self.options.stopped() => {
+                Err(e) if e.retryable() && attempt < attempts && !self.options.stopped() => {
+                    tell(&photo.progress, Step::Retrying { attempt, of: attempts, why: e.to_string() });
                     std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
                 }
                 Err(e) => return Err(e.into()),
@@ -316,7 +321,8 @@ mod tests {
         assert_eq!(after("--model"), "claude-opus-5-5");
         assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), crate::schema(&brief.fields));
         assert!(std::fs::read_to_string(after("--system-prompt-file")).unwrap().contains("street"));
-        let message = ClaudeCode::message(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into() });
+        let message =
+            ClaudeCode::message(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into(), progress: None });
         let message: Value = serde_json::from_str(message.trim_end()).unwrap();
         assert_eq!(message["message"]["content"][0]["source"]["data"], "AQID");
         assert_eq!(message["message"]["content"][1]["text"], "DSCF0001.RAF");
@@ -328,7 +334,7 @@ mod tests {
         let cli = ClaudeCode::new(missing, Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
         let file = cli.system.clone();
         assert!(file.is_file());
-        let failed = cli.describe(&PhotoRequest { jpeg: vec![1], context: String::new() }).unwrap_err();
+        let failed = cli.describe(&PhotoRequest { jpeg: vec![1], context: String::new(), progress: None }).unwrap_err();
         assert!(matches!(failed.error, AiError::Cli(_)) && failed.error.stops_run() && failed.record.is_none());
         drop(cli);
         assert!(!file.exists());

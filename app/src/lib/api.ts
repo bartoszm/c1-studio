@@ -801,7 +801,30 @@ export type DescribeState = {
   /** Unix ms. */
   started: number;
   cost: number; error: string | null;
+  /** Photos go as contact sheets, a call each. */
+  sheets: boolean;
+  /** Calls made and to make: one per photo, or one per contact sheet. */
+  calls_done: number; calls_total: number;
+  /** The calls under way. */
+  units: DescribeUnit[];
+  /** What the run did, oldest first; kept after it ends. */
+  log: DescribeLogLine[];
 };
+/** A call under way: one photo or a contact sheet. */
+export type DescribeUnit = {
+  /** From 1: a sheet's number. */
+  call: number;
+  rows: number[];
+  sheet: boolean;
+  /** Its image being made, sent and awaited, or about to be tried again. */
+  phase: "preparing" | "waiting" | "retrying";
+  /** Unix ms: when the phase began, and the call. */
+  since: number; began: number;
+  /** The try under way, from 1; 0 while preparing. */
+  attempt: number;
+  note: string | null;
+};
+export type DescribeLogLine = { at: number; call: number; ok: boolean; text: string };
 export type Suggestion = {
   caption_en: string | null;
   caption_pl: string | null;
@@ -937,6 +960,8 @@ export const writeApply = () => invoke<WriteReport>("write_apply");
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
+/** The contact sheet an AI run (started at `run`, Unix ms) sent in call `call`, while kept. */
+export const sheetUrl = (run: number, call: number) => `${base}/sheet/${run}/${call}`;
 
 /** Where the analysis draws the lines between classes (shares are 0..1). */
 /** The colour names the analysis measures, in the order of `hue_stats` (`c1analysis::HUES`). */
