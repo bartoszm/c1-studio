@@ -3,6 +3,8 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import type { AiImage, AiView } from "./lib/api";
+  import type { LeftOut } from "./lib/keywordChoice";
+  import KeywordChoice from "./KeywordChoice.svelte";
 
   // How photos are described (the AI tab): Claude through the API with a key or through
   // Claude Code on a Claude plan, the model, the captions' language, effort, photos at
@@ -42,6 +44,13 @@
   function toggleField(key: keyof api.AiFields, on: boolean) {
     if (!view) return;
     save({ fields: { ...view.settings.fields, [key]: on } });
+  }
+
+  // ---- the keywords offered ---------------------------------------------------------
+  let showKeywords = $state(false);
+  function leftOutText(left: LeftOut): string {
+    const parts = [left.numbers ? "number names" : "", left.paths.length ? `${left.paths.length} left out` : ""].filter(Boolean);
+    return parts.length ? `all but ${parts.join(" and ")}` : "all";
   }
 
   // ---- the prompt -------------------------------------------------------------------
@@ -221,6 +230,18 @@
     What the photo already has (caption, headline, keywords, rating) is sent along as context, and the review shows it beside
     each suggestion. Changing these settings, or the prompt, lets photos described before be described again.
   </p>
+
+  {#if view.settings.fields.keywords || view.settings.fields.keywords_new}
+    <h3 class="next">
+      <button class="disclosure" aria-expanded={showKeywords} onclick={() => (showKeywords = !showKeywords)}>
+        {showKeywords ? "▾" : "▸"} Keywords offered
+      </button>
+      <span class="muted small">{leftOutText(view.settings.left_out)}</span>
+    </h3>
+    {#if showKeywords}
+      <KeywordChoice left={view.settings.left_out} {busy} onchange={(left_out) => save({ left_out })} />
+    {/if}
+  {/if}
 
   <h3 class="next">
     <button class="disclosure" aria-expanded={showPrompt} onclick={() => (showPrompt = !showPrompt)}>

@@ -11,7 +11,8 @@ use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
 use c1ai::{
-    AiError, Brief, Failed, Fields, Language, PhotoRequest, Progress, SheetRequest, Step, VisionProvider, Vocabulary,
+    AiError, Brief, Failed, Fields, Language, LeftOut, PhotoRequest, Progress, SheetRequest, Step, VisionProvider,
+    Vocabulary,
 };
 use c1index::ai::{Entry, Status};
 use c1index::{Accept, Accepted};
@@ -70,6 +71,8 @@ pub(crate) struct AiSettings {
     sheets: bool,
     /// The image sent of each photo, alone or on a sheet.
     image: AiImage,
+    /// Keywords not offered to the model, nor matched in its answers.
+    left_out: LeftOut,
 }
 
 impl Default for AiSettings {
@@ -86,6 +89,7 @@ impl Default for AiSettings {
             gemini_model: agy::DEFAULT_MODEL.into(),
             sheets: false,
             image: AiImage::Thumb,
+            left_out: LeftOut::default(),
         }
     }
 }
@@ -404,7 +408,8 @@ pub(crate) struct Estimate {
 /// The instructions for a run with these settings, and the vocabulary answers are
 /// checked against.
 fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), String> {
-    let paths = s.library.vocabulary().map_err(text)?;
+    let (paths, withheld): (Vec<_>, Vec<_>) =
+        s.library.vocabulary().map_err(text)?.into_iter().partition(|(path, _)| !settings.left_out.covers(path));
     let brief = Brief {
         language: settings.language,
         vocabulary: paths.iter().map(|(p, _)| p.rsplit('|').next().unwrap_or(p).to_string()).fold(
@@ -419,7 +424,8 @@ fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), Stri
         fields: settings.fields,
         instructions: settings.instructions.clone(),
     };
-    let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)));
+    let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)))
+        .withholding(withheld.iter().map(|(p, _)| p.as_str()));
     Ok((brief, vocabulary))
 }
 

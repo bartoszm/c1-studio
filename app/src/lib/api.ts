@@ -2,6 +2,7 @@
 // crates/c1index (Filter, QueryOptions, QueryResult) and crates/c1model (Photo).
 
 import { invoke } from "@tauri-apps/api/core";
+import type { LeftOut } from "./keywordChoice";
 
 export type Dim =
   | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
@@ -762,6 +763,8 @@ export type AiSettings = {
   sheets: boolean;
   /** The image sent of each photo, alone or on a sheet. */
   image: AiImage;
+  /** Keywords not offered to the model, nor matched in its answers. */
+  left_out: LeftOut;
 };
 /** The source's thumbnail (for Capture One its render of the edits) or the preview. */
 export type AiImage = "thumb" | "preview";
