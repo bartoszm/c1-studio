@@ -458,17 +458,18 @@ fn request(s: &Session, image: AiImage, row: u64) -> anyhow::Result<Option<Photo
 /// A photo's pixels for a model, at most `long_edge` on the long side: the image chosen
 /// first, then the other one, then a thumbnail made here. The source's own thumbnail is
 /// for Capture One its render of the edits (the colours of a preview read from its cache
-/// can be off); a missing preview is made if need be. An image that will not load gives
-/// way to the next.
+/// can be off); a missing preview is made if need be. An image that cannot be found, made
+/// or loaded gives way to the next; the first such error is returned if none will do.
 fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
-    let mut why = None;
-    let mut fitted = |image: Option<ImageRef>| match image.map(|r| c1image::load_fitted(&r, long_edge)) {
-        Some(Ok(pixels)) => Some(pixels),
-        Some(Err(e)) => {
+    let mut why: Option<anyhow::Error> = None;
+    let mut fitted = |image: anyhow::Result<Option<ImageRef>>| match image
+        .and_then(|image| image.map(|r| c1image::load_fitted(&r, long_edge)).transpose().map_err(Into::into))
+    {
+        Ok(pixels) => pixels,
+        Err(e) => {
             why.get_or_insert(e);
             None
         }
-        None => None,
     };
     let tiers = match image {
         AiImage::Thumb => [ImageTier::Thumb, ImageTier::Preview],
@@ -477,18 +478,18 @@ fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::
     for tier in tiers {
         // Only a preview is made: a thumbnail made here comes last, below.
         let found = match tier {
-            ImageTier::Preview => s.source.image_or_make(id, tier)?,
-            _ => s.source.image(id, tier)?,
+            ImageTier::Preview => s.source.image_or_make(id, tier),
+            _ => s.source.image(id, tier),
         };
-        if let Some(pixels) = fitted(found) {
+        if let Some(pixels) = fitted(found.map_err(Into::into)) {
             return Ok(Some(pixels));
         }
     }
-    if let Some(pixels) = fitted(s.thumbs.get_or_make(s.source.as_ref(), id)?.map(|made| made.image)) {
+    if let Some(pixels) = fitted(s.thumbs.get_or_make(s.source.as_ref(), id).map(|made| made.map(|made| made.image))) {
         return Ok(Some(pixels));
     }
     match why {
-        Some(e) => Err(e.into()),
+        Some(e) => Err(e),
         None => Ok(None),
     }
 }

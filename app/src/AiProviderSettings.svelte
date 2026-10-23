@@ -166,13 +166,13 @@
     <label for="ai-image">Photo sent</label>
     <div>
       <select id="ai-image" value={view.settings.image} disabled={busy} onchange={(e) => save({ image: e.currentTarget.value as AiImage })}>
-        <option value="thumb">Thumbnail: the {source.noun}'s own render of the edits, about 450 pixels</option>
+        <option value="thumb">Thumbnail: {source.owner ? `${source.owner}'s own render of the edits, ` : ""}about 450 pixels</option>
         <option value="preview">Preview: up to 1568 pixels, more detail</option>
       </select>
       <small class="muted">
         {view.settings.image === "thumb"
           ? "Where a photo has none, its preview goes."
-          : "A Capture One preview gets its colours matched here, and they can be off. Where a photo has none, its thumbnail goes."}
+          : `${source.owner ? `A ${source.owner} preview gets its colours matched here, and they can be off. ` : ""}Where a photo has none, its thumbnail goes.`}
       </small>
     </div>
 
