@@ -3,7 +3,8 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
+New in 0.6.0: [describe photos with AI](#describe-photos-with-ai) and
+[History](#history-the-catalog-over-time). New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
 [photo folders](#photo-folders) and [places from neighbours in time](#places-from-neighbours-in-time).
 
 - [Find anything, instantly](#find-anything-instantly)
@@ -23,6 +24,7 @@ New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
 - [Trips and the timeline](#trips-and-the-timeline)
 - [Write, history and backups](#write-history-and-backups)
 - [History: the catalog over time](#history-the-catalog-over-time)
+- [Describe photos with AI](#describe-photos-with-ai)
 
 ## Find anything, instantly
 
@@ -214,6 +216,19 @@ Not wanted? *Settings › History* turns the tab off for a catalog: the change l
 keeps only the changes themselves, as before, and the app does no history work.
 
 [In the guide: History](GUIDE.md#history)
+
+## Describe photos with AI
+
+Pick photos and the **AI** tab asks a vision model about them: Claude (with an API key, or
+on your Claude plan through Claude Code) or Gemini (through agy, on your Google account).
+Each photo comes back as a card to review: a caption, a headline, keywords chosen from your
+own vocabulary and a few new ones, a rating, and the place level by level with how likely
+each is. Tick what fits and accept it; it becomes edits in the queue like any of yours, and
+what the photo already has is replaced only when you tick it. Gemini can take contact
+sheets of 36 photos in one call for a quick first pass, and **Details** shows each call as
+it goes, down to the sheet that was sent.
+
+[In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
 
 ---
 

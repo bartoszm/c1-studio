@@ -1,10 +1,33 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-10-23
+
+### New
+
+- **Describe photos with AI:** the **AI** tab sends the picked photos to a vision model and shows what it suggests: a caption (English, Polish or both), a headline, the subject, keywords chosen from the catalog's own (and at most three new ones), a rating, quality and composition, and the place level by level (country, region, city, location, a position), each with how likely it is. What a photo already has goes along as context. Each photo gets a card to review: tick what to take, then **Accept** or **Reject**, or accept every card above a confidence at once. Accepted suggestions are edits in the queue like any other, marked *AI* in the history and undone with Ctrl+Z; a caption, rating or place the photo already has is replaced only when ticked. The estimate before a run says how many photos and calls it takes, and what it costs on the API. Photos are sent only when you start a run (#68, #73).
+- **Three ways to reach a model** (*Settings › AI › Access*): Claude with an Anthropic API key, billed per token (the key is kept in the Windows Credential Manager); Claude on your Claude plan, through Claude Code; or **Gemini through agy**, the Antigravity CLI, on your Google account's quota. Gemini can take **contact sheets**: up to 36 numbered photos in one call, which takes far fewer calls for a first pass over many photos (#68, #74).
+- **The photo sent** (*Settings › AI › Photo sent*): Capture One's own thumbnail, its render of your edits (the default), or the larger preview, whose colours the app matches and which can be off (#74).
+- **See what a run is doing:** the run line names the sheet (or photo) at work, its step (making its image, waiting for the answer, trying again) and how long it has taken; the bar counts sheets. **Details** shows each call at work with its photos and, for a sheet, **Show sheet**, the image as sent; and a log of the run, which stays after it ends, so a failure can be read later. The footer shows the sheet too (#77).
+- **Keywords offered** (*Settings › AI*): the keyword tree with a box each, to leave keywords out of what the model may choose, with all below them. Keywords named only with numbers (01, 02, 2023) are left out by default; one box brings them back. A keyword left out is not suggested as new either (#78).
+- **History:** a **History** tab with the catalog over time: photos imported per day and the change log's days. Drag across it to compare two dates: photos changed, added and removed, per field, keywords gained and lost, albums. Every number shows its photos in the grid. The change log now also keeps what a change replaced. *Settings › History* turns the tab off for a catalog (#67).
+- **No location:** *Places › No location* shows the photos with nothing in the Location field (and click again, those with one), also per city. With a city known, the Location field offers only that city's locations (#69).
+- **Map and grid in sync:** a single photo's pin picks the photo in the grid and scrolls to it; with *sync grid and map* on, the map centres on the photo picked in the grid. **Google plus codes** are taken wherever GPS is typed (full codes, short ones near the photo or the map's middle, or short code + town), and the details panel shows a photo's plus code (#69).
 
 ### Changed
 
 - **Neighbours… is one dialog:** the *Fill missing* and *Refine* tabs are gone. **Position** gives photos with no position, or only their place's (≈), one from the GPS photos taken around them (30 minutes by default): between two, or at the nearest within half the window, but not between two taken from a plane, and only if it lies in the photo's own place, which *Fill missing* did not check. A ≈ position now moves like a missing one, no longer only to GPS taken within 2 minutes. **Place** gives photos with no place, or no location, the place of a neighbour that says the same and more (15 minutes). It now looks past neighbours that only repeat the photo's place, so a city's photos get the location of a photo taken at a named spot nearby, not just the one next to it. Both sides must agree: a neighbour somewhere else, on either side, gives nothing.
+- **Each kind of source names itself:** dialogs, the footer and messages say *catalog* and *Capture One* for a catalog, *library* and *the photo folders* for folders, and no longer mention Capture One where it does not apply. While a photo folders source starts, the start-up dialog shows its scan ("Scanning folders 12,345") (#70, #71).
+- **Photo folders do less work:** a rating or caption change no longer rebuilds the folder and keyword trees, a scan reads each file's size and time once, and thumbnails are kept across restarts (#70).
+
+### Fixed
+
+- **"Capture One: open" in the footer** after the first read of a catalog, while the app made thumbnails or measured photos: its own reads of the catalog counted as another program holding it, and a write in that time was refused. Only other programs count now (#76, closes #72).
+- **Offline photos** were not dimmed after a restart in which the scan found nothing new. They are dimmed straight away now (#71).
+- **Errors in the footer** clear after 10 seconds or a click, instead of staying until the next edit (#69).
+
+### Install
+
+Run `C1.Studio_0.6.0_x64-setup.exe`. It installs over 0.5.x for the current user and keeps your settings and your library: the search index is not rebuilt. Describing photos needs one of: an Anthropic API key, Claude Code signed in with a Claude plan, or agy signed in with a Google account (*Settings › AI* says which is ready).
 
 ## 0.5.0 — 2026-10-21
 
