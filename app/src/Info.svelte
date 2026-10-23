@@ -1,7 +1,9 @@
 <script lang="ts">
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
-  import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText, parseGeo } from "./lib/format";
+  import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText } from "./lib/format";
+  import { resolveGeo } from "./lib/placeHints";
+  import { encode as plusCode } from "./lib/pluscode";
   import { allFields, fieldValues, isEmpty, keyOf, treeKeys, withCode, type Place } from "./lib/places";
   import { placeText } from "./lib/tree";
   import { offText } from "./lib/history";
@@ -274,12 +276,27 @@
   ];
 
   let geoError = $state<string | null>(null);
-  function commitGeo(e: Event) {
-    const parsed = parseGeo((e.currentTarget as HTMLInputElement).value);
+  /** `near`: where a short plus code is taken to be (the photo's position). */
+  async function commitGeo(e: Event, near: [number, number] | null) {
+    const was = { row, picked };
+    const parsed = await resolveGeo((e.currentTarget as HTMLInputElement).value, near);
+    // A town looked up meanwhile: another photo is shown now, this one is not changed.
+    if (was.row !== row || was.picked !== picked) return;
     if (typeof parsed === "string") geoError = parsed;
     else {
       geoError = null;
       ongeo(parsed);
+    }
+  }
+
+  let copiedCode = $state(false);
+  async function copyPlusCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      copiedCode = true;
+      setTimeout(() => (copiedCode = false), 1500);
+    } catch {
+      // No clipboard: the code is there to read.
     }
   }
 
@@ -651,13 +668,22 @@
           value={view.shown}
           placeholder={view.placeholder}
           readonly={reading}
-          title={`${view.title ? view.title + "\n" : ""}Decimal (50.0614, 19.9366), with N/S/E/W, or degrees and minutes (44°58′N 14°45′E). Empty clears it.`}
+          title={`${view.title ? view.title + "\n" : ""}Decimal (50.0614, 19.9366), with N/S/E/W, degrees and minutes (44°58′N 14°45′E), or a plus code (8FVC9G8F+6X; 9G8F+6X near the photo's position, or 9G8F+6X Zürich). Empty clears it.`}
           spellcheck="false"
           onkeydown={(e) => fieldKeys(e, view.shown)}
-          onchange={commitGeo}
+          onchange={(e) => commitGeo(e, batch ? (merged?.geo.same ?? null) : p.geo && [p.geo.lat, p.geo.lon])}
         />
       </dd>
     {/key}
+    {#if !batch && p.geo}
+      {@const code = plusCode(p.geo.lat, p.geo.lon)}
+      <dt>Plus code</dt>
+      <dd>
+        <button class="link" title="Its Google plus code · click to copy" onclick={() => copyPlusCode(code)}>
+          {code}{#if copiedCode}<span class="muted"> · copied</span>{/if}
+        </button>
+      </dd>
+    {/if}
   </dl>
   {#if !batch && geoError}<p class="error">{geoError}</p>{/if}
   {@const named = !!(p.place.city || p.place.state || p.place.country || p.place.location)}

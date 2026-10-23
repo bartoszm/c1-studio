@@ -2,7 +2,9 @@
 // point, and the address OpenStreetMap gives for it.
 
 import * as api from "./api";
+import { parseGeo } from "./format";
 import { fromNominatim, type PlacePath } from "./places";
+import { parsePlusCode, recoverNearest } from "./pluscode";
 
 /** A `place_tree` facet query's places, kept for the library's `version` only: an edit
  *  since asks again. One that failed is not kept. */
@@ -129,4 +131,20 @@ export function placeAt(lat: number, lon: number): Promise<PlacePath | null> {
     hereAsked.set(key, asked);
   }
   return asked;
+}
+
+/** Typed GPS as `parseGeo` reads it, and a short plus code with its town (`9G8F+6X
+ *  Zürich`): the town looked up on Nominatim, the code taken near it. */
+export async function resolveGeo(text: string, near?: [number, number] | null): Promise<[number, number] | null | string> {
+  const code = parsePlusCode(text);
+  if (!code || "full" in code || !code.locality) return parseGeo(text, near);
+  if (!online) return `Looking up ${code.locality} needs place lookups online (Settings); or type the full plus code.`;
+  try {
+    const list = await nominatim(`search?format=jsonv2&limit=1&q=${encodeURIComponent(code.locality)}`);
+    const [lat, lon] = Array.isArray(list) && list.length ? [Number(list[0]?.lat), Number(list[0]?.lon)] : [NaN, NaN];
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return `${code.locality}: no such place found.`;
+    return recoverNearest(code.short, [lat, lon]);
+  } catch {
+    return `Could not look up ${code.locality}: the place search needs a network.`;
+  }
 }

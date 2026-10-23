@@ -1,7 +1,7 @@
 //! Photos without a position on the map: by their place's name, from their neighbours in
 //! time, and places filled in from a position.
 
-use c1index::{BBox, Filter, Library, MapView, NeighbourSettings, PlaceLookup, QueryOptions, RefineSettings, Sort};
+use c1index::{BBox, Filter, Library, MapView, NeighbourSettings, PlaceLookup, QueryOptions, Sort};
 use c1model::memory::MemorySource;
 use c1model::*;
 
@@ -198,17 +198,17 @@ fn neighbours_in_time_give_a_position_or_a_place() {
     let (_d, lib) = setup();
     let settings = NeighbourSettings::default();
     let plan = lib.neighbour_plan(&Filter::default(), &settings).unwrap();
-    assert_eq!((plan.candidates, plan.positions, plan.places), (6, 1, 1));
+    assert_eq!((plan.unpositioned, plan.positions, plan.unlocated, plan.places), (6, 1, 9, 1));
     assert_eq!(plan.sample[0].0, row(&lib, 2));
     assert!((plan.sample[0].1 - 50.07).abs() < 1e-9, "halfway between 1 and 3");
-    assert_eq!(plan.place_counts, [("Poland|Malopolska|Kraków".to_owned(), 1)]);
+    assert_eq!(plan.place_counts, [(String::new(), "Poland|Malopolska|Kraków".to_owned(), 1)]);
     lib.neighbour_apply(&Filter::default(), &settings).unwrap();
     assert!(lib.photo(row(&lib, 2)).unwrap().unwrap().geo.is_some());
     assert_eq!(lib.photo(row(&lib, 8)).unwrap().unwrap().place, krakow());
-    let only_close = NeighbourSettings { max_gap_minutes: 1, ..settings };
+    let only_close = NeighbourSettings { position_gap_minutes: 1, ..settings };
     assert_eq!(lib.neighbour_plan(&Filter::default(), &only_close).unwrap().positions, 0);
     // A huge gap is two days, not an overflow.
-    let huge = NeighbourSettings { max_gap_minutes: i64::MAX, ..settings };
+    let huge = NeighbourSettings { position_gap_minutes: i64::MAX, place_gap_minutes: i64::MAX, ..settings };
     assert!(lib.neighbour_plan(&Filter::default(), &huge).is_ok());
 }
 
@@ -262,18 +262,18 @@ fn neighbours_refine_a_place_to_a_more_specific_one() {
     let (_d, lib) = setup();
     let wawel = Place { location: Some("Wawel".into()), ..krakow() };
     lib.edit(&[(row(&lib, 8), Op::SetPlace { base: Place::default(), value: wawel.clone() })]).unwrap();
-    let settings = RefineSettings::default();
-    let plan = lib.refine_plan(&Filter::default(), &settings).unwrap();
-    assert_eq!((plan.placed, plan.places, plan.approx, plan.positions), (4, 1, 0, 0));
+    let settings = NeighbourSettings::default();
+    let plan = lib.neighbour_plan(&Filter::default(), &settings).unwrap();
+    assert_eq!((plan.unlocated, plan.places), (8, 1));
     assert_eq!(
         plan.place_counts,
         [("Poland|Malopolska|Kraków".to_owned(), "Poland|Malopolska|Kraków|Wawel".to_owned(), 1)]
     );
-    let only_close = RefineSettings { place_gap_minutes: 4, ..settings };
-    assert_eq!(lib.refine_plan(&Filter::default(), &only_close).unwrap().places, 0);
-    lib.refine_apply(&Filter::default(), &settings).unwrap();
+    let only_close = NeighbourSettings { place_gap_minutes: 4, ..settings };
+    assert_eq!(lib.neighbour_plan(&Filter::default(), &only_close).unwrap().places, 0);
+    lib.neighbour_apply(&Filter::default(), &settings).unwrap();
     assert_eq!(lib.photo(row(&lib, 4)).unwrap().unwrap().place, wawel, "country code and all");
-    assert_eq!(lib.refine_plan(&Filter::default(), &settings).unwrap().places, 0, "nothing more to say");
+    assert_eq!(lib.neighbour_plan(&Filter::default(), &settings).unwrap().places, 0, "nothing more to say");
 }
 
 #[test]
@@ -283,50 +283,136 @@ fn neighbours_saying_different_things_refine_no_place() {
     let at = |location: &str| Place { location: Some(location.into()), ..krakow() };
     let photos = vec![photo(1, 0, at("Wawel"), None), photo(2, 5, krakow(), None), photo(3, 10, at("Barbican"), None)];
     lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
-    assert_eq!(lib.refine_plan(&Filter::default(), &RefineSettings::default()).unwrap().places, 0);
+    assert_eq!(lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap().places, 0);
     lib.edit(&[(row(&lib, 3), Op::SetPlace { base: at("Barbican"), value: at("Wawel") })]).unwrap();
-    assert_eq!(lib.refine_plan(&Filter::default(), &RefineSettings::default()).unwrap().places, 1, "they agree");
+    assert_eq!(lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap().places, 1, "they agree");
 }
 
 #[test]
-fn neighbours_refine_an_approximate_position_to_their_gps() {
+fn a_place_is_refined_past_neighbours_saying_the_same_but_not_past_one_elsewhere() {
+    // A city's photos, one of them at a named spot: the others need not be next to it.
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let wawel = Place { location: Some("Wawel".into()), ..krakow() };
+    let photos = vec![
+        photo(1, 0, wawel.clone(), None),
+        photo(2, 3, krakow(), None),
+        photo(3, 6, krakow(), None),
+        photo(4, 9, place("Poland", "", "Kraków"), None),
+    ];
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
+    assert_eq!(plan.places, 3, "{plan:?}");
+    // Somewhere else in between: 2 has Wawel before it but Warsaw after, 4 has Warsaw
+    // before it, and Warsaw's 3 has Kraków either side. Nothing agrees.
+    let warsaw = place("Poland", "Mazowieckie", "Warszawa");
+    lib.edit(&[(row(&lib, 3), Op::SetPlace { base: krakow(), value: warsaw })]).unwrap();
+    let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
+    assert_eq!(plan.places, 0, "{plan:?}");
+    // Further away than the gap, it says nothing.
+    let close = NeighbourSettings { place_gap_minutes: 3, ..NeighbourSettings::default() };
+    lib.edit(&[(row(&lib, 4), Op::SetPlace { base: place("Poland", "", "Kraków"), value: krakow() })]).unwrap();
+    let plan = lib.neighbour_plan(&Filter::default(), &close).unwrap();
+    assert_eq!(plan.places, 0, "2 still has Warsaw 3 minutes after it: {plan:?}");
+    lib.edit(&[(row(&lib, 3), Op::SetPlace { base: place("Poland", "Mazowieckie", "Warszawa"), value: krakow() })])
+        .unwrap();
+    assert_eq!(
+        lib.neighbour_plan(&Filter::default(), &close).unwrap().places,
+        1,
+        "only 2 is within 3 minutes of Wawel"
+    );
+}
+
+#[test]
+fn neighbours_place_no_photo_when_the_filter_wants_those_with_a_location() {
+    let (_d, lib) = setup();
+    let plan = lib.neighbour_plan(&Filter { located: Some(true), ..Filter::default() }, &NeighbourSettings::default());
+    let plan = plan.unwrap();
+    assert_eq!((plan.unlocated, plan.places), (0, 0));
+}
+
+#[test]
+fn neighbours_outside_the_filter_still_give_their_place() {
+    let (_d, lib) = setup();
+    // 8 is taken just after 4, in Kraków; the filter leaves 4 out.
+    let plan = lib.neighbour_plan(&Filter { placed: Some(false), ..Filter::default() }, &NeighbourSettings::default());
+    assert_eq!(plan.unwrap().place_counts, [(String::new(), "Poland|Malopolska|Kraków".to_owned(), 1)]);
+}
+
+#[test]
+fn a_photo_given_a_position_and_a_place_is_undone_whole() {
+    let (_d, lib) = setup();
+    let eight = row(&lib, 8);
+    lib.edit(&[(row(&lib, 4), by_hand(50.054, 19.9354))]).unwrap();
+    let undo = lib.neighbour_apply(&Filter::default(), &NeighbourSettings::default()).unwrap();
+    let given = lib.photo(eight).unwrap().unwrap();
+    assert_eq!((given.geo.map(|g| (g.lat, g.lon)), given.place), (Some((50.054, 19.9354)), krakow()));
+    lib.edit(&undo).unwrap();
+    let back = lib.photo(eight).unwrap().unwrap();
+    assert_eq!((back.geo, back.place), (None, Place::default()));
+}
+
+#[test]
+fn neighbours_move_an_approximate_position_to_their_gps() {
     let (_d, lib) = setup();
     let (four, eight) = (row(&lib, 4), row(&lib, 8));
     lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
     lib.edit(&[(eight, by_hand(50.054, 19.9354))]).unwrap();
-    let settings = RefineSettings::default();
-    let plan = lib.refine_plan(&Filter::default(), &settings).unwrap();
-    assert_eq!((plan.approx, plan.positions), (1, 0), "taken five minutes apart");
-    let wider = RefineSettings { position_gap_minutes: 10, ..settings };
-    assert_eq!(lib.refine_plan(&Filter::default(), &wider).unwrap().positions, 1);
-    lib.refine_apply(&Filter::default(), &wider).unwrap();
+    let positions = NeighbourSettings { places: false, ..NeighbourSettings::default() };
+    let given = |s: &NeighbourSettings, r: u64| {
+        lib.neighbour_plan(&Filter::default(), s).unwrap().sample.iter().any(|(at, ..)| *at == r)
+    };
+    let tight = NeighbourSettings { position_gap_minutes: 8, ..positions };
+    assert!(!given(&tight, four), "a single neighbour five minutes apart, more than half of 8");
+    assert!(given(&positions, four));
+    lib.neighbour_apply(&Filter::default(), &positions).unwrap();
     let geo = lib.photo(four).unwrap().unwrap().geo.unwrap();
     assert_eq!((geo.lat, geo.lon, geo.origin), (50.054, 19.9354, GeoOrigin::Manual));
     assert!(numbers(&lib, &Filter { gps: Some(true), approx: Some(true), ..Filter::default() }).is_empty());
     // A guess: with 8's position gone, 4 does not give it one back.
     lib.edit(&[(eight, Op::SetGeo { base: None, value: None })]).unwrap();
-    let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
-    assert!(!plan.sample.iter().any(|(r, ..)| *r == eight), "{plan:?}");
+    assert!(!given(&positions, eight));
 }
 
 #[test]
-fn a_position_outside_the_photos_place_refines_nothing() {
+fn a_position_outside_the_photos_place_is_not_given() {
     let (_d, lib) = setup();
-    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    let four = row(&lib, 4);
     lib.edit(&[(row(&lib, 8), by_hand(52.52, 13.405))]).unwrap();
-    let wider = RefineSettings { position_gap_minutes: 10, ..RefineSettings::default() };
-    assert_eq!(lib.refine_plan(&Filter::default(), &wider).unwrap().positions, 0, "Berlin is not in Kraków");
+    let given = || {
+        let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
+        plan.sample.iter().any(|(at, ..)| *at == four)
+    };
+    assert!(!given(), "Berlin is not in Kraków");
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    assert!(!given(), "nor for its ≈ position");
 }
 
 #[test]
-fn a_position_for_a_city_the_gazetteer_lacks_is_not_refined() {
+fn a_position_for_a_city_the_gazetteer_lacks_is_not_given() {
     let (_d, lib) = setup();
     let four = row(&lib, 4);
     let unknown = place("Poland", "Malopolska", "Xyzzyville");
     lib.edit(&[(four, Op::SetPlace { base: krakow(), value: unknown })]).unwrap();
     lib.promote(&Filter::default(), &["Poland|Malopolska|Xyzzyville".to_owned()]).unwrap();
     lib.edit(&[(row(&lib, 8), by_hand(50.054, 19.9354))]).unwrap();
-    let wider = RefineSettings { position_gap_minutes: 10, ..RefineSettings::default() };
-    let plan = lib.refine_plan(&Filter::default(), &wider).unwrap();
-    assert_eq!((plan.approx, plan.positions), (1, 0), "Kraków is in Malopolska, but is it Xyzzyville?");
+    let plan = lib.neighbour_plan(&Filter::default(), &NeighbourSettings::default()).unwrap();
+    assert!(!plan.sample.iter().any(|(at, ..)| *at == four), "Kraków is in Malopolska, but is it Xyzzyville?");
+}
+
+#[test]
+fn photos_with_a_location_or_without() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let at = |location: &str, place: Place| Place { location: Some(location.into()), ..place };
+    let photos = vec![
+        photo(1, 0, krakow(), None),
+        photo(2, 10, at("Rynek", krakow()), None),
+        photo(3, 20, Place::default(), None),
+        // Levels above left empty: still a location.
+        photo(4, 30, at("Beach", place("Poland", "", "")), None),
+    ];
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    assert_eq!(numbers(&lib, &Filter { located: Some(true), ..Filter::default() }), [2, 4]);
+    assert_eq!(numbers(&lib, &Filter { located: Some(false), ..Filter::default() }), [1, 3]);
 }

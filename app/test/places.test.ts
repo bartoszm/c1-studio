@@ -61,6 +61,24 @@ test("nearby places and the geocoded one come before the rest", () => {
   assert.equal(suggest("country", "", {}, { catalog: CATALOG, here })[0].key, "Poland");
 });
 
+test("with the city known, only its locations are suggested", () => {
+  const catalog: [string, number][] = [
+    ...CATALOG,
+    ["Poland|Mazowieckie|Warszawa|Stare Miasto", 3],
+    ["Japan|Kyoto|Kyoto|Gion", 5],
+  ];
+  const here = { country: "Polska", state: "Masovian Voivodeship", city: "Warszawa", location: "Powiśle", code: "PL" };
+  const nearby: [string, number][] = [["Poland|Mazowieckie|Warszawa|Stare Miasto", 3]];
+  const inKrakow = suggest("location", "", { city: "krakow" }, { catalog, nearby, here });
+  assert.deepEqual(inKrakow.map((s) => s.key), ["Poland|Małopolskie|Kraków|Kazimierz"]);
+  // Typing narrows within the city, never out of it.
+  assert.deepEqual(suggest("location", "gion", { city: "Kraków" }, { catalog }), []);
+  // No city: every location, the GPS one first.
+  const all = suggest("location", "", {}, { catalog, nearby, here });
+  assert.equal(all.length, 4);
+  assert.equal(all[0].value, "Powiśle");
+});
+
 test("a new place from the geocoder keeps the photo's names above it", () => {
   const here = { country: "Polska", state: "Lesser Poland Voivodeship", city: "Zakopane", location: "Krupówki", code: "PL" };
   // The catalog has Poland but no Zakopane; the photo's state stays as it is.

@@ -7,15 +7,15 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
-  import { parseGeo } from "./lib/format";
   import { hitView, mapPadding, parseHits, routeStep, viewBox, wrapLon, type Hit, type NominatimRow } from "./lib/mapview";
   import { movingOf } from "./lib/pins";
-  import { pointFor } from "./lib/placeHints";
+  import { pointFor, resolveGeo } from "./lib/placeHints";
+  import { parsePlusCode } from "./lib/pluscode";
   import { settings } from "./lib/settings.svelte";
   import UnplacedTray from "./UnplacedTray.svelte";
 
   let {
-    filter, version, focus, dragRows, pickedRows, tile, trip, onbox, onview, ontile, onpick, onsetgeo, onerror,
+    filter, version, focus, dragRows, pickedRows, tile, trip, center, onbox, onview, ontile, onselect, onsetgeo, onerror,
     onplace, onpromote, ondragrows, onneighbours, onunplaced, geoPerAsset = false,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
@@ -32,13 +32,16 @@
     tile: BBox | null;
     /** The trip the grid shows: its route can be drawn and played. */
     trip: { name: string } | null;
+    /** The photo to centre on (picked in the grid), a new object each time. */
+    center: { row: number; lat: number; lon: number } | null;
     /** Shift+drag picked an area: the grid shows just its photos. */
     onbox: (bounds: BBox) => void;
     /** A tile clicked (its photos' bounds, and the photo when it is one), or let go (null). */
     ontile: (bounds: BBox | null, row: number | null) => void;
     /** What the map shows now (null: not known yet); the grid can follow it. */
     onview: (bounds: BBox) => void;
-    onpick: (row: number) => void;
+    /** A photo clicked: picked in the grid too. */
+    onselect: (row: number) => void;
     /** Photos moved to a place: dragged markers, or photos dropped from the grid. */
     /** Photos placed; `from` is the tile they were moved from, when a pin was dragged. */
     onsetgeo: (rows: number[], lat: number, lon: number, from?: BBox) => void;
@@ -380,7 +383,8 @@
       })
         .setLngLat([c.lon, c.lat])
         .addTo(map!);
-      // A click picks the tile (or lets it go); a double click also zooms in to it.
+      // A click picks the photo, or the tile of several (or lets it go); a double click
+      // picks the tile and zooms in to it.
       let dragged = false;
       el.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -388,7 +392,8 @@
         if (e.detail > 1) return;
         // The picked tile itself lets go; one of its photos, zoomed in, is picked instead.
         if (tile && sameBox(tile, c.bounds)) ontile(null, null);
-        else ontile(c.bounds, single ? c.best : null);
+        else if (single) onselect(c.best);
+        else ontile(c.bounds, null);
       });
       el.addEventListener("dblclick", (e) => {
         e.stopPropagation();
@@ -520,6 +525,20 @@
     void tile;
     untrack(mark);
   });
+  // The photo picked in the grid, in the middle; the zoom stays.
+  $effect(() => {
+    const c = center;
+    if (c) untrack(() => map?.easeTo({ center: [c.lon, c.lat], padding }));
+  });
+  /** Where a short plus code is taken to be: the middle of the map, when it shows no more
+   *  than a degree each way (the code repeats every degree, and is found within half of one
+   *  of the middle); zoomed out, it needs its town. */
+  const middle = (): [number, number] | null => {
+    const b = map?.getBounds();
+    if (!b || b.getNorth() - b.getSouth() > 1 || b.getEast() - b.getWest() > 1) return null;
+    const c = b.getCenter();
+    return [c.lat, c.lng];
+  };
   // The map's padding follows what covers it: easeTo, flyTo and fitBounds centre in what is
   // left. Setting it stops a move, so while the map moves it waits for the move to end.
   let padLater = false;
@@ -754,8 +773,14 @@
     e.preventDefault();
     const q = query.trim();
     if (!q) return;
-    // Coordinates go straight there, online or not.
-    const at = /\d/.test(q) ? parseGeo(q) : null;
+    // Coordinates go straight there, online or not; a short plus code is taken near the
+    // middle of the map, or near the town typed after it.
+    const code = parsePlusCode(q);
+    const at = code || /\d/.test(q) ? await resolveGeo(q, middle()) : null;
+    if (code && typeof at === "string") {
+      onerror(at);
+      return;
+    }
     if (Array.isArray(at)) {
       const [lat, lon] = at;
       chosen = { name: `${lat.toFixed(5)}, ${lon.toFixed(5)}`, lat, lon, box: null };
@@ -901,7 +926,8 @@
       onsetgeo={(rows, lat, lon) => onsetgeo(rows, lat, lon)}
       {onneighbours}
       onshow={onunplaced}
-      {onpick}
+      near={middle}
+      onpick={onselect}
       {onerror}
     />
   {/if}

@@ -5,6 +5,7 @@
 
 mod coords;
 mod fold;
+mod pluscode;
 
 use std::collections::HashMap;
 use std::io::Read;

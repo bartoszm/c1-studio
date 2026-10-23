@@ -1,6 +1,9 @@
 // Coordinates as people type or paste them: `50.0614, 19.9366`, `33.8688S 151.2093E`,
-// `44°58′N 14°45′E`, `N44°58' E14°45'`, `44 58 N 14 45 E`, `50°3'41.0"N 19°56'12"E`.
-// The same forms `c1geo::parse_point` reads.
+// `44°58′N 14°45′E`, `N44°58' E14°45'`, `44 58 N 14 45 E`, `50°3'41.0"N 19°56'12"E`, and
+// plus codes: `8FVC9G8F+6X`, or `9G8F+6X` near a known point. The same forms
+// `c1geo::parse_point` reads (it takes full plus codes only).
+
+import { parsePlusCode, recoverNearest } from "./pluscode";
 
 type Unit = "deg" | "min" | "sec" | "bare";
 type Num = { value: number; unit: Unit; negative: boolean };
@@ -66,9 +69,17 @@ function value(nums: Num[]): number | null {
 
 const numbers = (list: Token[]): Num[] => list.flatMap((t) => (typeof t === "object" && "num" in t ? [t.num] : []));
 
-/** A typed position as [lat, lon], or what is wrong with it. */
-export function parsePoint(text: string): [number, number] | string {
-  const HOW = "Type latitude and longitude, e.g. 50.0614, 19.9366 or 44°58′N 14°45′E.";
+/** A typed position as [lat, lon], or what is wrong with it. A short plus code needs
+ *  `near`, the point it is near; one with a town after it is for `resolveGeo`. */
+export function parsePoint(text: string, near?: [number, number] | null): [number, number] | string {
+  const HOW = "Type latitude and longitude, e.g. 50.0614, 19.9366 or 44°58′N 14°45′E, or a plus code.";
+  const code = parsePlusCode(text);
+  if (code && "full" in code) return code.full;
+  if (code) {
+    if (code.locality) return `Look up ${code.locality} to place ${code.short}: that needs place lookups online.`;
+    if (!near) return `${code.short} is a short plus code: add the town it is in, or type the full code.`;
+    return recoverNearest(code.short, near);
+  }
   const list = tokens(text.trim());
   if (!list) return HOW;
   const letters = list.flatMap((t, i) => (typeof t === "object" && "letter" in t ? [[i, t.letter] as const] : []));

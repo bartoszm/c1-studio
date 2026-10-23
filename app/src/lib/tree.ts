@@ -122,17 +122,31 @@ export function searchTree(nodes: Node[], query: string): { nodes: Node[]; open:
 const NO_PLACE = ["(no country)", "(no state)", "(no city)", "(no location)"];
 
 /** Country › State › City › Location, from the `place_tree` facet. A missing level
- *  (`—` in the index) keeps its place, named for what is missing. */
+ *  (`—` in the index) keeps its place, named for what is missing. A city some of whose
+ *  photos have a location and some not gets a "(no location)" entry for the rest. */
 export function placeTree(values: [string, number][]): Node[] {
   const name = (nodes: Node[], depth: number) => {
     for (const n of nodes) {
       if (n.name === "—") n.name = NO_PLACE[depth] ?? "—";
       name(n.children, depth + 1);
+      const rest = (n.count ?? 0) - n.children.reduce((s, c) => s + (c.count ?? 0), 0);
+      if (depth === 2 && n.children.length && rest > 0) {
+        const value = `${n.value}|—`;
+        n.children.unshift({ key: "p:" + value, value, name: NO_PLACE[3], icon: "place", count: rest, children: [] });
+      }
     }
   };
   const roots = pathTree(values, "|", "p:", "place");
   name(roots, 0);
   return roots;
+}
+
+/** The city a place tree's "(no location)" entry is under (`Japan|Kanto|Tokyo|—` →
+ *  `Japan|Kanto|Tokyo`); null for any other entry. The index has no such place: it is
+ *  the city's photos with no location. */
+export function cityWithoutLocation(value: string): string | null {
+  const parts = value.split("|");
+  return parts.length === 4 && parts[3] === "—" ? parts.slice(0, 3).join("|") : null;
 }
 
 /** `Poland|—|Kraków` → `Poland › (no state) › Kraków`. */

@@ -88,9 +88,9 @@ Photos with a city, region or country but no GPS show too, marked ≈, at that p
 the map is zoomed out about as far as the name reaches. Place names are found offline in
 a built-in [GeoNames](https://www.geonames.org/) gazetteer (CC BY 4.0); the few it lacks
 are looked up online once. Photos with no location wait in a tray under the map to be
-dragged on, or get positions from the photos taken just before and after them.
-**Refine** makes rough places more specific (Kraków → Kraków › Stare Miasto) and moves ≈
-positions to the GPS of photos taken moments apart. A new position can fill in the
+dragged on, or get positions from the photos taken just before and after them; the same
+**Neighbours…** dialog makes rough places more specific (Kraków → Kraków › Stare Miasto)
+and moves ≈ positions to the GPS of photos taken moments apart. A new position can fill in the
 photo's city, region and country.
 
 ### History

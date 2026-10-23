@@ -31,6 +31,8 @@ export type Filter = {
   gps?: boolean;
   /** Photos with a place (any of country, state, city, location), or without one. */
   placed?: boolean;
+  /** Photos with a location (the place's finest level), or without one. */
+  located?: boolean;
   /** Photos without a position of their own (none, or one given from their place's name). */
   approx?: boolean;
   /** Capture time. */
@@ -532,6 +534,9 @@ export const forgetSource = (spec: SourceSpec) => invoke<void>("forget_source", 
 /** Offers these kinds of source from now on (at least one); the source open stays open. */
 export const setProviders = (ids: string[]) => invoke<void>("set_providers", { ids });
 export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResult>("query", { filter, options });
+/** Where a photo is among those the filter selects, in that order (null: not among them). */
+export const position = (filter: Filter, options: { sort: Sort }, row: number) =>
+  invoke<number | null>("position", { filter, options, row });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
 export type Approx = { lat: number; lon: number; level: Level };
@@ -553,35 +558,30 @@ export type FillGroup = { place: Photo["place"]; rows: number[] };
 export const fillPlan = (rows: number[]) => invoke<FillGroup[]>("fill_plan", { rows });
 /** Fills the empty place fields of the photos at `rows` from their positions. */
 export const fillPlaces = (rows: number[]) => invoke<[number, Op][]>("fill_places", { rows });
-export type NeighbourSettings = { max_gap_minutes: number; positions: boolean; places: boolean };
+export type NeighbourSettings = {
+  positions: boolean;
+  position_gap_minutes: number;
+  places: boolean;
+  place_gap_minutes: number;
+};
 export type NeighbourPlan = {
-  candidates: number;
+  /** Photos with no position, or only their place's (≈). */
+  unpositioned: number;
   positions: number;
+  /** Photos with no location. */
+  unlocated: number;
   places: number;
   sample: [number, number, number][];
-  place_counts: [string, number][];
+  /** From (empty: no place), to, how many photos. */
+  place_counts: [string, string, number][];
 };
+/** Positions from the GPS photos taken around photos without one of their own; places from
+ *  a neighbour's that says the same and more. Nothing is written. */
 export const neighbourPlan = (filter: Filter, settings: NeighbourSettings) =>
   invoke<NeighbourPlan>("neighbour_plan", { filter, settings });
 /** Places the photos as the plan showed; returns the ops that undo it. */
 export const neighbourApply = (filter: Filter, settings: NeighbourSettings) =>
   invoke<[number, Op][]>("neighbour_apply", { filter, settings });
-export type RefineSettings = { place_gap_minutes: number; position_gap_minutes: number; places: boolean; positions: boolean };
-export type RefinePlan = {
-  placed: number;
-  places: number;
-  approx: number;
-  positions: number;
-  /** From, to, how many photos. */
-  place_counts: [string, string, number][];
-};
-/** Photos with a place given their neighbour's more specific one; ≈ positions given their
- *  neighbours' GPS. Nothing is written. */
-export const refinePlan = (filter: Filter, settings: RefineSettings) =>
-  invoke<RefinePlan>("refine_plan", { filter, settings });
-/** Refines the photos as the plan showed; returns the ops that undo it. */
-export const refineApply = (filter: Filter, settings: RefineSettings) =>
-  invoke<[number, Op][]>("refine_apply", { filter, settings });
 export type GpxSettings = { path: string; offset_minutes: number; max_gap_minutes: number; overwrite: boolean };
 export type GpxPlan = {
   fixes: number;

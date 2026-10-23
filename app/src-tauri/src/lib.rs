@@ -851,6 +851,18 @@ async fn query(app: State<'_, App>, filter: Filter, options: QueryOptions) -> Re
     app.session()?.library.query(&filter, &options).map_err(|e| format!("{e:#}"))
 }
 
+/// Where `row` is among the photos `filter` selects, in `options`' order; None when it is
+/// not one of them.
+#[tauri::command]
+async fn position(
+    app: State<'_, App>,
+    filter: Filter,
+    options: QueryOptions,
+    row: u64,
+) -> Result<Option<usize>, String> {
+    app.session()?.library.position(&filter, &options, row).map_err(|e| format!("{e:#}"))
+}
+
 /// The map's markers for the photos `filter` selects, clustered for what the map shows.
 #[tauri::command]
 async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Result<c1index::MapResult, String> {
@@ -920,26 +932,6 @@ async fn neighbour_apply(
     let s = app.session()?;
     s.touched();
     s.library.neighbour_apply(&filter, &settings).map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-async fn refine_plan(
-    app: State<'_, App>,
-    filter: Filter,
-    settings: c1index::RefineSettings,
-) -> Result<c1index::RefinePlan, String> {
-    app.session()?.library.refine_plan(&filter, &settings).map_err(|e| format!("{e:#}"))
-}
-
-#[tauri::command]
-async fn refine_apply(
-    app: State<'_, App>,
-    filter: Filter,
-    settings: c1index::RefineSettings,
-) -> Result<Vec<(u64, Op)>, String> {
-    let s = app.session()?;
-    s.touched();
-    s.library.refine_apply(&filter, &settings).map_err(|e| format!("{e:#}"))
 }
 
 /// Smart album id → how many photos it holds under `filter` (its album pick aside).
@@ -2459,6 +2451,7 @@ pub fn run() {
             status,
             startup_progress,
             query,
+            position,
             smart_counts,
             trips,
             timeline,
@@ -2471,8 +2464,6 @@ pub fn run() {
             fill_places,
             neighbour_plan,
             neighbour_apply,
-            refine_plan,
-            refine_apply,
             set_trip_settings,
             class_settings,
             default_class_settings,

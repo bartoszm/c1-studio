@@ -43,9 +43,7 @@ mod selection;
 pub use describing::{Accept, Accepted, Seen};
 pub use history::{HistoryOff, LogDays, LogPage};
 
-pub use placing::{
-    FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, RefinePlan, RefineSettings, Unresolved, place_of_path,
-};
+pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
 pub use selection::{Merged, Selection, group_places};
 
 /// How many photos one read of a source may keep whole in the log when it finds them gone
@@ -1583,10 +1581,15 @@ impl Library {
     }
 
     pub fn query(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
+        self.query_plain(&self.stacking(filter)?, options)
+    }
+
+    /// `filter` with its history pick resolved, and stacking applied: it leaves out the
+    /// frames behind the sharpest of their group. Where other filters narrow the photos,
+    /// only those whose sharpest frame is among the matches go: a frame that matches stays
+    /// when its sharpest does not, so no burst disappears.
+    fn stacking(&self, filter: &Filter) -> anyhow::Result<Filter> {
         let filter = &self.resolve_history(filter)?;
-        // Stacking leaves out the frames behind the sharpest of their group. Where other
-        // filters narrow the photos, only those whose sharpest frame is among the matches go:
-        // a frame that matches stays when its sharpest does not, so no burst disappears.
         if filter.stacked && filter.group.is_none() && filter.stacked_in.is_none() {
             let base = Filter { stacked: false, ..filter.clone() };
             if base != Filter::default() {
@@ -1595,10 +1598,73 @@ impl Library {
                 let mut counted = self.query_plain(&keepers, &counting)?;
                 let kept: Vec<String> =
                     counted.facets.remove(&Dim::Group).unwrap_or_default().into_iter().map(|(id, _)| id).collect();
-                return self.query_plain(&Filter { stacked_in: Some(kept), ..base }, options);
+                return Ok(Filter { stacked_in: Some(kept), ..base });
             }
         }
-        self.query_plain(filter, options)
+        Ok(filter.clone())
+    }
+
+    /// Where `row` is among the photos `filter` selects, in `options`' order; None when it
+    /// is not one of them.
+    pub fn position(&self, filter: &Filter, options: &QueryOptions, row: u64) -> anyhow::Result<Option<usize>> {
+        let ascending = match options.sort {
+            Sort::Filename => true,
+            Sort::FilenameDesc => false,
+            _ => {
+                let all = QueryOptions { limit: None, offset: 0, facets: vec![], ..options.clone() };
+                return Ok(self.query(filter, &all)?.rows.iter().position(|&r| r == row));
+            }
+        };
+        // Sorting every name takes over a second on a large catalog: the names ahead of the
+        // photo's are counted instead, by their place in each segment's dictionary. Equal
+        // names go by address, as the sorted query has them.
+        let query = self.compile(&self.stacking(filter)?)?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let (mut rows, mut names) = (Vec::new(), Vec::new());
+        for segment in searcher.segment_readers() {
+            rows.push(segment.fast_fields().u64("row")?);
+            names.push(segment.fast_fields().str("filename")?);
+        }
+        let Some(&photo) = docs.iter().find(|a| rows[a.segment_ord as usize].first(a.doc_id) == Some(row)) else {
+            return Ok(None);
+        };
+        let ord = |a: &DocAddress| names[a.segment_ord as usize].as_ref().and_then(|c| c.term_ords(a.doc_id).next());
+        let name = match ord(&photo) {
+            Some(o) => {
+                let mut text = String::new();
+                names[photo.segment_ord as usize].as_ref().expect("has an ordinal").ord_to_str(o, &mut text)?;
+                Some(text)
+            }
+            None => None,
+        };
+        // Per segment, the ordinals of the names before the photo's and of those equal to it.
+        let mut bounds = Vec::new();
+        for column in &names {
+            bounds.push(match (column, &name) {
+                (Some(c), Some(n)) => (first_ord(c, |t| t >= n.as_str())?, first_ord(c, |t| t > n.as_str())?),
+                _ => (0, 0),
+            });
+        }
+        let mut ahead = 0;
+        for a in &docs {
+            let (before, equal) = bounds[a.segment_ord as usize];
+            // A photo with no name counts as before every name.
+            let side = match (ord(a), &name) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (Some(o), Some(_)) if o < before => std::cmp::Ordering::Less,
+                (Some(o), Some(_)) if o < equal => std::cmp::Ordering::Equal,
+                _ => std::cmp::Ordering::Greater,
+            };
+            ahead += match side {
+                std::cmp::Ordering::Equal => *a < photo,
+                std::cmp::Ordering::Less => ascending,
+                std::cmp::Ordering::Greater => !ascending,
+            } as usize;
+        }
+        Ok(Some(ahead))
     }
 
     fn query_plain(&self, filter: &Filter, options: &QueryOptions) -> anyhow::Result<QueryResult> {
@@ -2353,6 +2419,19 @@ impl Library {
 /// An id for an album made in the app: a fresh uuid, which the source stores with it.
 pub fn new_collection_id() -> CollectionId {
     CollectionId::new_local(&uuid::Uuid::new_v4().to_string())
+}
+
+/// The first ordinal of `column`'s dictionary whose text `holds` (true from some point on:
+/// the dictionary is in order); the number of texts when none does.
+fn first_ord(column: &StrColumn, holds: impl Fn(&str) -> bool) -> std::io::Result<u64> {
+    let (mut lo, mut hi) = (0, column.num_terms() as u64);
+    let mut text = String::new();
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        column.ord_to_str(mid, &mut text)?;
+        if holds(&text) { hi = mid } else { lo = mid + 1 }
+    }
+    Ok(lo)
 }
 
 /// What the index was built with: its schema, and the rules that turn an analysis into

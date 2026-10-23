@@ -204,6 +204,8 @@ pub struct Filter {
     pub place_under: Option<String>,
     /// Photos with a place (any of country, state, city, location), or without one.
     pub placed: Option<bool>,
+    /// Photos with a location (the place's finest level), or without one.
+    pub located: Option<bool>,
     /// Only photos with a country but no ISO country code.
     pub no_country_code: bool,
     /// Substring, case-insensitive.
@@ -376,7 +378,12 @@ impl Filter {
             Dim::Ext => f.ext.clear(),
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
-            Dim::PlaceTree => f.place_under = None,
+            // A city's "(no location)" is the city with `located` off: counted without it,
+            // the city's locations stay listed beside it.
+            Dim::PlaceTree => {
+                f.place_under = None;
+                f.located = None;
+            }
             Dim::Shape => f.shape.clear(),
             Dim::Hue => f.hues.clear(),
             Dim::Light => f.light.clear(),
@@ -429,6 +436,12 @@ impl Filter {
             Some(true) => must.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
             Some(false) => must_not.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
             None => {}
+        }
+        if let Some(located) = self.located {
+            // The place tree goes down to the last level a photo has: the fourth, the
+            // location, is there exactly when the location is.
+            let deepest = Box::new(RegexQuery::from_pattern(r"[^|]*\|[^|]*\|[^|]*\|.+", f.dim(Dim::PlaceTree))?);
+            if located { must.push(deepest) } else { must_not.push(deepest) }
         }
         if self.no_country_code {
             must.push(has(flag::NO_COUNTRY_CODE));
@@ -748,6 +761,13 @@ mod tests {
         }
         let range = Filter { captured: Some(TimeRange { from: Some(0), to: None }), ..Filter::default() };
         assert_eq!(range.without(Dim::Year), Filter::default());
+    }
+
+    #[test]
+    fn the_place_tree_counts_as_if_no_location_were_picked() {
+        let f = Filter { place_under: Some("Japan|Kanto|Tokyo".into()), located: Some(false), ..Filter::default() };
+        assert_eq!(f.without(Dim::PlaceTree), Filter::default());
+        assert_eq!(f.without(Dim::City).located, Some(false));
     }
 
     #[test]

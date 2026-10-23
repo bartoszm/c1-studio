@@ -3,12 +3,12 @@
   import { SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
-  import { parseGeo } from "./lib/format";
+  import { resolveGeo } from "./lib/placeHints";
 
   // The photos of the view the map cannot show: with no position at all, or with only a
   // place's name. Drag them onto the map, type where they were, or let their neighbours
   // in time say.
-  let { filter, version, counts, ondragrows, onsetgeo, onneighbours, onshow, onpick, onerror, height = $bindable(0) }: {
+  let { filter, version, counts, ondragrows, onsetgeo, onneighbours, onshow, onpick, onerror, near, height = $bindable(0) }: {
     filter: Filter;
     version: number;
     /** From the map: photos with neither a position nor a place, and with a place only. */
@@ -21,6 +21,8 @@
     onshow: (placed: boolean) => void;
     onpick: (row: number) => void;
     onerror: (text: string) => void;
+    /** Where a short plus code is taken to be: the middle of the map. */
+    near: () => [number, number] | null;
     /** How tall the tray is, open or not: the map keeps photos clear of it. */
     height?: number;
   } = $props();
@@ -97,15 +99,16 @@
     ondragrows(moving);
   }
 
-  function place(e: Event) {
+  async function place(e: Event) {
     e.preventDefault();
-    const at = parseGeo(typed);
+    const rows = [...picked];
+    const at = await resolveGeo(typed, near());
     if (at === null) return;
     if (typeof at === "string") {
       typedError = at;
       return;
     }
-    onsetgeo([...picked], at[0], at[1]);
+    onsetgeo(rows, at[0], at[1]);
     typing = false;
     typed = "";
     typedError = null;
@@ -131,7 +134,7 @@
       <span class="grow"></span>
       {#if picked.size}
         <span class="muted">{picked.size.toLocaleString()} picked · drag onto the map</span>
-        <button title="Type where they were taken: 50.0614, 19.9366 or 44°58′N 14°45′E" onclick={() => (typing = !typing)}>Coordinates…</button>
+        <button title="Type where they were taken: 50.0614, 19.9366, 44°58′N 14°45′E or a plus code (9G8F+6X near the map's middle, 9G8F+6X Zürich)" onclick={() => (typing = !typing)}>Coordinates…</button>
       {/if}
       <button title="Positions (or places) from the photos taken just before and after, with one" onclick={onneighbours}>From neighbours…</button>
       <button title="Show these photos in the grid" onclick={() => onshow(tab === "place")}>Show in grid</button>
