@@ -43,16 +43,19 @@ pub fn model(id: &str) -> Option<Model> {
 /// The long edge of the JPEG sent: past it the API scales the image down anyway.
 pub const LONG_EDGE: u32 = 1568;
 
-/// Tokens a photo takes, roughly, for estimating a run before it starts: the image
-/// (a 3:2 frame at [`LONG_EDGE`]), the line of context, the cached instructions read
-/// back, and the answer with a little thinking.
-const PHOTO_INPUT: f64 = 2300.0;
+/// Tokens a photo takes, roughly, for estimating a run before it starts: the image (a
+/// thumbnail, about 450 by 300, or a preview at [`LONG_EDGE`]) with the line of context,
+/// the cached instructions read back, and the answer with a little thinking.
+const THUMB_INPUT: f64 = 400.0;
+const PREVIEW_INPUT: f64 = 2200.0;
 const CACHED_INPUT: f64 = 1500.0;
 const PHOTO_OUTPUT: f64 = 700.0;
 
-/// What describing `photos` photos would cost with `model`, in US dollars.
-pub fn estimate(model: &Model, photos: usize) -> f64 {
-    let per_photo = (PHOTO_INPUT + CACHED_INPUT * 0.1) * model.input + PHOTO_OUTPUT * model.output;
+/// What describing `photos` photos would cost with `model`, in US dollars, each sent as
+/// its preview or else as its thumbnail.
+pub fn estimate(model: &Model, photos: usize, preview: bool) -> f64 {
+    let input = if preview { PREVIEW_INPUT } else { THUMB_INPUT };
+    let per_photo = (input + CACHED_INPUT * 0.1) * model.input + PHOTO_OUTPUT * model.output;
     per_photo * photos as f64 / 1e6
 }
 
@@ -270,12 +273,19 @@ impl VisionProvider for Claude {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_preview_costs_more_than_a_thumbnail() {
+        let model = model(DEFAULT_MODEL).unwrap();
+        assert!(estimate(&model, 10, true) > estimate(&model, 10, false));
+        assert_eq!(estimate(&model, 0, true), 0.0);
+    }
+
     /// A response in the API's shape: a thinking block, then the structured answer.
     const RESPONSE: &str = r#"{
       "id": "msg_01", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
       "content": [
         {"type": "thinking", "thinking": "", "signature": "x"},
-        {"type": "text", "text": "{\"caption_en\":\"A tram turns into Basztowa street at dusk.\",\"caption_pl\":\"\",\"headline\":\"Tram at dusk\",\"subject\":\"tram\",\"keywords\":[\"street\",\"Kraków\"],\"keywords_new\":[\"tram\"],\"rating\":4,\"quality\":4,\"composition\":3,\"confidence\":0.8,\"location_guess\":{\"city\":\"Kraków\",\"country\":\"Poland\",\"confidence\":0.6}}"}
+        {"type": "text", "text": "{\"caption_en\":\"A tram turns into Basztowa street at dusk.\",\"caption_pl\":\"\",\"headline\":\"Tram at dusk\",\"subject\":\"tram\",\"keywords\":[\"street\",\"Kraków\"],\"keywords_new\":[\"tram\"],\"rating\":4,\"quality\":4,\"composition\":3,\"confidence\":0.8,\"location_guess\":{\"country\":{\"name\":\"Poland\",\"p\":0.9},\"state\":{\"name\":\"\",\"p\":0},\"city\":{\"name\":\"Kraków\",\"p\":0.6},\"location\":{\"name\":\"\",\"p\":0},\"coordinates\":{\"lat\":50.06,\"lon\":19.94,\"p\":0.4,\"radius_km\":5}}}"}
       ],
       "stop_reason": "end_turn", "stop_details": null,
       "usage": {"input_tokens": 2210, "output_tokens": 640, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 1480}
@@ -287,7 +297,7 @@ mod tests {
         let (_, answer) = read(&message).unwrap();
         assert_eq!(answer.headline, "Tram at dusk");
         assert_eq!(answer.keywords, vec!["street", "Kraków"]);
-        assert_eq!(answer.location_guess.city, "Kraków");
+        assert_eq!(answer.location_guess.city.name, "Kraków");
         let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap();
         let opus = model("claude-opus-5-5").unwrap();
         let expected = ((2210.0 + 1480.0 * 0.1) * 4.0 + 640.0 * 20.0) / 1e6;

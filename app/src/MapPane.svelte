@@ -5,6 +5,7 @@
   import workerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
   import { onMount, tick, untrack } from "svelte";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
   import { hitView, mapPadding, parseHits, routeStep, viewBox, wrapLon, type Hit, type NominatimRow } from "./lib/mapview";
   import { movingOf } from "./lib/pins";
@@ -15,7 +16,7 @@
 
   let {
     filter, version, focus, dragRows, pickedRows, tile, trip, center, onbox, onview, ontile, onselect, onsetgeo, onerror,
-    onplace, onpromote, ondragrows, onneighbours, onunplaced,
+    onplace, onpromote, ondragrows, onneighbours, onunplaced, geoPerAsset = false,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
     filter: Filter;
@@ -55,6 +56,8 @@
     onneighbours: () => void;
     /** Show the photos with no position, with a place (true) or without, in the grid. */
     onunplaced: (placed: boolean) => void;
+    /** A position belongs to the image, so its variants move with it (Capture One). */
+    geoPerAsset?: boolean;
   } = $props();
 
   // OpenFreeMap: free vector tiles, no key. Painted light, turned dark by a CSS filter
@@ -897,8 +900,8 @@
       </span>
       {#if popup.confirm}
         <span>
-          Give {c.count === 1 ? "it" : `all ${c.count.toLocaleString()}`} this position? In Capture One the position belongs to
-          the image, so its variants move too. They keep showing as ≈ here, and can be undone.
+          Give {c.count === 1 ? "it" : `all ${c.count.toLocaleString()}`} this position?{#if geoPerAsset} In {source.name} the position belongs to
+          the image, so its variants move too.{/if} They keep showing as ≈ here, and can be undone.
         </span>
         <div class="buttons">
           <button class="primary" onclick={() => { onpromote(c.paths ?? []); popup = null; }}>Set GPS</button>

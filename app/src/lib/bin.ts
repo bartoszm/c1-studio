@@ -1,6 +1,7 @@
 // The app's trash: photos deleted here are left out of every view but the trash's, until
 // restored, or until the trash is emptied and their source deletes them for good.
-import type { Filter, Removal } from "./api";
+import type { Filter, Removal, Wording } from "./api";
+import { GENERAL } from "./format";
 
 /** The filter as the views ask it: only the trash's photos while it is shown, hidden ones
  *  too (a photo hidden, then deleted, is emptied with the rest: it must show to be restored). */
@@ -21,12 +22,12 @@ const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`
 export const binNote = (n: number, binned: boolean) => `${photos(n)} ${binned ? "moved to Trash" : "restored"}`;
 
 /** What deleting `n` photos for good does, in a sentence, for the dialog asking first. */
-export function removalText(n: number, removes: Removal): string {
+export function removalText(n: number, removes: Removal, wording: Wording = GENERAL): string {
   switch (removes) {
     case "Files":
       return `The files of ${photos(n)} go to the Windows Recycle Bin, with their own .xmp sidecars. Their edits in C1 Studio are lost.`;
     case "MarksTrashed":
-      return `${photos(n)} ${n === 1 ? "is" : "are"} marked deleted in Capture One and show${n === 1 ? "s" : ""} in its Trash; the files stay. Any other variants of the same images go too. A backup of the catalog is made first.`;
+      return `${photos(n)} ${n === 1 ? "is" : "are"} marked deleted in ${wording.name} and show${n === 1 ? "s" : ""} in its Trash; the files stay. Any other variants of the same images go too. A backup of the ${wording.noun} is made first.`;
     case "None":
       return "This source cannot delete photos.";
   }

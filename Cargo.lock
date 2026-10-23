@@ -368,6 +368,7 @@ name = "c1ai"
 version = "0.5.0"
 dependencies = [
  "base64 0.22.1",
+ "c1image",
  "keyring",
  "serde",
  "serde_json",

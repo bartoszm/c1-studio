@@ -131,6 +131,9 @@ pub struct QueryResult {
     /// How many photos matched, regardless of limit.
     pub total: usize,
     pub rows: Vec<u64>,
+    /// Positions in `rows` of the photos whose file is offline (a folder source's drive
+    /// not mounted), so a page marks them without asking again.
+    pub offline: Vec<u32>,
     pub facets: Counts,
     pub micros: u128,
 }
@@ -2043,15 +2046,36 @@ impl Library {
                 (n, addrs(hits), f)
             }
         };
-        Ok(QueryResult { total, rows: self.rows_of(searcher, &docs)?, facets, micros: 0 })
+        let (rows, offline) = self.rows_of(searcher, &docs)?;
+        Ok(QueryResult { total, rows, offline, facets, micros: 0 })
     }
 
-    fn rows_of(&self, searcher: &Searcher, docs: &[DocAddress]) -> anyhow::Result<Vec<u64>> {
+    /// The rows of `docs`, and the positions among them of the photos flagged offline.
+    fn rows_of(&self, searcher: &Searcher, docs: &[DocAddress]) -> anyhow::Result<(Vec<u64>, Vec<u32>)> {
         let mut columns = Vec::new();
         for segment in searcher.segment_readers() {
-            columns.push(segment.fast_fields().u64("row")?);
+            let fast = segment.fast_fields();
+            // The offline flag's number in this segment: none when no photo in it has it.
+            let flags = fast.str(Dim::Flag.field_name())?;
+            let offline = match &flags {
+                Some(column) => column.dictionary().term_ord(schema::flag::OFFLINE)?,
+                None => None,
+            };
+            columns.push((fast.u64("row")?, flags.zip(offline)));
         }
-        Ok(docs.iter().filter_map(|a| columns[a.segment_ord as usize].first(a.doc_id)).collect())
+        let mut rows = Vec::with_capacity(docs.len());
+        let mut offline = Vec::new();
+        for a in docs {
+            let (row, flags) = &columns[a.segment_ord as usize];
+            let Some(r) = row.first(a.doc_id) else { continue };
+            if let Some((column, ord)) = flags
+                && column.term_ords(a.doc_id).any(|o| o == *ord)
+            {
+                offline.push(rows.len() as u32);
+            }
+            rows.push(r);
+        }
+        Ok((rows, offline))
     }
 
     pub fn photo_id(&self, row: u64) -> Option<PhotoId> {

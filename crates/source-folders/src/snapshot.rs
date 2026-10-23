@@ -6,6 +6,8 @@
 //! and keywords again if they changed); anything else gets everything (`BeginFull`).
 //! The roots are walked first when a walk is due (on open, after `rescan`).
 
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::Ordering;
 
 use c1model::{Cursor, KeywordNode, KeywordPath, Result, SourceEvent, SourceId};
@@ -30,9 +32,10 @@ pub(crate) fn run(
     let def = src.definition();
     let events = {
         let state = src.store().read();
+        let mut trees = src.trees.lock().unwrap();
         match since.and_then(|c| generation_of(&state, c)) {
-            Some(since) => incremental(&src.id, &def, &state, since),
-            None => full(&src.id, &def, &state),
+            Some(since) => incremental(&src.id, &def, &state, since, &mut trees),
+            None => full(&src.id, &def, &state, &mut trees),
         }
     };
     for event in events {
@@ -56,9 +59,39 @@ fn shown(rec: &FileRec) -> bool {
     rec.state != FileState::Detached
 }
 
-fn full(source: &SourceId, def: &Definition, state: &State) -> Vec<SourceEvent> {
+/// What the folders and the keyword tree last sent were made of: each shown photo's folder
+/// and keywords, hashed. An incremental snapshot whose photos kept theirs (a rating, a
+/// caption changed) then need not build both again from every photo.
+#[derive(Default)]
+pub(crate) struct Trees {
+    /// The store and generation they were sent at.
+    at: Option<(String, u64)>,
+    made_of: HashMap<String, u64>,
+}
+
+impl Trees {
+    fn sent(&mut self, state: &State) {
+        self.at = Some((state.uuid.clone(), state.generation));
+        self.made_of = state
+            .files
+            .iter()
+            .filter(|(_, rec)| shown(rec))
+            .map(|(ext, rec)| (ext.clone(), part(state, ext, rec)))
+            .collect();
+    }
+}
+
+/// What a shown photo adds to the trees.
+fn part(state: &State, ext: &str, rec: &FileRec) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (&rec.root, rec.reldir(), keywords(rec, state.user.get(ext))).hash(&mut hasher);
+    hasher.finish()
+}
+
+fn full(source: &SourceId, def: &Definition, state: &State, trees: &mut Trees) -> Vec<SourceEvent> {
     let mut events = vec![SourceEvent::BeginFull];
     events.extend(collections_and_keywords(def, state));
+    trees.sent(state);
     for (ext, rec) in state.files.iter().filter(|(_, rec)| shown(rec)) {
         events.push(upsert(source, def, state, ext, rec));
     }
@@ -66,7 +99,7 @@ fn full(source: &SourceId, def: &Definition, state: &State) -> Vec<SourceEvent> 
     events
 }
 
-fn incremental(source: &SourceId, def: &Definition, state: &State, since: u64) -> Vec<SourceEvent> {
+fn incremental(source: &SourceId, def: &Definition, state: &State, since: u64, trees: &mut Trees) -> Vec<SourceEvent> {
     let mut changed: Vec<&String> = state.changed.iter().filter(|(_, at)| **at > since).map(|(ext, _)| ext).collect();
     changed.sort();
     let mut gone: Vec<&String> = state
@@ -82,9 +115,22 @@ fn incremental(source: &SourceId, def: &Definition, state: &State, since: u64) -
         .collect();
 
     let mut events = vec![SourceEvent::BeginIncremental];
-    // A photo's keywords may have changed with it, so the tree is sent again with any photo.
-    if state.albums_gen > since || !upserts.is_empty() || !gone.is_empty() {
+    // The trees are sent again when a photo changed its folder or keywords, came or went.
+    // Known only against the trees last sent, if the reader had those.
+    let known = trees.at.as_ref().is_some_and(|(uuid, at)| *uuid == state.uuid && *at == since);
+    let kept = known
+        && state.albums_gen <= since
+        && state.changed.iter().filter(|(_, at)| **at > since).map(|(ext, _)| ext).chain(gone.iter().copied()).all(
+            |ext| {
+                let now = state.files.get(ext).filter(|rec| shown(rec)).map(|rec| part(state, ext, rec));
+                now == trees.made_of.get(ext).copied()
+            },
+        );
+    if kept {
+        trees.at = Some((state.uuid.clone(), state.generation));
+    } else if state.albums_gen > since || !upserts.is_empty() || !gone.is_empty() {
         events.extend(collections_and_keywords(def, state));
+        trees.sent(state);
     }
     events.extend(upserts);
     events.extend(gone.into_iter().map(|ext| SourceEvent::Delete(c1model::PhotoId::new(source, ext.as_str()))));

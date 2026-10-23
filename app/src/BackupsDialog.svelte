@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
 
   // The backups made before writes, newest first, and putting one back. A restore backs
   // the catalog up first, so it shows up here and can be undone the same way.
@@ -60,23 +61,23 @@
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="backups-title">
     <h2 id="backups-title">Backups</h2>
     <p class="muted">
-      The catalog is copied before the app writes to it; the newest five are kept. Restoring one puts the catalog
-      back as it was then.
+      Before the app writes, it keeps a copy of the {source.backup}; the newest five are kept. Restoring one brings that copy
+      back.
     </p>
 
     {#if done}
-      <p class="ok">Restored. The catalog it replaced is kept as the newest backup below, so this can be undone the same way.</p>
+      <p class="ok">Restored. What it replaced is kept as the newest backup below, so this can be undone the same way.</p>
     {/if}
     {#if locked}
-      <p class="warn">Close Capture One to restore: it keeps the catalog in memory and would write it back over the restored one. <span class="muted">(Held by {locked}.)</span></p>
+      <p class="warn">Close {source.owner ?? "the program that has it open"} to restore: it keeps the {source.noun} in memory and would write it back over the restored one. <span class="muted">(Held by {locked}.)</span></p>
     {:else if status === "ReadOnly"}
-      <p class="warn">This catalog is not written by the app, so it cannot be restored here.</p>
+      <p class="warn">This {source.noun} is not written by the app, so it cannot be restored here.</p>
     {/if}
 
     {#if list === null && !failed}
       <p class="muted">Reading…</p>
     {:else if list && !list.length}
-      <p class="muted">No backups yet: one is made the first time the app writes to this catalog.</p>
+      <p class="muted">No backups yet: one is made the first time the app writes to this {source.noun}.</p>
     {:else if list}
       <ul>
         {#each list as b (b.id)}
@@ -93,11 +94,11 @@
           {#if asking?.id === b.id}
             <li class="confirm">
               <p>
-                Put the catalog back as it was on <b>{when(b.created_ms)}</b>? Everything changed in it since, in Capture One
-                or written from here, is undone.
+                Go back to the {source.backup} as of <b>{when(b.created_ms)}</b>? Everything changed since{#if source.owner}, in
+                {source.owner} or written from here,{/if} is undone.
               </p>
               <p class="muted">
-                The catalog as it is now is backed up first and listed here. Edits queued in this app stay queued.
+                What is there now is backed up first and listed here. Edits queued in this app stay queued.
               </p>
               <div class="buttons">
                 <button onclick={() => (asking = null)} disabled={busy}>Cancel</button>

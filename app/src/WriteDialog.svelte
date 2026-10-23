@@ -34,7 +34,7 @@
   load();
 
   /** How the source's own side of a conflict reads. */
-  let theirs_ = $derived(source.isCaptureOne ? "Capture One's" : "the source's");
+  let theirs_ = $derived(source.owner ? `${source.owner}'s` : "the source's");
   let locked = $derived(plan && typeof plan.status === "object" ? plan.status.Locked.by : null);
   let writable = $derived(plan?.status === "Ready");
   let toWrite = $derived(plan ? plan.remaps.length + plan.collections.length + plan.apply.length + plan.unchanged.length : 0);
@@ -51,7 +51,7 @@
   );
 
   async function write() {
-    busy = source.isCaptureOne ? "Backing up the catalog and writing…" : "Writing…";
+    busy = "Backing up and writing…";
     error = null;
     try {
       done = await api.writeApply();
@@ -125,7 +125,7 @@
 
     {#if done}
       <p class="ok">Written: {done.written.toLocaleString()} edit{done.written === 1 ? "" : "s"}.</p>
-      {#if done.backup}<p class="muted">The {source.isCaptureOne ? "catalog" : "data"} as it was is backed up in <code>{done.backup}</code>.</p>{/if}
+      {#if done.backup}<p class="muted">A copy of the {source.backup} from before is kept in <code>{done.backup}</code>.</p>{/if}
       {#if done.warnings.length}
         <p class="warn">The edits are written, but:</p>
         <ul class="labels">
@@ -133,18 +133,18 @@
         </ul>
       {/if}
       <p class="muted">
-        {#if source.isCaptureOne}Open Capture One to see the changes there. {/if}To have edits written by themselves, turn on Autosave at the bottom right.
+        {#if source.owner}Open {source.owner} to see the changes there. {/if}To have edits written by themselves, turn on Autosave at the bottom right.
       </p>
       <div class="buttons"><button class="primary" onclick={onclose}>Done</button></div>
     {:else if plan}
       <p class:warn={!writable}>
         {#if writable}
-          {#if source.isCaptureOne}Capture One is closed. The catalog is backed up before anything is written.{:else}Your data is backed up before anything is written.{/if}
+          {#if source.owner}{source.owner} is closed. {/if}A copy of the {source.backup} is made before anything is written.
         {:else if locked}
-          Close {source.word} to write: it keeps the catalog in memory and would overwrite these changes.
+          Close {source.word} to write: it keeps the {source.noun} in memory and would overwrite these changes.
           <span class="muted">(Held by {locked}.)</span> Your edits stay queued meanwhile.
         {:else}
-          This catalog cannot be written. <span class="muted">{plan.compatibility.format}.</span>
+          This {source.noun} cannot be written. <span class="muted">{plan.compatibility.format}.</span>
           {plan.compatibility.note ?? ""} Your edits stay queued here.
         {/if}
       </p>

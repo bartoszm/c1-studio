@@ -1,7 +1,7 @@
 // The change log as the History tab words it: a group of entries, and what a pick of it
 // is about.
 
-import type { HistoryOff, HistoryPick, LogEvent, LogGroup, LogKind, NetWhat } from "./api";
+import type { HistoryOff, HistoryPick, LogEvent, LogGroup, LogKind, NetWhat, Wording } from "./api";
 import { date, eventText } from "./format";
 
 const DAY = 86_400_000;
@@ -36,8 +36,8 @@ const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`
 
 /** One row of the log in a line: a single entry as `eventText` words it, a batch as
  *  `rating changed on 1,240 photos`. */
-export function groupText(g: LogGroup, albumName?: (id: string) => string, provider = ""): string {
-  if (g.entries === 1) return eventText(g.sample, albumName, provider);
+export function groupText(g: LogGroup, albumName?: (id: string) => string, wording?: Wording): string {
+  if (g.entries === 1) return eventText(g.sample, albumName, wording);
   switch (g.kind) {
     case "added":
     case "removed":

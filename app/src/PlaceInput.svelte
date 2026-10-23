@@ -1,5 +1,6 @@
 <script lang="ts">
   import { looseKey } from "./lib/countries";
+  import { source } from "./lib/source.svelte";
   import { catalogPlaces, nearbyPlaces, placeAt } from "./lib/placeHints";
   import { fillFor, suggest, type Level, type Place, type PlaceFields, type PlacePath, type Suggestion } from "./lib/places";
 
@@ -158,9 +159,9 @@
                 {#if s.source === "selection"}
                   <span title="On {s.n.toLocaleString()} of the {picked.toLocaleString()} selected photos">{s.n.toLocaleString()}/{picked.toLocaleString()}</span>
                 {:else if s.n}
-                  <span title="{s.n.toLocaleString()} photos in the catalog">{s.n.toLocaleString()}</span>
+                  <span title="{s.n.toLocaleString()} photos in the {source.noun}">{s.n.toLocaleString()}</span>
                 {:else}
-                  <span title="Not in the catalog yet">new</span>
+                  <span title="Not in the {source.noun} yet">new</span>
                 {/if}
               </span>
             </span>

@@ -59,10 +59,11 @@ pub struct Status {
 }
 
 pub fn status(program: &Path) -> Result<Status, AiError> {
-    let out = command(program).args(["auth", "status"]).output().map_err(|e| AiError::Cli(e.to_string()))?;
+    let out =
+        command(program).args(["auth", "status"]).output().map_err(|e| AiError::Cli(format!("Claude Code: {e}")))?;
     // Signed out, it says so with a non-zero exit and the same JSON.
     serde_json::from_slice(&out.stdout)
-        .map_err(|_| AiError::Cli(String::from_utf8_lossy(&out.stderr).trim().to_string()))
+        .map_err(|_| AiError::Cli(format!("Claude Code: {}", String::from_utf8_lossy(&out.stderr).trim())))
 }
 
 pub struct ClaudeCode {
@@ -87,7 +88,7 @@ impl ClaudeCode {
         let prompt = crate::prompt_hash(brief);
         let name = format!("c1studio-ai-{}-{}.txt", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
         let system = std::env::temp_dir().join(name);
-        std::fs::write(&system, text).map_err(|e| AiError::Cli(format!("the prompt's file: {e}")))?;
+        std::fs::write(&system, text).map_err(|e| AiError::Cli(format!("Claude Code: the prompt's file: {e}")))?;
         Ok(ClaudeCode { program, model, options, system, schema, prompt, vocabulary })
     }
 
@@ -141,7 +142,7 @@ impl ClaudeCode {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| AiError::Cli(format!("would not start: {e}")))?;
+            .map_err(|e| AiError::Cli(format!("Claude Code would not start: {e}")))?;
         let mut stdin = child.stdin.take().expect("piped");
         // Written from another thread: a photo is larger than the pipe, and Claude Code
         // starts writing before it has read it all. Dropping it closes Claude Code's input.
@@ -280,7 +281,7 @@ mod tests {
     /// The last line Claude Code prints, as it printed it for a photo (trimmed).
     const RESULT: &str = r#"{"type":"result","subtype":"success","is_error":false,"stop_reason":"tool_use","api_error_status":null,"total_cost_usd":0.0012,
       "usage":{"input_tokens":2,"cache_creation_input_tokens":3671,"cache_read_input_tokens":0,"output_tokens":905},
-      "result":"","structured_output":{"caption_en":"Three men play xiangqi at a stone table.","caption_pl":"","headline":"Street chess","subject":"xiangqi","keywords":["street"],"keywords_new":["xiangqi"],"rating":3,"quality":4,"composition":3,"confidence":0.9,"location_guess":{"city":"Hong Kong","country":"China","confidence":0.5}}}"#;
+      "result":"","structured_output":{"caption_en":"Three men play xiangqi at a stone table.","caption_pl":"","headline":"Street chess","subject":"xiangqi","keywords":["street"],"keywords_new":["xiangqi"],"rating":3,"quality":4,"composition":3,"confidence":0.9,"location_guess":{"country":{"name":"China","p":0.5},"state":{"name":"","p":0},"city":{"name":"Hong Kong","p":0.5},"location":{"name":"","p":0},"coordinates":{"lat":0,"lon":0,"p":0,"radius_km":0}}}}"#;
 
     #[test]
     fn reads_the_structured_answer() {
