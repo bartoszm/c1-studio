@@ -222,12 +222,14 @@ impl Agy {
         }
         let millis = started.elapsed().as_millis() as u64;
         let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
-        // No envelope: agy ended early (its connection dropped, it crashed); worth another try.
+        // No envelope: agy ended early (its connection dropped, it crashed), which is worth
+        // another try; unless what it said is that it is not signed in or out of quota.
         let envelope = serde_json::from_str::<Envelope>(stdout.trim()).map_err(|_| {
             let stderr = stderr.join().unwrap_or_default();
             let said = String::from_utf8_lossy(&stderr);
             let last = said.lines().chain(stdout.lines()).rfind(|l| !l.trim().is_empty()).unwrap_or("").trim();
-            AiError::Network(format!("agy gave no answer: {last}"))
+            let message = format!("agy gave no answer: {last}");
+            stopping(&message).unwrap_or(AiError::Network(message))
         })?;
         Ok((envelope, stdout, millis))
     }
@@ -290,12 +292,12 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-/// Words in an error that say it may pass: the service busy, the answer's stream broken off.
-const TRANSIENT: [&str; 14] = [
+/// Words in an error that say it may pass: the service busy, the answer's stream broken
+/// off. Matched as whole words, so "500" is not found in "1500 px".
+const TRANSIENT: [&str; 13] = [
     "unavailable",
     "overloaded",
     "timeout",
-    "timed out",
     "interrupted",
     "stream",
     "connection",
@@ -308,7 +310,25 @@ const TRANSIENT: [&str; 14] = [
     "503",
 ];
 
-/// What a failed envelope means: no sign-in and an exhausted quota stop a run.
+fn transient(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("timed out") || lower.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| TRANSIENT.contains(&w))
+}
+
+/// An error no other photo would fare better with: an exhausted quota, no sign-in.
+fn stopping(message: &str) -> Option<AiError> {
+    let lower = message.to_lowercase();
+    if lower.contains("quota") || lower.contains("rate limit") || lower.contains("resource_exhausted") {
+        Some(AiError::Limit(format!("Gemini: {message}")))
+    } else if lower.contains("sign in") || lower.contains("login") || lower.contains("unauthenticated") {
+        Some(AiError::Cli(format!("agy is not signed in: run agy once to sign in ({message})")))
+    } else {
+        None
+    }
+}
+
+/// What a failed envelope means: no sign-in and an exhausted quota stop a run; a busy
+/// service or a broken-off answer is tried again.
 fn failure(envelope: &Envelope) -> Option<AiError> {
     if envelope.status.eq_ignore_ascii_case("SUCCESS") {
         return None;
@@ -318,16 +338,11 @@ fn failure(envelope: &Envelope) -> Option<AiError> {
         Some(other) => other.to_string(),
         None => format!("agy answered {}", envelope.status),
     };
-    let lower = message.to_lowercase();
-    Some(if lower.contains("quota") || lower.contains("rate limit") || lower.contains("resource_exhausted") {
-        AiError::Limit(format!("Gemini: {message}"))
-    } else if lower.contains("sign in") || lower.contains("login") || lower.contains("unauthenticated") {
-        AiError::Cli(format!("agy is not signed in: run agy once to sign in ({message})"))
-    } else if TRANSIENT.iter().any(|word| lower.contains(word)) {
-        AiError::Network(message)
-    } else {
-        AiError::BadReply(message)
-    })
+    Some(
+        stopping(&message).unwrap_or_else(|| {
+            if transient(&message) { AiError::Network(message) } else { AiError::BadReply(message) }
+        }),
+    )
 }
 
 /// The JSON object in a reply: the whole reply, the last fenced `json` block, or the
@@ -484,6 +499,10 @@ mod tests {
         assert!(failure(&envelope("ERROR", "The stream was interrupted")).unwrap().retryable());
         assert!(failure(&envelope("ERROR", "connection reset by peer")).unwrap().retryable());
         assert!(!failure(&envelope("ERROR", "the request was invalid")).unwrap().retryable());
+        // Whole words only: a size or an id is no server error.
+        assert!(!failure(&envelope("ERROR", "image over 1500 px, id ab503c")).unwrap().retryable());
+        assert!(failure(&envelope("ERROR", "unexpected EOF")).unwrap().retryable());
+        assert!(stopping("agy gave no answer: please sign in").is_some_and(|e| e.stops_run()));
         let reply: Envelope = serde_json::from_str(
             r#"{"conversation_id":"x","status":"SUCCESS","response":"```json\n{\"headline\":\"Tram\"}\n```\n","duration_seconds":7.6,"num_turns":1,"usage":{"input_tokens":15029,"output_tokens":111,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":15140}}"#,
         )

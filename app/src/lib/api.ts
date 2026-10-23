@@ -801,6 +801,8 @@ export type DescribeState = {
   /** Unix ms. */
   started: number;
   cost: number; error: string | null;
+  /** Photos go as contact sheets, a call each. */
+  sheets: boolean;
   /** Calls made and to make: one per photo, or one per contact sheet. */
   calls_done: number; calls_total: number;
   /** The calls under way. */

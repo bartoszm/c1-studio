@@ -113,6 +113,8 @@ pub(crate) struct DescribeState {
     cost: f64,
     /// Why the run stopped early (no key, a refused key), or the last photo's failure.
     error: Option<String>,
+    /// Photos go as contact sheets, a call each.
+    sheets: bool,
     /// Calls made and to make: one per photo, or one per contact sheet.
     calls_done: usize,
     calls_total: usize,
@@ -183,11 +185,12 @@ fn call_name(call: usize, sheet: bool) -> String {
     format!("{} {call}", if sheet { "Sheet" } else { "Photo" })
 }
 
-/// Shows the run's state where it is looked at: the AI tab and the footer.
+/// Shows the run's state where it is looked at: the AI tab and the footer. Sent under
+/// the lock, so states from the run's threads arrive in the order they were made.
 fn publish(app: &AppHandle, s: &Arc<Session>) {
-    let state = lock(&s.describe).clone();
+    let state = lock(&s.describe);
     if is_current(app, s) {
-        let _ = app.emit("describe", state);
+        let _ = app.emit("describe", state.clone());
     }
 }
 
@@ -649,6 +652,7 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
         running: true,
         total: todo.len(),
         started: now(),
+        sheets,
         calls_total: units.len(),
         ..Default::default()
     };
@@ -695,6 +699,7 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                         let name = call_name(call, sheets);
                         let took = (now() - began) / 1000;
                         let mut st = lock(&s.describe);
+                        let tried_again = st.unit(call).is_some_and(|u| u.attempt > 1);
                         st.working.retain(|r| !unit.contains(r));
                         st.units.retain(|u| u.call != call);
                         match outcome {
@@ -728,7 +733,7 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                                 st.calls_done += 1;
                                 let mut message = format!("{e:#}");
                                 // Its tries are in the log; the error says they were made.
-                                if failed_with(&e).is_some_and(AiError::retryable) {
+                                if tried_again {
                                     message.push_str(" (tried again, to no avail)");
                                 }
                                 st.note(call, false, format!("{name}: failed after {took} s: {message}"));

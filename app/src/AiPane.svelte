@@ -96,7 +96,7 @@
   });
   let elapsed = $derived(describe?.running && describe.started ? Math.max(0, now - describe.started) : 0);
   /** Photos go as contact sheets: a call is a sheet of many. */
-  let bySheet = $derived(!!describe && (describe.units[0]?.sheet ?? describe.calls_total < describe.total));
+  let bySheet = $derived(!!describe?.sheets);
   /** From the pace so far, once a call is back; the calls at work count as half done. */
   let left = $derived.by(() => {
     if (!describe?.running || describe.calls_done < 1) return null;
