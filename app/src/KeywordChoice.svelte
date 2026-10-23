@@ -17,14 +17,30 @@
   let tree = $derived(keywordTree(keywords));
   let counts = $derived(offeredCount(keywords, left));
 
+  // Unfolded by hand; while finding, levels with a match unfold unless folded by hand.
   let open = $state(new Set<string>());
+  let folded = $state(new Set<string>());
   let find = $state("");
   let needle = $derived(find.trim().toLowerCase());
-  const expanded = (n: KeywordNode) => (needle ? n.children.some((c) => matches(c, needle)) : open.has(n.path));
+  const expanded = (n: KeywordNode) =>
+    needle ? !folded.has(n.path) && n.children.some((c) => matches(c, needle)) : open.has(n.path);
   function flip(path: string) {
-    const next = new Set(open);
+    const set = needle ? folded : open;
+    const next = new Set(set);
     if (!next.delete(path)) next.add(path);
-    open = next;
+    if (needle) folded = next;
+    else open = next;
+  }
+  $effect(() => {
+    void needle;
+    folded = new Set();
+  });
+  /** A box shows what is saved: it waits for the save (which re-renders it) rather than
+   *  showing a change that may not be kept. */
+  function choose(box: HTMLInputElement, path: string) {
+    const offer = box.checked;
+    box.checked = !offer;
+    onchange(toggle(left, path, offer));
   }
   /** Why a keyword is not offered though its own box may be ticked: a level above it, or
    *  its name. */
@@ -52,7 +68,7 @@
             checked={!covers(n.path, left)}
             disabled={busy || why !== null}
             title={why ? `Not offered: ${why}` : ""}
-            onchange={(e) => onchange(toggle(left, n.path, e.currentTarget.checked))}
+            onchange={(e) => choose(e.currentTarget, n.path)}
           />
           {n.name}
           {#if n.uses}<span class="muted">{n.uses.toLocaleString()}</span>{/if}
@@ -71,7 +87,16 @@
   matched to it.
 </p>
 <label class="numbers">
-  <input type="checkbox" checked={left.numbers} disabled={busy} onchange={(e) => onchange({ ...left, numbers: e.currentTarget.checked })} />
+  <input
+    type="checkbox"
+    checked={left.numbers}
+    disabled={busy}
+    onchange={(e) => {
+      const numbers = e.currentTarget.checked;
+      e.currentTarget.checked = !numbers;
+      onchange({ ...left, numbers });
+    }}
+  />
   Leave out keywords named only with numbers (01, 02, 2023)
 </label>
 <div class="tools">

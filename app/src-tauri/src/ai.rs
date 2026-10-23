@@ -408,8 +408,8 @@ pub(crate) struct Estimate {
 /// The instructions for a run with these settings, and the vocabulary answers are
 /// checked against.
 fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), String> {
-    let mut paths = s.library.vocabulary().map_err(text)?;
-    paths.retain(|(path, _)| !settings.left_out.covers(path));
+    let (paths, withheld): (Vec<_>, Vec<_>) =
+        s.library.vocabulary().map_err(text)?.into_iter().partition(|(path, _)| !settings.left_out.covers(path));
     let brief = Brief {
         language: settings.language,
         vocabulary: paths.iter().map(|(p, _)| p.rsplit('|').next().unwrap_or(p).to_string()).fold(
@@ -424,7 +424,8 @@ fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), Stri
         fields: settings.fields,
         instructions: settings.instructions.clone(),
     };
-    let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)));
+    let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)))
+        .withholding(withheld.iter().map(|(p, _)| p.as_str()));
     Ok((brief, vocabulary))
 }
 

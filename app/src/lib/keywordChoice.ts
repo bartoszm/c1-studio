@@ -58,13 +58,14 @@ export function keywordTree(keywords: [string, number][]): KeywordNode[] {
 }
 
 /** Of `keywords`, the distinct names a model is offered and the distinct names in use:
- *  only keywords on photos count, as only they are offered. */
+ *  only keywords on photos count, as only they are offered. Names as the prompt lists
+ *  them (`ai::brief`), told apart exactly. */
 export function offeredCount(keywords: [string, number][], left: LeftOut): { offered: number; all: number } {
   const all = new Set<string>();
   const offered = new Set<string>();
   for (const [path, uses] of keywords) {
     if (uses < 1) continue;
-    const name = leaf(path).trim().toLowerCase();
+    const name = leaf(path);
     all.add(name);
     if (!covers(path, left)) offered.add(name);
   }

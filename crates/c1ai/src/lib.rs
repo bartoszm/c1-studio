@@ -350,6 +350,9 @@ pub struct SheetReply {
 #[derive(Default)]
 pub struct Vocabulary {
     by_name: HashMap<String, String>,
+    /// Names the catalog has but a run left out ([`LeftOut`]): an answer naming one is
+    /// dropped, rather than taken for a new keyword the catalog would then hold twice.
+    withheld: std::collections::HashSet<String>,
 }
 
 impl Vocabulary {
@@ -366,11 +369,27 @@ impl Vocabulary {
                 }
             }
         }
-        Vocabulary { by_name: best.into_iter().map(|(k, (p, _))| (k, p)).collect() }
+        Vocabulary { by_name: best.into_iter().map(|(k, (p, _))| (k, p)).collect(), withheld: Default::default() }
+    }
+
+    /// Names of keywords left out of it (pipe paths' last levels): answers naming one are
+    /// dropped. A name it offers through another path stays offered.
+    pub fn withholding<'a>(mut self, paths: impl IntoIterator<Item = &'a str>) -> Self {
+        for path in paths {
+            let key = fold(path.rsplit('|').next().unwrap_or(path));
+            if !self.by_name.contains_key(&key) {
+                self.withheld.insert(key);
+            }
+        }
+        self
     }
 
     pub fn path(&self, name: &str) -> Option<&str> {
         self.by_name.get(&fold(name)).map(String::as_str)
+    }
+
+    fn withheld(&self, name: &str) -> bool {
+        self.withheld.contains(&fold(name))
     }
 }
 
@@ -446,6 +465,8 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
             if !keywords.iter().any(|k| k == path) {
                 keywords.push(path.to_string());
             }
+        } else if vocabulary.withheld(name) {
+            warnings.push(format!("dropped keyword {name:?}: left out of the keywords offered"));
         } else if !new.iter().any(|k| fold(k) == fold(name)) {
             if !proposed {
                 warnings.push(format!("{name:?} is not in the catalog: suggested as new"));
@@ -492,6 +513,21 @@ mod tests {
         assert!(!left.covers("trips|b&w"));
         assert!(!LeftOut { paths: Vec::new(), numbers: false }.covers("places|01"));
         assert!(!number_name("") && !number_name("--"));
+    }
+
+    #[test]
+    fn a_keyword_left_out_is_not_suggested_as_new() {
+        let vocabulary = Vocabulary::new([("street", 40), ("pets|dog", 3)]).withholding(["animal|cat", "animal|dog"]);
+        let raw = RawAnswer {
+            keywords: vec!["cat".into(), "dog".into()],
+            keywords_new: vec!["Cat".into(), "puddle".into()],
+            ..RawAnswer::default()
+        };
+        let (s, warnings) = validate(&raw, &vocabulary);
+        // dog is still offered through pets|dog; cat is left out, so not new either.
+        assert_eq!(s.keywords, vec!["pets|dog"]);
+        assert_eq!(s.keywords_new, vec!["puddle"]);
+        assert!(warnings.iter().any(|w| w.contains("left out")));
     }
 
     fn vocabulary() -> Vocabulary {
