@@ -222,6 +222,11 @@ impl Gazetteer {
         g
     }
 
+    /// The ISO code of a country [`Gazetteer::resolve`] found.
+    pub fn country_code(&self, id: u32) -> Option<&str> {
+        self.countries.get(id as usize).map(|c| c.code.as_str())
+    }
+
     pub fn country_name(&self, code: &str) -> Option<&str> {
         let id = self.country_by_code.get(&code.trim().to_ascii_uppercase())?;
         Some(&self.countries[*id as usize].name)

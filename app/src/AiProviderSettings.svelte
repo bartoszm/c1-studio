@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import type { AiView } from "./lib/api";
 
   // How photos are described (the AI tab): Claude through the API with a key or through
@@ -32,11 +33,11 @@
     { key: "caption", label: "Caption", hint: "two or three sentences, in the language below" },
     { key: "headline", label: "Headline", hint: "at most five words" },
     { key: "subject", label: "Subject", hint: "the main subject, shown on the card" },
-    { key: "keywords", label: "Keywords", hint: "chosen from the catalog's own" },
-    { key: "keywords_new", label: "New keywords", hint: "at most three the catalog lacks" },
+    { key: "keywords", label: "Keywords", hint: `chosen from the ${source.noun}'s own` },
+    { key: "keywords_new", label: "New keywords", hint: `at most three the ${source.noun} lacks` },
     { key: "rating", label: "Rating", hint: "1 to 5 stars, never taken unless ticked" },
     { key: "scores", label: "Quality and composition", hint: "1 to 5 each, shown on the card" },
-    { key: "place", label: "Place guess", hint: "city and country from landmarks or signs; never applied" },
+    { key: "place", label: "Place", hint: "country, region, city, location and a position, each with how likely it is" },
   ];
   function toggleField(key: keyof api.AiFields, on: boolean) {
     if (!view) return;
@@ -78,10 +79,37 @@
       <select id="ai-access" value={view.settings.access} disabled={busy} onchange={(e) => save({ access: e.currentTarget.value as api.AiAccess })}>
         <option value="api">Anthropic API key: billed per token</option>
         <option value="plan">Claude plan, through Claude Code</option>
+        <option value="gemini">Gemini, through agy (Antigravity CLI)</option>
       </select>
     </div>
 
-    {#if view.settings.access === "plan"}
+    {#if view.settings.access === "gemini"}
+      <span class="label">agy</span>
+      <div>
+        {#if view.gemini && view.gemini_error}
+          <span class="warn">Installed, but {view.gemini_error}</span>
+        {:else if view.gemini}
+          <span>Installed{view.models.length ? `: ${view.models.length} Gemini models` : ""}</span>
+        {:else}
+          <span class="warn">Not found. Install the Antigravity CLI and run <code>agy</code> once to sign in.</span>
+        {/if}
+        <button class="small-btn" disabled={busy} onclick={() => run(api.aiSettings)}>Check again</button>
+        <small class="muted">Runs count toward the Google account's Gemini quota.</small>
+      </div>
+
+      <label for="ai-sheets">Send</label>
+      <div>
+        <select id="ai-sheets" value={view.settings.sheets ? "sheets" : "photo"} disabled={busy} onchange={(e) => save({ sheets: e.currentTarget.value === "sheets" })}>
+          <option value="photo">One photo per call: its thumbnail, else its preview</option>
+          <option value="sheets">Contact sheets: 36 thumbnails per call, numbered</option>
+        </select>
+        <small class="muted">Sheets take far fewer calls for a first pass over many photos; each photo is seen smaller.</small>
+      </div>
+    {/if}
+
+    {#if view.settings.access === "gemini"}
+      <!-- agy needs no key -->
+    {:else if view.settings.access === "plan"}
       <span class="label">Claude Code</span>
       <div>
         {#if busy && !view.plan}
@@ -120,7 +148,15 @@
 
     <label for="ai-model">Model</label>
     <div>
-      <select id="ai-model" value={view.settings.model} disabled={busy} onchange={(e) => save({ model: e.currentTarget.value })}>
+      <select
+        id="ai-model"
+        value={view.settings.access === "gemini" ? view.settings.gemini_model : view.settings.model}
+        disabled={busy}
+        onchange={(e) => save(view?.settings.access === "gemini" ? { gemini_model: e.currentTarget.value } : { model: e.currentTarget.value })}
+      >
+        {#if view.settings.access === "gemini" && !view.models.some((m) => m.id === view?.settings.gemini_model)}
+          <option value={view.settings.gemini_model}>{view.settings.gemini_model}</option>
+        {/if}
         {#each view.models as m (m.id)}
           <option value={m.id}>{m.name}{view.settings.access === "api" ? ` · $${m.input} / $${m.output} per M tokens` : ""}</option>
         {/each}
@@ -150,6 +186,12 @@
       <input id="ai-parallel" type="number" min="1" max="8" value={view.settings.parallel} disabled={busy} onchange={(e) => save({ parallel: Number(e.currentTarget.value) })} />
       <span class="muted">photos described in parallel</span>
     </div>
+
+    <label for="ai-place-tick">Place</label>
+    <div>
+      <input id="ai-place-tick" type="number" min="1" max="100" value={view.settings.place_tick} disabled={busy} onchange={(e) => save({ place_tick: Number(e.currentTarget.value) })} />
+      <span class="muted">% likely or more: ticked in the review where the photo has none</span>
+    </div>
   </div>
   {#if error}<p class="warn">{error}</p>{/if}
 
@@ -174,7 +216,7 @@
   </h3>
   {#if showPrompt}
     <p class="muted small">
-      The instructions the model gets first. The list of fields ticked above, the caption language and the catalog's keyword
+      The instructions the model gets first. The list of fields ticked above, the caption language and the {source.noun}'s keyword
       vocabulary are added after them, so the answer always fits the review.
     </p>
     <textarea class="prompt" rows="10" bind:value={draft} spellcheck="false"></textarea>
@@ -195,7 +237,7 @@
 
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
-    sent to Anthropic as previews of at most 1568 pixels. These settings belong to this catalog.
+    sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as thumbnails (previews where there is none) of at most 1568 pixels{view.settings.access === "gemini" && view.settings.sheets ? ", or as contact sheets of thumbnails" : ""}. These settings belong to this {source.noun}.
   </p>
 {/if}
 

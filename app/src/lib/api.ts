@@ -178,15 +178,32 @@ export type QueryOptions = {
 export type QueryResult = {
   total: number;
   rows: number[];
+  /** Positions in `rows` of the photos whose file is offline. */
+  offline: number[];
   facets: Partial<Record<Dim, [string, number][]>>;
   micros: number;
+};
+
+/** How the app names the open source in its text. */
+export type Wording = {
+  /** As a label: "Capture One", "Photo folders". */
+  name: string;
+  /** In a sentence: "Write to Capture One", "write to the photo folders". */
+  word: string;
+  /** What holds the photos, after "the": "catalog", "library". */
+  noun: string;
+  /** What a backup holds, after "a copy of the": "catalog", "edits and albums kept for the folders". */
+  backup: string;
+  /** The program that keeps the source open and has to be closed before writing. */
+  owner: string | null;
 };
 
 export type Status = {
   catalog: string;
   source: string;
+  wording: Wording;
   photos: number;
-  writes: string;
+  writes: WriteStatus;
   sync_error: string | null;
   compatibility: Compatibility;
   /** The provider's id: `capture-one`, `folders`. */
@@ -199,6 +216,8 @@ export type Status = {
   progress: SourceProgress | null;
   /** What emptying the trash does at the source. */
   removes: Removal;
+  /** A position belongs to the image, so moving one variant moves the others (Capture One). */
+  geo_per_asset: boolean;
   /** Photos in the app's trash. */
   binned: number;
 };
@@ -461,7 +480,15 @@ export type CopyField = "rating" | "color" | "keywords" | "keywords_exact" | Pla
 export const status = () => invoke<Status>("status");
 /** How far opening a source has got; null once it is ready to use. Also sent as the
  *  `startup-progress` event. */
-export type Startup = { step: "opening" | "reading" | "indexing" | "saving"; done: number; total: number };
+export type Startup = {
+  step: "opening" | "reading" | "indexing" | "saving";
+  done: number;
+  total: number;
+  /** While reading: how far the source has got by its own count (a folder scan). */
+  source: SourceProgress | null;
+  /** What holds the photos ("catalog", "library"), once the source is open. */
+  noun: string | null;
+};
 export const startupProgress = () => invoke<Startup | null>("startup_progress");
 export const sources = () => invoke<SourcesView>("sources");
 /** The system dialog for a provider's kind of source; null if cancelled. */
@@ -716,7 +743,7 @@ export const openLog = () => invoke<void>("open_log");
 // Describing photos with a vision model (crates/c1ai, app/src-tauri/src/ai.rs).
 export type AiLanguage = "en" | "pl" | "both";
 /** The API with a key, or Claude Code signed in with a Claude plan. */
-export type AiAccess = "api" | "plan";
+export type AiAccess = "api" | "plan" | "gemini";
 /** What a description holds (crates/c1ai/src/prompt.rs, `Fields`). */
 export type AiFields = {
   caption: boolean; headline: boolean; subject: boolean; keywords: boolean; keywords_new: boolean;
@@ -727,6 +754,12 @@ export type AiSettings = {
   fields: AiFields;
   /** The user's own instructions; null: the default ones. */
   instructions: string | null;
+  /** A place level guessed at least this likely (%) starts ticked where the photo has none. */
+  place_tick: number;
+  /** The Gemini model agy is asked for. */
+  gemini_model: string;
+  /** Gemini gets contact sheets of up to 36 photos rather than one photo per call. */
+  sheets: boolean;
 };
 export type AiModel = { id: string; name: string; input: number; output: number };
 /** Claude Code as a plan run would use it. */
@@ -738,7 +771,11 @@ export type AiView = {
   key: [string, "stored" | "environment"] | null;
   /** Only when the plan is chosen. */
   plan: AiPlan | null;
-  /** A run can start: a key, or Claude Code signed in. */
+  /** With Gemini chosen: whether agy is installed. */
+  gemini: boolean | null;
+  /** Why agy's models could not be listed. */
+  gemini_error: string | null;
+  /** A run can start: a key, Claude Code signed in, or agy there. */
   ready: boolean;
   calls: number;
   /** US dollars spent in this library. */
@@ -747,7 +784,12 @@ export type AiView = {
 };
 /** The prompt a run would send now. */
 export type AiPrompt = { system: string; schema: unknown };
-export type AiEstimate = { photos: number; skipped: number; cost: number; model: string; plan: boolean };
+export type AiEstimate = {
+  photos: number; skipped: number; cost: number; model: string; plan: boolean;
+  /** One per photo, or per contact sheet. */
+  calls: number;
+  via: "Claude" | "Gemini";
+};
 export type DescribeState = {
   running: boolean; done: number; total: number; failed: number;
   /** Rows being described now. */
@@ -769,7 +811,21 @@ export type Suggestion = {
   quality: number | null;
   composition: number | null;
   confidence: number;
-  place: { city: string | null; country: string | null; confidence: number } | null;
+  place: PlaceGuess | null;
+};
+/** A photo's place names. */
+export type PlaceNames = Photo["place"];
+/** A place level guessed, with the probability (0..1) that it is right. */
+export type Guess = { name: string; p: number };
+/** Where the model thinks the photo was taken, level by level, and a position. */
+export type PlaceGuess = {
+  country: Guess | null;
+  state: Guess | null;
+  city: Guess | null;
+  location: Guess | null;
+  /** Known when the gazetteer knows the country. */
+  country_code: string | null;
+  point: { lat: number; lon: number; p: number; radius_km: number } | null;
 };
 export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
 export type SuggestionRow = {
@@ -782,12 +838,24 @@ export type SuggestionRow = {
   cost: number;
   status: SuggestionStatus;
   /** What the photo has now, for comparing. */
-  current: { caption: string | null; headline: string | null; rating: number | null; keywords: string[] } | null;
+  current: {
+    caption: string | null; headline: string | null; rating: number | null; keywords: string[];
+    place: PlaceNames;
+    /** It has a position: a guessed one is never given. */
+    placed: boolean;
+  } | null;
 };
 /** What the review showed a photo to have: a field taken is set only while it still has it. */
-export type Seen = { caption: string | null; headline: string | null; rating: number | null };
+export type Seen = { caption: string | null; headline: string | null; rating: number | null; place: PlaceNames };
 /** What the user takes from a suggestion; fields left out are not touched. */
-export type Accept = { row: number; keywords: string[]; caption?: string; headline?: string; rating?: number; seen: Seen };
+export type Accept = {
+  row: number; keywords: string[]; caption?: string; headline?: string; rating?: number;
+  /** The place levels taken. */
+  place?: Partial<PlaceNames>;
+  /** A position taken, given only to a photo with none (marked ≈). */
+  point?: [number, number];
+  seen: Seen;
+};
 /** The ops that undo it, and the photos whose taken field changed since shown (left as is). */
 export type Accepted = { undo: [number, Op][]; changed: number[] };
 export const aiSettings = () => invoke<AiView>("ai_settings");

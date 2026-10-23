@@ -255,7 +255,8 @@ pub fn check_backup(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
 
 /// Capabilities match what the source does: [`PhotoSource::rescan`] succeeds exactly when
 /// `capabilities().rescan` says it can, and [`PhotoSource::progress`] is `None` once a
-/// snapshot has finished. A source that can rescan is asked to, so its next snapshot reads
+/// snapshot has finished, and all along for a source whose `capabilities().progress` is
+/// false (it is not asked). A source that can rescan is asked to, so its next snapshot reads
 /// its files again (and is then taken).
 pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
     let mut problems = Vec::new();
@@ -266,8 +267,19 @@ pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
         (false, Err(SourceError::Unsupported(_))) | (true, Ok(())) => {}
         (false, Err(e)) => problems.push(format!("rescan() without the capability is not Unsupported: {e}")),
     }
-    if let Err(e) = collect(source) {
+    let quiet = !source.capabilities().progress;
+    let mut told = None;
+    let snapshot = source.snapshot(None, &mut |_| {
+        if quiet && told.is_none() {
+            told = source.progress();
+        }
+        Ok(())
+    });
+    if let Err(e) = snapshot {
         problems.push(format!("snapshot failed: {e}"));
+    }
+    if let Some(p) = told {
+        problems.push(format!("progress() during a snapshot, but capabilities().progress is false: {p:?}"));
     }
     if let Some(p) = source.progress() {
         problems.push(format!("progress() after the snapshot ended: {p:?}"));

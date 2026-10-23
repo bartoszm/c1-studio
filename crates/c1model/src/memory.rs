@@ -114,6 +114,7 @@ impl PhotoSource for MemorySource {
             rescan: false,
             makes_images: false,
             removes: self.state.lock().unwrap().removal,
+            progress: false,
         }
     }
 

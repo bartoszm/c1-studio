@@ -7,7 +7,7 @@
 //! After it, the XMP export (if the definition asks for one) writes the files, and their
 //! records are brought up to date with what it wrote.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -98,28 +98,50 @@ pub(crate) fn check_remap(
     earlier: &[KeywordRemap],
     remap: &KeywordRemap,
 ) -> Result<Option<String>> {
-    let carried: HashSet<KeywordPath> = {
-        let state = src.store().read();
-        state
-            .files
-            .iter()
-            .filter(|(_, rec)| rec.state != FileState::Detached)
-            .flat_map(|(ext, rec)| {
-                state.user.get(ext).and_then(|l| l.keywords.as_ref()).unwrap_or(&rec.meta.keywords).iter().cloned()
-            })
-            .collect()
-    };
-    // Each keyword after the earlier remaps, and every keyword it sits under.
-    let paths: BTreeSet<KeywordPath> = carried
-        .into_iter()
-        .map(|k| earlier.iter().fold(k, |k, r| r.path(&k)))
-        .flat_map(|k| (1..=k.0.len()).map(move |n| KeywordPath(k.0[..n].to_vec())))
-        .collect();
+    // Each keyword after the earlier remaps.
+    let carried: HashSet<KeywordPath> =
+        carried(src).into_iter().map(|k| earlier.iter().fold(k, |k, r| r.path(&k))).collect();
+    Ok(blocked(&carried, remap))
+}
+
+/// [`check_remap`] for remaps queued one after another, the photos' keywords read once.
+pub(crate) fn check_remaps(src: &FolderSource, remaps: &[KeywordRemap]) -> Result<Vec<Option<String>>> {
+    let mut carried = carried(src);
+    Ok(remaps
+        .iter()
+        .map(|remap| {
+            let why = blocked(&carried, remap);
+            if why.is_none() {
+                carried = carried.iter().map(|k| remap.path(k)).collect();
+            }
+            why
+        })
+        .collect())
+}
+
+/// Every keyword the photos carry, edits here included.
+fn carried(src: &FolderSource) -> HashSet<KeywordPath> {
+    let state = src.store().read();
+    state
+        .files
+        .iter()
+        .filter(|(_, rec)| rec.state != FileState::Detached)
+        .flat_map(|(ext, rec)| {
+            state.user.get(ext).and_then(|l| l.keywords.as_ref()).unwrap_or(&rec.meta.keywords).iter().cloned()
+        })
+        .collect()
+}
+
+/// Why `remap` has nothing to change when the photos carry `carried`: none of its
+/// keywords is one of them or sits above one.
+fn blocked(carried: &HashSet<KeywordPath>, remap: &KeywordRemap) -> Option<String> {
+    let paths: BTreeSet<KeywordPath> =
+        carried.iter().flat_map(|k| (1..=k.0.len()).map(move |n| KeywordPath(k.0[..n].to_vec()))).collect();
     if remap.map.iter().any(|(from, _)| paths.contains(from)) {
-        return Ok(None);
+        return None;
     }
     let names: Vec<String> = remap.map.iter().map(|(from, _)| from.to_pipe()).collect();
-    Ok(Some(format!("no longer on any photo: {}", names.join(", "))))
+    Some(format!("no longer on any photo: {}", names.join(", ")))
 }
 
 pub(crate) fn check_collection(
@@ -246,15 +268,13 @@ fn refresh(src: &FolderSource, written: &[(&str, &Path, &Written)]) -> Vec<Strin
 }
 
 pub(crate) fn backups(src: &FolderSource) -> Result<Vec<BackupInfo>> {
-    Ok(list(&backup_dir(src)).into_iter().map(|b| b.info).collect())
+    Ok(list(src).into_iter().map(|b| b.info).collect())
 }
 
 pub(crate) fn restore(src: &FolderSource, id: &str) -> Result<BackupInfo> {
     let _busy = src.busy.lock().unwrap();
-    let chosen = list(&backup_dir(src))
-        .into_iter()
-        .find(|b| b.info.id == id)
-        .ok_or_else(|| SourceError::NotFound(format!("backup {id}")))?;
+    let chosen =
+        list(src).into_iter().find(|b| b.info.id == id).ok_or_else(|| SourceError::NotFound(format!("backup {id}")))?;
     let saved: BackupFile = serde_json::from_slice(&fs::read(&chosen.path)?).map_err(backup_err)?;
     let before = make_backup(src, Some(format!("before restoring {id}")), Some(id))?;
     src.store().write(|w| {
@@ -299,8 +319,8 @@ struct BackupFile {
 }
 
 /// What a listing needs from a backup file.
-#[derive(Deserialize)]
-struct BackupHead {
+#[derive(Clone, Deserialize)]
+pub(crate) struct BackupHead {
     created_ms: u64,
     #[serde(default)]
     note: Option<String>,
@@ -324,9 +344,18 @@ fn backup_dir(src: &FolderSource) -> PathBuf {
     src.work_dir().join(BACKUP_DIR)
 }
 
-/// The backups in `dir`, newest first. Files that cannot be read are left out.
-fn list(dir: &Path) -> Vec<Listed> {
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+/// A backup file's size and time: its head is read again only when they change.
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+/// The heads of the backup files read so far, by file name. A backup holds every user
+/// layer, so reading each whole for every write would grow with the library.
+pub(crate) type BackupHeads = std::sync::Mutex<HashMap<String, (Stamp, BackupHead)>>;
+
+/// The source's backups, newest first. Files that cannot be read are left out.
+fn list(src: &FolderSource) -> Vec<Listed> {
+    let Ok(entries) = fs::read_dir(backup_dir(src)) else { return Vec::new() };
+    let mut heads = src.backup_heads.lock().unwrap();
+    let mut seen = HashSet::new();
     let mut out: Vec<Listed> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -335,18 +364,28 @@ fn list(dir: &Path) -> Vec<Listed> {
                 return None;
             }
             let path = e.path();
-            let bytes = fs::read(&path).ok()?;
-            let head: BackupHead = serde_json::from_slice(&bytes).ok()?;
+            let meta = e.metadata().ok()?;
+            let stamp = (meta.len(), meta.modified().ok());
+            seen.insert(name.clone());
+            let head = match heads.get(&name) {
+                Some((at, head)) if *at == stamp => head.clone(),
+                _ => {
+                    let head: BackupHead = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+                    heads.insert(name.clone(), (stamp, head.clone()));
+                    head
+                }
+            };
             let info = BackupInfo {
                 id: name,
                 path: path.display().to_string(),
                 created_ms: head.created_ms,
-                size: bytes.len() as u64,
+                size: meta.len(),
                 note: head.note,
             };
             Some(Listed { info, path, store_uuid: head.store_uuid, generation: head.generation })
         })
         .collect();
+    heads.retain(|name, _| seen.contains(name));
     out.sort_by(|a, b| b.info.created_ms.cmp(&a.info.created_ms).then_with(|| b.info.id.cmp(&a.info.id)));
     out
 }
@@ -370,7 +409,7 @@ fn fresh_name(dir: &Path) -> (u64, String) {
 /// `protect` (a backup about to be restored).
 fn make_backup(src: &FolderSource, note: Option<String>, protect: Option<&str>) -> Result<BackupInfo> {
     let dir = backup_dir(src);
-    let all = list(&dir);
+    let all = list(src);
     let state = src.store().read();
     if let Some(newest) = all.first()
         && newest.store_uuid == state.uuid
@@ -395,7 +434,9 @@ fn make_backup(src: &FolderSource, note: Option<String>, protect: Option<&str>) 
     let tmp = dir.join(format!("{name}.tmp"));
     fs::write(&tmp, &json)?;
     fs::rename(&tmp, &path)?;
-    for stale in list(&dir).into_iter().skip(KEEP_BACKUPS).filter(|b| Some(b.info.id.as_str()) != protect) {
+    // The new one is the newest: of the others, those past the ones kept go.
+    let stale = all.iter().skip(KEEP_BACKUPS.saturating_sub(1));
+    for stale in stale.filter(|b| Some(b.info.id.as_str()) != protect) {
         let _ = fs::remove_file(&stale.path);
     }
     Ok(BackupInfo { id: name, path: path.display().to_string(), created_ms, size: json.len() as u64, note })
@@ -404,7 +445,8 @@ fn make_backup(src: &FolderSource, note: Option<String>, protect: Option<&str>) 
 #[cfg(test)]
 mod tests {
     use c1model::{
-        CollectionId, CollectionKind, ColorLabel, GeoOrigin, GeoPoint, Iptc, Op, PhotoSource, Place, SmartRule,
+        CollectionId, CollectionKind, ColorLabel, Cursor, GeoOrigin, GeoPoint, Iptc, Op, PhotoSource, Place, SmartRule,
+        SourceEvent,
     };
 
     use super::*;
@@ -607,6 +649,45 @@ mod tests {
     }
 
     #[test]
+    fn the_trees_are_sent_again_only_when_a_photo_changed_its_folder_or_keywords() {
+        let f = fixture_with(2, |i, r| r.meta.keywords = if i == 0 { vec![k("street")] } else { vec![] });
+        let snapshot = |since: Option<&Cursor>| {
+            let mut events = Vec::new();
+            f.src
+                .snapshot(since, &mut |e| {
+                    events.push(e);
+                    Ok(())
+                })
+                .unwrap();
+            events
+        };
+        let trees = |events: &[SourceEvent]| {
+            events.iter().filter(|e| matches!(e, SourceEvent::Collections(_) | SourceEvent::Keywords(_))).count()
+        };
+        let end = |events: &[SourceEvent]| match events.last() {
+            Some(SourceEvent::End(cursor)) => cursor.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut at = end(&snapshot(None));
+
+        f.write(&[f.change(1, rating(None, Some(3)))]);
+        let events = snapshot(Some(&at));
+        assert_eq!(trees(&events), 0, "a rating leaves them: {events:?}");
+        assert!(events.iter().any(|e| matches!(e, SourceEvent::Upsert(_))));
+        at = end(&events);
+
+        f.write(&[f.change(1, Op::AddKeywords { paths: vec![k("b&w")] })]);
+        let events = snapshot(Some(&at));
+        assert_eq!(trees(&events), 2, "a keyword changes the tree");
+        at = end(&events);
+
+        // A reader at an older cursor than the trees last sent gets them again.
+        f.write(&[f.change(0, rating(None, Some(1)))]);
+        let old = Cursor(format!("{}:0", at.0.split_once(':').unwrap().0));
+        assert_eq!(trees(&snapshot(Some(&old))), 2);
+    }
+
+    #[test]
     fn keywords_are_added_removed_and_remapped() {
         let f = fixture_with(3, |i, r| {
             r.meta.keywords = match i {
@@ -638,6 +719,19 @@ mod tests {
         let rename = KeywordRemap::rename(k("street"), "road");
         assert_eq!(f.src.check_remap(&[], &rename).unwrap(), None);
         assert!(f.src.check_remap(std::slice::from_ref(&rename), &rename).unwrap().is_some());
+        // Checked in one go, each after the ones before it that can be written.
+        let queued = [rename.clone(), rename.clone(), join.clone()];
+        let one_by_one: Vec<Option<String>> = (0..queued.len())
+            .scan(Vec::new(), |ok: &mut Vec<KeywordRemap>, i| {
+                let why = f.src.check_remap(ok, &queued[i]).unwrap();
+                if why.is_none() {
+                    ok.push(queued[i].clone());
+                }
+                Some(why)
+            })
+            .collect();
+        assert_eq!(f.src.check_remaps(&queued).unwrap(), one_by_one);
+        assert!(one_by_one[0].is_none() && one_by_one[1].is_some());
         f.write_after(&[KeywordRemap::rename(k("b&w"), "mono")], &[], &[]);
         assert_eq!(f.photo(0).keywords, [k("mono")]);
         assert_eq!(f.photo(2).keywords, [k("mono")]);

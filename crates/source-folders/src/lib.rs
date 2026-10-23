@@ -35,7 +35,7 @@ use std::sync::{Mutex, RwLock};
 use c1model::{
     ApplyPlan, ApplyReport, BackupInfo, Capabilities, Change, CollectionChange, Compatibility, Cursor, Field, ImageRef,
     ImageTier, KeywordRemap, PhotoId, PhotoSource, Removal, RemoveReport, Result, SourceError, SourceEvent, SourceInfo,
-    SourceProgress, WriteStatus,
+    SourceProgress, Wording, WriteStatus,
 };
 
 pub use definition::{Definition, ImageStore, RootDef, SidecarNaming};
@@ -67,6 +67,8 @@ pub struct FolderSource {
     pub(crate) busy: Mutex<()>,
     last_scan: Mutex<Option<ScanOutcome>>,
     recycler: RwLock<remove::Recycler>,
+    backup_heads: write::BackupHeads,
+    trees: Mutex<snapshot::Trees>,
 }
 
 impl FolderSource {
@@ -90,6 +92,8 @@ impl FolderSource {
             scan_due: AtomicBool::new(true),
             busy: Mutex::new(()),
             last_scan: Mutex::new(None),
+            backup_heads: Default::default(),
+            trees: Default::default(),
             recycler: RwLock::new(remove::recycle_bin),
         })
     }
@@ -200,6 +204,18 @@ impl PhotoSource for FolderSource {
             rescan: true,
             makes_images: true,
             removes: Removal::Files,
+            progress: true,
+        }
+    }
+
+    fn wording(&self) -> Wording {
+        Wording {
+            name: "Photo folders".into(),
+            word: "the photo folders".into(),
+            noun: "library".into(),
+            // A backup holds what the app keeps beside the files, never the files.
+            backup: "edits and albums kept for the folders".into(),
+            owner: None,
         }
     }
 
@@ -247,6 +263,10 @@ impl PhotoSource for FolderSource {
         write::check_remap(self, earlier, remap)
     }
 
+    fn check_remaps(&self, remaps: &[KeywordRemap]) -> Result<Vec<Option<String>>> {
+        write::check_remaps(self, remaps)
+    }
+
     fn check_collection(&self, earlier: &[CollectionChange], change: &CollectionChange) -> Result<Option<String>> {
         write::check_collection(self, earlier, change)
     }
@@ -274,6 +294,10 @@ impl PhotoSource for FolderSource {
 
     fn offline_places(&self) -> Vec<String> {
         self.last_scan().map(|scan| scan.offline_roots).unwrap_or_default()
+    }
+
+    fn flush(&self) -> Result<()> {
+        self.store.flush_lazy()
     }
 
     fn progress(&self) -> Option<SourceProgress> {

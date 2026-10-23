@@ -3,13 +3,20 @@
 
 use std::collections::{HashMap, HashSet};
 
-use c1ai::RunRecord;
-use c1model::{KeywordPath, Op};
+use c1ai::{PlaceGuess, RunRecord};
+use c1geo::{Level, gazetteer};
+use c1model::{GeoOrigin, GeoPoint, KeywordPath, Op, Place};
 use serde::{Deserialize, Serialize};
 
 use super::Library;
 use crate::ai::{Entry, Status};
 use crate::edits::Origin;
+use crate::places::Coarse;
+use crate::schema;
+
+/// How likely a place level the gazetteer does not know (or knows elsewhere) is left at
+/// most: a hint for the review, never a tick by default.
+const DOUBTED: f32 = 0.5;
 
 /// What the user takes from one photo's suggestion, as edited in the review: any field
 /// left out is not touched.
@@ -23,6 +30,12 @@ pub struct Accept {
     pub caption: Option<String>,
     pub headline: Option<String>,
     pub rating: Option<u8>,
+    /// The place levels taken (country, its code, state, city, location); those left
+    /// `None` are not touched.
+    pub place: Place,
+    /// A position taken, `[lat, lon]`: given only to a photo with none, and marked as
+    /// approximate (≈), like a place's position.
+    pub point: Option<[f64; 2]>,
     /// What the review showed the photo to have.
     pub seen: Seen,
 }
@@ -36,6 +49,7 @@ pub struct Seen {
     pub caption: Option<String>,
     pub headline: Option<String>,
     pub rating: Option<u8>,
+    pub place: Place,
 }
 
 /// What accepting did.
@@ -51,6 +65,98 @@ pub struct Accepted {
 /// A text field as compared: trimmed, empty as none.
 fn text(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+/// The photo's place with the levels `pick` takes, each only where the photo still has
+/// what the review showed; and whether a level was left for that.
+fn taken_place(now: &Place, pick: &Accept) -> (Place, bool) {
+    let mut place = now.clone();
+    let mut stale = false;
+    let slots =
+        |p: &Place| [p.country.clone(), p.country_code.clone(), p.state.clone(), p.city.clone(), p.location.clone()];
+    let (taken, seen, had) = (slots(&pick.place), slots(&pick.seen.place), slots(now));
+    let mut out = slots(now);
+    for i in 0..5 {
+        let Some(value) = text(&taken[i]) else { continue };
+        if text(&had[i]) == text(&seen[i]) {
+            out[i] = Some(value.to_string());
+        } else if text(&had[i]) != Some(value) {
+            stale = true;
+        }
+    }
+    // Another country taken without a code: the code the photo had was the old country's.
+    if text(&out[0]) != text(&had[0]) && text(&taken[1]).is_none() {
+        out[1] = None;
+    }
+    let [country, country_code, state, city, location] = out;
+    place.country = country;
+    place.country_code = country_code;
+    place.state = state;
+    place.city = city;
+    place.location = location;
+    (place, stale)
+}
+
+/// Checks a model's place against the gazetteer and fills the country's code. A country
+/// or city it does not know, or knows only elsewhere than the level above, is left at
+/// most [`DOUBTED`] likely, as is a point outside the city or country named. A state is
+/// only told: regions go by many names. Returns why.
+pub fn check_place(guess: &mut PlaceGuess) -> Vec<String> {
+    let name = |g: &Option<c1ai::Guess>| g.as_ref().map(|g| g.name.clone());
+    let place =
+        Place { country: name(&guess.country), state: name(&guess.state), city: name(&guess.city), ..Place::default() };
+    let g = gazetteer();
+    let found = g.resolve(&place);
+    // A city found brings its own country and state, so each level is looked up by its
+    // own name too: a country the gazetteer does not know is not taken as known through
+    // the city.
+    let alone = |p: Place| g.resolve(&p);
+    let country_known = guess.country.is_none()
+        || alone(Place { country: place.country.clone(), ..Place::default() }).country.is_some();
+    let state_known = guess.state.is_none()
+        || alone(Place { country: place.country.clone(), state: place.state.clone(), ..Place::default() })
+            .state
+            .is_some();
+    guess.country_code = found
+        .country
+        .filter(|_| country_known && guess.country.is_some())
+        .and_then(|id| g.country_code(id))
+        .map(str::to_owned);
+    let mut why = Vec::new();
+    for (level, known, cap) in [
+        (&mut guess.country, country_known, true),
+        (&mut guess.state, state_known, false),
+        (&mut guess.city, found.city.is_some(), true),
+    ] {
+        let Some(level) = level.as_mut().filter(|_| !known) else { continue };
+        if cap && level.p > DOUBTED {
+            why.push(format!(
+                "{} is not known there: {:.0}% lowered to {:.0}%",
+                level.name,
+                level.p * 100.0,
+                DOUBTED * 100.0
+            ));
+            level.p = DOUBTED;
+        } else {
+            why.push(format!("{} is not known there", level.name));
+        }
+    }
+    guess.coherent();
+    if let Some(point) = guess.point.as_mut()
+        && let Some(at) = g.reverse(point.lat, point.lon)
+    {
+        let differ = |named: Option<u32>, there: Option<u32>| named.is_some() && there.is_some() && named != there;
+        if (differ(found.country, at.ids.country) || differ(found.city, at.ids.city)) && point.p > DOUBTED {
+            why.push(format!(
+                "the position is in {}, not the place named: {:.0}% lowered to {:.0}%",
+                at.city.as_deref().unwrap_or(&at.country),
+                point.p * 100.0,
+                DOUBTED * 100.0
+            ));
+            point.p = DOUBTED;
+        }
+    }
+    why
 }
 
 impl Library {
@@ -82,9 +188,25 @@ impl Library {
             .collect())
     }
 
+    /// Stores a photo's suggestion, its place checked against the gazetteer first.
     pub fn put_suggestion(&self, row: u64, entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
         let Some(key) = self.key_of(row) else { return Ok(()) };
-        self.suggestions.put(&key, entry, record)
+        let mut entry = entry.clone();
+        if let Some(place) = entry.suggestion.place.as_mut() {
+            entry.warnings.extend(check_place(place));
+        }
+        self.suggestions.put(&key, &entry, record)
+    }
+
+    /// [`Library::put_suggestion`] for a photo whose call is recorded with another (a
+    /// contact sheet's).
+    pub fn put_suggestion_only(&self, row: u64, entry: &Entry) -> anyhow::Result<()> {
+        let Some(key) = self.key_of(row) else { return Ok(()) };
+        let mut entry = entry.clone();
+        if let Some(place) = entry.suggestion.place.as_mut() {
+            entry.warnings.extend(check_place(place));
+        }
+        self.suggestions.put_entry(&key, &entry)
     }
 
     /// Records a call that gave no suggestion: it was paid for all the same.
@@ -124,6 +246,23 @@ impl Library {
     pub fn accept_suggestions(&self, picks: &[Accept]) -> anyhow::Result<Accepted> {
         let by_row: HashMap<u64, &Accept> = picks.iter().map(|p| (p.row, p)).collect();
         let rows: Vec<u64> = by_row.keys().copied().collect();
+        // A position taken is marked approximate before it is set, as a place's position
+        // is: a mark on a photo not at its point is ignored, a position without its mark
+        // would pass for one taken there.
+        let mut marks = Vec::new();
+        for pick in picks {
+            let Some([lat, lon]) = pick.point else { continue };
+            let Some(photo) = self.photo(pick.row)? else { continue };
+            if photo.geo.is_some() {
+                continue;
+            }
+            let (place, _) = taken_place(&photo.place, pick);
+            let level = Level::named(&place).unwrap_or(Level::Country);
+            let path = schema::place_tree(&place).pop().unwrap_or_default();
+            marks.push((photo.id.key(), Some(Coarse { lat, lon, level, path })));
+        }
+        self.place_book.set_coarse(&marks)?;
+        self.coarse.write().unwrap().extend(marks.into_iter().filter_map(|(k, c)| Some((k, c?))));
         let changed = std::sync::Mutex::new(HashSet::new());
         let undo = self.edit_photos_as(
             &rows,
@@ -166,6 +305,18 @@ impl Library {
                     } else {
                         stale = true;
                     }
+                }
+                let (place, place_stale) = taken_place(&photo.place, pick);
+                stale |= place_stale;
+                if place != photo.place {
+                    ops.push(Op::SetPlace { base: photo.place.clone(), value: place });
+                }
+                // Never over a position the photo has.
+                if let Some([lat, lon]) = pick.point
+                    && photo.geo.is_none()
+                {
+                    let value = GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Geocoded };
+                    ops.push(Op::SetGeo { base: None, value: Some(value) });
                 }
                 if stale {
                     changed.lock().unwrap().insert(row);

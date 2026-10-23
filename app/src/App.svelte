@@ -64,7 +64,6 @@
   /** How far the source's scan has got (`source-progress` events), while one runs. */
   let progress = $state<api.SourceProgress | null>(null);
   /** Rows of photos whose originals are out of reach, for dimming their tiles. */
-  let offlineRows = $state.raw(new Set<number>());
   /** The source menu in the header; open by itself when nothing could be opened. */
   let choosingSource = $state(false);
   /** How far opening a source has got, while it is under way. */
@@ -519,6 +518,8 @@
   // swaps in a new map, so the variable itself must be reactive too: cells already on
   // screen would otherwise keep reading the old one and show the previous result's photos.
   let pages = $state.raw(new SvelteMap<number, number[]>());
+  /** Page → positions in it of the photos whose file is offline; swapped with `pages`. */
+  let offlinePages = $state.raw(new SvelteMap<number, Set<number>>());
   let loading = new Map<number, Promise<void>>();
 
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks.
@@ -558,6 +559,7 @@
       // are read again alongside the first and swapped in with the result in one go: until
       // then the grid and the details panel keep the old ones.
       const shown = grid?.range() ?? [0, 0];
+      const offline = new Map<number, Set<number>>();
       const { result: r, pages: fresh } = keep
         ? await refreshPages(
             first,
@@ -566,16 +568,20 @@
               return [shown, [at, at + 2]];
             },
             result?.total ?? 0,
-            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => p.rows),
+            (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => {
+              if (p.offline.length) offline.set(page, new Set(p.offline));
+              return p.rows;
+            }),
           )
         : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
+      if (r.offline.length) offline.set(0, new Set(r.offline));
       result = r;
       counted = groups;
       pages = new SvelteMap(fresh);
+      offlinePages = new SvelteMap(offline);
       loading = new Map();
       error = null;
-      showOffline(mine, asked);
       if (keptRow !== undefined) {
         // Set with the pages, so the focus never passes over the photo now at its old place;
         // one gone from the result leaves nothing picked, not whatever took its place.
@@ -605,17 +611,6 @@
     } catch (e) {
       if (mine === generation) error = String(e);
     }
-  }
-
-  /** Finds which photos of the result are offline; only asked once a root is out of reach. */
-  function showOffline(mine: number, asked: Filter) {
-    if (!status?.offline_roots.length) {
-      if (offlineRows.size) offlineRows = new Set();
-      return;
-    }
-    api.query({ ...asked, offline: true }, { sort: "DateDesc", limit: 50000 })
-      .then((r) => { if (mine === generation) offlineRows = new Set(r.rows); })
-      .catch(() => {});
   }
 
   /**
@@ -653,8 +648,13 @@
     if (pending) return pending;
     const mine = generation;
     const into = pages;
+    const intoOffline = offlinePages;
     const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
-      .then((r) => { if (mine === generation) into.set(page, r.rows); })
+      .then((r) => {
+        if (mine !== generation) return;
+        if (r.offline.length) intoOffline.set(page, new Set(r.offline));
+        into.set(page, r.rows);
+      })
       .catch((e) => { if (mine === generation) error = String(e); });
     loading.set(page, p);
     return p;
@@ -673,7 +673,7 @@
   async function refresh(keep = false) {
     try {
       status = await api.status();
-      source.provider = status.provider;
+      source.wording = status.wording;
       progress = status.progress;
       // A sync that failed before the window was listening (at start, or on opening
       // another catalog) still says so.
@@ -1716,7 +1716,7 @@
     switch (s.state) {
       case "pending": return [`saving to ${source.word} when you pause…`, false];
       case "waiting":
-        return [/captureone|imgcore/i.test(s.by) ? "autosave waits for Capture One to close" : "autosave waits: the catalog is open in another program", false];
+        return [/captureone|imgcore/i.test(s.by) ? `autosave waits for ${source.owner ?? s.by} to close` : `autosave waits: the ${source.noun} is open in another program`, false];
       case "attention": {
         const parts = [s.conflicts && `${s.conflicts} conflict${s.conflicts > 1 ? "s" : ""}`, s.blocked && `${s.blocked} that cannot be written`];
         return [`autosave paused: ${parts.filter(Boolean).join(", ")}`, true];
@@ -2086,7 +2086,7 @@
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
       <button class:on={tab === "analysis"} title="What the photos look like: colour, light, focus, duplicates" onclick={() => showTab("analysis")}>Analysis</button>
       {#if historyOn}
-        <button class:on={tab === "history"} title="The catalog over time: what changed between two dates, and the change log" onclick={() => showTab("history")}>History</button>
+        <button class:on={tab === "history"} title="The {source.noun} over time: what changed between two dates, and the change log" onclick={() => showTab("history")}>History</button>
       {/if}
       <button class:on={tab === "ai"} title="Captions, keywords and ratings suggested by a vision model, to review" onclick={() => showTab("ai")}>AI</button>
     </nav>
@@ -2351,7 +2351,7 @@
       {#if inBin && status}
         <span class="bin-bar">
           <b>Trash</b>
-          <span class="muted">deleted here; {status.removes === "Files" ? "their files stay" : "Capture One keeps them"} until the trash is emptied</span>
+          <span class="muted">deleted here; {status.removes === "Files" ? "their files stay" : `${source.name} keeps them`} until the trash is emptied</span>
           <button disabled={!targets().length} title="Back into every view (Ctrl+Z after a delete does too)" onclick={() => setBinned(false)}>Restore</button>
           <button disabled={!targets().length} title="Delete the picked photos for good, now" onclick={() => (emptying = { rows: targets() })}>Delete for good…</button>
           <button class="danger" disabled={!status.binned} title="Delete every photo in the trash for good" onclick={() => (emptying = {})}>Empty trash…</button>
@@ -2406,6 +2406,7 @@
     </div>
     <MapPane
       filter={eff}
+      geoPerAsset={status?.geo_per_asset}
       {version}
       focus={selected === null ? mapRow : (focusRow ?? null)}
       dragRows={dragging && "rows" in dragging ? dragging.rows : null}
@@ -2454,7 +2455,7 @@
     <HistoryPane
       filter={eff}
       {version}
-      provider={source.provider}
+      wording={source.wording}
       albumName={(id) => byId.get(id)?.name}
       picked={filter.history}
       onpick={showHistory}
@@ -2508,7 +2509,7 @@
     picked={(i) => picked.size > 1 && picked.has(rowAt(i) ?? -1)}
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     hidden={(i) => hiddenHere.has(rowAt(i) ?? -1)}
-    offline={(i) => offlineRows.has(rowAt(i) ?? -1)}
+    offline={(i) => offlinePages.get(Math.floor(i / PAGE))?.has(i % PAGE) ?? false}
     onselect={pick}
     ondragcell={dragCell}
     onopen={(i) => { pick(i); viewing = true; }}
@@ -2552,8 +2553,8 @@
         </button>
       {/if}
       <span>{status.photos.toLocaleString()} in library</span>
-      {#if status.provider === "capture-one"}
-        <span>Capture One: {status.writes.startsWith("Locked") ? "open" : "closed"}</span>
+      {#if source.owner}
+        <span>{source.owner}: {typeof status.writes === "object" ? "open" : "closed"}</span>
       {/if}
       {#if status.offline_roots.length}
         <span class="offline-roots" title={`Not reachable at the last scan:\n${status.offline_roots.join("\n")}\nTheir photos stay, dimmed, with their edits.`}>
@@ -2622,7 +2623,7 @@
           <span>{note}</span>
         {/if}
       {/if}
-      <label title={source.isCaptureOne ? "Write queued edits to Capture One by itself, a few seconds after you pause, whenever it is closed" : `Write queued edits to ${source.word} by itself, a few seconds after you pause`}>
+      <label title={`Write queued edits to ${source.word} by itself, a few seconds after you pause${source.owner ? `, whenever ${source.owner} is closed` : ""}`}>
         <input type="checkbox" checked={autosaveOn} onchange={(e) => toggleAutosave(e.currentTarget.checked)} />
         Autosave
       </label>
@@ -2705,7 +2706,7 @@
         <button role="menuitem" class="danger" onclick={() => { albumDialog = { mode: "delete", collection: c }; albumMenu = null; }}>Delete…</button>
       {/if}
     {:else if c?.system}
-      <div class="menu-note">{source.isCaptureOne ? "Capture One's own: changed only there." : "Made from the folders: changed only on disk."}</div>
+      <div class="menu-note">{source.owner ? `${source.owner}'s own: changed only there.` : `Made from ${source.word}: changed only on disk.`}</div>
     {/if}
   </div>
 {/if}

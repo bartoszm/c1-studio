@@ -1,6 +1,6 @@
 // How photo facts read in the UI.
 
-import type { LogEvent, Op, Origin, Photo } from "./api";
+import type { LogEvent, Op, Origin, Photo, Wording } from "./api";
 import { parsePoint } from "./coords";
 
 export const COLORS: Record<string, string> = {
@@ -96,29 +96,14 @@ export function opText(op: Op, albumName: (id: string) => string = (id) => id): 
   return null;
 }
 
-/** The source's name for headings and labels: "Capture One", "Photo folders". */
-export function sourceName(provider: string): string {
-  switch (provider) {
-    case "capture-one": return "Capture One";
-    case "folders": return "Photo folders";
-    default: return "Source";
-  }
-}
-
-/** The source as it reads in a sentence: "Write to Capture One", "write to the photo folders". */
-export function sourceWord(provider: string): string {
-  switch (provider) {
-    case "capture-one": return "Capture One";
-    case "folders": return "the photo folders";
-    default: return "the source";
-  }
-}
+/** The wording before the source has said its own. */
+export const GENERAL: Wording = { name: "Source", word: "the source", noun: "library", backup: "library", owner: null };
 
 /** Who made a logged change, for the history list. */
-export function originLabel(origin: Origin, provider = ""): string {
+export function originLabel(origin: Origin, wording: Wording = GENERAL): string {
   switch (origin) {
     case "App": return "here";
-    case "Source": return sourceName(provider);
+    case "Source": return wording.name;
     case "Gpx": return "GPX";
     case "Restore": return "backup";
     case "Ai": return "AI";
@@ -128,7 +113,7 @@ export function originLabel(origin: Origin, provider = ""): string {
 const count = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
 
 /** A change log entry in one line: `rating: ★★ → ★★★★★`, `+ street`, `added`. */
-export function eventText(e: LogEvent, albumName?: (id: string) => string, provider = ""): string {
+export function eventText(e: LogEvent, albumName?: (id: string) => string, wording: Wording = GENERAL): string {
   if ("change" in e) {
     const t = opText(e.change.op, albumName);
     if (!t) return "changed";
@@ -147,7 +132,7 @@ export function eventText(e: LogEvent, albumName?: (id: string) => string, provi
       albums && count(albums, "album change"),
       keywords && count(keywords, "keyword change"),
     ].filter(Boolean);
-    return `${parts.join(", ") || "Nothing"} written to ${sourceWord(provider)}`;
+    return `${parts.join(", ") || "Nothing"} written to ${wording.word}`;
   }
   return "";
 }

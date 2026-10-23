@@ -1,5 +1,6 @@
 <script lang="ts">
   import * as api from "./lib/api";
+  import { source } from "./lib/source.svelte";
   import { placeText } from "./lib/tree";
 
   // Photos placed from the photos taken just before and after them. Positions: photos with
@@ -66,7 +67,7 @@
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="neighbours-title">
     <h2 id="neighbours-title">Place photos from their neighbours</h2>
     <p class="muted small">
-      For the photos the filter selects (the map's area aside): the photos taken just before and after, by any camera in the catalog, say where they were.
+      For the photos the filter selects (the map's area aside): the photos taken just before and after, by any camera in the {source.noun}, say where they were.
     </p>
 
     <div class="row">

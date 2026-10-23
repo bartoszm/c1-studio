@@ -9,10 +9,10 @@
 
   // The History tab: the library over time, two dates compared (every number picks those
   // photos in the grid), and the change log.
-  let { filter, version, provider, albumName, picked, onpick, onerror }: {
+  let { filter, version, wording, albumName, picked, onpick, onerror }: {
     filter: Filter;
     version: number;
-    provider: string;
+    wording: api.Wording;
     albumName: (id: string) => string | undefined;
     picked: HistoryPick | undefined;
     onpick: (pick: HistoryPick) => void;
@@ -77,7 +77,7 @@
         {:else}
           <p class="line">
             {n(compare.entries)} log {compare.entries === 1 ? "entry" : "entries"}:
-            {#each Object.entries(compare.by_origin) as [o, count], i}{i ? ", " : ""}{n(count)} {originLabel(o as api.Origin, provider)}{/each}{compare.written ? `, ${n(compare.written)} written` : ""}
+            {#each Object.entries(compare.by_origin) as [o, count], i}{i ? ", " : ""}{n(count)} {originLabel(o as api.Origin, wording)}{/each}{compare.written ? `, ${n(compare.written)} written` : ""}
           </p>
           <div class="numbers">
             {#if compare.changed}
@@ -131,7 +131,7 @@
     {:else}
       <p class="hint pad">Drag across the chart to pick days, or click a bar. Each number below then shows those photos in the grid.</p>
     {/if}
-    <LogList {range} {version} {provider} {albumName} {picked} {onpick} {onerror} />
+    <LogList {range} {version} {wording} {albumName} {picked} {onpick} {onerror} />
   </div>
 </div>
 
