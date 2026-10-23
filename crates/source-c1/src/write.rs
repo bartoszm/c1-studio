@@ -78,12 +78,70 @@ fn journal_present(catalog: &Path) -> bool {
     fs::metadata(journal).is_ok_and(|m| m.len() > 0)
 }
 
-/// Can we open the file with no sharing at all? Capture One holds it open while it
-/// runs, and so does any other program reading it, even read-only.
+/// Does another program have the catalog open? Capture One holds it open while it runs,
+/// and so does any other program reading it, even read-only. The app's own reads (a
+/// preview's framing, say, while thumbnails are made) do not count.
 #[cfg(windows)]
 fn held_elsewhere(catalog: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
-    fs::OpenOptions::new().read(true).write(true).share_mode(0).open(catalog).is_err()
+    match holders(catalog) {
+        Some(pids) if !pids.is_empty() => pids.iter().any(|&pid| pid != std::process::id()),
+        // Nobody listed, or no answer: the Restart Manager sees only this machine's
+        // handles, so a catalog on a share another machine holds lists nobody. Can the file
+        // be opened with no sharing at all? That fails against the app's own reads too.
+        _ => fs::OpenOptions::new().read(true).write(true).share_mode(0).open(catalog).is_err(),
+    }
+}
+
+/// The processes that have `file` open, as the Windows Restart Manager lists them; `None`
+/// when it cannot say.
+#[cfg(windows)]
+fn holders(file: &Path) -> Option<Vec<u32>> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::RestartManager::{
+        CCH_RM_SESSION_KEY, RM_PROCESS_INFO, RmEndSession, RmGetList, RmRegisterResources, RmStartSession,
+    };
+
+    struct Session(u32);
+    impl Drop for Session {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from RmStartSession and is ended once.
+            unsafe { RmEndSession(self.0) };
+        }
+    }
+
+    let path: Vec<u16> = file.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut handle = 0u32;
+    let mut key = [0u16; CCH_RM_SESSION_KEY as usize + 1];
+    // SAFETY: the out pointers are valid for the call; the key holds CCH_RM_SESSION_KEY + 1.
+    if unsafe { RmStartSession(&mut handle, 0, key.as_mut_ptr()) } != ERROR_SUCCESS {
+        return None;
+    }
+    let session = Session(handle);
+    let files = [path.as_ptr()];
+    // SAFETY: one NUL-terminated path, alive for the call; no applications or services.
+    let registered =
+        unsafe { RmRegisterResources(session.0, 1, files.as_ptr(), 0, std::ptr::null(), 0, std::ptr::null()) };
+    if registered != ERROR_SUCCESS {
+        return None;
+    }
+    // The list can grow between asking its size and reading it: ask again a few times.
+    let mut infos: Vec<RM_PROCESS_INFO> = Vec::new();
+    for _ in 0..4 {
+        let mut needed = 0u32;
+        let mut count = infos.len() as u32;
+        let mut reasons = 0u32;
+        // SAFETY: `infos` has room for `count` entries; the rest are out pointers.
+        let got = unsafe { RmGetList(session.0, &mut needed, &mut count, infos.as_mut_ptr(), &mut reasons) };
+        match got {
+            ERROR_SUCCESS => return Some(infos[..count as usize].iter().map(|p| p.Process.dwProcessId).collect()),
+            // SAFETY: RM_PROCESS_INFO is plain data, for which all zeroes is valid.
+            ERROR_MORE_DATA => infos.resize(needed as usize, unsafe { std::mem::zeroed() }),
+            _ => return None,
+        }
+    }
+    None
 }
 
 #[cfg(not(windows))]
@@ -635,6 +693,35 @@ pub(crate) fn open_write(catalog: &Path) -> Result<Connection> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// The app's own handle on the catalog does not lock it; another process's does (#72).
+    #[cfg(windows)]
+    #[test]
+    fn only_other_programs_hold_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("cat.cocatalogdb");
+        fs::write(&file, b"x").unwrap();
+        assert!(!held_elsewhere(&file));
+
+        // Listed (with nothing else, unless a scanner looks at the new file just then), so
+        // the exclusive open, which would fail against it, is not what decides.
+        let ours = fs::File::open(&file).unwrap();
+        assert!(holders(&file).unwrap().contains(&std::process::id()));
+        assert!(!held_elsewhere(&file));
+        drop(ours);
+
+        // A child handed the file as its stdin keeps it open while it waits.
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdin(fs::File::open(&file).unwrap())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let held = held_elsewhere(&file);
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(held);
+    }
 
     /// Capture One's schema, dumped once from the live catalog into `tests/fixtures`
     /// (ignored by git: it is their schema, not ours). `None` when there is neither the

@@ -13,5 +13,9 @@ serde.workspace = true
 serde_json.workspace = true
 xxhash-rust.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# Which programs hold the catalog open, the app's own reads left out.
+windows-sys = { version = "0.61", features = ["Win32_System_RestartManager"] }
+
 [dev-dependencies]
 tempfile.workspace = true
