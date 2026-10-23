@@ -83,7 +83,8 @@ A scenario is a module in `scenarios\` whose default export is `{ name, title, r
 | `evaluate(js)`, `send(method, params)`, `shot(file)` | anything else over CDP |
 
 Scenarios that edit undo their edits at the end, so the copy stays as it was (`hidden`
-shows again what it hid). Only `history` writes, to the copy. `reset()` also puts the
+shows again what it hid). Only `history` writes, to the copy. `ai` really describes four
+photos, on the Claude plan through Claude Code: Claude Code must be signed in. `reset()` also puts the
 sort back to *Date taken, newest first* and turns *Stack* and *Hidden* off, so each clip
 starts from the same view.
 

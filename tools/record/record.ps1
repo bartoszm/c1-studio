@@ -19,7 +19,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $here = $PSScriptRoot
 $media = Join-Path $here '..\..\docs\media\features'
-$order = 'search', 'browse', 'sort', 'match', 'edit', 'hidden', 'trash', 'keywords', 'albums', 'analysis', 'alike', 'map', 'refine', 'trips', 'history', 'folders', 'demo'
+$order = 'search', 'browse', 'sort', 'match', 'edit', 'hidden', 'trash', 'keywords', 'albums', 'analysis', 'alike', 'map', 'places', 'refine', 'trips', 'history', 'changes', 'ai', 'folders', 'demo'
 $names = if ($Only) { $Only } else { $order }
 
 if (-not $FromFrames) { & (Join-Path $here 'start.ps1') -Exe $Exe -Work $Work -Port $Port }
