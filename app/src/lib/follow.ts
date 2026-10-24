@@ -4,7 +4,7 @@
 // do (no keywords, no place, not in an album…) never follow: emptying them is the point.
 
 import type { Color, Edit, Filter, Merged, Range, Selection } from "./api";
-import { ratingFor, ratingParts } from "./criteria";
+import { ratingFor } from "./criteria";
 import { keyOf } from "./places";
 
 /** Fields whose emptying is the goal, not something to undo by looking elsewhere. */
@@ -83,8 +83,10 @@ export function followFilter(f: Filter, sel: Selection, n: number, edit?: Edit, 
   if (f.rating !== undefined && !allMatch(f.rating, sel.rating, inRange)) {
     const to = presenceFor(sel.rating);
     if (!to) return null;
+    // Only the stars they have now: an operator kept (≥ 4 set to 2 giving ≥ 2) would take
+    // in every photo rated above them too.
     if (to === "None") next.rating = "None";
-    else if (to.values.length === 1) next.rating = ratingFor(ratingParts(f.rating)?.op ?? "=", to.values[0]);
+    else if (to.values.length === 1) next.rating = ratingFor("=", to.values[0]);
     else next.rating = { Values: { min: Math.min(...to.values), max: Math.max(...to.values) } };
     changed = true;
   }

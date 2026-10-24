@@ -1604,6 +1604,26 @@ impl Library {
         Ok(filter.clone())
     }
 
+    /// Where each of `rows` is among the photos `filter` selects, in `options`' order: (row,
+    /// position) for those it selects, by position. Only these go back, not the whole result.
+    pub fn positions(
+        &self,
+        filter: &Filter,
+        options: &QueryOptions,
+        rows: &[u64],
+    ) -> anyhow::Result<Vec<(u64, usize)>> {
+        match rows {
+            [] => Ok(Vec::new()),
+            &[row] => Ok(self.position(filter, options, row)?.map(|at| (row, at)).into_iter().collect()),
+            _ => {
+                let wanted: HashSet<u64> = rows.iter().copied().collect();
+                let all = QueryOptions { limit: None, offset: 0, facets: vec![], ..options.clone() };
+                let found = self.query(filter, &all)?.rows.into_iter().enumerate();
+                Ok(found.filter(|(_, row)| wanted.contains(row)).map(|(at, row)| (row, at)).collect())
+            }
+        }
+    }
+
     /// Where `row` is among the photos `filter` selects, in `options`' order; None when it
     /// is not one of them.
     pub fn position(&self, filter: &Filter, options: &QueryOptions, row: u64) -> anyhow::Result<Option<usize>> {
