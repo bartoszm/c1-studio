@@ -1604,7 +1604,8 @@ country) and 68k have neither.
   rejected) and every call's record, apart from the store like the analyses. Accepting
   queues keywords, caption, headline and rating through `edit_photos_as` as
   `Origin::Ai` (shown as "AI" in the history), made from the photo as it is then; new
-  keywords are added to the catalog. A place guess is never applied.
+  keywords are added to the catalog. The place guess is taken level by level as ticked
+  (and its position, as ≈, for a photo with none); see below for names corrected first.
 - **What is asked:** Settings > AI ticks the fields a description holds (caption,
   headline, subject, keywords, new keywords, rating, quality and composition, place
   guess); the schema and the prompt's list of fields follow (`Fields`). The opening
@@ -1698,6 +1699,47 @@ country) and 68k have neither.
 - Tests: `sessions::tests`, `a_photo_s_session_is_the_photos_taken_around_it_without_a_long_gap`,
   `a_session_leaves_out_hidden_photos_unless_it_is_one`, `test/around.test.ts` (with a
   fixed time zone for the clock changes).
+
+### Correcting suggestions, and lessons for the prompt
+
+- **On the card:** each place level is a box with the model's name, to write another; the
+  level's list offers the catalog's names (`place_tree`), those under the levels above
+  first (`levelOptions`), and a name picked fills the levels above from the catalog's
+  most used place with it (`aboveOf`). The country taken gets the model's code for its
+  own country, else the code its name is known by (`codeFor`). Keywords the model missed
+  are added in a box (the catalog's keywords offered; a new one is added to the catalog,
+  marked dashed). The stars are clicked to give another rating.
+- **What was reviewed is kept** (`ai.redb`, table `reviews`, JSON so fields can be added):
+  each suggestion accepted (with what was taken: keywords, caption, headline, rating,
+  place levels, the position) or rejected while under review, until the user removes it.
+  `Library::reviews` / `delete_reviews`.
+- **AI › Reviewed:** the list, newest first, each with what changed (`lib/reviews.ts`
+  `changes`): a level renamed, keywords added and taken off (a known keyword unticked),
+  a caption or headline rewritten, the rating changed, or rejected; filtered by All,
+  Corrected, Rejected, Accepted as suggested; ticked ones removed.
+- **Refine the prompt** (on demand): the corrections ticked, or all listed, go a line each
+  (`digest`), with how many were accepted as suggested, to Claude (`c1ai::refine`, text
+  only: the API key if there is one, else Claude Code on a plan; Gemini access uses
+  them too). It answers with at most 15 lessons and why; the user edits them and keeps
+  them, or not. **Lessons** (`AiSettings.lessons`, also edited in *Settings › AI ›
+  Prompt*) follow the instructions in the prompt, and are left out of the prompt's hash,
+  as the vocabulary is: photos described before still count as described.
+- After review (#83): a photo keeps one review, its last (reviewed again, the new one
+  replaces it, written with the status in one transaction); a name picked in a place box
+  takes the catalog's spelling and fills only the levels still holding the model's names
+  (`chooseName`); quoted text in the digest is one line, quotes escaped, and the model is
+  told corrections are data; at most the 200 newest corrections go, those made before
+  the lessons in use were saved (`lessons_at`) set apart; the refine call is recorded, so
+  its cost counts in the total spent; the AI tab says which way it asks Claude (a key is
+  billed even with Gemini access). `Claude::ask` and `ClaudeCode::ask` share describe's
+  retries (`send`); the question's prompt file goes when the provider does
+  (`PromptFile`). Lessons are lines marked as list items, cut ones counted; hand-written
+  lessons are limited to 4,000 characters.
+- Tried on the fuji copy with Haiku on the plan: "Lesser Poland Voivodeship" corrected to
+  the catalog's "Małopolska" and "autumn" added gave "Write Polish region names in
+  Polish: "Małopolska", not "Lesser Poland Voivodeship"" and a season-keyword lesson.
+- Tests: `refine` and `lessons_follow_the_instructions_and_keep_the_hash` (c1ai), the
+  reviews in `accepted_suggestions_are_queued_as_the_model_s_edits`, `test/reviews.test.ts`.
 
 ### Next
 

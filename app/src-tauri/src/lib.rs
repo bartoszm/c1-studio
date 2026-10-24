@@ -2563,7 +2563,10 @@ pub fn run() {
             ai::suggestions,
             ai::suggestion,
             ai::accept_suggestions,
-            ai::set_suggestion_status
+            ai::set_suggestion_status,
+            ai::ai_reviews,
+            ai::delete_ai_reviews,
+            ai::refine_lessons
         ])
         .build(tauri::generate_context!())
         .expect("C1 Studio failed to start")

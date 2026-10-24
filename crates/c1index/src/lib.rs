@@ -27,7 +27,7 @@ pub use filter::{
 };
 pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
 pub use history::{Compare, EventView, LogGroup, LogKind, LogQuery, NetWhat};
-pub use library::{Accept, Accepted, ClassPreview, GroupSort, Seen};
+pub use library::{Accept, Accepted, ClassPreview, GroupSort, ReviewRow, Seen};
 pub use library::{
     FillGroup, Group, GroupPage, HistoryOff, Library, LogDays, LogPage, Merged, NeighbourPlan, NeighbourSettings,
     PendingEdit, PlaceLookup, QueryOptions, QueryResult, RoutePoint, Selection, Sort, SyncReport, SyncStep, TripList,

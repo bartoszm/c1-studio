@@ -25,7 +25,12 @@
       busy = false;
     }
   }
-  onMount(() => run(api.aiSettings).then(() => (draft = view?.settings.instructions ?? view?.default_instructions ?? "")));
+  onMount(() =>
+    run(api.aiSettings).then(() => {
+      draft = view?.settings.instructions ?? view?.default_instructions ?? "";
+      lessons = view?.settings.lessons ?? "";
+    }),
+  );
   const save = (change: Partial<api.AiSettings>) => view && run(() => api.setAiSettings({ ...view!.settings, ...change }));
   const saveKey = (key: string) => run(() => api.setAiKey(key)).then(() => (keyInput = ""));
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
@@ -59,6 +64,12 @@
   let own = $derived(!!view?.settings.instructions);
   let edited = $derived(!!view && draft.trim() !== (view.settings.instructions ?? view.default_instructions).trim());
   let preview = $state<api.AiPrompt | null>(null);
+  /** The lessons being edited. */
+  let lessons = $state("");
+  async function saveLessons(text: string) {
+    await run(() => api.setAiSettings({ ...view!.settings, lessons: text.trim() || null }));
+    lessons = view?.settings.lessons ?? "";
+  }
   async function saveInstructions(text: string | null) {
     await run(() => api.setAiSettings({ ...view!.settings, instructions: text }));
     draft = view?.settings.instructions ?? view?.default_instructions ?? "";
@@ -259,6 +270,16 @@
       <button class="small-btn" disabled={busy || !edited} onclick={() => (draft = view?.settings.instructions ?? view?.default_instructions ?? "")}>Undo changes</button>
       <button class="small-btn" disabled={busy || !own} onclick={() => saveInstructions(null)}>Back to the default</button>
       <button class="small-btn" onclick={togglePreview}>{preview ? "Hide" : "Show"} the full prompt</button>
+    </div>
+    <h4>Lessons</h4>
+    <p class="muted small">
+      Drawn from your corrections (AI tab › Reviewed › Refine the prompt), or written here, one per line: they follow the
+      instructions in every run. Changing them does not make photos described before count as not described.
+    </p>
+    <textarea class="prompt" rows="6" bind:value={lessons} spellcheck="false" placeholder="- Write place names as the catalog does: Małopolskie, not Lesser Poland."></textarea>
+    <div class="row-buttons">
+      <button class="small-btn" disabled={busy || lessons.trim() === (view.settings.lessons ?? "")} onclick={() => saveLessons(lessons)}>Save lessons</button>
+      <button class="small-btn" disabled={busy || !view.settings.lessons} onclick={() => saveLessons("")}>Clear</button>
     </div>
     {#if preview}
       <pre class="preview">{preview.system}</pre>

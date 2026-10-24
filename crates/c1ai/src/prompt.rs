@@ -56,14 +56,17 @@ impl Fields {
 }
 
 /// What a run asks for, besides the photo: the fields, the caption languages, the
-/// catalog's keyword names the model should choose from (most used first), and the
-/// user's own instructions in place of [`INSTRUCTIONS`].
+/// catalog's keyword names the model should choose from (most used first), the user's
+/// own instructions in place of [`INSTRUCTIONS`], and the lessons drawn from how the user
+/// corrected earlier suggestions.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Brief {
     pub language: Language,
     pub vocabulary: Vec<String>,
     pub fields: Fields,
     pub instructions: Option<String>,
+    #[serde(default)]
+    pub lessons: Option<String>,
 }
 
 /// How many of the catalog's keyword names go into the prompt.
@@ -117,6 +120,10 @@ pub fn system_prompt(brief: &Brief) -> String {
     .filter_map(|(on, line)| on.then_some(line))
     .collect();
     let mut prompt = format!("{instructions}\n\nFields:\n{}\n", lines.join("\n"));
+    if let Some(lessons) = brief.lessons.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        prompt
+            .push_str(&format!("\nThe photographer corrected earlier suggestions; follow these lessons:\n{lessons}\n"));
+    }
     let language = match (f.caption, brief.language) {
         (true, Language::En) => Some("Captions: English only (caption_en)."),
         (true, Language::Pl) => Some("Captions: Polish only (caption_pl); the headline in Polish."),
@@ -201,9 +208,10 @@ pub fn schema(fields: &Fields) -> Value {
 
 /// Identifies the prompt and schema a suggestion was made with. The vocabulary is left
 /// out: it grows with every keyword accepted, and would make every photo look as if it
-/// had never been described.
+/// had never been described. So are the lessons: refined now and then, they would do the
+/// same; describing photos again is the user's choice ("again").
 pub fn prompt_hash(brief: &Brief) -> u64 {
-    let general = Brief { vocabulary: Vec::new(), ..brief.clone() };
+    let general = Brief { vocabulary: Vec::new(), lessons: None, ..brief.clone() };
     let text = format!("{}\n{}\n{}", crate::PROMPT_VERSION, system_prompt(&general), schema(&brief.fields));
     xxhash_rust::xxh3::xxh3_64(text.as_bytes())
 }
@@ -245,6 +253,17 @@ mod tests {
         assert!(system_prompt(&own).starts_with("Describe tersely.\n\nFields:"));
         assert_eq!(system_prompt(&blank), system_prompt(&default));
         assert_ne!(prompt_hash(&own), prompt_hash(&default));
+    }
+
+    #[test]
+    fn lessons_follow_the_instructions_and_keep_the_hash() {
+        let before = Brief::default();
+        let after = Brief { lessons: Some("- Write place names in Polish.".into()), ..Default::default() };
+        let prompt = system_prompt(&after);
+        let at = prompt.find("- Write place names in Polish.").unwrap();
+        assert!(at > prompt.find("Fields:").unwrap());
+        assert!(!system_prompt(&before).contains("lessons"));
+        assert_eq!(prompt_hash(&before), prompt_hash(&after));
     }
 
     #[test]

@@ -2680,6 +2680,7 @@
       describe={describing}
       {version}
       settingsOpen={showSettings}
+      keywords={keywordList}
       onsettings={() => { settingsTab = "ai"; showSettings = true; }}
       onselect={(row) => { picked.clear(); selected = null; mapRow = row; }}
       onaccepted={async (undo) => {
