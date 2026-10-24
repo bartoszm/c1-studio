@@ -221,6 +221,14 @@
     if (y < el.scrollTop) el.scrollTop = y - PAD;
     else if (y + cellH > el.scrollTop + height) el.scrollTop = y + cellH + PAD - height;
   }
+
+  /** Scrolls position `i` to the middle, for a photo kept picked in a new result. */
+  export function center(i: number) {
+    if (!el) return;
+    const y = PAD + Math.floor(i / cols) * lineH;
+    el.scrollTop = Math.max(0, y - (height - cellH) / 2);
+    top = el.scrollTop;
+  }
 </script>
 
 <main bind:this={el} bind:clientWidth={width} bind:clientHeight={height} onscroll={scrolled}>

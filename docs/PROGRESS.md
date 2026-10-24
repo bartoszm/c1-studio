@@ -1639,6 +1639,35 @@ country) and 68k have neither.
 - Tests: `c1ai` (answer reading, cost, the request's shape, validation) and
   `accepted_suggestions_are_queued_as_the_model_s_edits`.
 
+### The selection through filters, filters that follow edits, Back and Forward
+
+- **The selection stays:** a new filter (any pick in the sidebar, a chip dropped, the
+  search, the sort, Clear filters) no longer drops the picked photos. `run()` takes them
+  (`pickedNow`) before it asks, and `keepPicks` looks for them in the new result: one by
+  `position`, several by reading the result's rows. Those still in it stay picked, the
+  focus stays on the focused one or goes to the first of them, scrolled to the middle
+  (`Grid.center`); with none left, the grid starts at the top as before. The map is not
+  moved to the photo (`holdMap`).
+- **Picked photos left out:** with several picked, the footer says "2 of 5 picked photos
+  are outside this filter · Show them", which goes Back.
+- **A filter follows an edit that empties it** (`lib/follow.ts`): when an edit (a key, the
+  panel, a paste, AI accepted) leaves the filter with no photos, the fields its photos no
+  longer match take the values they have now, read with `selection_summary`: the place
+  (the levels they share, no deeper than the filter's), the rating (its operator kept),
+  the colour, the country, a keyword (only for keywords the edit added), an album (the
+  one they were put into). The new filter is used only if it shows them; it opens the
+  Location tree to the place, keeps them picked and says so, with Back. It never
+  follows a work list (no keywords, no place, no location, no GPS, no code, not in an
+  album, any "not" pick, not analysed, the search, a History pick, the trash), Match any,
+  or a field no value of theirs can mend (a place cleared, a keyword removed): emptying
+  those is the point. A single photo leaving a filter that still has others moves on to
+  the next, as before.
+- **Back and Forward** (`lib/navigation.ts`, ‹ › in the header, Alt+← Alt+→): every new
+  filter keeps the one it leaves (filter, sort, Match) with its picks, 50 at most;
+  going back shows it with them picked again. A run that shows the same filter is no
+  step.
+- Tests: `test/follow.test.ts`.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that
