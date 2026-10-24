@@ -4,6 +4,12 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.7.0:** picked photos [stay picked through a filter](docs/FEATURES.md#the-selection-through-filters-back-and-forward),
+**Back and Forward** go through the filters, and a filter follows an edit instead of
+emptying. *Around* shows a photo's [shoot or its day](docs/FEATURES.md#photos-around-a-photo).
+AI suggestions can be [corrected and turned into lessons](docs/FEATURES.md#correct-the-ai-and-teach-it)
+for the prompt. Albums made in C1 Studio now show in Capture One.
+
 **New in 0.6.0:** [describe photos with AI](docs/FEATURES.md#describe-photos-with-ai):
 Claude or Gemini suggest captions, keywords from your own vocabulary, ratings and places,
 and you accept what fits. A [History](docs/FEATURES.md#history-the-catalog-over-time) tab

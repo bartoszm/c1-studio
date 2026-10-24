@@ -142,6 +142,32 @@ the Date tree still shows every year.
 **From the details panel.** The camera, each keyword (or any level of it), each album
 and the folder are links: clicking one filters by it.
 
+**Photos around a photo.** *Around*, under *Captured*, sets the filter's dates to the
+photos taken near the focused one: its **shoot** (the photos taken one after another
+around it, no two more than 30 minutes apart; the gap is set in *Settings › Map &
+places*), ±15 min, ±1 h, ±3 h or its **day**. It replaces a year, month, week or trip
+pick, as a custom range does, and the photo stays picked. Shift+click picks those photos
+among the ones shown instead, leaving the filter as it is. `t` shows the focused photo's
+shoot, Shift+T picks it. The shoot is the library's: with ★5 picked, it shows the
+shoot's five-star photos. Hidden and trashed photos take no part in shoots.
+
+**The selection through a filter.** A new filter (a sidebar pick, a chip, the search, the
+sort, *Clear filters*) keeps the picked photos it still shows; the focus stays on the
+focused one or moves to the first of them. With several picked, the footer says how many
+are outside the filter, and **Show them** goes back to the one before.
+
+**A filter that follows an edit.** When an edit leaves the filter with no photos, for
+example photos filtered by Kraków given Warszawa as their city, the filter takes the
+values they have now (the place, the rating, the colour, the country, a keyword the edit
+added, the album they were put into), keeps them picked and says so, with Back. Work
+lists are never followed, since emptying them is the point: no keywords, no place, no
+location, no GPS, not in an album, any "not" pick, the search, a History pick, the trash,
+and *Match any*. Neither are hiding and the trash.
+
+**Back and Forward.** ‹ and › in the header, or Alt+← and Alt+→, go through the filters
+shown, each with the photos that were picked in it (up to 50 steps). A search typed or
+map tiles clicked one after another are one step.
+
 ## Browsing
 
 **Selecting.** Click a photo to focus it. Ctrl+click adds or removes one, Shift+click
@@ -617,6 +643,26 @@ history; Ctrl+Z undoes them), **Reject** sets the card aside; *Accept N* above a
 and *Reject all* do every card. The tabs *To review*, *Accepted*, *Rejected* and *All* keep
 them.
 
+**Correcting a card.** Each place level is a box holding the model's name: write another,
+or pick one of the catalog's names from its list (those under the levels above come first).
+A name picked fills the levels above from the catalog, and the country code follows the
+country. *+ keyword* adds keywords the model missed (a new one is added to the keyword
+tree), and a click on the stars gives another rating.
+
+**Reviewed.** Every card accepted or rejected is kept, with what was taken, until you
+remove it; a photo reviewed again keeps only its last review. *Reviewed* lists them newest
+first with what you changed: a place level renamed, keywords added or taken off, a caption
+or headline rewritten, the rating changed, or rejected. Show *All*, *Corrected*,
+*Rejected* or *Accepted as suggested*; tick reviews to remove them.
+
+**Lessons.** *Refine the prompt* sends the ticked corrections, or all listed (the 200
+newest at most), to Claude as text, no photos: with the API key if there is one, else
+Claude Code on your plan. It proposes up to 15 lessons, each with why, such as *Write
+Polish region names in Polish: "Małopolska", not "Lesser Poland Voivodeship"*. Edit them
+and *Use these lessons*, or leave them. Lessons follow the instructions in the prompt and
+can be changed in *Settings › AI › Prompt*; photos described before still count as
+described. The refine call's cost counts in the total spent.
+
 ## Writing to Capture One
 
 Nothing is written to the catalog until you ask, or turn Autosave on.
@@ -788,6 +834,8 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Esc | Back to one photo; close the viewer, a dialog or a menu |
 | Enter, double-click | Open the viewer |
 | ← → (viewer) | Previous, next photo |
+| Alt+← Alt+→ | Back to the filter before, forward again |
+| `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
 | `i` | Show or hide the details panel |
 | `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
