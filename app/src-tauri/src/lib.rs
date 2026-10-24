@@ -955,6 +955,12 @@ async fn timeline(app: State<'_, App>, filter: Filter) -> Result<Vec<(i64, usize
     app.session()?.library.timeline(&filter).map_err(|e| format!("{e:#}"))
 }
 
+/// The span of the shoot the photo at `row` is part of: no two photos more than `gap_ms` apart.
+#[tauri::command]
+async fn session_around(app: State<'_, App>, row: u64, gap_ms: i64) -> Result<Option<c1index::TimeRange>, String> {
+    app.session()?.library.session_around(row, gap_ms).map_err(|e| format!("{e:#}"))
+}
+
 /// The photos `filter` selects that have a position, in the order they were taken.
 #[tauri::command]
 async fn route(app: State<'_, App>, filter: Filter) -> Result<Vec<c1index::RoutePoint>, String> {
@@ -2466,6 +2472,7 @@ pub fn run() {
             smart_counts,
             trips,
             timeline,
+            session_around,
             route,
             unresolved_places,
             set_place_points,

@@ -4,6 +4,7 @@
   import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText } from "./lib/format";
   import { resolveGeo } from "./lib/placeHints";
   import { encode as plusCode } from "./lib/pluscode";
+  import { AROUND, type Around } from "./lib/around";
   import { allFields, fieldValues, isEmpty, keyOf, treeKeys, withCode, type Place } from "./lib/places";
   import { placeText } from "./lib/tree";
   import { offText } from "./lib/history";
@@ -19,7 +20,7 @@
   let {
     row, version, analysed, picked, queued, queuedPicked, collections, keywords, clip, summary, stale, summaryError,
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
-    onaddalbum, onremovealbum, ongroup,
+    onaddalbum, onremovealbum, ongroup, onaround,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
     allHidden = false, onhide, inBin = false, ondelete,
   }: {
@@ -58,6 +59,8 @@
     ongroup: (id: string) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
+    /** The photos taken around this one (`at`): shown, or with `select` picked among those shown. */
+    onaround?: (row: number, at: number, what: Around, select: boolean) => void;
     /** Location fields typed in, "" clearing one: on `rows`, or on every photo edited. */
     onplace: (fields: Partial<Record<api.PlaceField, string>>, rows?: number[]) => void;
     ongeo: (value: [number, number] | null) => void;
@@ -431,7 +434,19 @@
 
 {#snippet exif(p: api.Photo)}
   <dl>
-    {#if p.captured_at !== null}<dt>Captured</dt><dd>{date(p.captured_at)}</dd>{/if}
+    {#if p.captured_at !== null}
+      {@const at = p.captured_at}
+      <dt>Captured</dt><dd>{date(at)}</dd>
+      {#if onaround && row !== undefined}
+        {@const r = row}
+        <dt>Around</dt>
+        <dd class="around">
+          {#each AROUND as a (a.label)}
+            <button class="link" title="{a.title}. Shift+click picks them among the photos shown instead." onclick={(e) => onaround(r, at, a.what, e.shiftKey)}>{a.label}</button>
+          {/each}
+        </dd>
+      {/if}
+    {/if}
     {#if camera(p)}
       <dt>Camera</dt>
       <dd><button class="link" onclick={() => p.exif.camera_model && oncamera(p.exif.camera_model)}>{camera(p)}</button></dd>

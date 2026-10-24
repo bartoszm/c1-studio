@@ -174,6 +174,23 @@
         </small>
       </span>
     </label>
+    <h3>Photos around a photo</h3>
+    <label class="option">
+      <input
+        type="number"
+        min="1"
+        max="1440"
+        value={settings.sessionGap}
+        onchange={(e) => { const n = Math.round(+e.currentTarget.value); if (n >= 1) settings.sessionGap = n; }}
+      />
+      <span>
+        Minutes between two photos that end a shoot
+        <small class="muted">
+          "shoot" under Captured in the details panel shows the photos taken one after another around the photo, with no gap
+          longer than this between two of them.
+        </small>
+      </span>
+    </label>
     <p class="muted small">
       Place names and positions: <a href="https://www.geonames.org/" target="_blank" rel="noreferrer">GeoNames</a>, CC BY 4.0.
     </p>

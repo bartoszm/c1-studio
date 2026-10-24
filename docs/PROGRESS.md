@@ -1668,6 +1668,22 @@ country) and 68k have neither.
   step.
 - Tests: `test/follow.test.ts`.
 
+### Photos around a photo in time
+
+- **Around** under Captured in the details panel: **shoot**, ±15 min, ±1 h, ±3 h, **day**.
+  A click sets the filter's dates to that span (dropping a year, month, week or trip
+  pick, as a custom range does); the photo stays picked in it (the selection survives the
+  filter) and Back returns. Shift+click picks those photos among the ones shown instead,
+  within the filter's own dates (`within`). `t` shows the focused photo's shoot,
+  Shift+T picks it.
+- **The shoot** (`Library::session_around`, `trips::session`): the library's photos in time
+  order, from the photo back and forward while two in a row are no more than the gap
+  apart (30 minutes; *Settings › Map & places*). Spans and the day are worked out in the
+  window (`lib/around.ts`); the day is the local one.
+- The Dates chip shows times for a span that is not whole days.
+- Tests: `a_session_runs_while_photos_follow_within_the_gap`,
+  `a_photo_s_session_is_the_photos_taken_around_it_without_a_long_gap`, `test/around.test.ts`.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that

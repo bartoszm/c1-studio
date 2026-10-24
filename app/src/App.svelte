@@ -42,6 +42,7 @@
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, followStep, sameRows } from "./lib/batch";
   import { followFilter } from "./lib/follow";
+  import { aroundRange, wholeDays, within, type Around } from "./lib/around";
   import { Trail, type Shown } from "./lib/navigation";
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
   import { binNote, deleteAction, withBin } from "./lib/bin";
@@ -1907,6 +1908,7 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
+    else if (key === "t" && !e.repeat) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
@@ -1928,6 +1930,14 @@
     // On Analysis, History and AI the page keys scroll the view; arrows move in the strip.
     else if ((tab === "analysis" || tab === "history" || tab === "ai") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
+  }
+
+  /** `t`: the shoot of the photo focused (Shift: picked among those shown). */
+  async function aroundFocused(select: boolean) {
+    const row = selected === null ? undefined : focusRow;
+    if (row === undefined) return;
+    const at = (await api.photo(row).catch(() => null))?.captured_at;
+    if (at != null) await showAround(row, at, "session", select);
   }
 
   // Links in the info panel: filter by what was clicked.
@@ -1958,6 +1968,28 @@
   function openPlace(path: string) {
     const parts = path.split("|");
     for (let i = 1; i < parts.length; i++) expanded.add("p:" + parts.slice(0, i).join("|"));
+  }
+  /**
+   * The photos taken around a photo: its shoot, a span either side, or its day. Shown as the
+   * filter's dates (the photo stays picked in them), or with `select` picked among the
+   * photos shown now.
+   */
+  async function showAround(row: number, at: number, what: Around, select: boolean) {
+    try {
+      const range = what === "session" ? await api.sessionAround(row, settings.sessionGap * 60_000) : aroundRange(at, what);
+      if (!range) return;
+      if (!select) {
+        filter = { ...filter, captured: range, trip: undefined, year: undefined, month: undefined, week: undefined };
+        return run();
+      }
+      const f = $state.snapshot(filter);
+      const rows = (await api.query(asking({ ...f, captured: within(f.captured, range) }), { sort: sortBy })).rows;
+      picked.clear();
+      for (const r of rows) picked.add(r);
+      note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} picked around ${rows.length === 1 ? "it" : "this one"}`);
+    } catch (e) {
+      editError = String(e);
+    }
   }
   function showFolder(path: string) {
     const parts = path.split("/");
@@ -2086,6 +2118,13 @@
   }
   function rangeText(r: api.TimeRange) {
     const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    if (r.from !== undefined && r.to !== undefined && !wholeDays(r)) {
+      // Photos around one (a shoot, an hour either side): the times say more than the day.
+      const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      return day(r.from) === day(r.to)
+        ? `${day(r.from)} ${time(r.from)} – ${time(r.to)}`
+        : `${day(r.from)} ${time(r.from)} – ${day(r.to)} ${time(r.to)}`;
+    }
     if (r.from !== undefined && r.to !== undefined) return `${day(r.from)} – ${day(r.to)}`;
     return r.from !== undefined ? `from ${day(r.from)}` : r.to !== undefined ? `until ${day(r.to)}` : "any";
   }
@@ -2187,6 +2226,7 @@
     ongroup={showGroup}
     onfolder={showFolder}
     oncamera={(camera) => only({ cameras: [camera] })}
+    onaround={showAround}
     summary={selection?.data ?? null}
     stale={!selectionNow}
     summaryError={selectionError}
