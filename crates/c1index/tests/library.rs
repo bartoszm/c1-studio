@@ -355,6 +355,12 @@ fn a_photos_position_is_its_place_in_the_sorted_result() {
             assert_eq!(lib.position(&rated, &options, row).unwrap(), Some(i), "{sort:?}");
         }
         assert_eq!(lib.position(&rated, &options, outside).unwrap(), None, "{sort:?}");
+        // Several at once: those it selects, by position, and none of the others.
+        let asked = [rows[30], outside, rows[3], rows[500]];
+        let found = lib.positions(&rated, &options, &asked).unwrap();
+        assert_eq!(found, vec![(rows[3], 3), (rows[30], 30), (rows[500], 500)], "{sort:?}");
+        assert_eq!(lib.positions(&rated, &options, &[rows[9]]).unwrap(), vec![(rows[9], 9)], "{sort:?}");
+        assert!(lib.positions(&rated, &options, &[]).unwrap().is_empty());
     }
 }
 
@@ -1710,6 +1716,46 @@ fn photo_history_outlives_reopening() {
 /// local day wherever the tests run), from 2026-01-01.
 fn trip_time(n: u32, hour: i64) -> i64 {
     1_767_225_600_000 + i64::from((n - 1) / 3) * 86_400_000 + hour * 3_600_000
+}
+
+#[test]
+fn a_photo_s_session_is_the_photos_taken_around_it_without_a_long_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    // Three photos a day, at 10, 12 and 14.
+    lib.sync(&MemorySource::new("mem", trip_photos(), vec![])).unwrap();
+    let hour = 3_600_000;
+    let row = row_of(&lib, 5);
+    let span = |from: i64, to: i64| Some(TimeRange { from: Some(from), to: Some(to) });
+    assert_eq!(
+        lib.session_around(row, 2 * hour).unwrap(),
+        span(trip_time(4, 10), trip_time(6, 14)),
+        "its day's photos"
+    );
+    assert_eq!(lib.session_around(row, hour).unwrap(), span(trip_time(5, 12), trip_time(5, 12)), "alone");
+    assert_eq!(lib.session_around(row, 24 * hour).unwrap(), span(trip_time(1, 10), trip_time(30, 14)), "nights joined");
+}
+
+#[test]
+fn a_session_leaves_out_hidden_photos_unless_it_is_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let mut photos = trip_photos();
+    let mut undated = photo(31);
+    undated.captured_at = None;
+    undated.trashed = false;
+    photos.push(undated);
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    let hour = 3_600_000;
+    let span = |from: i64, to: i64| Some(TimeRange { from: Some(from), to: Some(to) });
+    // 10:00 and 14:00 are joined by 12:00 under a two-hour gap; hidden, it joins nothing.
+    let noon = row_of(&lib, 5);
+    lib.set_hidden(&[noon], true).unwrap();
+    assert_eq!(lib.session_around(row_of(&lib, 4), 2 * hour).unwrap(), span(trip_time(4, 10), trip_time(4, 10)));
+    // The hidden photo itself has its shoot, all photos taking part.
+    assert_eq!(lib.session_around(noon, 2 * hour).unwrap(), span(trip_time(4, 10), trip_time(6, 14)));
+    assert_eq!(lib.session_around(row_of(&lib, 31), 2 * hour).unwrap(), None, "no capture time");
+    assert_eq!(lib.session_around(u64::MAX, 2 * hour).unwrap(), None, "no such photo");
 }
 
 /// Photos 1..=30 over ten days: 1-9 in Kraków, 10-21 in Tokyo (one of them rated 5),

@@ -538,6 +538,10 @@ export const query = (filter: Filter, options: QueryOptions) => invoke<QueryResu
 /** Where a photo is among those the filter selects, in that order (null: not among them). */
 export const position = (filter: Filter, options: { sort: Sort }, row: number) =>
   invoke<number | null>("position", { filter, options, row });
+/** Where each of `rows` is among the photos the filter selects: [row, position] for those
+ *  it selects, in that order. */
+export const positions = (filter: Filter, options: { sort: Sort }, rows: number[]) =>
+  invoke<[number, number][]>("positions", { filter, options, rows });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
 export type Approx = { lat: number; lon: number; level: Level };
@@ -656,6 +660,8 @@ export type TripEdit =
 export const trips = (filter: Filter) => invoke<TripList>("trips", { filter });
 /** Photos per day under `filter`: [local midnight in ms, count], in date order. */
 export const timeline = (filter: Filter) => invoke<[number, number][]>("timeline", { filter });
+/** The span of the shoot the photo at `row` is part of: no two photos more than `gapMs` apart. */
+export const sessionAround = (row: number, gapMs: number) => invoke<TimeRange | null>("session_around", { row, gapMs });
 /** A photo on a route: when and where it was taken. */
 export type RoutePoint = { at: number; lat: number; lon: number; row: number };
 /** The photos `filter` selects that have a position, in the order they were taken. */

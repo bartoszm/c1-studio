@@ -866,6 +866,18 @@ async fn position(
     app.session()?.library.position(&filter, &options, row).map_err(|e| format!("{e:#}"))
 }
 
+/// Where each of `rows` is among the photos `filter` selects: (row, position) for those it
+/// selects.
+#[tauri::command]
+async fn positions(
+    app: State<'_, App>,
+    filter: Filter,
+    options: QueryOptions,
+    rows: Vec<u64>,
+) -> Result<Vec<(u64, usize)>, String> {
+    app.session()?.library.positions(&filter, &options, &rows).map_err(|e| format!("{e:#}"))
+}
+
 /// The map's markers for the photos `filter` selects, clustered for what the map shows.
 #[tauri::command]
 async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Result<c1index::MapResult, String> {
@@ -953,6 +965,12 @@ async fn trips(app: State<'_, App>, filter: Filter) -> Result<c1index::TripList,
 #[tauri::command]
 async fn timeline(app: State<'_, App>, filter: Filter) -> Result<Vec<(i64, usize)>, String> {
     app.session()?.library.timeline(&filter).map_err(|e| format!("{e:#}"))
+}
+
+/// The span of the shoot the photo at `row` is part of: no two photos more than `gap_ms` apart.
+#[tauri::command]
+async fn session_around(app: State<'_, App>, row: u64, gap_ms: i64) -> Result<Option<c1index::TimeRange>, String> {
+    app.session()?.library.session_around(row, gap_ms).map_err(|e| format!("{e:#}"))
 }
 
 /// The photos `filter` selects that have a position, in the order they were taken.
@@ -2463,9 +2481,11 @@ pub fn run() {
             startup_progress,
             query,
             position,
+            positions,
             smart_counts,
             trips,
             timeline,
+            session_around,
             route,
             unresolved_places,
             set_place_points,

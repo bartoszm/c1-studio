@@ -40,7 +40,10 @@
   import { tripDates, tripName } from "./lib/trips";
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
-  import { editingNote, followStep, sameRows } from "./lib/batch";
+  import { editingNote, followStep, keptPicks, sameRows, wantedRows, type Picks } from "./lib/batch";
+  import { followFilter } from "./lib/follow";
+  import { aroundRange, dayOf, dayStart, isEmpty, wholeDays, within, type Around } from "./lib/around";
+  import { Trail, type Shown } from "./lib/navigation";
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
   import { binNote, deleteAction, withBin } from "./lib/bin";
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
@@ -148,9 +151,10 @@
       mapTile = null;
       filter = { ...filter, within: follow ? (mapView ?? undefined) : beforeTile };
     }
-    // Other photos altogether: a selection kept by its place in the grid would land on
-    // one nobody chose, so it starts afresh, on the photo when one was clicked.
-    await run();
+    // Other photos altogether: the photos picked stay picked where the tile has them (by
+    // row, not by their place in the grid); a photo clicked is picked instead. Tiles
+    // clicked one after another are one step back.
+    await run(false, false, bounds ? { kind: "tile" } : {});
     if (row !== null) await mapSelect(row);
   }
   function sameBox(a: api.BBox | undefined | null, b: api.BBox | undefined | null): boolean {
@@ -524,9 +528,24 @@
 
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks.
    *  `byRow`: a single pick stays on its photo, wherever it now is (the map moved),
-   *  rather than on its place in the grid. */
-  async function run(keep = false, byRow = false) {
+   *  rather than on its place in the grid. Otherwise it is a new filter: the photos picked
+   *  (or `how.restore`'s) stay picked where it still shows them, and the filter left is a
+   *  step back (see `Step`). */
+  async function run(keep = false, byRow = false, how: Step = {}) {
     const mine = ++generation;
+    // Overtaking a new filter still looking for its picks (the map moved, a count was
+    // needed): this run finishes that, as the same step.
+    if (keep && carried) {
+      keep = byRow = false;
+      how = { restore: carried, travelling: true };
+    }
+    // A new filter: what was picked is looked for in it, and what was shown is kept to go
+    // back to. Picks a run overtaken was still looking for are this one's to look for.
+    const was = keep ? null : (how.restore ?? carried ?? untrack(pickedNow));
+    if (was) {
+      carried = was;
+      untrack(() => leaving(was, how));
+    }
     untrack(() => (filter = following(filter)));
     const asked = asking($state.snapshot(filter));
     const keepRow = keep && byRow && picked.size <= 1 && selected !== null ? focusRow : undefined;
@@ -582,6 +601,7 @@
       offlinePages = new SvelteMap(offline);
       loading = new Map();
       error = null;
+      onScreen = shownNow();
       if (keptRow !== undefined) {
         // Set with the pages, so the focus never passes over the photo now at its old place;
         // one gone from the result leaves nothing picked, not whatever took its place.
@@ -601,17 +621,112 @@
       } else if (keep) {
         if (selected !== null && selected >= r.total) selected = r.total ? r.total - 1 : null;
         await followPicks(mine, asked);
-      } else {
-        selected = null;
-        picked.clear();
-        anchor = null;
-        viewing = false;
-        grid?.reset();
+      } else if (was) {
+        const lost = await keepPicks(mine, asked, was);
+        // Said for a filter picked here; going back or forward, Back would not find them.
+        if (mine === generation && lost && was.picks.length > 1 && !how.travelling) {
+          notice = { kind: "outside", lost, total: was.picks.length };
+        }
       }
     } catch (e) {
-      if (mine === generation) error = String(e);
+      if (mine === generation) {
+        error = String(e);
+        carried = null;
+      }
     }
   }
+
+  const pickedNow = (): Picks => ({ picks: [...picked], focus: selected === null ? undefined : focusRow });
+  /** The picks a new filter is looking for, until it has them in: a newer run that overtakes
+   *  it looks for these, not for the selection it found cleared. Picking anew drops them. */
+  let carried: Picks | null = null;
+
+  /**
+   * After a new filter ran: the photos picked before that it still shows stay picked, and
+   * the focus stays on the focused one, or moves to the first of them, scrolled to; with
+   * none of them left, the grid starts at the top with nothing picked. Says how many of the
+   * picked photos it no longer shows.
+   */
+  async function keepPicks(mine: number, asked: Filter, was: Picks): Promise<number> {
+    picked.clear();
+    selected = anchor = null;
+    const found = await api.positions(asked, { sort: sortBy }, wantedRows(was)).catch(() => []);
+    if (mine !== generation) return 0;
+    const { kept, at, lost } = keptPicks(was, found);
+    if (at === null) {
+      carried = null;
+      viewing = false;
+      grid?.reset();
+      return lost;
+    }
+    await need(at, at + 1);
+    if (mine !== generation) return 0;
+    carried = null;
+    const row = rowAt(at);
+    for (const r of kept) picked.add(r);
+    // The map stays where it is: the photo was picked before, not just now.
+    holdMap = row ?? null;
+    selected = anchor = at;
+    focusRow = row;
+    if (row !== was.focus) viewing = false;
+    await tick();
+    holdMap = null;
+    if (mine === generation) grid?.center(at);
+    return lost;
+  }
+
+  // Back and forward through the filters shown (Alt+← and Alt+→).
+  const trail = new Trail();
+  let canBack = $state(false);
+  let canForward = $state(false);
+  /** The filter on screen, once its result is in: what a new one leaves. */
+  let onScreen: Shown | null = null;
+  /** How a new filter came: `restore` picks these instead of the photos picked now;
+   *  `travelling` is no new step and nothing said (going back or forward, or finishing a
+   *  run overtaken); steps of one `kind` in a row
+   *  (typing a search, clicking tiles) are one step back. */
+  type Step = { restore?: Picks; travelling?: boolean; kind?: "search" | "tile" };
+  const shownNow = (): Shown => ({
+    filter: $state.snapshot(filter), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
+    tile: mapTile, follow, picks: [],
+  });
+  function leaving(was: Picks, how: Step) {
+    notice = null;
+    if (!onScreen || how.travelling) return;
+    trail.leave({ ...onScreen, ...was }, shownNow(), how.kind);
+    canBack = trail.back.length > 0;
+    canForward = trail.forward.length > 0;
+  }
+  function travel(back: boolean) {
+    const now = { ...shownNow(), ...pickedNow() };
+    const to = back ? trail.goBack(now) : trail.goForward(now);
+    canBack = trail.back.length > 0;
+    canForward = trail.forward.length > 0;
+    if (!to) return;
+    clearTimeout(followTimer);
+    clearTimeout(typing);
+    // The area as it was: a tile stays the tile, a drawn area keeps the grid off the map's
+    // moves (as drawing it did).
+    mapTile = to.tile;
+    if (!to.follow && to.filter.within && !to.tile) follow = false;
+    inBin = to.bin;
+    showHidden = to.hidden;
+    filter = to.filter;
+    search = to.filter.text ?? "";
+    sortField = to.sortField;
+    sortReversed = to.sortReversed;
+    match = to.match;
+    rememberSort();
+    run(false, false, { restore: { picks: to.picks, focus: to.focus }, travelling: true });
+  }
+  /** The footer's word on the selection: picked photos the new filter left out, or the
+   *  filter having followed an edit (and how many of the photos it does not show). */
+  let notice = $state<{ kind: "outside" | "followed"; lost: number; total: number } | null>(null);
+  $effect(() => {
+    if (notice?.kind !== "followed") return;
+    const gone = setTimeout(() => (notice = null), 8000);
+    return () => clearTimeout(gone);
+  });
 
   /**
    * After an edit re-ran the filter in place: photos that left the result leave the
@@ -620,7 +735,7 @@
    */
   async function followPicks(mine: number, asked: Filter) {
     if (picked.size > 1) {
-      const all = new Set((await api.query(asked, { sort: sortBy })).rows);
+      const all = new Set((await api.positions(asked, { sort: sortBy }, [...picked])).map(([row]) => row));
       if (mine !== generation) return;
       for (const row of [...picked]) if (!all.has(row)) picked.delete(row);
     }
@@ -839,10 +954,44 @@
     return row === undefined ? [] : [row];
   }
 
-  async function edited() {
+  /** What an edit changed: its photos, and the edit itself when it is one. */
+  type EditDone = { rows: number[]; edit?: api.Edit };
+
+  async function edited(done?: EditDone) {
+    const focus = selected === null ? undefined : focusRow;
     version++;
     await refreshQueued();
+    // Asked before the filter runs again, so an edit it follows shows no empty grid first.
+    if (done?.rows.length && (await followEdit(done, focus))) return;
     await run(true);
+  }
+
+  /** The edit took every photo out of the filter: the filter goes where they went, with them
+   *  picked, if it can (see lib/follow.ts). Says whether it did. */
+  async function followEdit(done: EditDone, focus: number | undefined): Promise<boolean> {
+    if (inBin) return false;
+    const mine = generation;
+    try {
+      const now = $state.snapshot(filter);
+      if ((await api.query(asking(now), { sort: sortBy, limit: 0 })).total) return false;
+      const sel = await api.selectionSummary(done.rows);
+      if (mine !== generation) return false;
+      const next = followFilter(now, sel, done.rows.length, done.edit, match === "any");
+      if (!next) return false;
+      // Only to a filter that shows them: one the edit left empty for another reason stays.
+      const found = await api.positions(asking(next), { sort: sortBy }, done.rows);
+      if (!found.length || mine !== generation) return false;
+      if (next.place_under) openPlace(next.place_under);
+      filter = next;
+      const ran = run(false, false, { restore: { picks: done.rows, focus: focus !== undefined && done.rows.includes(focus) ? focus : done.rows[0] } });
+      const its = generation;
+      await ran;
+      if (its === generation) notice = { kind: "followed", lost: done.rows.length - found.length, total: done.rows.length };
+      return true;
+    } catch (e) {
+      editError = String(e);
+      return false;
+    }
   }
 
   // Copy and paste between photos. The clipboard holds the photo as it was when copied,
@@ -975,7 +1124,7 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited({ rows });
   }
 
   /** What runs now, for the footer: an edit on many photos takes a while. */
@@ -992,6 +1141,8 @@
   }
   /** How many photos an undo or redo of these ops touches. */
   const opRows = (ops: [number, api.Op][]) => new Set(ops.map(([row]) => row)).size;
+  /** The photos ops touch, for `edited` to follow. */
+  const rowsOf = (ops: [number, api.Op][]): EditDone => ({ rows: [...new Set(ops.map(([row]) => row))] });
 
   async function applyEdit(edit: api.Edit, rows = targets()) {
     if (!rows.length) return;
@@ -1006,7 +1157,7 @@
       } catch (e) {
         editError = String(e);
       }
-      await edited();
+      await edited({ rows, edit });
     });
   }
 
@@ -1114,6 +1265,8 @@
   async function undoNow() {
     const last = undoStack.pop();
     if (!last) return;
+    // An undo can empty the filter as the edit did: it follows the photos back.
+    const done = "ops" in last ? rowsOf(last.ops) : undefined;
     try {
       if ("hidden" in last) {
         await api.setHidden(last.hidden, !last.on);
@@ -1143,12 +1296,13 @@
       editError = String(e);
       syncNote = "";
     }
-    await edited();
+    await edited(done);
   }
 
   async function redoNow() {
     const last = redoStack.pop();
     if (!last) return;
+    const done = "ops" in last ? rowsOf(last.ops) : undefined;
     try {
       if ("hidden" in last) {
         await api.setHidden(last.hidden, last.on);
@@ -1172,11 +1326,13 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(done);
   }
 
   async function pick(i: number, how?: { add: boolean; range: boolean }) {
     const row = rowAt(i);
+    notice = null;
+    carried = null;
     if (how?.range && anchor !== null) {
       const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor];
       await need(lo, hi + 1);
@@ -1216,7 +1372,7 @@
     clearTimeout(typing);
     typing = setTimeout(() => {
       filter.text = search.trim() || undefined;
-      run();
+      run(false, false, { kind: "search" });
     }, 150);
   }
 
@@ -1380,7 +1536,7 @@
       undoStack.push({ ops: undo });
       redoStack = [];
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   /** Photos given positions in bulk (a track, their neighbours): offer their places too. */
   async function placedMany(undo: [number, api.Op][]) {
@@ -1405,8 +1561,9 @@
   }
   async function fillPlaces(rows: number[]) {
     fillOffer = null;
+    let undo: [number, api.Op][] = [];
     try {
-      const undo = await api.fillPlaces(rows);
+      undo = await api.fillPlaces(rows);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1417,15 +1574,16 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   function placeLine(p: api.Photo["place"]): string {
     return [p.city, p.state, p.country].filter(Boolean).join(", ");
   }
   /** The photos edited that have no position get their place's (approximate). */
   async function geoFromPlace() {
+    let undo: [number, api.Op][] = [];
     try {
-      const undo = await api.promoteRows(targets());
+      undo = await api.promoteRows(targets());
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1438,12 +1596,13 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
+    let undo: [number, api.Op][] = [];
     try {
-      const undo = await api.promotePlaces({ ...compiled($state.snapshot(filter)), within: undefined }, paths);
+      undo = await api.promotePlaces({ ...compiled($state.snapshot(filter)), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1456,7 +1615,7 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   function pickKeyword(n: Node) {
     const { inc, exc } = cycle(filter.keywords_under, filter.keywords_under_not, n.value);
@@ -1493,20 +1652,7 @@
     run();
   }
 
-  // Range ends are local days, `YYYY-MM-DD` as date inputs give them.
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const dayOf = (ms: number) => {
-    const d = new Date(ms);
-    return `${String(d.getFullYear()).padStart(4, "0")}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-  /** Midnight starting the day, `after` days on (setFullYear: `new Date` reads years below 100 as 19xx). */
-  function dayStart(day: string, after = 0) {
-    const [y, m, d] = day.split("-").map(Number);
-    const at = new Date(0);
-    at.setFullYear(y, m - 1, d + after);
-    at.setHours(0, 0, 0, 0);
-    return at.getTime();
-  }
+  // Range ends are local days (`dayOf`, `dayStart` in lib/around.ts).
   let rangeFrom = $derived(filter.captured?.from === undefined ? "" : dayOf(filter.captured.from));
   let rangeTo = $derived(filter.captured?.to === undefined ? "" : dayOf(filter.captured.to));
 
@@ -1771,10 +1917,16 @@
       e.preventDefault();
       return;
     }
+    if (e.altKey && !ctrl && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+      travel(e.key === "ArrowLeft");
+      e.preventDefault();
+      return;
+    }
     if (e.altKey) return;
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
+    else if (key === "t" && !e.repeat && !viewing) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
@@ -1796,6 +1948,14 @@
     // On Analysis, History and AI the page keys scroll the view; arrows move in the strip.
     else if ((tab === "analysis" || tab === "history" || tab === "ai") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
+  }
+
+  /** `t`: the shoot of the photo focused (Shift: picked among those shown). Not in the
+   *  viewer: the grid's photos would change under the photo shown. */
+  function aroundFocused(select: boolean) {
+    const row = selected === null ? undefined : focusRow;
+    if (row === undefined) return note("Pick a photo to see its shoot");
+    return showAround(row, null, "session", select);
   }
 
   // Links in the info panel: filter by what was clicked.
@@ -1821,6 +1981,44 @@
     const parts = path.split("|");
     for (let i = 1; i < parts.length; i++) expanded.add("k:" + parts.slice(0, i).join("|"));
     only({ keywords_under: [path] });
+  }
+  /** Opens the Location tree's branches above a place, so its pick is in sight. */
+  function openPlace(path: string) {
+    const parts = path.split("|");
+    for (let i = 1; i < parts.length; i++) expanded.add("p:" + parts.slice(0, i).join("|"));
+  }
+  /**
+   * The photos taken around a photo (taken at `at`, needed for all but the shoot): its
+   * shoot, a span either side, or its day. Shown as the filter's dates (the photo stays
+   * picked in them), or with `select` picked among the photos shown now.
+   *
+   * On purpose: the span replaces a year, month, week or trip pick (as a custom range does;
+   * Back returns to it) and keeps every other pick, and the shoot is worked out over the
+   * whole library, not the filter: with ★ 5 picked, it is the shoot's five-star photos.
+   */
+  async function showAround(row: number, at: number | null, what: Around, select: boolean) {
+    try {
+      const range =
+        what === "session" ? await api.sessionAround(row, settings.sessionGap * 60_000)
+        : at === null ? null
+        : aroundRange(at, what);
+      if (!range) return note("No capture time for this photo");
+      if (!select) {
+        filter = { ...filter, captured: range, trip: undefined, year: undefined, month: undefined, week: undefined };
+        return run();
+      }
+      const f = $state.snapshot(filter);
+      const both = within(f.captured, range);
+      const rows = isEmpty(both) ? [] : (await api.query(asking({ ...f, captured: both }), { sort: sortBy })).rows;
+      // None of them shown: the photos picked stay picked.
+      if (!rows.length) return note("None of the photos around it are among those shown");
+      picked.clear();
+      carried = null;
+      for (const r of rows) picked.add(r);
+      note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} picked around ${rows.length === 1 ? "it" : "this one"}`);
+    } catch (e) {
+      editError = String(e);
+    }
   }
   function showFolder(path: string) {
     const parts = path.split("/");
@@ -1949,6 +2147,14 @@
   }
   function rangeText(r: api.TimeRange) {
     const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    if (r.from !== undefined && r.to !== undefined && !wholeDays(r)) {
+      // Photos around one (a shoot, an hour either side): the times say more than the day.
+      const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      if (r.from === r.to) return `${day(r.from)} ${time(r.from)}`;
+      return day(r.from) === day(r.to)
+        ? `${day(r.from)} ${time(r.from)} – ${time(r.to)}`
+        : `${day(r.from)} ${time(r.from)} – ${day(r.to)} ${time(r.to)}`;
+    }
     if (r.from !== undefined && r.to !== undefined) return `${day(r.from)} – ${day(r.to)}`;
     return r.from !== undefined ? `from ${day(r.from)}` : r.to !== undefined ? `until ${day(r.to)}` : "any";
   }
@@ -2050,6 +2256,7 @@
     ongroup={showGroup}
     onfolder={showFolder}
     oncamera={(camera) => only({ cameras: [camera] })}
+    onaround={showAround}
     summary={selection?.data ?? null}
     stale={!selectionNow}
     summaryError={selectionError}
@@ -2080,6 +2287,10 @@
 <div class="app" class:with-info={showInfo} class:busy={!!busy} aria-busy={!!busy}>
   <header>
     <SourceMenu bind:open={choosingSource} onbackups={() => (showBackups = true)} onchanged={() => refresh(true)} />
+    <span class="trail">
+      <button aria-label="Back" title="Back to the filter before, with its photos picked (Alt+←)" disabled={!canBack} onclick={() => travel(true)}>‹</button>
+      <button aria-label="Forward" title="Forward again (Alt+→)" disabled={!canForward} onclick={() => travel(false)}>›</button>
+    </span>
     <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
     <nav class="tabs" aria-label="View">
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
@@ -2479,7 +2690,7 @@
           note(`Queued suggestions for ${opRows(undo).toLocaleString()} photo${opRows(undo) === 1 ? "" : "s"}`);
         }
         editError = null;
-        await edited();
+        await edited(rowsOf(undo));
       }}
       onerror={(m) => (editError = m)}
     />
@@ -2579,6 +2790,18 @@
       </span>
     {/if}
     {#if busy}<span class="busy">{busy}</span>{:else if editError}<button class="edit-error" title="Click to dismiss" onclick={() => (editError = null)}>{editError}</button>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
+    {#if notice?.kind === "followed"}
+      <span class="fill-offer edit-note">
+        The filter followed your edit{#if notice.lost}; {notice.lost.toLocaleString()} of the {notice.total.toLocaleString()} photos are not in it{/if}
+        <button title="Back to the filter before (Alt+←)" onclick={() => { notice = null; travel(true); }}>Back</button>
+      </span>
+    {:else if notice}
+      <span class="fill-offer edit-note">
+        {notice.lost.toLocaleString()} of {notice.total.toLocaleString()} picked photos are outside this filter
+        <button title="Back to the filter before, with all of them picked (Alt+←)" onclick={() => travel(true)}>Show them</button>
+        <button aria-label="Dismiss" onclick={() => (notice = null)}>×</button>
+      </span>
+    {/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}
     {#if thumbs?.running}
       <span class="sync" title="From each photo's preview, or its original when there is no preview">

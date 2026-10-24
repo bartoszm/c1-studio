@@ -26,7 +26,7 @@ use crate::edits::{
     self, Before, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key,
 };
 use crate::facets::{Counts, FacetCollector};
-use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, Trashed};
+use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, TimeRange, Trashed};
 use crate::looks::{Look, Looks, Record};
 use crate::marks::MarkBook;
 use crate::matching::{self, MatchSpec, Measures};
@@ -1604,6 +1604,26 @@ impl Library {
         Ok(filter.clone())
     }
 
+    /// Where each of `rows` is among the photos `filter` selects, in `options`' order: (row,
+    /// position) for those it selects, by position. Only these go back, not the whole result.
+    pub fn positions(
+        &self,
+        filter: &Filter,
+        options: &QueryOptions,
+        rows: &[u64],
+    ) -> anyhow::Result<Vec<(u64, usize)>> {
+        match rows {
+            [] => Ok(Vec::new()),
+            &[row] => Ok(self.position(filter, options, row)?.map(|at| (row, at)).into_iter().collect()),
+            _ => {
+                let wanted: HashSet<u64> = rows.iter().copied().collect();
+                let all = QueryOptions { limit: None, offset: 0, facets: vec![], ..options.clone() };
+                let found = self.query(filter, &all)?.rows.into_iter().enumerate();
+                Ok(found.filter(|(_, row)| wanted.contains(row)).map(|(at, row)| (row, at)).collect())
+            }
+        }
+    }
+
     /// Where `row` is among the photos `filter` selects, in `options`' order; None when it
     /// is not one of them.
     pub fn position(&self, filter: &Filter, options: &QueryOptions, row: u64) -> anyhow::Result<Option<usize>> {
@@ -1754,6 +1774,25 @@ impl Library {
         Ok(out)
     }
 
+    /// The span of the shoot the photo at `row` belongs to: the photos taken one after another
+    /// around it, no two more than `gap_ms` apart. The photos are the library's, whatever the
+    /// filter on screen, but those hidden, in the trash or deleted take no part, so they never
+    /// join two shoots; for a photo that is one of them, all photos do. None for a photo with
+    /// no capture time, or no photo at `row`.
+    pub fn session_around(&self, row: u64, gap_ms: i64) -> anyhow::Result<Option<TimeRange>> {
+        let everything =
+            Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() };
+        for filter in [Filter::default(), everything] {
+            let taken = self.capture_times(&filter)?;
+            let Some(&(at, _)) = taken.iter().find(|t| t.1 == row) else { continue };
+            let mut times: Vec<i64> = taken.into_iter().map(|t| t.0).collect();
+            times.sort_unstable();
+            // Photos taken at the same moment are no gap apart: any of them stands for it.
+            return Ok(crate::sessions::session(&times, times.partition_point(|&t| t < at), gap_ms));
+        }
+        Ok(None)
+    }
+
     /// The photos `filter` selects that have a position and a capture time, in the order
     /// they were taken: a route to draw. A filter's own `within` is set aside, as for the map.
     pub fn route(&self, filter: &Filter) -> anyhow::Result<Vec<RoutePoint>> {
@@ -1879,6 +1918,26 @@ impl Library {
     }
 
     /// The photos `filter` selects that have a capture time.
+    /// When each photo `filter` selects was taken, with its row; those with no capture time
+    /// are left out. In no order.
+    fn capture_times(&self, filter: &Filter) -> anyhow::Result<Vec<(i64, u64)>> {
+        let query = self.compile(filter)?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((fast.i64("captured_sort")?, fast.u64("row")?));
+        }
+        Ok(docs
+            .iter()
+            .filter_map(|a| {
+                let (captured, row) = &columns[a.segment_ord as usize];
+                Some((captured.first(a.doc_id).and_then(schema::captured_of_sort_key)?, row.first(a.doc_id)?))
+            })
+            .collect())
+    }
+
     fn taken(&self, filter: &Filter) -> anyhow::Result<Vec<Taken>> {
         let query = self.compile(filter)?;
         let searcher = self.reader.searcher();

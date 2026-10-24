@@ -15,6 +15,7 @@ pub mod marks;
 pub mod matching;
 pub mod places;
 pub mod schema;
+pub mod sessions;
 mod store;
 pub mod thumbs;
 pub mod trips;

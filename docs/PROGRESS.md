@@ -1640,6 +1640,66 @@ country) and 68k have neither.
 - Tests: `c1ai` (answer reading, cost, the request's shape, validation) and
   `accepted_suggestions_are_queued_as_the_model_s_edits`.
 
+### The selection through filters, filters that follow edits, Back and Forward
+
+- **The selection stays:** a new filter (any pick in the sidebar, a chip dropped, the
+  search, the sort, Clear filters) no longer drops the picked photos. `run()` takes them
+  (`pickedNow`) before it asks, and `keepPicks` looks for them in the new result with
+  `positions` (the backend returns only the picks it shows, with their places; the pure
+  part is `keptPicks` in `lib/batch.ts`). Picks a run still looks for when a newer one
+  overtakes it (`carried`) are the newer one's to look for. Those still in it stay picked, the
+  focus stays on the focused one or goes to the first of them, scrolled to the middle
+  (`Grid.center`); with none left, the grid starts at the top as before. The map is not
+  moved to the photo (`holdMap`).
+- **Picked photos left out:** with several picked, the footer says "2 of 5 picked photos
+  are outside this filter · Show them", which goes Back.
+- **A filter follows an edit that empties it** (`lib/follow.ts`): when an edit (a key, the
+  panel, a paste, AI accepted, undo and redo, places filled, positions given) leaves the
+  filter with no photos (counted before it runs again, so no empty grid shows first), the
+  fields its photos no longer match take the values they have now, read with
+  `selection_summary`: the place (the levels they share, no deeper than the filter's),
+  the rating (just the stars they have: `≥ 4` set to 2 is `= 2`, not `≥ 2`),
+  the colour, the country, a keyword (only for keywords the edit added), an album (the
+  one they were put into). The new filter is used only if it shows at least one of them;
+  it opens the Location tree to the place, keeps them picked and says so, with Back, and
+  how many it does not show. Hiding and the trash never follow: taking photos out of
+  view is what they are for. It never
+  follows a work list (no keywords, no place, no location, no GPS, no code, not in an
+  album, any "not" pick, not analysed, the search, a History pick, the trash), Match any,
+  or a field no value of theirs can mend (a place cleared, a keyword removed): emptying
+  those is the point. A single photo leaving a filter that still has others moves on to
+  the next, as before.
+- **Back and Forward** (`lib/navigation.ts`, ‹ › in the header, Alt+← Alt+→): every new
+  filter keeps the one it leaves (filter, sort, Match, the trash or hidden photos shown,
+  a map tile or drawn area) with its picks (10,000 at most, else only the focus), 50 at
+  most; going back shows it with them picked again. A run that shows the same filter is
+  no step, and a search typed or tiles clicked one after another are one step.
+- Tests: `test/follow.test.ts`.
+
+### Photos around a photo in time
+
+- **Around** under Captured in the details panel: **shoot**, ±15 min, ±1 h, ±3 h, **day**.
+  A click sets the filter's dates to that span (dropping a year, month, week or trip
+  pick, as a custom range does); the photo stays picked in it (the selection survives the
+  filter) and Back returns. Shift+click picks those photos among the ones shown instead,
+  within the filter's own dates (`within`); with none of them shown, the picks stay.
+  `t` shows the focused photo's shoot, Shift+T picks it (not in the viewer). The shoot
+  is the library's, not the filter's: with ★ 5 picked it shows the shoot's five-star
+  photos.
+- **The shoot** (`Library::session_around`, `sessions::session`): the library's photos in
+  time order (capture times only, sorted, the photo found by binary search), from the
+  photo back and forward while two in a row are no more than the gap apart (30 minutes,
+  1 to 1,440; *Settings › Map & places*). Hidden, binned and deleted photos take no part,
+  so they join no shoots; for a photo that is one of them, all photos do. A photo with
+  no capture time says so. Spans and the day are worked out in the window
+  (`lib/around.ts`, with `dayOf`/`dayStart` moved there from App.svelte); the day is the
+  local one, 23 or 25 hours on a clock change.
+- The Dates chip shows times for a span that is not whole days, one time for a one-photo
+  shoot.
+- Tests: `sessions::tests`, `a_photo_s_session_is_the_photos_taken_around_it_without_a_long_gap`,
+  `a_session_leaves_out_hidden_photos_unless_it_is_one`, `test/around.test.ts` (with a
+  fixed time zone for the clock changes).
+
 ### Correcting suggestions, and lessons for the prompt
 
 - **On the card:** each place level is a box with the model's name, to write another; the
