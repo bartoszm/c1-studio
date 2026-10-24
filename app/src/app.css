@@ -424,6 +424,8 @@ footer {
 .info-panel .sep { margin: 0 4px; color: var(--muted); }
 .info-panel .muted, .info-panel .hint { color: var(--muted); }
 .link { padding: 0; text-align: left; overflow-wrap: anywhere; }
+/* Photos around this one: its shoot, spans and day, side by side. */
+.info-panel dd.around { display: flex; flex-wrap: wrap; gap: 0 10px; }
 .link:hover { text-decoration: underline; color: #fff; }
 
 footer .queue {

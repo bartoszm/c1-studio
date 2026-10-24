@@ -656,6 +656,8 @@ export type TripEdit =
 export const trips = (filter: Filter) => invoke<TripList>("trips", { filter });
 /** Photos per day under `filter`: [local midnight in ms, count], in date order. */
 export const timeline = (filter: Filter) => invoke<[number, number][]>("timeline", { filter });
+/** The span of the shoot the photo at `row` is part of: no two photos more than `gapMs` apart. */
+export const sessionAround = (row: number, gapMs: number) => invoke<TimeRange | null>("session_around", { row, gapMs });
 /** A photo on a route: when and where it was taken. */
 export type RoutePoint = { at: number; lat: number; lon: number; row: number };
 /** The photos `filter` selects that have a position, in the order they were taken. */

@@ -26,7 +26,7 @@ use crate::edits::{
     self, Before, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key,
 };
 use crate::facets::{Counts, FacetCollector};
-use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, Trashed};
+use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, TimeRange, Trashed};
 use crate::looks::{Look, Looks, Record};
 use crate::marks::MarkBook;
 use crate::matching::{self, MatchSpec, Measures};
@@ -1752,6 +1752,18 @@ impl Library {
         let mut out: Vec<(i64, usize)> = days.into_iter().collect();
         out.sort_unstable();
         Ok(out)
+    }
+
+    /// The span of the shoot the photo at `row` belongs to: the photos of the library taken
+    /// one after another around it, no two more than `gap_ms` apart. None for a photo with
+    /// no capture time.
+    pub fn session_around(&self, row: u64, gap_ms: i64) -> anyhow::Result<Option<TimeRange>> {
+        let mut taken = self.taken(&Filter::default())?;
+        taken.sort_by_key(|t| (t.at, t.row));
+        let Some(at) = taken.iter().position(|t| t.row == row) else { return Ok(None) };
+        let times: Vec<i64> = taken.iter().map(|t| t.at).collect();
+        let (from, to) = crate::trips::session(&times, at, gap_ms);
+        Ok(Some(TimeRange { from: Some(from), to: Some(to) }))
     }
 
     /// The photos `filter` selects that have a position and a capture time, in the order

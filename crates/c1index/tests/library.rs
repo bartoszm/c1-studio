@@ -1712,6 +1712,24 @@ fn trip_time(n: u32, hour: i64) -> i64 {
     1_767_225_600_000 + i64::from((n - 1) / 3) * 86_400_000 + hour * 3_600_000
 }
 
+#[test]
+fn a_photo_s_session_is_the_photos_taken_around_it_without_a_long_gap() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    // Three photos a day, at 10, 12 and 14.
+    lib.sync(&MemorySource::new("mem", trip_photos(), vec![])).unwrap();
+    let hour = 3_600_000;
+    let row = row_of(&lib, 5);
+    let span = |from: i64, to: i64| Some(TimeRange { from: Some(from), to: Some(to) });
+    assert_eq!(
+        lib.session_around(row, 2 * hour).unwrap(),
+        span(trip_time(4, 10), trip_time(6, 14)),
+        "its day's photos"
+    );
+    assert_eq!(lib.session_around(row, hour).unwrap(), span(trip_time(5, 12), trip_time(5, 12)), "alone");
+    assert_eq!(lib.session_around(row, 24 * hour).unwrap(), span(trip_time(1, 10), trip_time(30, 14)), "nights joined");
+}
+
 /// Photos 1..=30 over ten days: 1-9 in Kraków, 10-21 in Tokyo (one of them rated 5),
 /// 22-30 in Kraków again.
 fn trip_photos() -> Vec<Photo> {
