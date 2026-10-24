@@ -42,7 +42,7 @@
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, followStep, keptPicks, sameRows, wantedRows, type Picks } from "./lib/batch";
   import { followFilter } from "./lib/follow";
-  import { aroundRange, wholeDays, within, type Around } from "./lib/around";
+  import { aroundRange, dayOf, dayStart, isEmpty, wholeDays, within, type Around } from "./lib/around";
   import { Trail, type Shown } from "./lib/navigation";
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
   import { binNote, deleteAction, withBin } from "./lib/bin";
@@ -1652,20 +1652,7 @@
     run();
   }
 
-  // Range ends are local days, `YYYY-MM-DD` as date inputs give them.
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const dayOf = (ms: number) => {
-    const d = new Date(ms);
-    return `${String(d.getFullYear()).padStart(4, "0")}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-  /** Midnight starting the day, `after` days on (setFullYear: `new Date` reads years below 100 as 19xx). */
-  function dayStart(day: string, after = 0) {
-    const [y, m, d] = day.split("-").map(Number);
-    const at = new Date(0);
-    at.setFullYear(y, m - 1, d + after);
-    at.setHours(0, 0, 0, 0);
-    return at.getTime();
-  }
+  // Range ends are local days (`dayOf`, `dayStart` in lib/around.ts).
   let rangeFrom = $derived(filter.captured?.from === undefined ? "" : dayOf(filter.captured.from));
   let rangeTo = $derived(filter.captured?.to === undefined ? "" : dayOf(filter.captured.to));
 
@@ -1939,7 +1926,7 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
-    else if (key === "t" && !e.repeat) aroundFocused(e.shiftKey);
+    else if (key === "t" && !e.repeat && !viewing) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
@@ -1963,12 +1950,12 @@
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
   }
 
-  /** `t`: the shoot of the photo focused (Shift: picked among those shown). */
-  async function aroundFocused(select: boolean) {
+  /** `t`: the shoot of the photo focused (Shift: picked among those shown). Not in the
+   *  viewer: the grid's photos would change under the photo shown. */
+  function aroundFocused(select: boolean) {
     const row = selected === null ? undefined : focusRow;
-    if (row === undefined) return;
-    const at = (await api.photo(row).catch(() => null))?.captured_at;
-    if (at != null) await showAround(row, at, "session", select);
+    if (row === undefined) return note("Pick a photo to see its shoot");
+    return showAround(row, null, "session", select);
   }
 
   // Links in the info panel: filter by what was clicked.
@@ -2001,21 +1988,32 @@
     for (let i = 1; i < parts.length; i++) expanded.add("p:" + parts.slice(0, i).join("|"));
   }
   /**
-   * The photos taken around a photo: its shoot, a span either side, or its day. Shown as the
-   * filter's dates (the photo stays picked in them), or with `select` picked among the
-   * photos shown now.
+   * The photos taken around a photo (taken at `at`, needed for all but the shoot): its
+   * shoot, a span either side, or its day. Shown as the filter's dates (the photo stays
+   * picked in them), or with `select` picked among the photos shown now.
+   *
+   * On purpose: the span replaces a year, month, week or trip pick (as a custom range does;
+   * Back returns to it) and keeps every other pick, and the shoot is worked out over the
+   * whole library, not the filter: with ★ 5 picked, it is the shoot's five-star photos.
    */
-  async function showAround(row: number, at: number, what: Around, select: boolean) {
+  async function showAround(row: number, at: number | null, what: Around, select: boolean) {
     try {
-      const range = what === "session" ? await api.sessionAround(row, settings.sessionGap * 60_000) : aroundRange(at, what);
-      if (!range) return;
+      const range =
+        what === "session" ? await api.sessionAround(row, settings.sessionGap * 60_000)
+        : at === null ? null
+        : aroundRange(at, what);
+      if (!range) return note("No capture time for this photo");
       if (!select) {
         filter = { ...filter, captured: range, trip: undefined, year: undefined, month: undefined, week: undefined };
         return run();
       }
       const f = $state.snapshot(filter);
-      const rows = (await api.query(asking({ ...f, captured: within(f.captured, range) }), { sort: sortBy })).rows;
+      const both = within(f.captured, range);
+      const rows = isEmpty(both) ? [] : (await api.query(asking({ ...f, captured: both }), { sort: sortBy })).rows;
+      // None of them shown: the photos picked stay picked.
+      if (!rows.length) return note("None of the photos around it are among those shown");
       picked.clear();
+      carried = null;
       for (const r of rows) picked.add(r);
       note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} picked around ${rows.length === 1 ? "it" : "this one"}`);
     } catch (e) {
@@ -2152,6 +2150,7 @@
     if (r.from !== undefined && r.to !== undefined && !wholeDays(r)) {
       // Photos around one (a shoot, an hour either side): the times say more than the day.
       const time = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+      if (r.from === r.to) return `${day(r.from)} ${time(r.from)}`;
       return day(r.from) === day(r.to)
         ? `${day(r.from)} ${time(r.from)} – ${time(r.to)}`
         : `${day(r.from)} ${time(r.from)} – ${day(r.to)} ${time(r.to)}`;

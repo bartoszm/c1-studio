@@ -570,36 +570,9 @@ impl TripBook {
     }
 }
 
-/// The shoot the photo taken at `times[at]` belongs to: the photos before and after it taken
-/// one after another, no two more than `gap` ms apart. `times` is in time order; returns
-/// the first and last time.
-pub fn session(times: &[i64], at: usize, gap: i64) -> (i64, i64) {
-    let mut lo = at;
-    while lo > 0 && times[lo] - times[lo - 1] <= gap {
-        lo -= 1;
-    }
-    let mut hi = at;
-    while hi + 1 < times.len() && times[hi + 1] - times[hi] <= gap {
-        hi += 1;
-    }
-    (times[lo], times[hi])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_session_runs_while_photos_follow_within_the_gap() {
-        let min = 60_000;
-        let times = [0, 10 * min, 25 * min, 90 * min, 95 * min, 200 * min];
-        assert_eq!(session(&times, 1, 30 * min), (0, 25 * min));
-        assert_eq!(session(&times, 0, 30 * min), (0, 25 * min));
-        assert_eq!(session(&times, 4, 30 * min), (90 * min, 95 * min));
-        // Alone, it is its own session; a wider gap joins the others.
-        assert_eq!(session(&times, 5, 30 * min), (200 * min, 200 * min));
-        assert_eq!(session(&times, 5, 120 * min), (0, 200 * min));
-    }
 
     const T0: i64 = 1_767_225_600_000; // 2026-01-01 00:00 UTC
 

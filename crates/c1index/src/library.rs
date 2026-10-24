@@ -1774,16 +1774,23 @@ impl Library {
         Ok(out)
     }
 
-    /// The span of the shoot the photo at `row` belongs to: the photos of the library taken
-    /// one after another around it, no two more than `gap_ms` apart. None for a photo with
-    /// no capture time.
+    /// The span of the shoot the photo at `row` belongs to: the photos taken one after another
+    /// around it, no two more than `gap_ms` apart. The photos are the library's, whatever the
+    /// filter on screen, but those hidden, in the trash or deleted take no part, so they never
+    /// join two shoots; for a photo that is one of them, all photos do. None for a photo with
+    /// no capture time, or no photo at `row`.
     pub fn session_around(&self, row: u64, gap_ms: i64) -> anyhow::Result<Option<TimeRange>> {
-        let mut taken = self.taken(&Filter::default())?;
-        taken.sort_by_key(|t| (t.at, t.row));
-        let Some(at) = taken.iter().position(|t| t.row == row) else { return Ok(None) };
-        let times: Vec<i64> = taken.iter().map(|t| t.at).collect();
-        let (from, to) = crate::trips::session(&times, at, gap_ms);
-        Ok(Some(TimeRange { from: Some(from), to: Some(to) }))
+        let everything =
+            Filter { trashed: Trashed::Include, hidden: Hidden::Include, bin: Bin::Include, ..Filter::default() };
+        for filter in [Filter::default(), everything] {
+            let taken = self.capture_times(&filter)?;
+            let Some(&(at, _)) = taken.iter().find(|t| t.1 == row) else { continue };
+            let mut times: Vec<i64> = taken.into_iter().map(|t| t.0).collect();
+            times.sort_unstable();
+            // Photos taken at the same moment are no gap apart: any of them stands for it.
+            return Ok(crate::sessions::session(&times, times.partition_point(|&t| t < at), gap_ms));
+        }
+        Ok(None)
     }
 
     /// The photos `filter` selects that have a position and a capture time, in the order
@@ -1911,6 +1918,26 @@ impl Library {
     }
 
     /// The photos `filter` selects that have a capture time.
+    /// When each photo `filter` selects was taken, with its row; those with no capture time
+    /// are left out. In no order.
+    fn capture_times(&self, filter: &Filter) -> anyhow::Result<Vec<(i64, u64)>> {
+        let query = self.compile(filter)?;
+        let searcher = self.reader.searcher();
+        let docs = searcher.search(query.as_ref(), &DocSetCollector)?;
+        let mut columns = Vec::new();
+        for segment in searcher.segment_readers() {
+            let fast = segment.fast_fields();
+            columns.push((fast.i64("captured_sort")?, fast.u64("row")?));
+        }
+        Ok(docs
+            .iter()
+            .filter_map(|a| {
+                let (captured, row) = &columns[a.segment_ord as usize];
+                Some((captured.first(a.doc_id).and_then(schema::captured_of_sort_key)?, row.first(a.doc_id)?))
+            })
+            .collect())
+    }
+
     fn taken(&self, filter: &Filter) -> anyhow::Result<Vec<Taken>> {
         let query = self.compile(filter)?;
         let searcher = self.reader.searcher();

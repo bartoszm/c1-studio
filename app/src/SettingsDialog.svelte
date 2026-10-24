@@ -3,6 +3,7 @@
   import { source } from "./lib/source.svelte";
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
+  import { SESSION_GAP_MAX, sessionGap } from "./lib/around";
   import ClassSettings from "./ClassSettings.svelte";
   import AiProviderSettings from "./AiProviderSettings.svelte";
 
@@ -179,9 +180,13 @@
       <input
         type="number"
         min="1"
-        max="1440"
+        max={SESSION_GAP_MAX}
         value={settings.sessionGap}
-        onchange={(e) => { const n = Math.round(+e.currentTarget.value); if (n >= 1) settings.sessionGap = n; }}
+        onchange={(e) => {
+          // Kept within 1 to 1440; the box shows what was kept, also when the text was not a number.
+          settings.sessionGap = sessionGap(e.currentTarget.value) ?? settings.sessionGap;
+          e.currentTarget.value = String(settings.sessionGap);
+        }}
       />
       <span>
         Minutes between two photos that end a shoot

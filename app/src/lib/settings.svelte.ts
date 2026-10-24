@@ -1,7 +1,7 @@
 // The app's own preferences, the same for every catalog: kept in the webview's storage
 // next to the sidebar's layout.
 
-import { SESSION_GAP } from "./around";
+import { SESSION_GAP, sessionGap } from "./around";
 import { mergeSections, type SectionPref } from "./sections";
 
 export type Settings = {
@@ -29,7 +29,7 @@ function load(): Settings {
     onlineMap: saved.onlineMap !== false,
     approxPlaces: saved.approxPlaces !== false,
     fillPlaces: saved.fillPlaces === true,
-    sessionGap: typeof saved.sessionGap === "number" && saved.sessionGap > 0 ? saved.sessionGap : SESSION_GAP,
+    sessionGap: typeof saved.sessionGap === "number" ? (sessionGap(saved.sessionGap) ?? SESSION_GAP) : SESSION_GAP,
   };
 }
 
