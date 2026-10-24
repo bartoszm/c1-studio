@@ -1,6 +1,7 @@
 // The app's own preferences, the same for every catalog: kept in the webview's storage
 // next to the sidebar's layout.
 
+import { SESSION_GAP, sessionGap } from "./around";
 import { mergeSections, type SectionPref } from "./sections";
 
 export type Settings = {
@@ -12,6 +13,8 @@ export type Settings = {
   approxPlaces: boolean;
   /** Photos given a position get their empty place fields filled from it, without asking. */
   fillPlaces: boolean;
+  /** A gap longer than this (minutes) between two photos ends a shoot: "shoot" under Captured. */
+  sessionGap: number;
 };
 
 function load(): Settings {
@@ -26,6 +29,7 @@ function load(): Settings {
     onlineMap: saved.onlineMap !== false,
     approxPlaces: saved.approxPlaces !== false,
     fillPlaces: saved.fillPlaces === true,
+    sessionGap: typeof saved.sessionGap === "number" ? (sessionGap(saved.sessionGap) ?? SESSION_GAP) : SESSION_GAP,
   };
 }
 

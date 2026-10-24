@@ -1675,6 +1675,30 @@ country) and 68k have neither.
   no step, and a search typed or tiles clicked one after another are one step.
 - Tests: `test/follow.test.ts`.
 
+### Photos around a photo in time
+
+- **Around** under Captured in the details panel: **shoot**, ±15 min, ±1 h, ±3 h, **day**.
+  A click sets the filter's dates to that span (dropping a year, month, week or trip
+  pick, as a custom range does); the photo stays picked in it (the selection survives the
+  filter) and Back returns. Shift+click picks those photos among the ones shown instead,
+  within the filter's own dates (`within`); with none of them shown, the picks stay.
+  `t` shows the focused photo's shoot, Shift+T picks it (not in the viewer). The shoot
+  is the library's, not the filter's: with ★ 5 picked it shows the shoot's five-star
+  photos.
+- **The shoot** (`Library::session_around`, `sessions::session`): the library's photos in
+  time order (capture times only, sorted, the photo found by binary search), from the
+  photo back and forward while two in a row are no more than the gap apart (30 minutes,
+  1 to 1,440; *Settings › Map & places*). Hidden, binned and deleted photos take no part,
+  so they join no shoots; for a photo that is one of them, all photos do. A photo with
+  no capture time says so. Spans and the day are worked out in the window
+  (`lib/around.ts`, with `dayOf`/`dayStart` moved there from App.svelte); the day is the
+  local one, 23 or 25 hours on a clock change.
+- The Dates chip shows times for a span that is not whole days, one time for a one-photo
+  shoot.
+- Tests: `sessions::tests`, `a_photo_s_session_is_the_photos_taken_around_it_without_a_long_gap`,
+  `a_session_leaves_out_hidden_photos_unless_it_is_one`, `test/around.test.ts` (with a
+  fixed time zone for the clock changes).
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that

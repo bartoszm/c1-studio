@@ -3,6 +3,7 @@
   import { source } from "./lib/source.svelte";
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
+  import { SESSION_GAP_MAX, sessionGap } from "./lib/around";
   import ClassSettings from "./ClassSettings.svelte";
   import AiProviderSettings from "./AiProviderSettings.svelte";
 
@@ -171,6 +172,27 @@
         Fill in the place of photos I put on the map
         <small class="muted">
           Empty city, region and country fields are filled from the new position without asking. Off, the app offers to.
+        </small>
+      </span>
+    </label>
+    <h3>Photos around a photo</h3>
+    <label class="option">
+      <input
+        type="number"
+        min="1"
+        max={SESSION_GAP_MAX}
+        value={settings.sessionGap}
+        onchange={(e) => {
+          // Kept within 1 to 1440; the box shows what was kept, also when the text was not a number.
+          settings.sessionGap = sessionGap(e.currentTarget.value) ?? settings.sessionGap;
+          e.currentTarget.value = String(settings.sessionGap);
+        }}
+      />
+      <span>
+        Minutes between two photos that end a shoot
+        <small class="muted">
+          "shoot" under Captured in the details panel shows the photos taken one after another around the photo, with no gap
+          longer than this between two of them.
         </small>
       </span>
     </label>
