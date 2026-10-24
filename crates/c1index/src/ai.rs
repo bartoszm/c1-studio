@@ -7,7 +7,7 @@
 //! outlive the store, which is wiped when the model changes. Photos are named by their
 //! key, which a rebuilt store keeps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Context;
@@ -22,8 +22,9 @@ const SUGGESTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("suggesti
 const SUGGESTIONS_V1: TableDefinition<&str, &[u8]> = TableDefinition::new("suggestions");
 /// sequence → postcard (photo key, [`RunRecord`]): every call, never rewritten.
 const RECORDS: TableDefinition<u64, &[u8]> = TableDefinition::new("records");
-/// sequence → JSON [`Review`]: each suggestion accepted or rejected, until the user removes
-/// it. JSON, not postcard: fields can be added without moving the old ones over.
+/// sequence → JSON [`Review`]: the last time each photo's suggestion was accepted or
+/// rejected, until the user removes it. JSON, not postcard, with every field defaulted:
+/// fields can be added without moving the old ones over.
 const REVIEWS: TableDefinition<u64, &[u8]> = TableDefinition::new("reviews");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,7 +66,8 @@ pub struct Taken {
 }
 
 /// A suggestion reviewed: what was suggested, and what the user did with it.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Review {
     /// Epoch milliseconds of the review.
     pub at: i64,
@@ -165,8 +167,11 @@ impl SuggestionBook {
         Ok(())
     }
 
-    /// Sets the status of the photos' suggestions; photos without one are skipped.
-    pub fn set_status(&self, keys: &[&str], status: Status) -> anyhow::Result<()> {
+    /// Sets the status of the photos' suggestions (photos without one are skipped) and keeps
+    /// `reviews`, in one go: a review is never kept for a status that was not set. A photo's
+    /// review replaces the one it had (reviewed again: the last word counts), each under the
+    /// next number.
+    pub fn settle(&self, keys: &[&str], status: Status, reviews: &[Review]) -> anyhow::Result<()> {
         let tx = self.db.begin_write()?;
         {
             let mut table = tx.open_table(SUGGESTIONS)?;
@@ -178,39 +183,41 @@ impl SuggestionBook {
                 entry.status = status;
                 table.insert(*key, postcard::to_stdvec(&entry)?.as_slice())?;
             }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Keeps reviews, each under the next number.
-    pub fn add_reviews(&self, reviews: &[Review]) -> anyhow::Result<()> {
-        if reviews.is_empty() {
-            return Ok(());
-        }
-        let tx = self.db.begin_write()?;
-        {
-            let mut table = tx.open_table(REVIEWS)?;
-            let first = table.last()?.map(|(k, _)| k.value() + 1).unwrap_or(0);
-            for (seq, review) in (first..).zip(reviews) {
-                table.insert(seq, serde_json::to_vec(review)?.as_slice())?;
+            if !reviews.is_empty() {
+                let mut table = tx.open_table(REVIEWS)?;
+                let again: HashSet<&str> = reviews.iter().map(|r| r.key.as_str()).collect();
+                // Only the key is read of the others.
+                #[derive(Deserialize)]
+                struct Keyed {
+                    #[serde(default)]
+                    key: String,
+                }
+                table.retain(|_, bytes| {
+                    serde_json::from_slice::<Keyed>(bytes).map_or(true, |r| !again.contains(r.key.as_str()))
+                })?;
+                let first = table.last()?.map(|(k, _)| k.value() + 1).unwrap_or(0);
+                for (seq, review) in (first..).zip(reviews) {
+                    table.insert(seq, serde_json::to_vec(review)?.as_slice())?;
+                }
             }
         }
         tx.commit()?;
         Ok(())
     }
 
-    /// Every review kept, by its number, newest first. One that no longer reads is left out.
-    pub fn reviews(&self) -> anyhow::Result<Vec<(u64, Review)>> {
+    /// Every review kept, by its number, newest first, and how many could not be read.
+    pub fn reviews(&self) -> anyhow::Result<(Vec<(u64, Review)>, usize)> {
         let tx = self.db.begin_read()?;
         let mut out = Vec::new();
+        let mut unreadable = 0;
         for entry in tx.open_table(REVIEWS)?.iter()?.rev() {
             let (seq, bytes) = entry?;
-            if let Ok(review) = serde_json::from_slice::<Review>(bytes.value()) {
-                out.push((seq.value(), review));
+            match serde_json::from_slice::<Review>(bytes.value()) {
+                Ok(review) => out.push((seq.value(), review)),
+                Err(_) => unreadable += 1,
             }
         }
-        Ok(out)
+        Ok((out, unreadable))
     }
 
     pub fn delete_reviews(&self, seqs: &[u64]) -> anyhow::Result<()> {
@@ -343,7 +350,7 @@ mod tests {
         assert_eq!(calls, 3);
         assert!((cost - 0.005).abs() < 1e-12);
 
-        book.set_status(&["c1:1", "c1:9"], Status::Rejected).unwrap();
+        book.settle(&["c1:1", "c1:9"], Status::Rejected, &[]).unwrap();
         assert_eq!(book.get("c1:1").unwrap().unwrap().status, Status::Rejected);
     }
 

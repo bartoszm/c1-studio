@@ -14,6 +14,9 @@ use crate::edits::Origin;
 use crate::places::Coarse;
 use crate::schema;
 
+/// The key a refine call is recorded under: it is about no photo.
+const REFINE_KEY: &str = "refine";
+
 /// How likely a place level the gazetteer does not know (or knows elsewhere) is left at
 /// most: a hint for the review, never a tick by default.
 const DOUBTED: f32 = 0.5;
@@ -246,6 +249,11 @@ impl Library {
         self.suggestions.record(&key, record)
     }
 
+    /// Records a call about no photo (lessons refined), so its cost counts with the rest.
+    pub fn record_refine(&self, record: &RunRecord) -> anyhow::Result<()> {
+        self.suggestions.record(REFINE_KEY, record)
+    }
+
     /// Stored suggestions of photos in the library, with `status` or any, newest first.
     pub fn suggestions(&self, status: Option<Status>) -> anyhow::Result<Vec<(u64, Entry)>> {
         let all = self.suggestions.all()?;
@@ -261,38 +269,39 @@ impl Library {
     }
 
     /// Sets the status of the photos' suggestions. Rejecting one under review is kept as a
-    /// review too.
+    /// review too, in place of the photo's review before (it was reviewed again).
     pub fn set_suggestion_status(&self, rows: &[u64], status: Status) -> anyhow::Result<()> {
         let keys: Vec<String> = rows.iter().filter_map(|&r| self.key_of(r)).collect();
+        let mut reviews = Vec::new();
         if status == Status::Rejected {
-            let mut reviews = Vec::new();
             for key in &keys {
                 if let Some(entry) = self.suggestions.get(key)?.filter(|e| e.status == Status::Proposed) {
                     reviews.push(review_of(key.clone(), entry, Status::Rejected, None));
                 }
             }
-            self.suggestions.add_reviews(&reviews)?;
         }
-        self.suggestions.set_status(&keys.iter().map(String::as_str).collect::<Vec<_>>(), status)
+        self.suggestions.settle(&keys.iter().map(String::as_str).collect::<Vec<_>>(), status, &reviews)
     }
 
-    /// The suggestions reviewed, newest first, until removed: what lessons are drawn from.
-    pub fn reviews(&self) -> anyhow::Result<Vec<ReviewRow>> {
-        let list = self.suggestions.reviews()?;
+    /// The suggestions reviewed, newest first, until removed: what lessons are drawn from;
+    /// and how many reviews could not be read.
+    pub fn reviews(&self) -> anyhow::Result<(Vec<ReviewRow>, usize)> {
+        let (list, unreadable) = self.suggestions.reviews()?;
         let rows: HashMap<&str, u64> = self
             .store
             .rows_of(list.iter().map(|(_, r)| r.key.as_str()))?
             .into_iter()
             .map(|(row, k)| (k, row))
             .collect();
-        Ok(list
+        let list = list
             .iter()
             .map(|(seq, review)| ReviewRow {
                 seq: *seq,
                 row: rows.get(review.key.as_str()).copied(),
                 review: review.clone(),
             })
-            .collect())
+            .collect();
+        Ok((list, unreadable))
     }
 
     pub fn delete_reviews(&self, seqs: &[u64]) -> anyhow::Result<()> {
@@ -392,15 +401,16 @@ impl Library {
         )?;
         let changed = changed.into_inner().unwrap();
         let done: Vec<u64> = rows.iter().copied().filter(|r| !changed.contains(r)).collect();
+        let mut keys = Vec::new();
         let mut reviews = Vec::new();
         for &row in &done {
             let Some(key) = self.key_of(row) else { continue };
             if let Some(entry) = self.suggestions.get(&key)? {
-                reviews.push(review_of(key, entry, Status::Accepted, Some(Taken::from(by_row[&row]))));
+                reviews.push(review_of(key.clone(), entry, Status::Accepted, Some(Taken::from(by_row[&row]))));
             }
+            keys.push(key);
         }
-        self.suggestions.add_reviews(&reviews)?;
-        self.set_suggestion_status(&done, Status::Accepted)?;
+        self.suggestions.settle(&keys.iter().map(String::as_str).collect::<Vec<_>>(), Status::Accepted, &reviews)?;
         let mut changed: Vec<u64> = changed.into_iter().collect();
         changed.sort_unstable();
         Ok(Accepted { undo, changed })

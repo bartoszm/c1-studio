@@ -3,11 +3,11 @@
   import * as api from "./lib/api";
   import { SvelteSet } from "svelte/reactivity";
   import {
-    LEVELS, aboveOf, guessNames, levelOptions, percent, placeReplaces, placeTicks, takenPlace,
-    type Level, type Names, type PlaceTicks,
+    LEVELS, chooseName, guessNames, levelOptions, percent, placeIndex, placeReplaces, placeTicks, takenPlace,
+    type Level, type Names, type PlaceIndex, type PlaceTicks,
   } from "./lib/aiPlace";
   import { catalogPlaces } from "./lib/placeHints";
-  import { changes, chipText, digest, shows, type Shown as ReviewShown } from "./lib/reviews";
+  import { REFINE_LINES, changes, chipText, digest, shows, type Shown as ReviewShown } from "./lib/reviews";
   import { source } from "./lib/source.svelte";
   import type { Accept, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
@@ -213,11 +213,12 @@
     untrack(loadRows);
   });
   // While a run goes, new suggestions come in every few seconds at most, not once per
-  // photo; its end bumps `version`, which reads them all.
+  // photo; its end bumps `version`, which reads them all. Reviews do not change as photos
+  // are described: the Reviewed list is not read again for it.
   let pending: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     void describe?.done;
-    if (pending || !describe?.running) return;
+    if (pending || !describe?.running || show === "Reviewed") return;
     pending = setTimeout(() => {
       pending = undefined;
       loadRows();
@@ -252,34 +253,45 @@
   }
 
   // ---- correcting a card ---------------------------------------------------------------
-  /** The catalog's places (`place_tree` keys with counts): what the place boxes offer. */
-  let placeKeys = $state.raw<[string, number][]>([]);
-  $effect(() => {
-    catalogPlaces(version).then((k) => (placeKeys = k)).catch(() => {});
-  });
+  /** The catalog's places by level: what the place boxes offer. Read when a box is entered,
+   *  once per `version`. */
+  let places = $state.raw<PlaceIndex | null>(null);
+  let placesRead = -1;
+  function readPlaces() {
+    if (placesRead === version) return;
+    placesRead = version;
+    catalogPlaces(version).then((k) => (places = placeIndex(k))).catch(() => (placesRead = -1));
+  }
   /** The place box being typed in: its level's list offers names under the card's levels above. */
   let placeFocus = $state<{ row: number; level: Level } | null>(null);
   let placeOptions = $derived.by(() => {
     const f = placeFocus;
     const names = f && drafts[f.row]?.names;
-    return f && names ? levelOptions(placeKeys, f.level, names).slice(0, 300) : [];
+    return f && names && places ? levelOptions(places, f.level, names).slice(0, 300) : [];
   });
   function nameTyped(d: Draft, level: Level, value: string) {
     if (!d.names || !d.place) return;
     d.names[level] = value;
     d.place[level] = !!value.trim();
   }
-  /** A name picked (or typed and left): the levels above it follow the catalog's place with it. */
+  /** A name picked (or typed and left): written as the catalog writes it, and the levels
+   *  above it that still hold the model's names follow the catalog's place with it. */
   function nameChosen(d: Draft, r: SuggestionRow, level: Level, value: string) {
-    if (!d.names || !d.place || !value.trim()) return;
-    const up = aboveOf(placeKeys, level, value) ?? {};
-    for (const l of LEVELS) {
-      const name = up[l];
-      if (!name || d.names[l] === name) continue;
-      d.names[l] = name;
-      d.place[l] = (r.current?.place[l] ?? "") !== name;
-    }
+    const guess = r.suggestion.place;
+    if (!d.names || !d.place || !guess || !places || !value.trim()) return;
+    const chosen = chooseName(places, level, value, d.names, guessNames(guess));
+    if (!chosen) return;
+    d.names = chosen.names;
+    for (const l of chosen.filled) d.place[l] = (r.current?.place[l] ?? "") !== chosen.names[l];
   }
+  /** What is typed in a keyword box, while one is entered: its list offers matching keywords. */
+  let keywordTyped = $state<string | null>(null);
+  let keywordOptions = $derived.by(() => {
+    if (keywordTyped === null) return [];
+    const typed = keywordTyped.trim().toLowerCase();
+    const found = typed ? keywords.filter((k) => k.toLowerCase().includes(typed)) : keywords;
+    return found.slice(0, 300);
+  });
   function addKeyword(d: Draft, input: HTMLInputElement) {
     const path = input.value.split("|").map((l) => l.trim()).join("|");
     if (!path) return;
@@ -293,19 +305,45 @@
 
   // ---- what was reviewed, and lessons from it -----------------------------------------
   let reviews = $state.raw<api.Review[]>([]);
+  /** Reviews kept that could not be read (written by another version). */
+  let unreadable = $state(0);
   let reviewShown = $state<ReviewShown>("all");
   const ticked = new SvelteSet<number>();
-  let listed = $derived(reviews.filter((r) => shows(r, reviewShown)));
+  /** Each review with what was changed of it, worked out once. */
+  let analysed = $derived(reviews.map((r) => ({ r, list: changes(r) })));
+  const PARTS = [["all", "All"], ["edited", "Corrected"], ["rejected", "Rejected"], ["unchanged", "Accepted as suggested"]] as const;
+  let counts = $derived(
+    Object.fromEntries(PARTS.map(([k]) => [k, analysed.filter((a) => shows(a.r, k, a.list)).length])) as Record<ReviewShown, number>,
+  );
+  let listed = $derived(analysed.filter((a) => shows(a.r, reviewShown, a.list)));
   /** What refining is asked from: the ticked reviews, or all listed. */
-  let basis = $derived(ticked.size ? listed.filter((r) => ticked.has(r.seq)) : listed);
-  let basisLines = $derived(basis.map(digest).filter((l): l is string => !!l));
+  let basis = $derived(ticked.size ? listed.filter((a) => ticked.has(a.r.seq)) : listed);
+  /** Its corrections, a line each, newest first: the newest [REFINE_LINES] are sent. */
+  let corrections = $derived(
+    basis.flatMap((a) => {
+      const line = digest(a.r, a.list);
+      return line ? [{ at: a.r.at, line }] : [];
+    }),
+  );
+  let sent = $derived(corrections.slice(0, REFINE_LINES));
+  /** Suggestions accepted without a correction, of all kept: what the model got right. */
+  let unchanged = $derived(analysed.filter((a) => a.r.status === "Accepted" && !a.list.length).length);
+  /** How refining asks Claude with these settings, said before it does: a key is billed. */
+  let refineVia = $derived.by(() => {
+    if (!view) return "";
+    const access = view.settings.access;
+    if (access === "plan") return "Claude Code on your Claude plan";
+    if (view.key) return access === "gemini" ? "your Anthropic API key (billed; Gemini only describes)" : "your API key (billed)";
+    return access === "gemini" ? "Claude Code on your Claude plan, if signed in" : "an API key: none is stored";
+  });
   async function loadReviews() {
     const mine = asked;
     try {
-      const list = await api.aiReviews();
+      const got = await api.aiReviews();
       if (mine !== asked) return;
-      reviews = list;
-      const seqs = new Set(list.map((r) => r.seq));
+      reviews = got.reviews;
+      unreadable = got.unreadable;
+      const seqs = new Set(got.reviews.map((r) => r.seq));
       for (const s of [...ticked]) if (!seqs.has(s)) ticked.delete(s);
     } catch (e) {
       onerror(String(e));
@@ -315,7 +353,9 @@
     if (!seqs.length) return;
     try {
       await api.deleteAiReviews(seqs);
-      await loadReviews();
+      const gone = new Set(seqs);
+      reviews = reviews.filter((r) => !gone.has(r.seq));
+      for (const s of seqs) ticked.delete(s);
     } catch (e) {
       onerror(String(e));
     }
@@ -325,8 +365,11 @@
   async function refine() {
     refining = true;
     try {
-      const unchanged = basis.filter((r) => r.status === "Accepted" && !changes(r).length).length;
-      refined = await api.refineLessons(basisLines, unchanged);
+      // Corrections the lessons in use were drawn from are told apart from newer ones.
+      const since = view?.settings.lessons ? view.settings.lessons_at : null;
+      const newer = sent.filter((c) => since === null || c.at > since).map((c) => c.line);
+      const earlier = sent.filter((c) => since !== null && c.at <= since).map((c) => c.line);
+      refined = await api.refineLessons(newer, earlier, unchanged);
     } catch (e) {
       onerror(String(e));
     } finally {
@@ -576,10 +619,12 @@
         <button class="btn" disabled={!ticked.size} onclick={() => removeReviews([...ticked])}>Remove {ticked.size || ""}</button>
         <button
           class="btn primary"
-          disabled={refining || !basisLines.length}
-          title="Asks Claude to turn these corrections into lessons for the prompt; you read them before they are kept"
+          disabled={refining || !sent.length}
+          title="Asks Claude, with {refineVia}, to turn these corrections into lessons for the prompt; you read them before they are kept"
           onclick={refine}
-        >{refining ? "Asking Claude…" : `Refine the prompt from ${basisLines.length.toLocaleString()} correction${basisLines.length === 1 ? "" : "s"}…`}</button>
+        >{refining
+          ? `Asking Claude with ${refineVia}…`
+          : `Refine the prompt from ${sent.length < corrections.length ? `the ${sent.length.toLocaleString()} newest of ${corrections.length.toLocaleString()}` : sent.length.toLocaleString()} correction${corrections.length === 1 ? "" : "s"}…`}</button>
       </div>
     {:else if proposed.length}
       <div class="bulk">
@@ -600,6 +645,7 @@
       <section class="refine" aria-label="Lessons proposed">
         <h4>Lessons proposed</h4>
         {#if refined.rationale}<p class="muted">{refined.rationale}</p>{/if}
+        {#if refined.cut}<p class="warn">{refined.cut} more lesson{refined.cut === 1 ? "" : "s"} past the limit {refined.cut === 1 ? "was" : "were"} left out.</p>{/if}
         <div class="lessons">
           <div>
             <span class="muted">In use now</span>
@@ -619,9 +665,9 @@
     {/if}
     <div class="bar">
       <nav class="parts small">
-        {#each [["all", "All"], ["edited", "Corrected"], ["rejected", "Rejected"], ["unchanged", "Accepted as suggested"]] as const as [k, label] (k)}
+        {#each PARTS as [k, label] (k)}
           <button class:on={reviewShown === k} onclick={() => { reviewShown = k; ticked.clear(); }}>
-            {label} <span class="muted">{reviews.filter((r) => shows(r, k)).length.toLocaleString()}</span>
+            {label} <span class="muted">{counts[k].toLocaleString()}</span>
           </button>
         {/each}
       </nav>
@@ -630,17 +676,21 @@
           <input
             type="checkbox"
             checked={ticked.size === listed.length}
-            onchange={(e) => { ticked.clear(); if (e.currentTarget.checked) for (const r of listed) ticked.add(r.seq); }}
+            onchange={(e) => { ticked.clear(); if (e.currentTarget.checked) for (const a of listed) ticked.add(a.r.seq); }}
           /> all
         </label>
       {/if}
     </div>
+    {#if unreadable}
+      <p class="warn">{unreadable.toLocaleString()} review{unreadable === 1 ? "" : "s"} could not be read: kept by another version of the app.</p>
+    {/if}
     {#if !listed.length}
       <p class="muted empty">Nothing yet: suggestions you accept or reject are listed here, with what you changed.</p>
     {/if}
     <ul class="reviews">
-      {#each listed as r (r.seq)}
-        {@const list = changes(r)}
+      {#each listed as a (a.r.seq)}
+        {@const r = a.r}
+        {@const list = a.list}
         <li>
           <input type="checkbox" checked={ticked.has(r.seq)} onchange={(e) => (e.currentTarget.checked ? ticked.add(r.seq) : ticked.delete(r.seq))} />
           {#if r.row !== null}
@@ -667,7 +717,7 @@
     </p>
   {/if}
   <datalist id="ai-keyword-list">
-    {#each keywords as k (k)}<option value={k}></option>{/each}
+    {#each keywordOptions as k (k)}<option value={k}></option>{/each}
   </datalist>
   {#each LEVELS as level (level)}
     <datalist id="ai-place-{level}">
@@ -738,7 +788,10 @@
                   list="ai-keyword-list"
                   placeholder="+ keyword"
                   title="Add a keyword the model missed: Enter adds it"
-                  onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addKeyword(d, e.currentTarget); } }}
+                  onfocus={(e) => (keywordTyped = e.currentTarget.value)}
+                  oninput={(e) => (keywordTyped = e.currentTarget.value)}
+                  onblur={() => (keywordTyped = null)}
+                  onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addKeyword(d, e.currentTarget); keywordTyped = ""; } }}
                 />
               {/if}
             </div>
@@ -764,7 +817,7 @@
                       placeholder={level}
                       value={names[level]}
                       size={Math.max(6, Math.min(22, names[level].length + 1))}
-                      onfocus={() => (placeFocus = { row: r.row, level })}
+                      onfocus={() => { readPlaces(); placeFocus = { row: r.row, level }; }}
                       oninput={(e) => nameTyped(d, level, e.currentTarget.value)}
                       onchange={(e) => nameChosen(d, r, level, e.currentTarget.value)}
                     />

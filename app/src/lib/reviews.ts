@@ -4,6 +4,7 @@
 
 import type { Review, Suggestion } from "./api";
 import { LEVELS, type Level } from "./aiPlace";
+import { looseKey } from "./countries";
 
 export type Change =
   | { kind: "place"; level: Level; from: string; to: string }
@@ -17,8 +18,10 @@ export type Change =
 const trim = (v: string | null | undefined) => v?.trim() ?? "";
 const leaf = (path: string) => path.split("|").at(-1) ?? path;
 
-/** What the user changed of a suggestion. Nothing for one accepted as it was; fields left
- *  untaken are no correction (the photo had its own, or the level was unsure). */
+/** What the user changed of a suggestion. Nothing for one accepted as it was. Fields left
+ *  untaken are no correction (the photo had its own, or the level was unsure), nor are new
+ *  keywords left unticked: they start unticked, so leaving them says nothing. A name written
+ *  only another way (case, accents) is no correction either. */
 export function changes(r: Review): Change[] {
   if (r.status === "Rejected") return [{ kind: "rejected" }];
   const t = r.taken;
@@ -28,7 +31,7 @@ export function changes(r: Review): Change[] {
   for (const level of LEVELS) {
     const from = trim(s.place?.[level]?.name);
     const to = trim(t.place[level]);
-    if (to && to !== from) out.push({ kind: "place", level, from, to });
+    if (to && looseKey(to) !== looseKey(from)) out.push({ kind: "place", level, from, to });
   }
   const suggested = new Set([...s.keywords, ...s.keywords_new].map((k) => k.toLowerCase()));
   const taken = new Set(t.keywords.map((k) => k.toLowerCase()));
@@ -59,7 +62,9 @@ export function chipText(c: Change): string {
 }
 
 const cut = (text: string, n = 300) => (text.length > n ? `${text.slice(0, n - 1)}…` : text);
-const quote = (text: string) => `"${cut(text)}"`;
+/** Text as quoted in a line: on one line, its quotes escaped, so a caption cannot read as
+ *  more lines (more corrections) to the model refining. */
+const quote = (text: string) => JSON.stringify(cut(text.replace(/\s+/g, " ").trim()));
 
 /** What the model suggested, briefly: for a rejected suggestion, what was turned down. */
 function suggested(s: Suggestion): string {
@@ -73,9 +78,8 @@ function suggested(s: Suggestion): string {
   ].filter(Boolean).join("; ");
 }
 
-/** One line for the model refining lessons. */
-export function digest(r: Review): string | null {
-  const list = changes(r);
+/** One line for the model refining lessons; `list` is the review's `changes`. */
+export function digest(r: Review, list: Change[] = changes(r)): string | null {
   if (!list.length) return null;
   if (list[0].kind === "rejected") return `- Rejected as a whole: ${suggested(r.suggestion) || "(empty)"}`;
   const parts = list.map((c) => {
@@ -93,9 +97,13 @@ export function digest(r: Review): string | null {
 }
 
 export type Shown = "all" | "edited" | "rejected" | "unchanged";
-export function shows(r: Review, which: Shown): boolean {
+/** Whether a review is listed under `which`; `list` is its `changes`. */
+export function shows(r: Review, which: Shown, list: Change[] = changes(r)): boolean {
   if (which === "all") return true;
   if (which === "rejected") return r.status === "Rejected";
-  const edited = r.status === "Accepted" && changes(r).length > 0;
+  const edited = r.status === "Accepted" && list.length > 0;
   return which === "edited" ? edited : r.status === "Accepted" && !edited;
 }
+
+/** How many corrections refining sends at most: the newest. */
+export const REFINE_LINES = 200;

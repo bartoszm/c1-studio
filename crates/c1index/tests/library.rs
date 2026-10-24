@@ -2512,7 +2512,7 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
     assert!(lib.suggestions(Some(Status::Proposed)).unwrap().is_empty());
 
     // The review is kept with what was taken; one rejected too, once, and they go when removed.
-    let reviews = lib.reviews().unwrap();
+    let reviews = lib.reviews().unwrap().0;
     assert_eq!(reviews.len(), 1);
     assert_eq!((reviews[0].row, reviews[0].review.status), (Some(row), Status::Accepted));
     let taken = reviews[0].review.taken.as_ref().unwrap();
@@ -2522,12 +2522,25 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
     lib.put_suggestion(other, &entry, &c1ai::RunRecord::default()).unwrap();
     lib.set_suggestion_status(&[other], Status::Rejected).unwrap();
     lib.set_suggestion_status(&[other], Status::Rejected).unwrap();
-    let reviews = lib.reviews().unwrap();
-    assert_eq!(reviews.len(), 2, "rejected once is one review");
+    let (reviews, unreadable) = lib.reviews().unwrap();
+    assert_eq!((reviews.len(), unreadable), (2, 0), "rejected once is one review");
     assert_eq!((reviews[0].row, reviews[0].review.status), (Some(other), Status::Rejected), "newest first");
     assert!(reviews[0].review.taken.is_none());
+    // Reviewed again and accepted: the accept replaces the reject, it does not sit beside it.
+    lib.set_suggestion_status(&[other], Status::Proposed).unwrap();
+    let pick = c1index::Accept { row: other, keywords: vec!["street".into()], ..c1index::Accept::default() };
+    lib.accept_suggestions(&[pick]).unwrap();
+    let reviews = lib.reviews().unwrap().0;
+    assert_eq!(reviews.len(), 2);
+    assert_eq!((reviews[0].row, reviews[0].review.status), (Some(other), Status::Accepted));
     lib.delete_reviews(&[reviews[0].seq]).unwrap();
-    assert_eq!(lib.reviews().unwrap().len(), 1);
+    assert_eq!(lib.reviews().unwrap().0.len(), 1);
+    // A refine's call counts with the photos' calls.
+    let (calls, _) = lib.ai_spent().unwrap();
+    lib.record_refine(&c1ai::RunRecord { cost: 0.25, ..c1ai::RunRecord::default() }).unwrap();
+    let (more, spent) = lib.ai_spent().unwrap();
+    assert_eq!(more, calls + 1);
+    assert!(spent >= 0.25);
 }
 
 /// A caption written after the review showed the photo is not replaced by accepting: the

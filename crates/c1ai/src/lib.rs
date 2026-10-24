@@ -102,6 +102,7 @@ pub struct RawPoint {
 /// A suggestion for one photo, checked: empty texts are `None`, numbers are in range,
 /// keywords are split into ones the catalog has (by their full path) and new ones.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Suggestion {
     pub caption_en: Option<String>,
     pub caption_pl: Option<String>,
@@ -124,6 +125,7 @@ pub struct Suggestion {
 /// down to a location (a district, a landmark), with the probability that it is right, and
 /// a point. A deeper level is never more likely than the one above it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PlaceGuess {
     pub country: Option<Guess>,
     pub state: Option<Guess>,

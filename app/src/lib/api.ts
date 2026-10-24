@@ -757,6 +757,8 @@ export type AiSettings = {
   instructions: string | null;
   /** Lessons from the corrections in the review (or written by hand), after the instructions. */
   lessons: string | null;
+  /** When the lessons last changed, Unix ms. */
+  lessons_at: number | null;
   /** A place level guessed at least this likely (%) starts ticked where the photo has none. */
   place_tick: number;
   /** The Gemini model agy is asked for. */
@@ -924,13 +926,16 @@ export type Review = {
   suggestion: Suggestion;
   taken: Taken | null;
 };
-export const aiReviews = () => invoke<Review[]>("ai_reviews");
+/** The reviews, newest first, and how many could not be read. */
+export const aiReviews = () => invoke<{ reviews: Review[]; unreadable: number }>("ai_reviews");
 export const deleteAiReviews = (seqs: number[]) => invoke<void>("delete_ai_reviews", { seqs });
-/** Lessons proposed from the corrections, to replace those in use, and why. */
-export type Refined = { lessons: string; rationale: string };
-/** Asks Claude for lessons from `reviews` (a line each) and the count accepted as they were. */
-export const refineLessons = (reviews: string[], unchanged: number) =>
-  invoke<Refined>("refine_lessons", { reviews, unchanged });
+/** Lessons proposed from the corrections, to replace those in use, and why; `cut` lessons
+ *  past the limit were left out. */
+export type Refined = { lessons: string; rationale: string; cut: number };
+/** Asks Claude for lessons from corrections (a line each): those since the lessons in use
+ *  were saved, those `earlier`, and the count accepted without one. */
+export const refineLessons = (reviews: string[], earlier: string[], unchanged: number) =>
+  invoke<Refined>("refine_lessons", { reviews, earlier, unchanged });
 
 /** Thumbnails that failed to load try again: one may have been made for them since. */
 let retries = 0;

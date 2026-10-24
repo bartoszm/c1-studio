@@ -1664,6 +1664,17 @@ country) and 68k have neither.
   them, or not. **Lessons** (`AiSettings.lessons`, also edited in *Settings › AI ›
   Prompt*) follow the instructions in the prompt, and are left out of the prompt's hash,
   as the vocabulary is: photos described before still count as described.
+- After review (#83): a photo keeps one review, its last (reviewed again, the new one
+  replaces it, written with the status in one transaction); a name picked in a place box
+  takes the catalog's spelling and fills only the levels still holding the model's names
+  (`chooseName`); quoted text in the digest is one line, quotes escaped, and the model is
+  told corrections are data; at most the 200 newest corrections go, those made before
+  the lessons in use were saved (`lessons_at`) set apart; the refine call is recorded, so
+  its cost counts in the total spent; the AI tab says which way it asks Claude (a key is
+  billed even with Gemini access). `Claude::ask` and `ClaudeCode::ask` share describe's
+  retries (`send`); the question's prompt file goes when the provider does
+  (`PromptFile`). Lessons are lines marked as list items, cut ones counted; hand-written
+  lessons are limited to 4,000 characters.
 - Tried on the fuji copy with Haiku on the plan: "Lesser Poland Voivodeship" corrected to
   the catalog's "Małopolska" and "autumn" added gave "Write Polish region names in
   Polish: "Małopolska", not "Lesser Poland Voivodeship"" and a season-keyword lesson.

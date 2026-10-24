@@ -65,6 +65,8 @@ pub(crate) struct AiSettings {
     /// Lessons drawn from the user's corrections (Refine in the AI tab), or written by hand:
     /// they follow the instructions.
     lessons: Option<String>,
+    /// When the lessons last changed, Unix ms: corrections made before are what they came from.
+    lessons_at: Option<i64>,
     /// A place level (or position) guessed at least this likely (%) is ticked in the review
     /// where the photo has none.
     place_tick: u8,
@@ -89,6 +91,7 @@ impl Default for AiSettings {
             fields: Fields::default(),
             instructions: None,
             lessons: None,
+            lessons_at: None,
             place_tick: 80,
             gemini_model: agy::DEFAULT_MODEL.into(),
             sheets: false,
@@ -371,11 +374,17 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     let instructions =
         settings.instructions.map(|i| i.trim().to_string()).filter(|i| !i.is_empty() && i != c1ai::INSTRUCTIONS.trim());
     let lessons = settings.lessons.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+    if lessons.as_ref().is_some_and(|l| l.chars().count() > MAX_LESSONS_TEXT) {
+        return Err(format!("Lessons are limited to {MAX_LESSONS_TEXT} characters: they go into every call"));
+    }
+    let before = load_settings(&s);
+    let lessons_at = if lessons == before.lessons { before.lessons_at } else { lessons.as_ref().map(|_| now()) };
     let settings = AiSettings {
         parallel: settings.parallel.clamp(1, 8),
         place_tick: settings.place_tick.clamp(1, 100),
         instructions,
         lessons,
+        lessons_at,
         ..settings
     };
     std::fs::write(settings_path(&s), serde_json::to_vec_pretty(&settings).map_err(text)?).map_err(text)?;
@@ -1012,25 +1021,45 @@ pub(crate) async fn accept_suggestions(app: State<'_, App>, picks: Vec<Accept>) 
         .map_err(text)?
 }
 
+/// The suggestions reviewed, newest first, and how many could not be read.
+#[derive(Serialize)]
+pub(crate) struct Reviews {
+    reviews: Vec<c1index::ReviewRow>,
+    unreadable: usize,
+}
+
 /// The suggestions reviewed, newest first: what lessons are drawn from.
 #[tauri::command]
-pub(crate) async fn ai_reviews(app: State<'_, App>) -> Result<Vec<c1index::ReviewRow>, String> {
+pub(crate) async fn ai_reviews(app: State<'_, App>) -> Result<Reviews, String> {
     let s = app.session()?;
-    tauri::async_runtime::spawn_blocking(move || s.library.reviews().map_err(text)).await.map_err(text)?
+    tauri::async_runtime::spawn_blocking(move || {
+        let (reviews, unreadable) = s.library.reviews().map_err(text)?;
+        Ok(Reviews { reviews, unreadable })
+    })
+    .await
+    .map_err(text)?
 }
 
 #[tauri::command]
 pub(crate) async fn delete_ai_reviews(app: State<'_, App>, seqs: Vec<u64>) -> Result<(), String> {
-    app.session()?.library.delete_reviews(&seqs).map_err(text)
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.delete_reviews(&seqs).map_err(text)).await.map_err(text)?
 }
 
-/// Lessons proposed from the corrections given (one line each) and the count of suggestions
-/// accepted as they were, by Claude: with the API key, or else Claude Code on a plan. Not
-/// kept: the user reads them and saves them in the settings.
+/// How long the lessons may be, in characters: they go into every call.
+const MAX_LESSONS_TEXT: usize = 4000;
+
+/// Lessons proposed by Claude from the corrections given (one line each: those made since
+/// the lessons in use were saved, and those before) and the count of suggestions accepted
+/// without one. Through the API key with API access, or with Gemini access when a key is
+/// stored, else Claude Code on a plan: the AI tab says which before asking. The call is
+/// recorded, so what it cost counts with the rest. Not kept: the user reads the lessons
+/// and saves them in the settings.
 #[tauri::command]
 pub(crate) async fn refine_lessons(
     app: State<'_, App>,
     reviews: Vec<String>,
+    earlier: Vec<String>,
     unchanged: usize,
 ) -> Result<c1ai::refine::Refined, String> {
     let s = app.session()?;
@@ -1040,9 +1069,10 @@ pub(crate) async fn refine_lessons(
             instructions: settings.instructions.clone().unwrap_or_else(|| c1ai::INSTRUCTIONS.to_string()),
             lessons: settings.lessons.clone(),
             reviews,
+            earlier,
             unchanged,
         };
-        let (system, message, schema) = (c1ai::refine::SYSTEM, c1ai::refine::message(&ask), c1ai::refine::schema());
+        let (system, message, schema) = (c1ai::refine::system(), c1ai::refine::message(&ask), c1ai::refine::schema());
         let options = claude::Options {
             model: settings.model.clone(),
             effort: settings.effort.clone(),
@@ -1051,11 +1081,11 @@ pub(crate) async fn refine_lessons(
         };
         // Gemini describes, but refining is Claude's: the key if there is one, else the plan.
         let key = keys::get(&ANTHROPIC).map_err(text)?;
-        let answer = match (settings.access, key) {
+        let (answer, record) = match (settings.access, key) {
             (Access::Api, None) => return Err(AiError::NoKey.to_string()),
             (Access::Api | Access::Gemini, Some(key)) => {
                 let claude = Claude::new(key, options, &Brief::default(), Vocabulary::default()).map_err(text)?;
-                claude.ask(system, &message, &schema).map_err(text)?.0
+                claude.ask(&system, &message, &schema).map_err(text)?
             }
             (Access::Plan | Access::Gemini, _) => {
                 let program = claude_code::find().ok_or_else(|| {
@@ -1065,10 +1095,10 @@ pub(crate) async fn refine_lessons(
                 if !on_plan(&claude_code::status(&program).map_err(text)?) {
                     return Err("Refining the prompt asks Claude: Claude Code is not signed in with a Claude plan".into());
                 }
-                let cli = ClaudeCode::new(program, options, &Brief::default(), Vocabulary::default()).map_err(text)?;
-                cli.ask(system, &message, &schema).map_err(text)?
+                ClaudeCode::asking(program, options, &system, schema).map_err(text)?.ask(&message).map_err(text)?
             }
         };
+        s.library.record_refine(&record).map_err(text)?;
         c1ai::refine::read(&answer).map_err(text)
     })
     .await
