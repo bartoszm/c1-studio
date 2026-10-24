@@ -516,6 +516,11 @@ footer .busy { color: var(--text); }
 .sort-slot { margin-left: auto; }
 .tiles { margin-left: 0; display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .tiles button { width: 22px; height: 22px; border-radius: 3px; }
+/* Back and forward through the filters. */
+.trail { display: flex; gap: 2px; }
+.trail button { width: 22px; height: 22px; border-radius: 3px; font-size: 16px; line-height: 1; color: var(--muted); }
+.trail button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.trail button:disabled { opacity: 0.35; }
 .tiles button:hover { color: var(--text); background: var(--hover); }
 .tiles input[type="range"] { width: 110px; accent-color: var(--accent); }
 /* Room for the sort box and the map's buttons on a narrower window. */

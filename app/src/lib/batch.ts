@@ -12,6 +12,22 @@ export function followStep(picked: { size: number; clear(): void; add(row: numbe
   return true;
 }
 
+/** The photos picked and the one focused, by row. */
+export type Picks = { picks: number[]; focus?: number };
+
+/** The rows a new result is searched for: the picked ones, else the focused one. */
+export const wantedRows = (was: Picks): number[] =>
+  was.picks.length ? was.picks : was.focus !== undefined ? [was.focus] : [];
+
+/** A selection kept through a new filter. `found` is [row, position] of the rows wanted
+ *  (`wantedRows`) that it shows: those stay picked, the focus stays on the photo focused
+ *  when it is among them, else goes to the first of them; `lost` counts the rest. */
+export function keptPicks(was: Picks, found: [number, number][]): { kept: number[]; at: number | null; lost: number } {
+  const focus = found.find(([row]) => row === was.focus);
+  const first = found.reduce<[number, number] | undefined>((a, b) => (!a || b[1] < a[1] ? b : a), undefined);
+  return { kept: found.map(([row]) => row), at: (focus ?? first)?.[1] ?? null, lost: wantedRows(was).length - found.length };
+}
+
 export const sameRows =(rows: number[], picked: { size: number; has: (row: number) => boolean }) =>
   rows.length === picked.size && rows.every((r) => picked.has(r));
 

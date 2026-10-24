@@ -355,6 +355,12 @@ fn a_photos_position_is_its_place_in_the_sorted_result() {
             assert_eq!(lib.position(&rated, &options, row).unwrap(), Some(i), "{sort:?}");
         }
         assert_eq!(lib.position(&rated, &options, outside).unwrap(), None, "{sort:?}");
+        // Several at once: those it selects, by position, and none of the others.
+        let asked = [rows[30], outside, rows[3], rows[500]];
+        let found = lib.positions(&rated, &options, &asked).unwrap();
+        assert_eq!(found, vec![(rows[3], 3), (rows[30], 30), (rows[500], 500)], "{sort:?}");
+        assert_eq!(lib.positions(&rated, &options, &[rows[9]]).unwrap(), vec![(rows[9], 9)], "{sort:?}");
+        assert!(lib.positions(&rated, &options, &[]).unwrap().is_empty());
     }
 }
 
