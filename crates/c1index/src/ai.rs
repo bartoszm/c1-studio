@@ -1,15 +1,18 @@
 //! What a vision model suggested for photos (stage 5), kept until the user accepts or
-//! rejects it, and a record of every call made: the set to judge prompts and models by.
+//! rejects it, a record of every call made (the set to judge prompts and models by), and
+//! of every suggestion reviewed with what the user took from it: the corrections that
+//! lessons for the prompt are drawn from.
 //!
 //! Kept in its own file (`ai.redb`), like analyses: calls cost money, so suggestions
 //! outlive the store, which is wiped when the model changes. Photos are named by their
 //! key, which a rebuilt store keeps.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Context;
 use c1ai::{RunRecord, Suggestion};
+use c1model::Place;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 
@@ -19,6 +22,10 @@ const SUGGESTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("suggesti
 const SUGGESTIONS_V1: TableDefinition<&str, &[u8]> = TableDefinition::new("suggestions");
 /// sequence → postcard (photo key, [`RunRecord`]): every call, never rewritten.
 const RECORDS: TableDefinition<u64, &[u8]> = TableDefinition::new("records");
+/// sequence → JSON [`Review`]: the last time each photo's suggestion was accepted or
+/// rejected, until the user removes it. JSON, not postcard, with every field defaulted:
+/// fields can be added without moving the old ones over.
+const REVIEWS: TableDefinition<u64, &[u8]> = TableDefinition::new("reviews");
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Status {
@@ -42,6 +49,39 @@ pub struct Entry {
     pub status: Status,
 }
 
+/// What the user took from a suggestion, as the review had it when accepted: the names
+/// edited, keywords added and taken off.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Taken {
+    /// Pipe paths ticked, those the photo had included.
+    pub keywords: Vec<String>,
+    pub caption: Option<String>,
+    pub headline: Option<String>,
+    pub rating: Option<u8>,
+    /// The place levels taken; `None` where none was.
+    pub place: Place,
+    /// The guessed position was taken.
+    pub point: bool,
+}
+
+/// A suggestion reviewed: what was suggested, and what the user did with it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Review {
+    /// Epoch milliseconds of the review.
+    pub at: i64,
+    /// The photo's key.
+    pub key: String,
+    pub model: String,
+    pub prompt: u64,
+    /// Accepted or rejected.
+    pub status: Status,
+    pub suggestion: Suggestion,
+    /// For one accepted.
+    pub taken: Option<Taken>,
+}
+
 pub struct SuggestionBook {
     db: Database,
 }
@@ -53,6 +93,7 @@ impl SuggestionBook {
         {
             let mut table = tx.open_table(SUGGESTIONS)?;
             tx.open_table(RECORDS)?;
+            tx.open_table(REVIEWS)?;
             // Postcard does not say what it holds, so the older entries are read as they
             // were written and stored again in the new shape.
             let old = tx.open_table(SUGGESTIONS_V1)?;
@@ -126,8 +167,11 @@ impl SuggestionBook {
         Ok(())
     }
 
-    /// Sets the status of the photos' suggestions; photos without one are skipped.
-    pub fn set_status(&self, keys: &[&str], status: Status) -> anyhow::Result<()> {
+    /// Sets the status of the photos' suggestions (photos without one are skipped) and keeps
+    /// `reviews`, in one go: a review is never kept for a status that was not set. A photo's
+    /// review replaces the one it had (reviewed again: the last word counts), each under the
+    /// next number.
+    pub fn settle(&self, keys: &[&str], status: Status, reviews: &[Review]) -> anyhow::Result<()> {
         let tx = self.db.begin_write()?;
         {
             let mut table = tx.open_table(SUGGESTIONS)?;
@@ -138,6 +182,50 @@ impl SuggestionBook {
                 };
                 entry.status = status;
                 table.insert(*key, postcard::to_stdvec(&entry)?.as_slice())?;
+            }
+            if !reviews.is_empty() {
+                let mut table = tx.open_table(REVIEWS)?;
+                let again: HashSet<&str> = reviews.iter().map(|r| r.key.as_str()).collect();
+                // Only the key is read of the others.
+                #[derive(Deserialize)]
+                struct Keyed {
+                    #[serde(default)]
+                    key: String,
+                }
+                table.retain(|_, bytes| {
+                    serde_json::from_slice::<Keyed>(bytes).map_or(true, |r| !again.contains(r.key.as_str()))
+                })?;
+                let first = table.last()?.map(|(k, _)| k.value() + 1).unwrap_or(0);
+                for (seq, review) in (first..).zip(reviews) {
+                    table.insert(seq, serde_json::to_vec(review)?.as_slice())?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every review kept, by its number, newest first, and how many could not be read.
+    pub fn reviews(&self) -> anyhow::Result<(Vec<(u64, Review)>, usize)> {
+        let tx = self.db.begin_read()?;
+        let mut out = Vec::new();
+        let mut unreadable = 0;
+        for entry in tx.open_table(REVIEWS)?.iter()?.rev() {
+            let (seq, bytes) = entry?;
+            match serde_json::from_slice::<Review>(bytes.value()) {
+                Ok(review) => out.push((seq.value(), review)),
+                Err(_) => unreadable += 1,
+            }
+        }
+        Ok((out, unreadable))
+    }
+
+    pub fn delete_reviews(&self, seqs: &[u64]) -> anyhow::Result<()> {
+        let tx = self.db.begin_write()?;
+        {
+            let mut table = tx.open_table(REVIEWS)?;
+            for seq in seqs {
+                table.remove(*seq)?;
             }
         }
         tx.commit()?;
@@ -262,7 +350,7 @@ mod tests {
         assert_eq!(calls, 3);
         assert!((cost - 0.005).abs() < 1e-12);
 
-        book.set_status(&["c1:1", "c1:9"], Status::Rejected).unwrap();
+        book.settle(&["c1:1", "c1:9"], Status::Rejected, &[]).unwrap();
         assert_eq!(book.get("c1:1").unwrap().unwrap().status, Status::Rejected);
     }
 

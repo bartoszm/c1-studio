@@ -16,7 +16,8 @@ use serde_json::{Value, json};
 
 use crate::claude::{Model, Options, Usage, model};
 use crate::{
-    AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, Step, VisionProvider, Vocabulary, tell, validate,
+    AiError, Brief, Failed, PhotoRequest, Progress, RawAnswer, Reply, RunRecord, Step, VisionProvider, Vocabulary,
+    tell, validate,
 };
 
 /// How long one photo may take before Claude Code is stopped: answers take seconds, a
@@ -68,13 +69,31 @@ pub fn status(program: &Path) -> Result<Status, AiError> {
         .map_err(|_| AiError::Cli(format!("Claude Code: {}", String::from_utf8_lossy(&out.stderr).trim())))
 }
 
+/// A system prompt in a temporary file: with the vocabulary it can outgrow a command line.
+/// Removed when dropped, whatever happens to the provider holding it.
+struct PromptFile(PathBuf);
+
+impl PromptFile {
+    fn write(text: &str) -> Result<PromptFile, AiError> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let name = format!("c1studio-ai-{}-{}.txt", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, text).map_err(|e| AiError::Cli(format!("Claude Code: the prompt's file: {e}")))?;
+        Ok(PromptFile(path))
+    }
+}
+
+impl Drop for PromptFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
 pub struct ClaudeCode {
     program: PathBuf,
     model: Model,
     options: Options,
-    /// The system prompt, in a file: with the vocabulary it can outgrow a command line.
-    /// This provider's own, removed when it is dropped.
-    system: PathBuf,
+    system: PromptFile,
     schema: Value,
     prompt: u64,
     vocabulary: Vocabulary,
@@ -82,16 +101,19 @@ pub struct ClaudeCode {
 
 impl ClaudeCode {
     pub fn new(program: PathBuf, options: Options, brief: &Brief, vocabulary: Vocabulary) -> Result<Self, AiError> {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let mut cli = ClaudeCode::asking(program, options, &crate::system_prompt(brief), crate::schema(&brief.fields))?;
+        cli.prompt = crate::prompt_hash(brief);
+        cli.vocabulary = vocabulary;
+        Ok(cli)
+    }
+
+    /// Claude Code for questions without a photo ([`ClaudeCode::ask`]): `system` and the
+    /// answer's shape `schema` stand for the description prompt.
+    pub fn asking(program: PathBuf, options: Options, system: &str, schema: Value) -> Result<Self, AiError> {
         let model =
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
-        let text = crate::system_prompt(brief);
-        let schema = crate::schema(&brief.fields);
-        let prompt = crate::prompt_hash(brief);
-        let name = format!("c1studio-ai-{}-{}.txt", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed));
-        let system = std::env::temp_dir().join(name);
-        std::fs::write(&system, text).map_err(|e| AiError::Cli(format!("Claude Code: the prompt's file: {e}")))?;
-        Ok(ClaudeCode { program, model, options, system, schema, prompt, vocabulary })
+        let system = PromptFile::write(system)?;
+        Ok(ClaudeCode { program, model, options, system, schema, prompt: 0, vocabulary: Vocabulary::default() })
     }
 
     fn args(&self) -> Vec<String> {
@@ -114,9 +136,59 @@ impl ClaudeCode {
         .map(String::from)
         .into();
         args.extend(["--model".into(), self.model.id.into(), "--effort".into(), self.options.effort.clone()]);
-        args.extend(["--system-prompt-file".into(), self.system.display().to_string()]);
+        args.extend(["--system-prompt-file".into(), self.system.0.display().to_string()]);
         args.extend(["--json-schema".into(), self.schema.to_string()]);
         args
+    }
+
+    /// The message for a question without a photo.
+    fn question(text: &str) -> String {
+        let message = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
+        format!("{message}\n")
+    }
+
+    /// Runs a message, trying it once more after a pause on errors that may pass (Claude
+    /// Code retries rate limits and overload itself; this is for the rest).
+    fn send(&self, message: &str, progress: &Option<Progress>) -> Result<(Value, u64), AiError> {
+        let attempts = self.options.attempts.min(2);
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            if self.options.stopped() {
+                return Err(AiError::Stopped);
+            }
+            tell(progress, Step::Sent { attempt });
+            match self.call(message) {
+                Ok(done) => return Ok(done),
+                Err(e) if e.retryable() && attempt < attempts => {
+                    tell(progress, Step::Retrying { attempt, of: attempts, why: e.to_string() });
+                    std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// One question without a photo, answered in the shape the instance was made with
+    /// ([`ClaudeCode::asking`]). Returns the answer and the call's record (counted against
+    /// the plan: no cost).
+    pub fn ask(&self, text: &str) -> Result<(Value, RunRecord), AiError> {
+        let (result, millis) = self.send(&Self::question(text), &None)?;
+        let answer = structured(&result)?.clone();
+        let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
+        let record = RunRecord {
+            provider: "claude-code".to_string(),
+            model: self.model.id.to_string(),
+            prompt: 0,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_write_tokens: usage.cache_creation_input_tokens,
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cost: 0.0,
+            millis,
+            raw: answer.to_string(),
+        };
+        Ok((answer, record))
     }
 
     fn message(photo: &PhotoRequest) -> String {
@@ -134,9 +206,10 @@ impl ClaudeCode {
         format!("{message}\n")
     }
 
-    /// Runs Claude Code on one photo. It is killed on a stop or after [`CALL_TIMEOUT`];
-    /// its output is read as it comes, so neither pipe fills and stalls it.
-    fn call(&self, photo: &PhotoRequest) -> Result<(Value, u64), AiError> {
+    /// Runs Claude Code on one message (a photo's, or a question) with `args`. It is killed
+    /// on a stop or after [`CALL_TIMEOUT`]; its output is read as it comes, so neither pipe
+    /// fills and stalls it.
+    fn call(&self, message: &str) -> Result<(Value, u64), AiError> {
         let started = Instant::now();
         let mut child = command(&self.program)
             .args(self.args())
@@ -148,7 +221,7 @@ impl ClaudeCode {
         let mut stdin = child.stdin.take().expect("piped");
         // Written from another thread: a photo is larger than the pipe, and Claude Code
         // starts writing before it has read it all. Dropping it closes Claude Code's input.
-        let message = Self::message(photo);
+        let message = message.to_string();
         std::thread::spawn(move || stdin.write_all(message.as_bytes()));
         let drain = |mut pipe: Box<dyn Read + Send>| {
             std::thread::spawn(move || {
@@ -198,14 +271,15 @@ impl ClaudeCode {
     }
 }
 
-impl Drop for ClaudeCode {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.system);
-    }
-}
-
 /// Reads the final `result` event: an error first, then the structured answer.
 fn read(result: &Value) -> Result<(String, RawAnswer), AiError> {
+    let output = structured(result)?;
+    let answer = serde_json::from_value::<RawAnswer>(output.clone()).map_err(|e| AiError::BadReply(e.to_string()))?;
+    Ok((output.to_string(), answer))
+}
+
+/// The structured answer of the final `result` event, after its error if any.
+fn structured(result: &Value) -> Result<&Value, AiError> {
     if result["is_error"].as_bool() == Some(true) {
         let message = result["result"].as_str().unwrap_or("Claude Code failed").to_string();
         return Err(match result["api_error_status"].as_u64() {
@@ -225,8 +299,7 @@ fn read(result: &Value) -> Result<(String, RawAnswer), AiError> {
     if !output.is_object() {
         return Err(AiError::BadReply(result["result"].as_str().unwrap_or("no structured answer").to_string()));
     }
-    let answer = serde_json::from_value::<RawAnswer>(output.clone()).map_err(|e| AiError::BadReply(e.to_string()))?;
-    Ok((output.to_string(), answer))
+    Ok(output)
 }
 
 impl VisionProvider for ClaudeCode {
@@ -243,21 +316,7 @@ impl VisionProvider for ClaudeCode {
     }
 
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
-        // Claude Code retries rate limits and overload itself; this is for the rest.
-        let mut attempt = 0;
-        let (result, millis) = loop {
-            attempt += 1;
-            tell(&photo.progress, Step::Sent { attempt });
-            let attempts = self.options.attempts.min(2);
-            match self.call(photo) {
-                Ok(done) => break done,
-                Err(e) if e.retryable() && attempt < attempts && !self.options.stopped() => {
-                    tell(&photo.progress, Step::Retrying { attempt, of: attempts, why: e.to_string() });
-                    std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
-                }
-                Err(e) => return Err(e.into()),
-            }
-        };
+        let (result, millis) = self.send(&Self::message(photo), &photo.progress).map_err(Failed::from)?;
         let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
         let record = |raw: String| RunRecord {
             provider: "claude-code".to_string(),
@@ -332,12 +391,29 @@ mod tests {
     fn a_missing_program_stops_the_run_and_the_prompt_file_goes_with_the_provider() {
         let missing = std::env::temp_dir().join("c1studio-no-such-dir").join("claude.exe");
         let cli = ClaudeCode::new(missing, Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
-        let file = cli.system.clone();
+        let file = cli.system.0.clone();
         assert!(file.is_file());
         let failed = cli.describe(&PhotoRequest { jpeg: vec![1], context: String::new(), progress: None }).unwrap_err();
         assert!(matches!(failed.error, AiError::Cli(_)) && failed.error.stops_run() && failed.record.is_none());
         drop(cli);
         assert!(!file.exists());
+    }
+
+    #[test]
+    fn a_question_has_its_own_prompt_and_shape_and_no_photo() {
+        let schema = json!({"type": "object", "properties": {"lessons": {"type": "string"}}});
+        let cli =
+            ClaudeCode::asking("claude".into(), Options::default(), "Refine the lessons.", schema.clone()).unwrap();
+        let args = cli.args();
+        let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
+        assert_eq!(std::fs::read_to_string(after("--system-prompt-file")).unwrap(), "Refine the lessons.");
+        assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), schema);
+        assert_eq!(after("--tools"), "");
+        let message: Value = serde_json::from_str(ClaudeCode::question("Corrections:").trim_end()).unwrap();
+        assert_eq!(message["message"]["content"], json!([{"type": "text", "text": "Corrections:"}]));
+        let file = cli.system.0.clone();
+        drop(cli);
+        assert!(!file.exists(), "the prompt's file goes with it");
     }
 
     #[test]

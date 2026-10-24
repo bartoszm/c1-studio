@@ -9,10 +9,13 @@ use c1model::{GeoOrigin, GeoPoint, KeywordPath, Op, Place};
 use serde::{Deserialize, Serialize};
 
 use super::Library;
-use crate::ai::{Entry, Status};
+use crate::ai::{Entry, Review, Status, Taken};
 use crate::edits::Origin;
 use crate::places::Coarse;
 use crate::schema;
+
+/// The key a refine call is recorded under: it is about no photo.
+const REFINE_KEY: &str = "refine";
 
 /// How likely a place level the gazetteer does not know (or knows elsewhere) is left at
 /// most: a hint for the review, never a tick by default.
@@ -50,6 +53,37 @@ pub struct Seen {
     pub headline: Option<String>,
     pub rating: Option<u8>,
     pub place: Place,
+}
+
+/// A review kept, with its photo's row while the photo is in the library.
+#[derive(Clone, Debug, Serialize)]
+pub struct ReviewRow {
+    pub seq: u64,
+    pub row: Option<u64>,
+    #[serde(flatten)]
+    pub review: Review,
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
+fn review_of(key: String, entry: Entry, status: Status, taken: Option<Taken>) -> Review {
+    Review { at: now_ms(), key, model: entry.model, prompt: entry.prompt, status, suggestion: entry.suggestion, taken }
+}
+
+impl From<&Accept> for Taken {
+    fn from(pick: &Accept) -> Taken {
+        let text = |v: &Option<String>| text(v).map(str::to_string);
+        Taken {
+            keywords: pick.keywords.clone(),
+            caption: text(&pick.caption),
+            headline: text(&pick.headline),
+            rating: pick.rating,
+            place: pick.place.clone(),
+            point: pick.point.is_some(),
+        }
+    }
 }
 
 /// What accepting did.
@@ -215,6 +249,11 @@ impl Library {
         self.suggestions.record(&key, record)
     }
 
+    /// Records a call about no photo (lessons refined), so its cost counts with the rest.
+    pub fn record_refine(&self, record: &RunRecord) -> anyhow::Result<()> {
+        self.suggestions.record(REFINE_KEY, record)
+    }
+
     /// Stored suggestions of photos in the library, with `status` or any, newest first.
     pub fn suggestions(&self, status: Option<Status>) -> anyhow::Result<Vec<(u64, Entry)>> {
         let all = self.suggestions.all()?;
@@ -229,9 +268,44 @@ impl Library {
         Ok(out)
     }
 
+    /// Sets the status of the photos' suggestions. Rejecting one under review is kept as a
+    /// review too, in place of the photo's review before (it was reviewed again).
     pub fn set_suggestion_status(&self, rows: &[u64], status: Status) -> anyhow::Result<()> {
         let keys: Vec<String> = rows.iter().filter_map(|&r| self.key_of(r)).collect();
-        self.suggestions.set_status(&keys.iter().map(String::as_str).collect::<Vec<_>>(), status)
+        let mut reviews = Vec::new();
+        if status == Status::Rejected {
+            for key in &keys {
+                if let Some(entry) = self.suggestions.get(key)?.filter(|e| e.status == Status::Proposed) {
+                    reviews.push(review_of(key.clone(), entry, Status::Rejected, None));
+                }
+            }
+        }
+        self.suggestions.settle(&keys.iter().map(String::as_str).collect::<Vec<_>>(), status, &reviews)
+    }
+
+    /// The suggestions reviewed, newest first, until removed: what lessons are drawn from;
+    /// and how many reviews could not be read.
+    pub fn reviews(&self) -> anyhow::Result<(Vec<ReviewRow>, usize)> {
+        let (list, unreadable) = self.suggestions.reviews()?;
+        let rows: HashMap<&str, u64> = self
+            .store
+            .rows_of(list.iter().map(|(_, r)| r.key.as_str()))?
+            .into_iter()
+            .map(|(row, k)| (k, row))
+            .collect();
+        let list = list
+            .iter()
+            .map(|(seq, review)| ReviewRow {
+                seq: *seq,
+                row: rows.get(review.key.as_str()).copied(),
+                review: review.clone(),
+            })
+            .collect();
+        Ok((list, unreadable))
+    }
+
+    pub fn delete_reviews(&self, seqs: &[u64]) -> anyhow::Result<()> {
+        self.suggestions.delete_reviews(seqs)
     }
 
     /// Calls made and what they cost in all, in US dollars.
@@ -327,7 +401,16 @@ impl Library {
         )?;
         let changed = changed.into_inner().unwrap();
         let done: Vec<u64> = rows.iter().copied().filter(|r| !changed.contains(r)).collect();
-        self.set_suggestion_status(&done, Status::Accepted)?;
+        let mut keys = Vec::new();
+        let mut reviews = Vec::new();
+        for &row in &done {
+            let Some(key) = self.key_of(row) else { continue };
+            if let Some(entry) = self.suggestions.get(&key)? {
+                reviews.push(review_of(key.clone(), entry, Status::Accepted, Some(Taken::from(by_row[&row]))));
+            }
+            keys.push(key);
+        }
+        self.suggestions.settle(&keys.iter().map(String::as_str).collect::<Vec<_>>(), Status::Accepted, &reviews)?;
         let mut changed: Vec<u64> = changed.into_iter().collect();
         changed.sort_unstable();
         Ok(Accepted { undo, changed })

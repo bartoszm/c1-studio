@@ -11,7 +11,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, Step, VisionProvider, Vocabulary, tell, validate,
+    AiError, Brief, Failed, PhotoRequest, Progress, RawAnswer, Reply, RunRecord, Step, VisionProvider, Vocabulary,
+    tell, validate,
 };
 
 const URL: &str = "https://api.anthropic.com/v1/messages";
@@ -132,7 +133,7 @@ impl Claude {
 
     fn body(&self, photo: &PhotoRequest) -> Value {
         let data = base64::engine::general_purpose::STANDARD.encode(&photo.jpeg);
-        let mut body = json!({
+        let body = json!({
             "model": self.model.id,
             "max_tokens": 16000,
             "system": [{"type": "text", "text": self.system, "cache_control": {"type": "ephemeral"}}],
@@ -148,10 +149,58 @@ impl Claude {
                 ]
             }]
         });
+        self.with_fallbacks(body)
+    }
+
+    /// A request for a model that has them lets the API answer a declined call with
+    /// another model, as [`FALLBACK_BETA`] allows.
+    fn with_fallbacks(&self, mut body: Value) -> Value {
         if self.model.fallbacks {
             body["fallbacks"] = json!("default");
         }
         body
+    }
+
+    /// The request for a question without a photo: `text` under `system`, answered in the
+    /// shape `schema` gives.
+    fn ask_body(&self, system: &str, text: &str, schema: &Value) -> Value {
+        self.with_fallbacks(json!({
+            "model": self.model.id,
+            "max_tokens": 16000,
+            "system": system,
+            "output_config": {"effort": self.options.effort, "format": {"type": "json_schema", "schema": schema}},
+            "messages": [{"role": "user", "content": text}]
+        }))
+    }
+
+    /// Sends a request, trying again after a pause (the server's `retry-after` when it gives
+    /// one) on rate limits, overload and network errors, up to `attempts` times; a stop ends
+    /// the wait at once.
+    fn send(&self, body: &Value, progress: &Option<Progress>) -> Result<(Value, u64), AiError> {
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            if self.options.stopped() {
+                return Err(AiError::Stopped);
+            }
+            tell(progress, Step::Sent { attempt });
+            match self.call(body) {
+                Ok(done) => return Ok(done),
+                Err(e) if e.retryable() && attempt < self.options.attempts => {
+                    tell(progress, Step::Retrying { attempt, of: self.options.attempts, why: e.to_string() });
+                    let wait = match &e {
+                        AiError::Http { retry_after: Some(s), .. } => *s,
+                        _ => 2u64.pow(attempt),
+                    };
+                    // In short steps, so a stop is not kept waiting.
+                    let until = Instant::now() + Duration::from_secs(wait.min(60));
+                    while Instant::now() < until && !self.options.stopped() {
+                        std::thread::sleep(Duration::from_millis(200));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     fn call(&self, body: &Value) -> Result<(Value, u64), AiError> {
@@ -188,11 +237,34 @@ impl Claude {
         let value = serde_json::from_str(&text).map_err(|e| AiError::BadReply(e.to_string()))?;
         Ok((value, millis))
     }
+
+    /// One question without a photo: `text` under `system`, answered in the shape `schema`
+    /// gives, tried again as a photo's call is. Returns the answer and the call's record
+    /// (prompt 0: no description prompt), so what it cost is counted with the rest.
+    pub fn ask(&self, system: &str, text: &str, schema: &Value) -> Result<(Value, RunRecord), AiError> {
+        let (message, millis) = self.send(&self.ask_body(system, text, schema), &None)?;
+        let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
+        let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
+        let raw = answer_text(&message)?;
+        let answer = serde_json::from_str(&raw).map_err(|e| AiError::BadReply(e.to_string()))?;
+        let record = RunRecord {
+            provider: "claude".to_string(),
+            model: served.id.to_string(),
+            prompt: 0,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_write_tokens: usage.cache_creation_input_tokens,
+            cache_read_tokens: usage.cache_read_input_tokens,
+            cost: cost(&served, &usage),
+            millis,
+            raw,
+        };
+        Ok((answer, record))
+    }
 }
 
-/// Reads a Messages response: the stop reason first, then the text block holding the
-/// structured answer.
-fn read(message: &Value) -> Result<(String, RawAnswer), AiError> {
+/// The text of a Messages response, its stop reason checked first.
+fn answer_text(message: &Value) -> Result<String, AiError> {
     match message["stop_reason"].as_str() {
         Some("refusal") => {
             return Err(AiError::Refused(message["stop_details"]["category"].as_str().map(str::to_string)));
@@ -200,13 +272,19 @@ fn read(message: &Value) -> Result<(String, RawAnswer), AiError> {
         Some("max_tokens") => return Err(AiError::Truncated),
         _ => {}
     }
-    let raw = message["content"]
+    Ok(message["content"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|block| block["type"] == "text")
         .filter_map(|block| block["text"].as_str())
-        .collect::<String>();
+        .collect())
+}
+
+/// Reads a Messages response: the stop reason first, then the text block holding the
+/// structured answer.
+fn read(message: &Value) -> Result<(String, RawAnswer), AiError> {
+    let raw = answer_text(message)?;
     let answer = serde_json::from_str::<RawAnswer>(&raw).map_err(|e| AiError::BadReply(e.to_string()))?;
     Ok((raw, answer))
 }
@@ -225,31 +303,7 @@ impl VisionProvider for Claude {
     }
 
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
-        let body = self.body(photo);
-        let mut attempt = 0;
-        let (message, millis) = loop {
-            attempt += 1;
-            if self.options.stopped() {
-                return Err(AiError::Stopped.into());
-            }
-            tell(&photo.progress, Step::Sent { attempt });
-            match self.call(&body) {
-                Ok(done) => break done,
-                Err(e) if e.retryable() && attempt < self.options.attempts => {
-                    tell(&photo.progress, Step::Retrying { attempt, of: self.options.attempts, why: e.to_string() });
-                    let wait = match &e {
-                        AiError::Http { retry_after: Some(s), .. } => *s,
-                        _ => 2u64.pow(attempt),
-                    };
-                    // In short steps, so a stop is not kept waiting.
-                    let until = Instant::now() + Duration::from_secs(wait.min(60));
-                    while Instant::now() < until && !self.options.stopped() {
-                        std::thread::sleep(Duration::from_millis(200));
-                    }
-                }
-                Err(e) => return Err(e.into()),
-            }
-        };
+        let (message, millis) = self.send(&self.body(photo), &photo.progress).map_err(Failed::from)?;
         let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
         // A declined photo answered by the fallback model is billed at that model's price.
         let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
@@ -314,6 +368,28 @@ mod tests {
         assert!(matches!(read(&refused), Err(AiError::Refused(Some(c))) if c == "cyber"));
         let cut = json!({"stop_reason": "max_tokens", "content": [{"type": "text", "text": "{\"cap"}]});
         assert!(matches!(read(&cut), Err(AiError::Truncated)));
+    }
+
+    #[test]
+    fn a_question_goes_without_a_photo_in_the_schema_asked() {
+        let claude = Claude::new("k".into(), Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
+        let schema = json!({"type": "object"});
+        let body = claude.ask_body("Refine.", "Corrections:", &schema);
+        assert_eq!(body["system"], "Refine.");
+        assert_eq!(body["messages"][0]["content"], "Corrections:");
+        assert_eq!(body["output_config"]["format"]["schema"], schema);
+        assert_eq!(body["fallbacks"], "default", "as a photo's call has");
+        let haiku = Options { model: "claude-haiku-5-5".into(), ..Options::default() };
+        let claude = Claude::new("k".into(), haiku, &Brief::default(), Vocabulary::default()).unwrap();
+        assert!(claude.ask_body("s", "t", &schema).get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn a_stopped_call_is_not_sent() {
+        let options = Options::default();
+        options.stop.store(true, Ordering::SeqCst);
+        let claude = Claude::new("k".into(), options, &Brief::default(), Vocabulary::default()).unwrap();
+        assert!(matches!(claude.ask("s", "t", &json!({})), Err(AiError::Stopped)));
     }
 
     #[test]
