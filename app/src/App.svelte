@@ -40,7 +40,7 @@
   import { tripDates, tripName } from "./lib/trips";
   import { shouldFollow } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
-  import { editingNote, followStep, sameRows } from "./lib/batch";
+  import { editingNote, followStep, keptPicks, sameRows, wantedRows, type Picks } from "./lib/batch";
   import { followFilter } from "./lib/follow";
   import { aroundRange, wholeDays, within, type Around } from "./lib/around";
   import { Trail, type Shown } from "./lib/navigation";
@@ -151,9 +151,10 @@
       mapTile = null;
       filter = { ...filter, within: follow ? (mapView ?? undefined) : beforeTile };
     }
-    // Other photos altogether: a selection kept by its place in the grid would land on
-    // one nobody chose, so it starts afresh, on the photo when one was clicked.
-    await run();
+    // Other photos altogether: the photos picked stay picked where the tile has them (by
+    // row, not by their place in the grid); a photo clicked is picked instead. Tiles
+    // clicked one after another are one step back.
+    await run(false, false, bounds ? { kind: "tile" } : {});
     if (row !== null) await mapSelect(row);
   }
   function sameBox(a: api.BBox | undefined | null, b: api.BBox | undefined | null): boolean {
@@ -528,13 +529,23 @@
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks.
    *  `byRow`: a single pick stays on its photo, wherever it now is (the map moved),
    *  rather than on its place in the grid. Otherwise it is a new filter: the photos picked
-   *  (or `restore`'s) stay picked where it still shows them. */
-  async function run(keep = false, byRow = false, restore?: Picks) {
+   *  (or `how.restore`'s) stay picked where it still shows them, and the filter left is a
+   *  step back (see `Step`). */
+  async function run(keep = false, byRow = false, how: Step = {}) {
     const mine = ++generation;
-    // A new filter: what was picked is looked for in it, and what was shown is kept to go back to.
-    const was = keep ? null : (restore ?? untrack(pickedNow));
-    const travelled = travelling;
-    if (was) untrack(() => leaving(was));
+    // Overtaking a new filter still looking for its picks (the map moved, a count was
+    // needed): this run finishes that, as the same step.
+    if (keep && carried) {
+      keep = byRow = false;
+      how = { restore: carried, travelling: true };
+    }
+    // A new filter: what was picked is looked for in it, and what was shown is kept to go
+    // back to. Picks a run overtaken was still looking for are this one's to look for.
+    const was = keep ? null : (how.restore ?? carried ?? untrack(pickedNow));
+    if (was) {
+      carried = was;
+      untrack(() => leaving(was, how));
+    }
     untrack(() => (filter = following(filter)));
     const asked = asking($state.snapshot(filter));
     const keepRow = keep && byRow && picked.size <= 1 && selected !== null ? focusRow : undefined;
@@ -590,6 +601,7 @@
       offlinePages = new SvelteMap(offline);
       loading = new Map();
       error = null;
+      onScreen = shownNow();
       if (keptRow !== undefined) {
         // Set with the pages, so the focus never passes over the photo now at its old place;
         // one gone from the result leaves nothing picked, not whatever took its place.
@@ -612,17 +624,22 @@
       } else if (was) {
         const lost = await keepPicks(mine, asked, was);
         // Said for a filter picked here; going back or forward, Back would not find them.
-        if (mine === generation) outside = lost && was.picks.length > 1 && !travelled ? { lost, total: was.picks.length } : null;
+        if (mine === generation && lost && was.picks.length > 1 && !how.travelling) {
+          notice = { kind: "outside", lost, total: was.picks.length };
+        }
       }
-      if (mine === generation) onScreen = shownNow();
     } catch (e) {
-      if (mine === generation) error = String(e);
+      if (mine === generation) {
+        error = String(e);
+        carried = null;
+      }
     }
   }
 
-  /** The photos picked and the one focused, by row. */
-  type Picks = { picks: number[]; focus?: number };
   const pickedNow = (): Picks => ({ picks: [...picked], focus: selected === null ? undefined : focusRow });
+  /** The picks a new filter is looking for, until it has them in: a newer run that overtakes
+   *  it looks for these, not for the selection it found cleared. Picking anew drops them. */
+  let carried: Picks | null = null;
 
   /**
    * After a new filter ran: the photos picked before that it still shows stay picked, and
@@ -633,27 +650,18 @@
   async function keepPicks(mine: number, asked: Filter, was: Picks): Promise<number> {
     picked.clear();
     selected = anchor = null;
-    const wanted = was.picks.length ? was.picks : was.focus !== undefined ? [was.focus] : [];
-    let kept: number[] = [];
-    let at: number | null = null;
-    if (wanted.length === 1) {
-      at = await api.position(asked, { sort: sortBy }, wanted[0]).catch(() => null);
-      if (at !== null) kept = wanted;
-    } else if (wanted.length) {
-      const rows = (await api.query(asked, { sort: sortBy })).rows;
-      const want = new Set(wanted);
-      kept = rows.filter((r) => want.has(r));
-      const focus = was.focus !== undefined && want.has(was.focus) ? rows.indexOf(was.focus) : -1;
-      at = focus >= 0 ? focus : kept.length ? rows.indexOf(kept[0]) : null;
-    }
+    const found = await api.positions(asked, { sort: sortBy }, wantedRows(was)).catch(() => []);
     if (mine !== generation) return 0;
+    const { kept, at, lost } = keptPicks(was, found);
     if (at === null) {
+      carried = null;
       viewing = false;
       grid?.reset();
-      return wanted.length;
+      return lost;
     }
     await need(at, at + 1);
     if (mine !== generation) return 0;
+    carried = null;
     const row = rowAt(at);
     for (const r of kept) picked.add(r);
     // The map stays where it is: the photo was picked before, not just now.
@@ -664,7 +672,7 @@
     await tick();
     holdMap = null;
     if (mine === generation) grid?.center(at);
-    return wanted.length - kept.length;
+    return lost;
   }
 
   // Back and forward through the filters shown (Alt+← and Alt+→).
@@ -673,15 +681,19 @@
   let canForward = $state(false);
   /** The filter on screen, once its result is in: what a new one leaves. */
   let onScreen: Shown | null = null;
-  /** Going back or forward: the run that shows it is no new step. */
-  let travelling = false;
+  /** How a new filter came: `restore` picks these instead of the photos picked now;
+   *  `travelling` is no new step and nothing said (going back or forward, or finishing a
+   *  run overtaken); steps of one `kind` in a row
+   *  (typing a search, clicking tiles) are one step back. */
+  type Step = { restore?: Picks; travelling?: boolean; kind?: "search" | "tile" };
   const shownNow = (): Shown => ({
-    filter: $state.snapshot(filter), sortField, sortReversed, match, picks: [],
+    filter: $state.snapshot(filter), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
+    tile: mapTile, follow, picks: [],
   });
-  function leaving(was: Picks) {
-    outside = null;
-    if (!onScreen || travelling) return;
-    trail.leave({ ...onScreen, ...was }, shownNow());
+  function leaving(was: Picks, how: Step) {
+    notice = null;
+    if (!onScreen || how.travelling) return;
+    trail.leave({ ...onScreen, ...was }, shownNow(), how.kind);
     canBack = trail.back.length > 0;
     canForward = trail.forward.length > 0;
   }
@@ -692,19 +704,29 @@
     canForward = trail.forward.length > 0;
     if (!to) return;
     clearTimeout(followTimer);
-    mapTile = null;
+    clearTimeout(typing);
+    // The area as it was: a tile stays the tile, a drawn area keeps the grid off the map's
+    // moves (as drawing it did).
+    mapTile = to.tile;
+    if (!to.follow && to.filter.within && !to.tile) follow = false;
+    inBin = to.bin;
+    showHidden = to.hidden;
     filter = to.filter;
     search = to.filter.text ?? "";
     sortField = to.sortField;
     sortReversed = to.sortReversed;
     match = to.match;
     rememberSort();
-    travelling = true;
-    run(false, false, { picks: to.picks, focus: to.focus });
-    travelling = false;
+    run(false, false, { restore: { picks: to.picks, focus: to.focus }, travelling: true });
   }
-  /** Picked photos the filter just left out, to say so in the footer. */
-  let outside = $state<{ lost: number; total: number } | null>(null);
+  /** The footer's word on the selection: picked photos the new filter left out, or the
+   *  filter having followed an edit (and how many of the photos it does not show). */
+  let notice = $state<{ kind: "outside" | "followed"; lost: number; total: number } | null>(null);
+  $effect(() => {
+    if (notice?.kind !== "followed") return;
+    const gone = setTimeout(() => (notice = null), 8000);
+    return () => clearTimeout(gone);
+  });
 
   /**
    * After an edit re-ran the filter in place: photos that left the result leave the
@@ -713,7 +735,7 @@
    */
   async function followPicks(mine: number, asked: Filter) {
     if (picked.size > 1) {
-      const all = new Set((await api.query(asked, { sort: sortBy })).rows);
+      const all = new Set((await api.positions(asked, { sort: sortBy }, [...picked])).map(([row]) => row));
       if (mine !== generation) return;
       for (const row of [...picked]) if (!all.has(row)) picked.delete(row);
     }
@@ -939,38 +961,38 @@
     const focus = selected === null ? undefined : focusRow;
     version++;
     await refreshQueued();
+    // Asked before the filter runs again, so an edit it follows shows no empty grid first.
+    if (done?.rows.length && (await followEdit(done, focus))) return;
     await run(true);
-    if (done?.rows.length && result?.total === 0) await followEdit(done, focus);
   }
 
   /** The edit took every photo out of the filter: the filter goes where they went, with them
-   *  picked, if it can (see lib/follow.ts). */
-  async function followEdit(done: EditDone, focus: number | undefined) {
-    if (inBin) return;
+   *  picked, if it can (see lib/follow.ts). Says whether it did. */
+  async function followEdit(done: EditDone, focus: number | undefined): Promise<boolean> {
+    if (inBin) return false;
     const mine = generation;
     try {
+      const now = $state.snapshot(filter);
+      if ((await api.query(asking(now), { sort: sortBy, limit: 0 })).total) return false;
       const sel = await api.selectionSummary(done.rows);
-      if (mine !== generation) return;
-      const next = followFilter($state.snapshot(filter), sel, done.rows.length, done.edit, match === "any");
-      if (!next) return;
+      if (mine !== generation) return false;
+      const next = followFilter(now, sel, done.rows.length, done.edit, match === "any");
+      if (!next) return false;
       // Only to a filter that shows them: one the edit left empty for another reason stays.
-      const shows = await api.position(asking(next), { sort: sortBy }, done.rows[0]).catch(() => null);
-      if (shows === null || mine !== generation) return;
+      const found = await api.positions(asking(next), { sort: sortBy }, done.rows);
+      if (!found.length || mine !== generation) return false;
       if (next.place_under) openPlace(next.place_under);
       filter = next;
-      await run(false, false, { picks: done.rows, focus: focus !== undefined && done.rows.includes(focus) ? focus : done.rows[0] });
-      followed = true;
+      const ran = run(false, false, { restore: { picks: done.rows, focus: focus !== undefined && done.rows.includes(focus) ? focus : done.rows[0] } });
+      const its = generation;
+      await ran;
+      if (its === generation) notice = { kind: "followed", lost: done.rows.length - found.length, total: done.rows.length };
+      return true;
     } catch (e) {
       editError = String(e);
+      return false;
     }
   }
-  /** The footer says the filter followed an edit, with the way back. */
-  let followed = $state(false);
-  $effect(() => {
-    if (!followed) return;
-    const gone = setTimeout(() => (followed = false), 8000);
-    return () => clearTimeout(gone);
-  });
 
   // Copy and paste between photos. The clipboard holds the photo as it was when copied,
   // and which fields to take from it; it survives restarts.
@@ -1119,6 +1141,8 @@
   }
   /** How many photos an undo or redo of these ops touches. */
   const opRows = (ops: [number, api.Op][]) => new Set(ops.map(([row]) => row)).size;
+  /** The photos ops touch, for `edited` to follow. */
+  const rowsOf = (ops: [number, api.Op][]): EditDone => ({ rows: [...new Set(ops.map(([row]) => row))] });
 
   async function applyEdit(edit: api.Edit, rows = targets()) {
     if (!rows.length) return;
@@ -1241,6 +1265,8 @@
   async function undoNow() {
     const last = undoStack.pop();
     if (!last) return;
+    // An undo can empty the filter as the edit did: it follows the photos back.
+    const done = "ops" in last ? rowsOf(last.ops) : undefined;
     try {
       if ("hidden" in last) {
         await api.setHidden(last.hidden, !last.on);
@@ -1270,12 +1296,13 @@
       editError = String(e);
       syncNote = "";
     }
-    await edited();
+    await edited(done);
   }
 
   async function redoNow() {
     const last = redoStack.pop();
     if (!last) return;
+    const done = "ops" in last ? rowsOf(last.ops) : undefined;
     try {
       if ("hidden" in last) {
         await api.setHidden(last.hidden, last.on);
@@ -1299,12 +1326,13 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(done);
   }
 
   async function pick(i: number, how?: { add: boolean; range: boolean }) {
     const row = rowAt(i);
-    outside = null;
+    notice = null;
+    carried = null;
     if (how?.range && anchor !== null) {
       const [lo, hi] = anchor < i ? [anchor, i] : [i, anchor];
       await need(lo, hi + 1);
@@ -1344,7 +1372,7 @@
     clearTimeout(typing);
     typing = setTimeout(() => {
       filter.text = search.trim() || undefined;
-      run();
+      run(false, false, { kind: "search" });
     }, 150);
   }
 
@@ -1508,7 +1536,7 @@
       undoStack.push({ ops: undo });
       redoStack = [];
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   /** Photos given positions in bulk (a track, their neighbours): offer their places too. */
   async function placedMany(undo: [number, api.Op][]) {
@@ -1533,8 +1561,9 @@
   }
   async function fillPlaces(rows: number[]) {
     fillOffer = null;
+    let undo: [number, api.Op][] = [];
     try {
-      const undo = await api.fillPlaces(rows);
+      undo = await api.fillPlaces(rows);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1545,15 +1574,16 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   function placeLine(p: api.Photo["place"]): string {
     return [p.city, p.state, p.country].filter(Boolean).join(", ");
   }
   /** The photos edited that have no position get their place's (approximate). */
   async function geoFromPlace() {
+    let undo: [number, api.Op][] = [];
     try {
-      const undo = await api.promoteRows(targets());
+      undo = await api.promoteRows(targets());
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1566,12 +1596,13 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   /** The photos at a place on the map (of those with no position) get its position. */
   async function promotePlace(paths: string[]) {
+    let undo: [number, api.Op][] = [];
     try {
-      const undo = await api.promotePlaces({ ...compiled($state.snapshot(filter)), within: undefined }, paths);
+      undo = await api.promotePlaces({ ...compiled($state.snapshot(filter)), within: undefined }, paths);
       if (undo.length) {
         undoStack.push({ ops: undo });
         redoStack = [];
@@ -1584,7 +1615,7 @@
     } catch (e) {
       editError = String(e);
     }
-    await edited();
+    await edited(rowsOf(undo));
   }
   function pickKeyword(n: Node) {
     const { inc, exc } = cycle(filter.keywords_under, filter.keywords_under_not, n.value);
@@ -2659,7 +2690,7 @@
           note(`Queued suggestions for ${opRows(undo).toLocaleString()} photo${opRows(undo) === 1 ? "" : "s"}`);
         }
         editError = null;
-        await edited({ rows: [...new Set(undo.map(([r]) => r))] });
+        await edited(rowsOf(undo));
       }}
       onerror={(m) => (editError = m)}
     />
@@ -2759,16 +2790,16 @@
       </span>
     {/if}
     {#if busy}<span class="busy">{busy}</span>{:else if editError}<button class="edit-error" title="Click to dismiss" onclick={() => (editError = null)}>{editError}</button>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
-    {#if followed}
+    {#if notice?.kind === "followed"}
       <span class="fill-offer edit-note">
-        The filter followed your edit
-        <button title="Back to the filter before (Alt+←)" onclick={() => { followed = false; travel(true); }}>Back</button>
+        The filter followed your edit{#if notice.lost}; {notice.lost.toLocaleString()} of the {notice.total.toLocaleString()} photos are not in it{/if}
+        <button title="Back to the filter before (Alt+←)" onclick={() => { notice = null; travel(true); }}>Back</button>
       </span>
-    {:else if outside}
+    {:else if notice}
       <span class="fill-offer edit-note">
-        {outside.lost.toLocaleString()} of {outside.total.toLocaleString()} picked photos are outside this filter
+        {notice.lost.toLocaleString()} of {notice.total.toLocaleString()} picked photos are outside this filter
         <button title="Back to the filter before, with all of them picked (Alt+←)" onclick={() => travel(true)}>Show them</button>
-        <button aria-label="Dismiss" onclick={() => (outside = null)}>×</button>
+        <button aria-label="Dismiss" onclick={() => (notice = null)}>×</button>
       </span>
     {/if}
     {#if syncNote}<span class="sync" class:failed={!!syncFailed} title={syncFailed ?? ""}>{syncNote}</span>{/if}

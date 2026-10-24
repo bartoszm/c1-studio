@@ -866,6 +866,18 @@ async fn position(
     app.session()?.library.position(&filter, &options, row).map_err(|e| format!("{e:#}"))
 }
 
+/// Where each of `rows` is among the photos `filter` selects: (row, position) for those it
+/// selects.
+#[tauri::command]
+async fn positions(
+    app: State<'_, App>,
+    filter: Filter,
+    options: QueryOptions,
+    rows: Vec<u64>,
+) -> Result<Vec<(u64, usize)>, String> {
+    app.session()?.library.positions(&filter, &options, &rows).map_err(|e| format!("{e:#}"))
+}
+
 /// The map's markers for the photos `filter` selects, clustered for what the map shows.
 #[tauri::command]
 async fn map(app: State<'_, App>, filter: Filter, view: c1index::MapView) -> Result<c1index::MapResult, String> {
@@ -2469,6 +2481,7 @@ pub fn run() {
             startup_progress,
             query,
             position,
+            positions,
             smart_counts,
             trips,
             timeline,
