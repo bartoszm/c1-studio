@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.0 — 2026-10-24
+
+### New
+
+- **The selection stays through a filter:** a new filter (a sidebar pick, a chip, the search, the sort, Clear filters) keeps the picked photos it still shows, and the focus stays on the focused one or moves to the first of them, scrolled to the middle. With several picked, the footer says how many are outside the filter, with **Show them** (#81).
+- **A filter follows an edit that empties it:** when an edit leaves the filter with no photos (say, Kraków photos given Warszawa as their city), the filter takes the values the photos have now (the place, the rating, the colour, the country, a keyword just added, the album they were put into), keeps them picked and offers Back. Work lists (no keywords, no place, not in an album, "not" picks, the search, History, the trash) and Match any are never followed: emptying those is the point (#81).
+- **Back and Forward** through filters, with their picks: ‹ › in the header, or Alt+← and Alt+→, up to 50 steps (#81).
+- **Photos around a photo:** *Around* under *Captured* in the details panel shows the photo's **shoot** (the photos taken one after another around it, no more than 30 minutes apart; *Settings › Map & places*), ±15 min, ±1 h, ±3 h or its **day**. The photo stays picked and Back returns; Shift+click picks those photos among the ones shown instead. `t` shows the focused photo's shoot, Shift+T picks it. The Dates chip shows times for a span shorter than whole days (#82).
+- **Correct AI suggestions before accepting them:** each place level on a card is a box to write another name in, offering the catalog's own names (those under the levels above first); a name picked fills the levels above from the catalog, and the country code follows the country. **+ keyword** adds keywords the model missed, and a click on the stars gives another rating (#83).
+- **AI › Reviewed:** every suggestion accepted or rejected is kept, with what you changed (a place renamed, keywords added or taken off, a caption rewritten, the rating changed), filtered by Corrected, Rejected or Accepted as suggested, until you remove it (#83).
+- **Lessons for the prompt:** **Refine the prompt** (under *Reviewed*) sends the corrections (text only, no photos) to Claude, which proposes up to 15 lessons, such as writing region names the way the catalog does. You edit them and keep them, or not; they are added to the prompt (and can be edited in *Settings › AI › Prompt*), and photos already described still count as described (#83).
+
+### Fixed
+
+- **Albums made or moved in C1 Studio did not show in Capture One:** a group made here, or an album moved into one, looked empty there, because its albums were numbered before their group and Capture One leaves those out. New and moved albums are numbered as Capture One numbers them, and the next write of any kind repairs the ones earlier builds wrote (#84).
+
+### Install
+
+Run `C1.Studio_0.7.0_x64-setup.exe`. It installs over 0.6.x for the current user and keeps your settings and your library: the search index is not rebuilt. To repair albums hidden by an earlier build, make any edit and write it with Capture One closed.
+
 ## 0.6.0 — 2026-10-23
 
 ### New

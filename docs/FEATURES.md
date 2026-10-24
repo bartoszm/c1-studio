@@ -3,13 +3,16 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.6.0: [describe photos with AI](#describe-photos-with-ai),
+New in 0.7.0: [the selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward),
+[photos around a photo](#photos-around-a-photo) and [AI suggestions corrected, and lessons](#correct-the-ai-and-teach-it). New in 0.6.0: [describe photos with AI](#describe-photos-with-ai),
 [History](#history-the-catalog-over-time) and [plus codes, map and grid in sync](#no-location-plus-codes-map-and-grid-in-sync). New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
 [photo folders](#photo-folders) and [places from neighbours in time](#places-from-neighbours-in-time).
 
 - [Find anything, instantly](#find-anything-instantly)
 - [Photo folders](#photo-folders)
 - [Browse](#browse)
+- [The selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward)
+- [Photos around a photo](#photos-around-a-photo)
 - [Sort](#sort)
 - [The best match first](#the-best-match-first)
 - [Edit, then write](#edit-then-write)
@@ -26,6 +29,7 @@ New in 0.6.0: [describe photos with AI](#describe-photos-with-ai),
 - [Write, history and backups](#write-history-and-backups)
 - [History: the catalog over time](#history-the-catalog-over-time)
 - [Describe photos with AI](#describe-photos-with-ai)
+- [Correct the AI, and teach it](#correct-the-ai-and-teach-it)
 
 ## Find anything, instantly
 
@@ -61,6 +65,25 @@ your edits and crop.
 ![Picking a photo, the viewer, and resizing the tiles](media/features/browse.gif)
 
 [In the guide: Browsing](GUIDE.md#browsing)
+
+## The selection through filters, Back and Forward
+
+*New in 0.7.0.* Change the filter and the picked photos stay picked, wherever the new one
+still shows them; the footer says how many it leaves out, with **Show them**. When an
+edit empties the filter (Kraków photos given Warszawa as their city), the filter follows
+the photos to their new values instead of leaving an empty grid. **‹ ›** in the header, or
+Alt+← and Alt+→, go back and forward through the filters, each with its picks.
+
+[In the guide: Finding photos](GUIDE.md#finding-photos)
+
+## Photos around a photo
+
+*New in 0.7.0.* *Around* in the details panel shows the photos taken near this one: its
+**shoot** (one after another, no gap over 30 minutes), ±15 minutes, ±1 hour, ±3 hours or
+the whole day, with the photo still picked. Shift+click picks them in the grid instead,
+and `t` shows the shoot of the focused photo.
+
+[In the guide: Finding photos](GUIDE.md#finding-photos)
 
 ## Sort
 
@@ -245,6 +268,17 @@ sheets of 36 photos in one call for a quick first pass, and **Details** shows ea
 it goes, down to the sheet that was sent.
 
 ![Describing four photos with Claude, the cards, and one accepted into the edit queue](media/features/ai.gif)
+
+[In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
+
+## Correct the AI, and teach it
+
+*New in 0.7.0.* Fix a card before accepting it: rename a place level from the catalog's
+own names (the levels above fill in), add keywords the model missed, give another rating.
+Every card accepted or rejected is kept under **Reviewed** with what you changed. **Refine
+the prompt** sends those corrections to Claude, which turns them into lessons such as
+*write Polish region names in Polish*; keep the ones you like and the next run follows
+them.
 
 [In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
 
