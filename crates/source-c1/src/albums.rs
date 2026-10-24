@@ -112,22 +112,7 @@ pub(crate) fn write(con: &Connection, change: &CollectionChange) -> Result<()> {
                 params![parent, next_index(con, parent)?, pk],
             )
             .map_err(db_err)?;
-            // Its project, and that of everything under it, follow the new place.
-            let mut todo = vec![pk];
-            while let Some(pk) = todo.pop() {
-                let parent: i64 = con
-                    .query_row("SELECT ZPARENT FROM ZCOLLECTION WHERE Z_PK = ?1", [pk], |r| r.get(0))
-                    .map_err(db_err)?;
-                con.execute(
-                    "UPDATE ZCOLLECTION SET ZPROJECT = ?1 WHERE Z_PK = ?2",
-                    params![project_for(con, parent)?, pk],
-                )
-                .map_err(db_err)?;
-                let mut stmt = con.prepare_cached("SELECT Z_PK FROM ZCOLLECTION WHERE ZPARENT = ?1").map_err(db_err)?;
-                for child in stmt.query_map([pk], |r| r.get::<_, i64>(0)).map_err(db_err)? {
-                    todo.push(child.map_err(db_err)?);
-                }
-            }
+            follow(con, pk)?;
             touch(con, pk)?;
         }
         CollectionChange::Delete { id } => {
@@ -182,13 +167,84 @@ fn project_for(con: &Connection, parent: i64) -> Result<i64> {
     Ok(if parent_ent == ENT_PROJECT { parent } else { parent_project.filter(|p| *p != -1).unwrap_or(ROOT) })
 }
 
-/// After the last of `parent`'s collections.
+/// After `parent` and after the last of its collections. Capture One numbers a
+/// collection past its parent (the parent's number + 1 + its place among its siblings)
+/// and leaves one numbered at or before its parent out of the tree.
 fn next_index(con: &Connection, parent: i64) -> Result<i64> {
-    con.query_row("SELECT COALESCE(MAX(ZCOLLECTIONINDEX), -1) + 1 FROM ZCOLLECTION WHERE ZPARENT = ?1", [parent], |r| {
-        r.get(0)
-    })
+    con.query_row(
+        "SELECT MAX(COALESCE((SELECT ZCOLLECTIONINDEX FROM ZCOLLECTION WHERE Z_PK = ?1), -1),
+                    COALESCE((SELECT MAX(ZCOLLECTIONINDEX) FROM ZCOLLECTION WHERE ZPARENT = ?1), -1)) + 1",
+        [parent],
+        |r| r.get(0),
+    )
     .map_err(db_err)
 }
+
+/// Brings everything under `pk` in line with where `pk` now is: each collection takes
+/// its parent's project, and the children of each are numbered after it, in the order
+/// they had.
+fn follow(con: &Connection, pk: i64) -> Result<()> {
+    let mut todo = vec![pk];
+    while let Some(pk) = todo.pop() {
+        let (parent, index): (i64, i64) = con
+            .query_row("SELECT ZPARENT, COALESCE(ZCOLLECTIONINDEX, -1) FROM ZCOLLECTION WHERE Z_PK = ?1", [pk], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .map_err(db_err)?;
+        con.execute("UPDATE ZCOLLECTION SET ZPROJECT = ?1 WHERE Z_PK = ?2", params![project_for(con, parent)?, pk])
+            .map_err(db_err)?;
+        let children: Vec<i64> = con
+            .prepare_cached("SELECT Z_PK FROM ZCOLLECTION WHERE ZPARENT = ?1 ORDER BY ZCOLLECTIONINDEX, Z_PK")
+            .and_then(|mut s| s.query_map([pk], |r| r.get(0))?.collect())
+            .map_err(db_err)?;
+        for (n, &child) in children.iter().enumerate() {
+            con.execute(
+                "UPDATE ZCOLLECTION SET ZCOLLECTIONINDEX = ?1 WHERE Z_PK = ?2",
+                params![index + 1 + n as i64, child],
+            )
+            .map_err(db_err)?;
+        }
+        todo.extend(children);
+    }
+    Ok(())
+}
+
+/// Puts back after their parent the user's collections numbered at or before it, as
+/// builds before this one wrote them; Capture One does not show them. They go after
+/// their last sibling, in the order they had, and what is under them follows. Their
+/// siblings keep their numbers. Returns how many were out of place.
+pub(crate) fn repair_order(con: &Connection) -> Result<usize> {
+    let mut fixed = 0;
+    // A parent at a time: placing its collections again may mend others under them.
+    while let Some(parent) = con
+        .query_row(
+            &format!("SELECT p.Z_PK {OUT_OF_ORDER} ORDER BY p.Z_PK LIMIT 1"),
+            params![ENT_ALBUM, ENT_SMART, ENT_PROJECT, ENT_GROUP],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(db_err)?
+    {
+        let out: Vec<i64> = con
+            .prepare(&format!("SELECT c.Z_PK {OUT_OF_ORDER} AND p.Z_PK = ?5 ORDER BY c.ZCOLLECTIONINDEX, c.Z_PK"))
+            .and_then(|mut s| {
+                s.query_map(params![ENT_ALBUM, ENT_SMART, ENT_PROJECT, ENT_GROUP, parent], |r| r.get(0))?.collect()
+            })
+            .map_err(db_err)?;
+        let first = next_index(con, parent)?;
+        for (n, &pk) in out.iter().enumerate() {
+            con.execute("UPDATE ZCOLLECTION SET ZCOLLECTIONINDEX = ?1 WHERE Z_PK = ?2", params![first + n as i64, pk])
+                .map_err(db_err)?;
+            follow(con, pk)?;
+        }
+        fixed += out.len();
+    }
+    Ok(fixed)
+}
+
+/// The user's collections numbered at or before their parent (`c`, under `p`).
+const OUT_OF_ORDER: &str = "FROM ZCOLLECTION c JOIN ZCOLLECTION p ON p.Z_PK = c.ZPARENT
+     WHERE c.Z_ENT IN (?1, ?2, ?3, ?4) AND COALESCE(c.ZCOLLECTIONINDEX, -1) <= COALESCE(p.ZCOLLECTIONINDEX, -1)";
 
 fn touch(con: &Connection, pk: i64) -> Result<()> {
     con.execute(
@@ -334,6 +390,49 @@ mod tests {
         )
     }
 
+    /// Collections Capture One would leave out: numbered at or before their parent.
+    fn out_of_order(con: &Connection) -> Vec<i64> {
+        let mut stmt = con
+            .prepare(
+                "SELECT c.Z_PK FROM ZCOLLECTION c JOIN ZCOLLECTION p ON p.Z_PK = c.ZPARENT
+                  WHERE COALESCE(c.ZCOLLECTIONINDEX, -1) <= COALESCE(p.ZCOLLECTIONINDEX, -1) ORDER BY 1",
+            )
+            .unwrap();
+        stmt.query_map([], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
+    }
+
+    #[test]
+    fn put_back_after_their_parent_as_capture_one_numbers_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
+        // As earlier builds left a catalog: a group made at the top level with an album
+        // made in it and one moved into it, both numbered before it, and a group of
+        // Capture One's own that is fine.
+        con.execute_batch(
+            "INSERT INTO ZCOLLECTION (Z_ENT, Z_PK, ZNAME, ZPARENT, ZPROJECT, ZDOCUMENT, ZCOLLECTIONINDEX) VALUES
+               (8, 40, 'fuji', 1, 1, 1, 8), (2, 41, 'kept', 40, 1, 1, 9),
+               (8, 913, 'konkursy', 1, 1, 1, 23), (2, 914, 'made', 913, 1, 1, 5), (8, 892, 'moved', 913, 1, 1, 7),
+               (2, 893, 'inside moved', 892, 1, 1, 8);",
+        )
+        .unwrap();
+        assert_eq!(out_of_order(&con), vec![892, 914]);
+        let index = |pk: i64| -> i64 {
+            con.query_row("SELECT ZCOLLECTIONINDEX FROM ZCOLLECTION WHERE Z_PK = ?1", [pk], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(repair_order(&con).unwrap(), 2);
+        assert_eq!(repair_order(&con).unwrap(), 0);
+        assert_eq!(out_of_order(&con), Vec::<i64>::new());
+        // In the order they had, after the group, with what is inside following.
+        assert_eq!([index(913), index(914), index(892), index(893)], [23, 24, 25, 26]);
+        assert_eq!([index(40), index(41)], [8, 9], "Capture One's own are not touched");
+
+        // Any write mends a catalog left like that.
+        con.execute("UPDATE ZCOLLECTION SET ZCOLLECTIONINDEX = 0 WHERE Z_PK = 914", []).unwrap();
+        let p = plan(&con, &[], &[], &[member(1, &CollectionId("41".into()), true)], pk).unwrap();
+        write_plan(&mut con, &p, pk).unwrap();
+        assert_eq!(out_of_order(&con), Vec::<i64>::new());
+    }
+
     #[test]
     fn made_filled_and_deleted_as_python_does() {
         let dir = tempfile::tempdir().unwrap();
@@ -364,11 +463,13 @@ mod tests {
             )
             .unwrap()
         };
-        // Top level is under the root (a project), so its project is the root.
-        assert_eq!(row(g), (ENT_GROUP, "trips".into(), ROOT, ROOT, 0, "date".into(), None));
-        assert_eq!(row(a), (ENT_ALBUM, "japan".into(), g, ROOT, 0, "date".into(), None));
+        // Top level is under the root (a project), so its project is the root. Each is
+        // numbered after its parent and its earlier siblings.
+        assert_eq!(row(g), (ENT_GROUP, "trips".into(), ROOT, ROOT, 1, "date".into(), None));
+        assert_eq!(row(a), (ENT_ALBUM, "japan".into(), g, ROOT, 2, "date".into(), None));
         let (ent, _, parent, _, index, _, xml) = row(s);
-        assert_eq!((ent, parent, index), (ENT_SMART, ROOT, 1));
+        assert_eq!((ent, parent, index), (ENT_SMART, ROOT, 2));
+        assert_eq!(out_of_order(&con), Vec::<i64>::new());
         assert!(xml.unwrap().contains("<Criterion>street</Criterion>"));
         assert_eq!(links(&con, a), (vec![1, 2], vec![1, 2]));
 
@@ -399,9 +500,9 @@ mod tests {
         let Some(mut con) = fixture(&dir.path().join("c.cocatalogdb")) else { return };
         con.execute_batch(
             "INSERT INTO ZCOLLECTION (Z_ENT, Z_PK, ZNAME, ZPARENT, ZPROJECT, ZDOCUMENT, ZCOLLECTIONINDEX)
-               VALUES (7, 30, 'proj', 1, 1, 1, 0);
+               VALUES (7, 30, 'proj', 1, 1, 1, 1);
              INSERT INTO ZCOLLECTION (Z_ENT, Z_PK, ZNAME, ZPARENT, ZPROJECT, ZDOCUMENT, ZCOLLECTIONINDEX)
-               VALUES (2, 31, 'already in it', 30, 30, 1, 0);",
+               VALUES (2, 31, 'already in it', 30, 30, 1, 2);",
         )
         .unwrap();
         let (group, album) = (CollectionId::new_local("g-1"), CollectionId::new_local("a-1"));
@@ -419,24 +520,25 @@ mod tests {
             })
             .unwrap()
         };
-        assert_eq!(place(&con, a), (g, ROOT, 0));
+        assert_eq!(place(&con, g), (ROOT, ROOT, 2));
+        assert_eq!(place(&con, a), (g, ROOT, 3));
 
         let moves = |to: Option<&str>| {
             [CollectionChange::Move { id: CollectionId(g.to_string()), parent: to.map(|t| CollectionId(t.into())) }]
         };
-        for (to, project) in [(Some("30"), 30), (None, ROOT)] {
+        for (to, project, index) in [(Some("30"), 30, 3), (None, ROOT, 2)] {
             let changes = moves(to);
             assert_eq!(check(&con, &[], &changes[0]).unwrap(), None);
             let mut p = plan(&con, &[], &changes, &[], pk).unwrap();
             p.collections = changes.to_vec();
             write_plan(&mut con, &p, pk).unwrap();
             let parent = to.map_or(ROOT, |t| t.parse().unwrap());
-            // After what was there, and the album inside follows to the project.
-            assert_eq!(place(&con, g).0, parent);
-            assert_eq!(place(&con, g).1, project);
-            assert_eq!(place(&con, a), (g, project, 0));
+            // After what was there, and the album inside follows: to the project, and
+            // numbered after the group.
+            assert_eq!(place(&con, g), (parent, project, index));
+            assert_eq!(place(&con, a), (g, project, index + 1));
+            assert_eq!(out_of_order(&con), Vec::<i64>::new());
         }
-        assert_eq!(place(&con, g).2, 1, "after the project at the top level");
         // Into an album, or into itself, is refused.
         let bad = CollectionChange::Move { id: CollectionId(g.to_string()), parent: Some(CollectionId(a.to_string())) };
         assert!(check(&con, &[], &bad).unwrap().is_some());

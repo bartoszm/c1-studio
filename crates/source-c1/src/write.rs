@@ -419,6 +419,8 @@ pub(crate) fn write(
     for remap in &plan.remaps {
         keywords::remap(&tx, remap)?;
     }
+    // Collections earlier builds numbered before their parent, which Capture One hides.
+    albums::repair_order(&tx)?;
     // Then albums: photo edits may put photos into one made here.
     for (i, change) in plan.collections.iter().enumerate() {
         if let Some(why) = albums::check(&tx, &plan.collections[..i], change)? {
