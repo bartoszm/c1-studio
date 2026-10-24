@@ -532,6 +532,12 @@
    *  step back (see `Step`). */
   async function run(keep = false, byRow = false, how: Step = {}) {
     const mine = ++generation;
+    // Overtaking a new filter still looking for its picks (the map moved, a count was
+    // needed): this run finishes that, as the same step.
+    if (keep && carried) {
+      keep = byRow = false;
+      how = { restore: carried, travelling: true };
+    }
     // A new filter: what was picked is looked for in it, and what was shown is kept to go
     // back to. Picks a run overtaken was still looking for are this one's to look for.
     const was = keep ? null : (how.restore ?? carried ?? untrack(pickedNow));
@@ -622,7 +628,10 @@
         }
       }
     } catch (e) {
-      if (mine === generation) error = String(e);
+      if (mine === generation) {
+        error = String(e);
+        carried = null;
+      }
     }
   }
 
@@ -672,7 +681,8 @@
   /** The filter on screen, once its result is in: what a new one leaves. */
   let onScreen: Shown | null = null;
   /** How a new filter came: `restore` picks these instead of the photos picked now;
-   *  `travelling` is going back or forward, no new step; steps of one `kind` in a row
+   *  `travelling` is no new step and nothing said (going back or forward, or finishing a
+   *  run overtaken); steps of one `kind` in a row
    *  (typing a search, clicking tiles) are one step back. */
   type Step = { restore?: Picks; travelling?: boolean; kind?: "search" | "tile" };
   const shownNow = (): Shown => ({
