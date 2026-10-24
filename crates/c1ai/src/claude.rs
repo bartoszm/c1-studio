@@ -188,11 +188,37 @@ impl Claude {
         let value = serde_json::from_str(&text).map_err(|e| AiError::BadReply(e.to_string()))?;
         Ok((value, millis))
     }
+
+    /// One question without a photo: `text` under `system`, answered in the shape `schema`
+    /// gives. Returns the answer and what it cost, in US dollars.
+    pub fn ask(&self, system: &str, text: &str, schema: &Value) -> Result<(Value, f64), AiError> {
+        let body = json!({
+            "model": self.model.id,
+            "max_tokens": 16000,
+            "system": system,
+            "output_config": {"effort": self.options.effort, "format": {"type": "json_schema", "schema": schema}},
+            "messages": [{"role": "user", "content": text}]
+        });
+        let mut attempt = 0;
+        let message = loop {
+            attempt += 1;
+            match self.call(&body) {
+                Ok((message, _)) => break message,
+                Err(e) if e.retryable() && attempt < self.options.attempts && !self.options.stopped() => {
+                    std::thread::sleep(Duration::from_secs(2u64.pow(attempt)));
+                }
+                Err(e) => return Err(e),
+            }
+        };
+        let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
+        let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
+        let answer = serde_json::from_str(&answer_text(&message)?).map_err(|e| AiError::BadReply(e.to_string()))?;
+        Ok((answer, cost(&served, &usage)))
+    }
 }
 
-/// Reads a Messages response: the stop reason first, then the text block holding the
-/// structured answer.
-fn read(message: &Value) -> Result<(String, RawAnswer), AiError> {
+/// The text of a Messages response, its stop reason checked first.
+fn answer_text(message: &Value) -> Result<String, AiError> {
     match message["stop_reason"].as_str() {
         Some("refusal") => {
             return Err(AiError::Refused(message["stop_details"]["category"].as_str().map(str::to_string)));
@@ -200,13 +226,19 @@ fn read(message: &Value) -> Result<(String, RawAnswer), AiError> {
         Some("max_tokens") => return Err(AiError::Truncated),
         _ => {}
     }
-    let raw = message["content"]
+    Ok(message["content"]
         .as_array()
         .into_iter()
         .flatten()
         .filter(|block| block["type"] == "text")
         .filter_map(|block| block["text"].as_str())
-        .collect::<String>();
+        .collect())
+}
+
+/// Reads a Messages response: the stop reason first, then the text block holding the
+/// structured answer.
+fn read(message: &Value) -> Result<(String, RawAnswer), AiError> {
+    let raw = answer_text(message)?;
     let answer = serde_json::from_str::<RawAnswer>(&raw).map_err(|e| AiError::BadReply(e.to_string()))?;
     Ok((raw, answer))
 }

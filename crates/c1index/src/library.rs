@@ -40,7 +40,7 @@ mod history;
 mod placing;
 mod selection;
 
-pub use describing::{Accept, Accepted, Seen};
+pub use describing::{Accept, Accepted, ReviewRow, Seen};
 pub use history::{HistoryOff, LogDays, LogPage};
 
 pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};

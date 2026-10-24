@@ -2510,6 +2510,24 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
     assert!(lib.events(10).unwrap().iter().any(|e| e.origin == Origin::Ai));
     assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
     assert!(lib.suggestions(Some(Status::Proposed)).unwrap().is_empty());
+
+    // The review is kept with what was taken; one rejected too, once, and they go when removed.
+    let reviews = lib.reviews().unwrap();
+    assert_eq!(reviews.len(), 1);
+    assert_eq!((reviews[0].row, reviews[0].review.status), (Some(row), Status::Accepted));
+    let taken = reviews[0].review.taken.as_ref().unwrap();
+    assert_eq!(taken.keywords, ["street", "market"]);
+    assert_eq!((taken.headline.as_deref(), taken.rating), (Some("Market square"), Some(5)));
+    let other = row_of(&lib, 8);
+    lib.put_suggestion(other, &entry, &c1ai::RunRecord::default()).unwrap();
+    lib.set_suggestion_status(&[other], Status::Rejected).unwrap();
+    lib.set_suggestion_status(&[other], Status::Rejected).unwrap();
+    let reviews = lib.reviews().unwrap();
+    assert_eq!(reviews.len(), 2, "rejected once is one review");
+    assert_eq!((reviews[0].row, reviews[0].review.status), (Some(other), Status::Rejected), "newest first");
+    assert!(reviews[0].review.taken.is_none());
+    lib.delete_reviews(&[reviews[0].seq]).unwrap();
+    assert_eq!(lib.reviews().unwrap().len(), 1);
 }
 
 /// A caption written after the review showed the photo is not replaced by accepting: the

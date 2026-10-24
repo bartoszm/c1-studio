@@ -95,6 +95,11 @@ impl ClaudeCode {
     }
 
     fn args(&self) -> Vec<String> {
+        self.args_with(&self.system, &self.schema)
+    }
+
+    /// The arguments with another system prompt (a file) and answer's shape.
+    fn args_with(&self, system: &Path, schema: &Value) -> Vec<String> {
         let mut args: Vec<String> = [
             "-p",
             "--input-format",
@@ -114,8 +119,8 @@ impl ClaudeCode {
         .map(String::from)
         .into();
         args.extend(["--model".into(), self.model.id.into(), "--effort".into(), self.options.effort.clone()]);
-        args.extend(["--system-prompt-file".into(), self.system.display().to_string()]);
-        args.extend(["--json-schema".into(), self.schema.to_string()]);
+        args.extend(["--system-prompt-file".into(), system.display().to_string()]);
+        args.extend(["--json-schema".into(), schema.to_string()]);
         args
     }
 
@@ -134,12 +139,13 @@ impl ClaudeCode {
         format!("{message}\n")
     }
 
-    /// Runs Claude Code on one photo. It is killed on a stop or after [`CALL_TIMEOUT`];
-    /// its output is read as it comes, so neither pipe fills and stalls it.
-    fn call(&self, photo: &PhotoRequest) -> Result<(Value, u64), AiError> {
+    /// Runs Claude Code on one message (a photo's, or a question) with `args`. It is killed
+    /// on a stop or after [`CALL_TIMEOUT`]; its output is read as it comes, so neither pipe
+    /// fills and stalls it.
+    fn call(&self, message: String, args: Vec<String>) -> Result<(Value, u64), AiError> {
         let started = Instant::now();
         let mut child = command(&self.program)
-            .args(self.args())
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -148,7 +154,6 @@ impl ClaudeCode {
         let mut stdin = child.stdin.take().expect("piped");
         // Written from another thread: a photo is larger than the pipe, and Claude Code
         // starts writing before it has read it all. Dropping it closes Claude Code's input.
-        let message = Self::message(photo);
         std::thread::spawn(move || stdin.write_all(message.as_bytes()));
         let drain = |mut pipe: Box<dyn Read + Send>| {
             std::thread::spawn(move || {
@@ -198,6 +203,20 @@ impl ClaudeCode {
     }
 }
 
+impl ClaudeCode {
+    /// One question without a photo: `text` under `system`, answered in the shape `schema`
+    /// gives.
+    pub fn ask(&self, system: &str, text: &str, schema: &Value) -> Result<Value, AiError> {
+        let file = self.system.with_extension("ask.txt");
+        std::fs::write(&file, system).map_err(|e| AiError::Cli(format!("Claude Code: the prompt's file: {e}")))?;
+        let message = json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}});
+        let called = self.call(format!("{message}\n"), self.args_with(&file, schema));
+        let _ = std::fs::remove_file(&file);
+        let (result, _) = called?;
+        structured(&result).cloned()
+    }
+}
+
 impl Drop for ClaudeCode {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.system);
@@ -206,6 +225,13 @@ impl Drop for ClaudeCode {
 
 /// Reads the final `result` event: an error first, then the structured answer.
 fn read(result: &Value) -> Result<(String, RawAnswer), AiError> {
+    let output = structured(result)?;
+    let answer = serde_json::from_value::<RawAnswer>(output.clone()).map_err(|e| AiError::BadReply(e.to_string()))?;
+    Ok((output.to_string(), answer))
+}
+
+/// The structured answer of the final `result` event, after its error if any.
+fn structured(result: &Value) -> Result<&Value, AiError> {
     if result["is_error"].as_bool() == Some(true) {
         let message = result["result"].as_str().unwrap_or("Claude Code failed").to_string();
         return Err(match result["api_error_status"].as_u64() {
@@ -225,8 +251,7 @@ fn read(result: &Value) -> Result<(String, RawAnswer), AiError> {
     if !output.is_object() {
         return Err(AiError::BadReply(result["result"].as_str().unwrap_or("no structured answer").to_string()));
     }
-    let answer = serde_json::from_value::<RawAnswer>(output.clone()).map_err(|e| AiError::BadReply(e.to_string()))?;
-    Ok((output.to_string(), answer))
+    Ok(output)
 }
 
 impl VisionProvider for ClaudeCode {
@@ -249,7 +274,7 @@ impl VisionProvider for ClaudeCode {
             attempt += 1;
             tell(&photo.progress, Step::Sent { attempt });
             let attempts = self.options.attempts.min(2);
-            match self.call(photo) {
+            match self.call(Self::message(photo), self.args()) {
                 Ok(done) => break done,
                 Err(e) if e.retryable() && attempt < attempts && !self.options.stopped() => {
                     tell(&photo.progress, Step::Retrying { attempt, of: attempts, why: e.to_string() });

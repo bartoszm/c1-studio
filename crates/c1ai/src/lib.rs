@@ -13,6 +13,7 @@ pub mod claude;
 pub mod claude_code;
 pub mod keys;
 mod prompt;
+pub mod refine;
 
 use std::collections::HashMap;
 use std::sync::Arc;

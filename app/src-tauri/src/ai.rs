@@ -62,6 +62,9 @@ pub(crate) struct AiSettings {
     fields: Fields,
     /// The user's own instructions in place of [`c1ai::INSTRUCTIONS`].
     instructions: Option<String>,
+    /// Lessons drawn from the user's corrections (Refine in the AI tab), or written by hand:
+    /// they follow the instructions.
+    lessons: Option<String>,
     /// A place level (or position) guessed at least this likely (%) is ticked in the review
     /// where the photo has none.
     place_tick: u8,
@@ -85,6 +88,7 @@ impl Default for AiSettings {
             parallel: 4,
             fields: Fields::default(),
             instructions: None,
+            lessons: None,
             place_tick: 80,
             gemini_model: agy::DEFAULT_MODEL.into(),
             sheets: false,
@@ -366,10 +370,12 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     // version of them then reaches this catalog too.
     let instructions =
         settings.instructions.map(|i| i.trim().to_string()).filter(|i| !i.is_empty() && i != c1ai::INSTRUCTIONS.trim());
+    let lessons = settings.lessons.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
     let settings = AiSettings {
         parallel: settings.parallel.clamp(1, 8),
         place_tick: settings.place_tick.clamp(1, 100),
         instructions,
+        lessons,
         ..settings
     };
     std::fs::write(settings_path(&s), serde_json::to_vec_pretty(&settings).map_err(text)?).map_err(text)?;
@@ -423,6 +429,7 @@ fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), Stri
         ),
         fields: settings.fields,
         instructions: settings.instructions.clone(),
+        lessons: settings.lessons.clone(),
     };
     let vocabulary = Vocabulary::new(paths.iter().map(|(p, n)| (p.as_str(), *n)))
         .withholding(withheld.iter().map(|(p, _)| p.as_str()));
@@ -1003,6 +1010,69 @@ pub(crate) async fn accept_suggestions(app: State<'_, App>, picks: Vec<Accept>) 
     tauri::async_runtime::spawn_blocking(move || s.library.accept_suggestions(&picks).map_err(|e| format!("{e:#}")))
         .await
         .map_err(text)?
+}
+
+/// The suggestions reviewed, newest first: what lessons are drawn from.
+#[tauri::command]
+pub(crate) async fn ai_reviews(app: State<'_, App>) -> Result<Vec<c1index::ReviewRow>, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || s.library.reviews().map_err(text)).await.map_err(text)?
+}
+
+#[tauri::command]
+pub(crate) async fn delete_ai_reviews(app: State<'_, App>, seqs: Vec<u64>) -> Result<(), String> {
+    app.session()?.library.delete_reviews(&seqs).map_err(text)
+}
+
+/// Lessons proposed from the corrections given (one line each) and the count of suggestions
+/// accepted as they were, by Claude: with the API key, or else Claude Code on a plan. Not
+/// kept: the user reads them and saves them in the settings.
+#[tauri::command]
+pub(crate) async fn refine_lessons(
+    app: State<'_, App>,
+    reviews: Vec<String>,
+    unchanged: usize,
+) -> Result<c1ai::refine::Refined, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_settings(&s);
+        let ask = c1ai::refine::RefineAsk {
+            instructions: settings.instructions.clone().unwrap_or_else(|| c1ai::INSTRUCTIONS.to_string()),
+            lessons: settings.lessons.clone(),
+            reviews,
+            unchanged,
+        };
+        let (system, message, schema) = (c1ai::refine::SYSTEM, c1ai::refine::message(&ask), c1ai::refine::schema());
+        let options = claude::Options {
+            model: settings.model.clone(),
+            effort: settings.effort.clone(),
+            attempts: 3,
+            stop: Default::default(),
+        };
+        // Gemini describes, but refining is Claude's: the key if there is one, else the plan.
+        let key = keys::get(&ANTHROPIC).map_err(text)?;
+        let answer = match (settings.access, key) {
+            (Access::Api, None) => return Err(AiError::NoKey.to_string()),
+            (Access::Api | Access::Gemini, Some(key)) => {
+                let claude = Claude::new(key, options, &Brief::default(), Vocabulary::default()).map_err(text)?;
+                claude.ask(system, &message, &schema).map_err(text)?.0
+            }
+            (Access::Plan | Access::Gemini, _) => {
+                let program = claude_code::find().ok_or_else(|| {
+                    "Refining the prompt asks Claude: add an API key in Settings > AI, or install Claude Code and sign in"
+                        .to_string()
+                })?;
+                if !on_plan(&claude_code::status(&program).map_err(text)?) {
+                    return Err("Refining the prompt asks Claude: Claude Code is not signed in with a Claude plan".into());
+                }
+                let cli = ClaudeCode::new(program, options, &Brief::default(), Vocabulary::default()).map_err(text)?;
+                cli.ask(system, &message, &schema).map_err(text)?
+            }
+        };
+        c1ai::refine::read(&answer).map_err(text)
+    })
+    .await
+    .map_err(text)?
 }
 
 /// Sets suggestions aside (`rejected`), or back to `proposed`.
