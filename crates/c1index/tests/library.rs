@@ -114,6 +114,29 @@ fn a_stopped_sync_saves_nothing() {
 }
 
 #[test]
+fn opening_stops_inside_its_slow_parts_and_its_files_open_only_once() {
+    let (dir, library, _) = setup();
+    let key = library.photo_id(0).unwrap().key();
+    library.put_analyses(vec![(key, (1, 1), look(100, 100, [10, 20, 30], 1.0, 7))]).unwrap();
+    // Open already: why a new open waits for one stopped that has not let go yet.
+    assert!(Library::open(dir.path()).is_err());
+    drop(library);
+    // Stopped once grouping has begun: the stop is seen inside it.
+    let cell: Arc<Mutex<Option<OpenControl>>> = Arc::default();
+    let ctl = {
+        let cell = cell.clone();
+        OpenControl::new(move |step| {
+            if step == OpenStep::Part("groups") {
+                cell.lock().unwrap().as_ref().unwrap().stop();
+            }
+        })
+    };
+    *cell.lock().unwrap() = Some(ctl.clone());
+    assert!(Library::open_with(dir.path(), &ctl).err().unwrap().is::<Stopped>());
+    assert_eq!(Library::open(dir.path()).unwrap().len(), 10);
+}
+
+#[test]
 fn opening_stops_between_parts_and_opens_again_after() {
     let (dir, library, _) = setup();
     drop(library);

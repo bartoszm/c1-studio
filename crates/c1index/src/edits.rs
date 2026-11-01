@@ -283,7 +283,7 @@ pub struct EditsBatch {
 impl Edits {
     pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
         let db = crate::db::open(path, "edits", ctl)?;
-        let tx = crate::db::begin_write(&db)?;
+        let tx = db.begin_write()?;
         tx.open_table(PENDING)?;
         tx.open_table(REMAPS)?;
         tx.open_table(COLLECTIONS)?;
@@ -319,7 +319,7 @@ impl Edits {
     }
 
     pub fn batch(&self) -> anyhow::Result<EditsBatch> {
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         // From the file, in the batch's own transaction: whatever turned it off last.
         let keep_before = history_on(&tx.open_table(META)?)?;
         Ok(EditsBatch { tx, keep_before })
@@ -330,7 +330,7 @@ impl Edits {
     /// stretch logged while off is remembered (see [`Edits::off_spans`]). Nothing changes
     /// when the write fails.
     pub fn set_keep_before(&self, on: bool) -> anyhow::Result<()> {
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         {
             let next = tx.open_table(EVENTS)?.last()?.map_or(0, |(k, _)| k.value() + 1);
             let mut meta = tx.open_table(META)?;

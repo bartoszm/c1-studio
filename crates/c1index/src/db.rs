@@ -132,11 +132,3 @@ pub(crate) fn open(path: &Path, part: &'static str, ctl: &OpenControl) -> anyhow
     ctl.took(part, started.elapsed(), repaired.load(Ordering::SeqCst));
     Ok(db)
 }
-
-/// A write transaction that keeps what a repair needs: if the app ends before the file is
-/// closed, the next open reads that instead of walking the whole file.
-pub(crate) fn begin_write(db: &Database) -> Result<redb::WriteTransaction, redb::TransactionError> {
-    let mut tx = db.begin_write()?;
-    tx.set_quick_repair(true);
-    Ok(tx)
-}

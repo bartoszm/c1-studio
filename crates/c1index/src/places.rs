@@ -72,7 +72,7 @@ pub struct PlaceBook {
 impl PlaceBook {
     pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
         let db = crate::db::open(path, "places", ctl)?;
-        let tx = crate::db::begin_write(&db)?;
+        let tx = db.begin_write()?;
         tx.open_table(ONLINE)?;
         tx.open_table(COARSE)?;
         tx.open_table(GUESSED)?;
@@ -102,7 +102,7 @@ impl PlaceBook {
         if items.is_empty() {
             return Ok(());
         }
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         {
             let mut table = tx.open_table(table)?;
             for (key, value) in items {

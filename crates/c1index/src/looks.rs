@@ -46,7 +46,7 @@ pub struct Looks {
 impl Looks {
     pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
         let db = crate::db::open(path, "analysis", ctl)?;
-        let tx = crate::db::begin_write(&db)?;
+        let tx = db.begin_write()?;
         tx.open_table(ANALYSES)?;
         tx.open_table(META)?;
         tx.commit()?;
@@ -64,7 +64,7 @@ impl Looks {
     }
 
     pub fn set_settings(&self, settings: &ClassSettings) -> anyhow::Result<()> {
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         tx.open_table(META)?.insert(SETTINGS, serde_json::to_string(settings)?.as_str())?;
         tx.commit()?;
         Ok(())
@@ -87,7 +87,7 @@ impl Looks {
     }
 
     pub fn put(&self, records: &[(String, Record)]) -> anyhow::Result<()> {
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         {
             let mut table = tx.open_table(ANALYSES)?;
             for (key, record) in records {

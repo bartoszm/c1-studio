@@ -263,24 +263,31 @@ struct Boot {
     last_emit: Mutex<Option<Instant>>,
     /// The open source's noun, for the steps that follow.
     noun: Mutex<Option<String>>,
-    /// The open under way, until its source is ready to use: Abort stops it.
+    /// The open under way, until its source is ready to use: Abort stops it. At most one is
+    /// kept, for as long as the app runs if its thread dies.
     open: Mutex<Option<OpenControl>>,
+    /// Opens whose threads are not done yet, stopped ones among them.
+    runs: OpenRuns,
     /// Numbers the opens: one stopped, or overtaken by another, finds a newer number when
     /// it is done, and leaves the app and the dialog as they are.
     ticket: AtomicU64,
 }
 
 impl Boot {
-    /// Shows the dialog for a new open: its ticket, and the control to open with.
-    fn begin(&self, app: &AppHandle) -> (u64, OpenControl) {
+    /// Shows the dialog for a new open of `spec`. One still under way is overtaken: it is
+    /// stopped, as nothing it makes would be used.
+    fn begin(&self, app: &AppHandle, spec: &SourceSpec) -> OpenRun {
         let ticket = self.ticket.fetch_add(1, Ordering::SeqCst) + 1;
         let handle = app.clone();
         let ctl = OpenControl::new(move |step| handle.state::<Boot>().open_step(&handle, ticket, step));
-        *self.open.lock().unwrap() = Some(ctl.clone());
+        if let Some(overtaken) = self.open.lock().unwrap().replace(ctl.clone()) {
+            overtaken.stop();
+        }
         self.active.store(true, Ordering::SeqCst);
         *self.noun.lock().unwrap() = None;
         self.set(app, Some(Startup::at("opening")), true);
-        (ticket, ctl)
+        let (before, done) = self.runs.begin(spec);
+        OpenRun { ticket, ctl, before, done }
     }
 
     /// Whether the open with `ticket` is still the one shown: not stopped, nor overtaken.
@@ -2207,13 +2214,14 @@ fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
         .expect("a static response always builds")
 }
 
-/// Opens the source the app was started with (the open `ticket`, with `ctl`), then
-/// [`finish_opening`]. Stopped meanwhile (Abort), it leaves what the window was told.
-fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool, ticket: u64, ctl: OpenControl) {
+/// Opens the source the app was started with, then [`finish_opening`]. Stopped meanwhile
+/// (Abort), it leaves what the window was told.
+fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool, run: OpenRun) {
     let app = app.clone();
     std::thread::spawn(move || {
+        let OpenRun { ticket, ctl, before, done: _done } = run;
         let session = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            open(&spec, &ctl).map(Arc::new).map_err(|e| format!("{e:#}"))
+            let_go(&before, &ctl).and_then(|()| open(&spec, &ctl)).map(Arc::new).map_err(|e| format!("{e:#}"))
         }))
         .unwrap_or_else(|_| Err("opening the library crashed".into()));
         let ready = session.is_ok();
@@ -2241,6 +2249,9 @@ fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool, ticket:
 /// (Abort stops it); any other is usable at once, and reads in the background.
 fn finish_opening(app: &AppHandle, ticket: u64) {
     let boot = app.state::<Boot>();
+    if !boot.current(ticket) {
+        return;
+    }
     if app.state::<App>().session().is_ok_and(|s| s.library.is_empty()) {
         if let Err(e) = run_sync(app)
             && boot.current(ticket)
@@ -2305,6 +2316,55 @@ impl Finish {
         let set = self.set.lock().unwrap_or_else(|e| e.into_inner());
         let (set, _) = self.changed.wait_timeout_while(set, time, |set| !*set).unwrap_or_else(|e| e.into_inner());
         *set
+    }
+}
+
+/// One open of a source, from [`Boot::begin`] until its thread is done with the library.
+struct OpenRun {
+    /// Tells this open from a newer one.
+    ticket: u64,
+    ctl: OpenControl,
+    /// Earlier opens of the same source still under way: see [`let_go`].
+    before: Vec<Arc<Finish>>,
+    done: FinishesOnDrop,
+}
+
+/// The opens whose threads are not done yet, by source.
+#[derive(Default)]
+struct OpenRuns(Mutex<Vec<(SourceSpec, Arc<Finish>)>>);
+
+impl OpenRuns {
+    /// A new open of `spec`: the earlier ones of it still under way, and what says this one is done.
+    fn begin(&self, spec: &SourceSpec) -> (Vec<Arc<Finish>>, FinishesOnDrop) {
+        let mut runs = self.0.lock().unwrap();
+        runs.retain(|(_, run)| !run.wait(Duration::ZERO));
+        let before = runs.iter().filter(|(of, _)| of == spec).map(|(_, run)| run.clone()).collect();
+        let done = Arc::new(Finish::default());
+        runs.push((spec.clone(), done.clone()));
+        (before, FinishesOnDrop(done))
+    }
+}
+
+/// Waits for earlier opens of the source to let go of its files: one stopped by Abort may
+/// be in a step that takes a while, and its files can be opened only once. Opening another
+/// source does not wait for it. Stopped meanwhile, this open ends too.
+fn let_go(before: &[Arc<Finish>], ctl: &OpenControl) -> anyhow::Result<()> {
+    for run in before {
+        while !run.wait(Duration::from_millis(100)) {
+            if ctl.stopped() {
+                return Err(c1index::Stopped.into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Sets the flag when dropped, which the thread holding it does last.
+struct FinishesOnDrop(Arc<Finish>);
+
+impl Drop for FinishesOnDrop {
+    fn drop(&mut self) {
+        self.0.set();
     }
 }
 
@@ -2494,13 +2554,15 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
         }
     }
     let boot = app.state::<Boot>();
-    let (ticket, ctl) = boot.begin(&app);
+    let OpenRun { ticket, ctl, before, done } = boot.begin(&app, &spec);
     let opened = {
         let spec = spec.clone();
-        tauri::async_runtime::spawn_blocking(move || open(&spec, &ctl).map_err(|e| format!("{e:#}")))
-            .await
-            .map_err(text)
-            .and_then(|r| r)
+        tauri::async_runtime::spawn_blocking(move || {
+            let_go(&before, &ctl).and_then(|()| open(&spec, &ctl)).map_err(|e| format!("{e:#}"))
+        })
+        .await
+        .map_err(text)
+        .and_then(|r| r)
     };
     let opened = match opened {
         // Stopped (Abort): what was open stays.
@@ -2528,7 +2590,10 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
     }
     let remembered = Recent::remember(&spec);
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || finish_opening(&handle, ticket));
+    tauri::async_runtime::spawn_blocking(move || {
+        let _done = done;
+        finish_opening(&handle, ticket);
+    });
     remembered
 }
 
@@ -2549,8 +2614,8 @@ pub fn run() {
             match sources::startup(&args) {
                 Ok((spec, remember)) => {
                     app.manage(App(RwLock::new(Current { spec: Some(spec.clone()), session: Err(STARTING.into()) })));
-                    let (ticket, ctl) = app.state::<Boot>().begin(app.handle());
-                    open_in_background(app.handle(), spec, remember, ticket, ctl);
+                    let run = app.state::<Boot>().begin(app.handle(), &spec);
+                    open_in_background(app.handle(), spec, remember, run);
                 }
                 Err(e) => {
                     app.manage(App(RwLock::new(Current { spec: None, session: Err(e) })));
@@ -2697,6 +2762,28 @@ mod tests {
     use super::*;
     use c1index::group_places;
     use c1model::{AssetId, EditInfo, Exif, FileInfo, PhotoId, SourceId};
+
+    #[test]
+    fn an_open_waits_only_for_earlier_opens_of_its_source() {
+        let spec = |location: &str| SourceSpec { provider: "capture-one".into(), location: location.into() };
+        let runs = OpenRuns::default();
+        let (none, first) = runs.begin(&spec("a"));
+        assert!(none.is_empty());
+        // Another source need not wait.
+        let (none, _other) = runs.begin(&spec("b"));
+        assert!(none.is_empty());
+        let (before, _second) = runs.begin(&spec("a"));
+        assert_eq!(before.len(), 1);
+        // Asked to stop, it stops waiting.
+        let ctl = OpenControl::default();
+        ctl.stop();
+        assert!(let_go(&before, &ctl).unwrap_err().is::<c1index::Stopped>());
+        // Once the first is done, there is nothing to wait for, and it is forgotten.
+        drop(first);
+        assert!(let_go(&before, &OpenControl::default()).is_ok());
+        let (before, _third) = runs.begin(&spec("a"));
+        assert_eq!(before.len(), 1, "only the second is still under way");
+    }
 
     #[test]
     fn settings_read_whatever_build_wrote_them() {

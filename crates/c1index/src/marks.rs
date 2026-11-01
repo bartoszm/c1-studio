@@ -33,7 +33,7 @@ impl MarkBook {
     fn open(path: &Path, table: &'static str, ctl: &OpenControl) -> anyhow::Result<Self> {
         let db = crate::db::open(path, table, ctl)?;
         let table = TableDefinition::new(table);
-        let tx = crate::db::begin_write(&db)?;
+        let tx = db.begin_write()?;
         tx.open_table(table)?;
         tx.commit()?;
         Ok(Self { db, table })
@@ -54,7 +54,7 @@ impl MarkBook {
         if keys.is_empty() {
             return Ok(());
         }
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         {
             let mut table = tx.open_table(self.table)?;
             for key in keys {

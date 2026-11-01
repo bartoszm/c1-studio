@@ -466,12 +466,12 @@ impl Library {
         let regrouped = ctl.timed("groups", || library.group_looks())?;
         let flagged = library.store.meta("coarse_flagged")?.is_some();
         if !rebuild {
-            ctl.timed("regrouped", || library.reindex_keys(&regrouped))?;
+            ctl.timed("regrouped", || library.reindex_keys_stoppable(&regrouped))?;
             // Photos given their place's position by a build that did not flag them yet:
             // written again, once.
             if !flagged {
                 let coarse: Vec<String> = library.coarse.read().unwrap().keys().cloned().collect();
-                library.reindex_keys(&coarse)?;
+                library.reindex_keys_stoppable(&coarse)?;
             }
         }
         if rebuild {
@@ -730,7 +730,11 @@ impl Library {
             return Ok(HashMap::new());
         }
         let binned = self.binned.read().unwrap().clone();
-        for (row, key) in self.store.keys()? {
+        for (at, (row, key)) in self.store.keys()?.into_iter().enumerate() {
+            // Worked out again at the next open, and seconds on a big library.
+            if at % 1024 == 0 && self.stopped() {
+                return Err(Stopped.into());
+            }
             let Some(&(hash, sharp)) = looks.get(&key) else { continue };
             if binned.contains(&key) {
                 continue;
@@ -972,11 +976,25 @@ impl Library {
 
     /// Writes the documents of these photos again. The caller holds `writing`.
     fn reindex_keys(&self, keys: &[String]) -> anyhow::Result<()> {
+        self.reindex_keys_unless(keys, || false)
+    }
+
+    /// [`Library::reindex_keys`] for what opening works out each time, or is marked done only
+    /// after: stopped, it leaves the index as it was. An edit's documents must not stop
+    /// halfway: its change is in the store already.
+    fn reindex_keys_stoppable(&self, keys: &[String]) -> anyhow::Result<()> {
+        self.reindex_keys_unless(keys, || self.stopped())
+    }
+
+    fn reindex_keys_unless(&self, keys: &[String], stopped: impl Fn() -> bool) -> anyhow::Result<()> {
         if keys.is_empty() {
             return Ok(());
         }
         let mut writer = self.writer()?;
         for key in keys {
+            if stopped() {
+                return Err(Stopped.into());
+            }
             let Some(row) = self.store.row_of(key)? else { continue };
             let Some(photo) = self.store.photo(row)? else { continue };
             writer.delete_term(Term::from_field_u64(self.fields.row, row));
@@ -997,6 +1015,10 @@ impl Library {
         let mut writer = self.writer()?;
         writer.delete_all_documents()?;
         self.store.for_each_photo(|row, photo| {
+            // Stopped: no commit, and the schema not marked, so the next open builds it again.
+            if self.stopped() {
+                return Err(Stopped.into());
+            }
             writer.add_document(self.doc(row, &photo))?;
             Ok(())
         })?;

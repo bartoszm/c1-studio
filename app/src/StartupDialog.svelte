@@ -40,7 +40,7 @@
     stopping = true;
     try {
       await abortOpen();
-    } catch {
+    } finally {
       stopping = false;
     }
   }
@@ -56,7 +56,8 @@
   const time = (s: number) => (s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")} s`);
 </script>
 
-<svelte:window onkeydown={(e) => { if (e.key === "Escape") abort(); }} />
+<!-- Esc only while stopping loses nothing: a stray key must not throw away a first read. -->
+<svelte:window onkeydown={(e) => { if (e.key === "Escape" && (progress.step === "opening" || progress.step === "repairing")) abort(); }} />
 
 <div class="backdrop" role="presentation">
   <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="startup-title" aria-describedby="startup-note">

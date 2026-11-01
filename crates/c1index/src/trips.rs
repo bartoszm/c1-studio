@@ -517,7 +517,7 @@ pub struct TripBook {
 impl TripBook {
     pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
         let db = crate::db::open(path, "trips", ctl)?;
-        let tx = crate::db::begin_write(&db)?;
+        let tx = db.begin_write()?;
         tx.open_table(TRIPS)?;
         tx.open_table(META)?;
         tx.commit()?;
@@ -534,7 +534,7 @@ impl TripBook {
     }
 
     pub fn set_settings(&self, settings: &TripSettings) -> anyhow::Result<()> {
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         tx.open_table(META)?.insert(SETTINGS, serde_json::to_string(settings)?.as_str())?;
         tx.commit()?;
         Ok(())
@@ -557,7 +557,7 @@ impl TripBook {
 
     /// Replaces the stored trips.
     pub fn save(&self, trips: &[Trip], next_id: u64) -> anyhow::Result<()> {
-        let tx = crate::db::begin_write(&self.db)?;
+        let tx = self.db.begin_write()?;
         {
             let mut table = tx.open_table(TRIPS)?;
             table.retain(|_, _| false)?;

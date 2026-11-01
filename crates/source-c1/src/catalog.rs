@@ -82,12 +82,12 @@ impl Drop for TempCopy {
 
 /// How old a snapshot copy must be before [`remove_stale_copies`] takes it for one left
 /// behind: a read takes seconds, so an hour leaves any under way alone.
-const STALE_COPY: Duration = Duration::from_secs(3600);
+pub(crate) const STALE_COPY: Duration = Duration::from_secs(3600);
 
 /// Removes the snapshot copies left in `work_dir` by a run that ended mid-read (the app
 /// killed, the computer turned off): each is as big as the catalog. Copies of this
-/// process, and recent ones (another process may be reading them), stay.
-pub(crate) fn remove_stale_copies(work_dir: &Path) {
+/// process, and those younger than `age` (another process may be reading them), stay.
+pub(crate) fn remove_stale_copies(work_dir: &Path, age: Duration) {
     let Ok(entries) = fs::read_dir(work_dir) else { return };
     let own = format!("snapshot-{}-", std::process::id());
     for entry in entries.flatten() {
@@ -96,9 +96,12 @@ pub(crate) fn remove_stale_copies(work_dir: &Path) {
         if !name.starts_with("snapshot-") || !name.ends_with(".cocatalogdb") || name.starts_with(&own) {
             continue;
         }
-        // Made when copied (a copy keeps the catalog's modification time).
-        let made = entry.metadata().and_then(|m| m.created());
-        if made.is_ok_and(|t| t.elapsed().is_ok_and(|age| age > STALE_COPY)) {
+        // Made when copied. On Windows a copy keeps the catalog's modification time and
+        // has its own creation time; elsewhere it may be the other way round, or have no
+        // creation time at all. The newer of the two is never before the copy.
+        let Ok(meta) = entry.metadata() else { continue };
+        let made = meta.created().ok().into_iter().chain(meta.modified().ok()).max();
+        if made.is_some_and(|t| t.elapsed().is_ok_and(|elapsed| elapsed >= age)) {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -270,19 +273,15 @@ mod tests {
             path
         };
         let own = file(&format!("snapshot-{}-0.cocatalogdb", std::process::id()));
-        let recent = file("snapshot-1-0.cocatalogdb");
+        let copy = file("snapshot-1-0.cocatalogdb");
         let other = file("notes.txt");
-        let old = file("snapshot-2-0.cocatalogdb");
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::FileTimesExt;
-            let made = std::time::SystemTime::now() - STALE_COPY * 2;
-            let handle = fs::OpenOptions::new().write(true).open(&old).unwrap();
-            handle.set_times(fs::FileTimes::new().set_created(made)).unwrap();
-        }
-        remove_stale_copies(dir.path());
-        assert!(own.exists() && recent.exists() && other.exists());
-        #[cfg(windows)]
-        assert!(!old.exists(), "a copy made two hours ago by another run goes");
+        // Not old enough yet: an hour has not gone by.
+        remove_stale_copies(dir.path(), STALE_COPY);
+        assert!(own.exists() && copy.exists() && other.exists());
+        // Old enough: only another run's copy goes.
+        thread::sleep(Duration::from_millis(50));
+        remove_stale_copies(dir.path(), Duration::from_millis(10));
+        assert!(own.exists() && other.exists());
+        assert!(!copy.exists(), "a copy left by another run goes");
     }
 }
