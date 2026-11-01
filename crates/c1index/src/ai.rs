@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1ai::{RunRecord, Suggestion};
 use c1model::Place;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -87,9 +87,9 @@ pub struct SuggestionBook {
 }
 
 impl SuggestionBook {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
-        let tx = db.begin_write()?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "suggestions", ctl)?;
+        let tx = crate::db::begin_write(&db)?;
         {
             let mut table = tx.open_table(SUGGESTIONS)?;
             tx.open_table(RECORDS)?;
@@ -136,7 +136,7 @@ impl SuggestionBook {
     /// Stores a photo's new suggestion without a call of its own: one of a contact sheet's
     /// photos, the call recorded with another.
     pub fn put_entry(&self, key: &str, entry: &Entry) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         tx.open_table(SUGGESTIONS)?.insert(key, postcard::to_stdvec(entry)?.as_slice())?;
         tx.commit()?;
         Ok(())
@@ -144,7 +144,7 @@ impl SuggestionBook {
 
     /// Stores a photo's new suggestion, replacing the one before, with the call's record.
     pub fn put(&self, key: &str, entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         {
             tx.open_table(SUGGESTIONS)?.insert(key, postcard::to_stdvec(entry)?.as_slice())?;
             let mut records = tx.open_table(RECORDS)?;
@@ -157,7 +157,7 @@ impl SuggestionBook {
 
     /// Records a call whose answer was not usable (declined, cut off): it cost money too.
     pub fn record(&self, key: &str, record: &RunRecord) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         {
             let mut records = tx.open_table(RECORDS)?;
             let next = records.last()?.map(|(k, _)| k.value() + 1).unwrap_or(0);
@@ -172,7 +172,7 @@ impl SuggestionBook {
     /// review replaces the one it had (reviewed again: the last word counts), each under the
     /// next number.
     pub fn settle(&self, keys: &[&str], status: Status, reviews: &[Review]) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         {
             let mut table = tx.open_table(SUGGESTIONS)?;
             for key in keys {
@@ -221,7 +221,7 @@ impl SuggestionBook {
     }
 
     pub fn delete_reviews(&self, seqs: &[u64]) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         {
             let mut table = tx.open_table(REVIEWS)?;
             for seq in seqs {
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn suggestions_are_replaced_and_every_call_is_counted() {
         let dir = tempfile::tempdir().unwrap();
-        let book = SuggestionBook::open(&dir.path().join("ai.redb")).unwrap();
+        let book = SuggestionBook::open(&dir.path().join("ai.redb"), &Default::default()).unwrap();
         let record = RunRecord { cost: 0.002, ..RunRecord::default() };
         book.put("c1:1", &entry(Status::Proposed), &record).unwrap();
         book.put("c1:1", &entry(Status::Proposed), &record).unwrap();
@@ -409,13 +409,17 @@ mod tests {
                 .unwrap();
             tx.commit().unwrap();
         }
-        let book = SuggestionBook::open(&path).unwrap();
+        let book = SuggestionBook::open(&path, &Default::default()).unwrap();
         let entry = book.get("c1:1").unwrap().expect("moved over");
         assert_eq!((entry.status, entry.suggestion.rating), (Status::Accepted, Some(4)));
         let place = entry.suggestion.place.unwrap();
         assert_eq!(place.city, Some(c1ai::Guess { name: "Kraków".into(), p: 0.6 }));
         assert_eq!(place.country.map(|g| g.name).as_deref(), Some("Poland"));
         drop(book);
-        assert_eq!(SuggestionBook::open(&path).unwrap().all().unwrap().len(), 1, "opened again: still there");
+        assert_eq!(
+            SuggestionBook::open(&path, &Default::default()).unwrap().all().unwrap().len(),
+            1,
+            "opened again: still there"
+        );
     }
 }

@@ -1,10 +1,11 @@
 use c1index::{
-    Before, Bin, Dim, Filter, Hidden, HistoryPick, Library, LogKind, LogQuery, Merged, NetWhat, Origin, Presence,
-    QueryOptions, Range, Sort, SyncStep, TimeRange, Trashed, What, parse_rating,
+    Before, Bin, Dim, Filter, Hidden, HistoryPick, Library, LogKind, LogQuery, Merged, NetWhat, OpenControl, OpenStep,
+    Origin, Presence, QueryOptions, Range, Sort, Stopped, SyncStep, TimeRange, Trashed, What, parse_rating,
 };
 use c1model::KeywordRemap;
 use c1model::memory::MemorySource;
 use c1model::*;
+use std::sync::{Arc, Mutex};
 
 fn photo(n: u32) -> Photo {
     let source = SourceId("mem".into());
@@ -90,6 +91,62 @@ fn a_sync_reports_reading_then_indexing_then_saving() {
     assert!(counts.iter().all(|(_, t)| *t == total));
     assert!(counts.windows(2).all(|w| w[0].0 < w[1].0));
     assert!(counts.len() >= 600 / 256);
+}
+
+#[test]
+fn a_stopped_sync_saves_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::open(dir.path()).unwrap();
+    let source = MemorySource::new("mem", (1..=600).map(photo).collect(), vec![]);
+    let stopped = library.sync_with(&source, Origin::Source, &mut |step| {
+        if matches!(step, SyncStep::Indexing { done: 0, .. }) {
+            library.stop();
+        }
+    });
+    assert!(stopped.unwrap_err().is::<Stopped>());
+    assert_eq!(library.len(), 0);
+    // The next sync stops before it reads anything.
+    assert!(library.sync(&source).unwrap_err().is::<Stopped>());
+    // Opened again, the library reads in full: the stopped read left no cursor behind.
+    drop(library);
+    let library = Library::open(dir.path()).unwrap();
+    assert_eq!(library.sync(&source).unwrap().added, 600);
+}
+
+#[test]
+fn opening_stops_between_parts_and_opens_again_after() {
+    let (dir, library, _) = setup();
+    drop(library);
+    // Stopped before it starts.
+    let ctl = OpenControl::default();
+    ctl.stop();
+    assert!(Library::open_with(dir.path(), &ctl).err().unwrap().is::<Stopped>());
+    // Stopped part way: the parts after are not opened, and the files are let go.
+    let cell: Arc<Mutex<Option<OpenControl>>> = Arc::default();
+    let parts: Arc<Mutex<Vec<&'static str>>> = Arc::default();
+    let ctl = {
+        let (cell, parts) = (cell.clone(), parts.clone());
+        OpenControl::new(move |step| {
+            if let OpenStep::Part(part) = step {
+                parts.lock().unwrap().push(part);
+                if part == "edits" {
+                    cell.lock().unwrap().as_ref().unwrap().stop();
+                }
+            }
+        })
+    };
+    *cell.lock().unwrap() = Some(ctl.clone());
+    assert!(Library::open_with(dir.path(), &ctl).err().unwrap().is::<Stopped>());
+    let parts = parts.lock().unwrap().clone();
+    assert!(parts.contains(&"store") && parts.contains(&"edits"), "{parts:?}");
+    assert!(!parts.contains(&"analysis"), "{parts:?}");
+    // Opened again, it is all there. The report names only the parts that took a while,
+    // and the stopped open closed its files: none needed repair.
+    let ctl = OpenControl::default();
+    let library = Library::open_with(dir.path(), &ctl).unwrap();
+    assert_eq!(library.len(), 10);
+    let report = ctl.report();
+    assert!(!report.contains(" 0.0 s") && !report.contains("repaired"), "{report}");
 }
 
 #[test]

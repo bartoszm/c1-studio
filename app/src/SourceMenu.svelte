@@ -46,7 +46,8 @@
       await api.openSource(spec);
       location.reload();
     } catch (e) {
-      failed = String(e);
+      // Stopped in the start-up dialog: what was open stays, and nothing went wrong.
+      failed = String(e) === api.OPEN_STOPPED ? null : String(e);
       busy = null;
     }
   }

@@ -482,7 +482,10 @@ export const status = () => invoke<Status>("status");
 /** How far opening a source has got; null once it is ready to use. Also sent as the
  *  `startup-progress` event. */
 export type Startup = {
-  step: "opening" | "reading" | "indexing" | "saving";
+  step: "opening" | "repairing" | "reading" | "indexing" | "saving";
+  /** While opening or repairing: which part of the library ("store", "edits", "index"…). */
+  part: string | null;
+  /** While indexing: photos; while repairing: thousandths. */
   done: number;
   total: number;
   /** While reading: how far the source has got by its own count (a folder scan). */
@@ -491,6 +494,11 @@ export type Startup = {
   noun: string | null;
 };
 export const startupProgress = () => invoke<Startup | null>("startup_progress");
+/** Stops the source being opened. With nothing left to use, the app then says
+ *  OPEN_STOPPED; otherwise the source open before stays. */
+export const abortOpen = () => invoke<void>("abort_open");
+/** What opening a source answers once it was stopped (Abort). */
+export const OPEN_STOPPED = "Opening was stopped";
 export const sources = () => invoke<SourcesView>("sources");
 /** The system dialog for a provider's kind of source; null if cancelled. */
 export const pickSource = (provider: string) => invoke<string | null>("pick_source", { provider });

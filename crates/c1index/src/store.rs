@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1model::{Collection, KeywordNode, Photo};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
@@ -34,10 +34,10 @@ pub struct Batch<'a> {
 }
 
 impl Store {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening store {}", path.display()))?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "store", ctl)?;
         // Create every table up front so read transactions never see one missing.
-        let tx = db.begin_write()?;
+        let tx = crate::db::begin_write(&db)?;
         tx.open_table(PHOTOS)?;
         tx.open_table(FINGERPRINTS)?;
         tx.open_table(KEYS)?;
@@ -49,7 +49,7 @@ impl Store {
     }
 
     pub fn batch(&self) -> anyhow::Result<Batch<'_>> {
-        Ok(Batch { tx: self.db.begin_write()?, _store: self })
+        Ok(Batch { tx: crate::db::begin_write(&self.db)?, _store: self })
     }
 
     pub fn meta(&self, key: &str) -> anyhow::Result<Option<String>> {

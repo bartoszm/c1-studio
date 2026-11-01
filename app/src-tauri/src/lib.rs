@@ -3,12 +3,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 use c1index::thumbs::{Failure, Kind, Progress, Thumbs};
-use c1index::{Filter, Library, Origin, PendingEdit, QueryOptions, QueryResult, SyncReport, SyncStep};
+use c1index::{
+    Filter, Library, OpenControl, OpenStep, Origin, PendingEdit, QueryOptions, QueryResult, SyncReport, SyncStep,
+};
 use c1model::provider::data_root;
 use c1model::{
     BackupInfo, Change, Collection, CollectionChange, CollectionId, ColorLabel, Compatibility, GeoOrigin, GeoPoint,
@@ -225,12 +227,18 @@ struct App(RwLock<Current>);
 
 /// What `Current::session` says while the first source is still being opened.
 const STARTING: &str = "starting";
+/// What `Current::session` says once its opening was stopped (Abort), and what opening
+/// another source answers then.
+const STOPPED: &str = "Opening was stopped";
 
 /// How far opening a source has got, for the window's start-up dialog.
 #[derive(Clone, Serialize)]
 struct Startup {
-    /// "opening", "reading", "indexing" or "saving".
+    /// "opening", "repairing", "reading", "indexing" or "saving".
     step: &'static str,
+    /// While opening or repairing: which part of the library.
+    part: Option<&'static str>,
+    /// While indexing: photos; while repairing: thousandths.
     done: u64,
     total: u64,
     /// While reading: how far the source has got by its own count (a folder scan).
@@ -241,7 +249,7 @@ struct Startup {
 
 impl Startup {
     fn at(step: &'static str) -> Self {
-        Startup { step, done: 0, total: 0, source: None, noun: None }
+        Startup { step, part: None, done: 0, total: 0, source: None, noun: None }
     }
 }
 
@@ -255,18 +263,64 @@ struct Boot {
     last_emit: Mutex<Option<Instant>>,
     /// The open source's noun, for the steps that follow.
     noun: Mutex<Option<String>>,
+    /// The open under way, until its source is ready to use: Abort stops it.
+    open: Mutex<Option<OpenControl>>,
+    /// Numbers the opens: one stopped, or overtaken by another, finds a newer number when
+    /// it is done, and leaves the app and the dialog as they are.
+    ticket: AtomicU64,
 }
 
 impl Boot {
-    fn begin(&self, app: &AppHandle) {
+    /// Shows the dialog for a new open: its ticket, and the control to open with.
+    fn begin(&self, app: &AppHandle) -> (u64, OpenControl) {
+        let ticket = self.ticket.fetch_add(1, Ordering::SeqCst) + 1;
+        let handle = app.clone();
+        let ctl = OpenControl::new(move |step| handle.state::<Boot>().open_step(&handle, ticket, step));
+        *self.open.lock().unwrap() = Some(ctl.clone());
         self.active.store(true, Ordering::SeqCst);
         *self.noun.lock().unwrap() = None;
         self.set(app, Some(Startup::at("opening")), true);
+        (ticket, ctl)
     }
 
-    fn finish(&self, app: &AppHandle) {
+    /// Whether the open with `ticket` is still the one shown: not stopped, nor overtaken.
+    fn current(&self, ticket: u64) -> bool {
+        self.ticket.load(Ordering::SeqCst) == ticket
+    }
+
+    /// The open with `ticket` is done (ready to use, or failed): the dialog goes.
+    fn finish(&self, app: &AppHandle, ticket: u64) {
+        if !self.current(ticket) {
+            return;
+        }
+        *self.open.lock().unwrap() = None;
         self.active.store(false, Ordering::SeqCst);
         self.set(app, None, true);
+    }
+
+    /// Stops the open under way, if there is one: its parts and its first read end
+    /// without saving, and whatever it makes when done is let go. The dialog stays until
+    /// the caller has said what is open instead ([`Boot::set`] to none).
+    fn abort(&self) -> bool {
+        let Some(ctl) = self.open.lock().unwrap().take() else { return false };
+        ctl.stop();
+        self.ticket.fetch_add(1, Ordering::SeqCst);
+        self.active.store(false, Ordering::SeqCst);
+        true
+    }
+
+    /// The library being opened reached `step`: shown with the part it is on.
+    fn open_step(&self, app: &AppHandle, ticket: u64, step: OpenStep) {
+        if !self.current(ticket) || !self.active.load(Ordering::SeqCst) {
+            return;
+        }
+        let shown = match step {
+            OpenStep::Part(part) => Startup { part: Some(part), ..Startup::at("opening") },
+            OpenStep::Repairing { part, done } => {
+                Startup { part: Some(part), done: (done * 1000.0) as u64, total: 1000, ..Startup::at("repairing") }
+            }
+        };
+        self.set(app, Some(shown), false);
     }
 
     /// The sync reached `step`. Counts come often, so they reach the window a few times a second.
@@ -305,10 +359,10 @@ impl Boot {
         self.emit(app, Some(reading.clone()), false);
     }
 
-    /// A new step always reaches the window; counts within one a few times a second.
+    /// A new step (or part) always reaches the window; counts within one a few times a second.
     fn set(&self, app: &AppHandle, shown: Option<Startup>, always: bool) {
         let mut current = self.shown.lock().unwrap();
-        let new_step = current.as_ref().map(|s| s.step) != shown.as_ref().map(|s| s.step);
+        let new_step = current.as_ref().map(|s| (s.step, s.part)) != shown.as_ref().map(|s| (s.step, s.part));
         *current = shown.clone();
         self.emit(app, shown, always || new_step);
     }
@@ -336,12 +390,14 @@ impl App {
 }
 
 /// Opens a source through its provider, with the app's data about it (library,
-/// settings, backups) in a folder of its own.
-fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
+/// settings, backups) in a folder of its own. `ctl` is told which part is opening, and
+/// stops it.
+fn open(spec: &SourceSpec, ctl: &OpenControl) -> anyhow::Result<Session> {
+    let started = Instant::now();
     let provider = sources::provider(&spec.provider).map_err(anyhow::Error::msg)?;
     let dir = data_root().join(provider.data_key(&spec.location));
-    let source = provider.open(&spec.location, &dir.join("work"))?;
-    let library = Library::open(dir.join("library"))?;
+    let source = ctl.timed("source", || Ok(provider.open(&spec.location, &dir.join("work"))?))?;
+    let library = Library::open_with(dir.join("library"), ctl)?;
     let settings_path = dir.join("settings.json");
     let (settings, settings_problem) = read_settings(&settings_path);
     // History turned off where the first builds kept it moves into the library, before
@@ -381,7 +437,10 @@ fn open(spec: &SourceSpec) -> anyhow::Result<Session> {
         count_again: AtomicBool::new(false),
         log: Log::new(dir.join("events.log")),
     };
-    session.log.event(&format!("Opened {}", spec.location), &[]);
+    // What the slow parts took: a slow start says where its time went.
+    let report = ctl.report();
+    let details = if report.is_empty() { Vec::new() } else { vec![report] };
+    session.log.event(&format!("Opened {} in {:.1} s", spec.location, started.elapsed().as_secs_f64()), &details);
     if let Some(problem) = &session.settings_problem {
         session.log.event(&format!("Settings: {problem}"), &[]);
     }
@@ -1127,6 +1186,11 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
             .sync_with(s.source.as_ref(), origin, &mut |step| boot.sync_step(app, step))
             .map_err(|e| format!("{e:#}"))
     });
+    // Stopped (Abort, or the library closing): nothing went wrong with the source.
+    if report.is_err() && s.library.stopped() {
+        s.log.event("Reading the source was stopped", &[]);
+        return report;
+    }
     let failed = report.as_ref().err().cloned();
     if let Some(e) = &failed
         && s.sync_error.lock().unwrap().as_ref() != Some(e)
@@ -2143,40 +2207,75 @@ fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
         .expect("a static response always builds")
 }
 
-/// Reads the source in the background, telling the window if that fails.
-/// Opens the source the app was started with, then [`finish_opening`].
-fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool) {
+/// Opens the source the app was started with (the open `ticket`, with `ctl`), then
+/// [`finish_opening`]. Stopped meanwhile (Abort), it leaves what the window was told.
+fn open_in_background(app: &AppHandle, spec: SourceSpec, remember: bool, ticket: u64, ctl: OpenControl) {
     let app = app.clone();
     std::thread::spawn(move || {
-        let session = std::panic::catch_unwind(|| open(&spec).map(Arc::new).map_err(|e| format!("{e:#}")))
-            .unwrap_or_else(|_| Err("opening the library crashed".into()));
+        let session = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            open(&spec, &ctl).map(Arc::new).map_err(|e| format!("{e:#}"))
+        }))
+        .unwrap_or_else(|_| Err("opening the library crashed".into()));
         let ready = session.is_ok();
+        {
+            let state = app.state::<App>();
+            let mut current = state.0.write().unwrap();
+            if !app.state::<Boot>().current(ticket) {
+                return;
+            }
+            *current = Current { spec: Some(spec.clone()), session };
+        }
         if ready && remember {
             let _ = Recent::remember(&spec);
         }
-        *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec), session };
         if ready {
-            finish_opening(&app);
+            finish_opening(&app, ticket);
         } else {
-            app.state::<Boot>().finish(&app);
+            app.state::<Boot>().finish(&app, ticket);
         }
     });
 }
 
-/// Reads the source just opened. A library with no photos has nothing to use until its
-/// first fill is in, so that is waited for under the start-up dialog; any other is
-/// usable at once, and reads in the background.
-fn finish_opening(app: &AppHandle) {
+/// Reads the source just opened (the open `ticket`). A library with no photos has nothing
+/// to use until its first fill is in, so that is waited for under the start-up dialog
+/// (Abort stops it); any other is usable at once, and reads in the background.
+fn finish_opening(app: &AppHandle, ticket: u64) {
     let boot = app.state::<Boot>();
     if app.state::<App>().session().is_ok_and(|s| s.library.is_empty()) {
-        if let Err(e) = run_sync(app) {
+        if let Err(e) = run_sync(app)
+            && boot.current(ticket)
+        {
             let _ = app.emit("sync-failed", e);
         }
-        boot.finish(app);
+        boot.finish(app, ticket);
     } else {
-        boot.finish(app);
+        boot.finish(app, ticket);
         sync_in_background(app);
     }
+}
+
+/// Abort in the start-up dialog: stops the open under way. When that leaves nothing to use
+/// (the source the app started with, or a library whose first read was stopped), the
+/// window offers to open another; otherwise the source open before stays.
+#[tauri::command]
+async fn abort_open(app: AppHandle) -> Result<(), String> {
+    let boot = app.state::<Boot>();
+    if !boot.abort() {
+        return Ok(());
+    }
+    {
+        let state = app.state::<App>();
+        let mut current = state.0.write().unwrap();
+        let usable = match &current.session {
+            Ok(s) => !s.library.stopped(),
+            Err(_) => false,
+        };
+        if !usable {
+            current.session = Err(STOPPED.into());
+        }
+    }
+    boot.set(&app, None, true);
+    Ok(())
 }
 
 fn sync_in_background(app: &AppHandle) {
@@ -2395,31 +2494,41 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
         }
     }
     let boot = app.state::<Boot>();
-    boot.begin(&app);
+    let (ticket, ctl) = boot.begin(&app);
     let opened = {
         let spec = spec.clone();
-        tauri::async_runtime::spawn_blocking(move || open(&spec).map_err(|e| format!("{e:#}")))
+        tauri::async_runtime::spawn_blocking(move || open(&spec, &ctl).map_err(|e| format!("{e:#}")))
             .await
             .map_err(text)
             .and_then(|r| r)
     };
     let opened = match opened {
+        // Stopped (Abort): what was open stays.
+        _ if !boot.current(ticket) => return Err(STOPPED.into()),
         Ok(opened) => opened,
         Err(e) => {
-            boot.finish(&app);
+            boot.finish(&app, ticket);
             return Err(e);
         }
     };
-    // The old session closes once the last task using it is done with it; its analysis
-    // stops after the batch it is on.
-    if let Ok(old) = &app.state::<App>().0.read().unwrap().session {
-        old.analysis_stop.store(true, Ordering::SeqCst);
-        old.fill_stop.store(true, Ordering::SeqCst);
+    {
+        let state = app.state::<App>();
+        let mut current = state.0.write().unwrap();
+        if !boot.current(ticket) {
+            return Err(STOPPED.into());
+        }
+        // The old session closes once the last task using it is done with it; its analysis
+        // stops after the batch it is on, and a read under way ends without saving.
+        if let Ok(old) = &current.session {
+            old.analysis_stop.store(true, Ordering::SeqCst);
+            old.fill_stop.store(true, Ordering::SeqCst);
+            old.library.stop();
+        }
+        *current = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
     }
-    *app.state::<App>().0.write().unwrap() = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
     let remembered = Recent::remember(&spec);
     let handle = app.clone();
-    tauri::async_runtime::spawn_blocking(move || finish_opening(&handle));
+    tauri::async_runtime::spawn_blocking(move || finish_opening(&handle, ticket));
     remembered
 }
 
@@ -2440,8 +2549,8 @@ pub fn run() {
             match sources::startup(&args) {
                 Ok((spec, remember)) => {
                     app.manage(App(RwLock::new(Current { spec: Some(spec.clone()), session: Err(STARTING.into()) })));
-                    app.state::<Boot>().begin(app.handle());
-                    open_in_background(app.handle(), spec, remember);
+                    let (ticket, ctl) = app.state::<Boot>().begin(app.handle());
+                    open_in_background(app.handle(), spec, remember, ticket, ctl);
                 }
                 Err(e) => {
                     app.manage(App(RwLock::new(Current { spec: None, session: Err(e) })));
@@ -2475,6 +2584,7 @@ pub fn run() {
             folders::folders_check_store,
             rescan,
             open_source,
+            abort_open,
             forget_source,
             set_providers,
             status,

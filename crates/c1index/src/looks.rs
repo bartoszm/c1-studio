@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1analysis::{Analysis, ClassSettings};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -44,9 +44,9 @@ pub struct Looks {
 }
 
 impl Looks {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
-        let tx = db.begin_write()?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "analysis", ctl)?;
+        let tx = crate::db::begin_write(&db)?;
         tx.open_table(ANALYSES)?;
         tx.open_table(META)?;
         tx.commit()?;
@@ -64,7 +64,7 @@ impl Looks {
     }
 
     pub fn set_settings(&self, settings: &ClassSettings) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         tx.open_table(META)?.insert(SETTINGS, serde_json::to_string(settings)?.as_str())?;
         tx.commit()?;
         Ok(())
@@ -87,7 +87,7 @@ impl Looks {
     }
 
     pub fn put(&self, records: &[(String, Record)]) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         {
             let mut table = tx.open_table(ANALYSES)?;
             for (key, record) in records {

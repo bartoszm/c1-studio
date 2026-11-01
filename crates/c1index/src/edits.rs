@@ -8,7 +8,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1model::{Change, Collection, CollectionChange, CollectionId, KeywordPath, KeywordRemap, Op, Photo, PhotoId};
 use redb::{Database, MultimapTableDefinition, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -281,9 +281,9 @@ pub struct EditsBatch {
 }
 
 impl Edits {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening edits {}", path.display()))?;
-        let tx = db.begin_write()?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "edits", ctl)?;
+        let tx = crate::db::begin_write(&db)?;
         tx.open_table(PENDING)?;
         tx.open_table(REMAPS)?;
         tx.open_table(COLLECTIONS)?;
@@ -319,7 +319,7 @@ impl Edits {
     }
 
     pub fn batch(&self) -> anyhow::Result<EditsBatch> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         // From the file, in the batch's own transaction: whatever turned it off last.
         let keep_before = history_on(&tx.open_table(META)?)?;
         Ok(EditsBatch { tx, keep_before })
@@ -330,7 +330,7 @@ impl Edits {
     /// stretch logged while off is remembered (see [`Edits::off_spans`]). Nothing changes
     /// when the write fails.
     pub fn set_keep_before(&self, on: bool) -> anyhow::Result<()> {
-        let tx = self.db.begin_write()?;
+        let tx = crate::db::begin_write(&self.db)?;
         {
             let next = tx.open_table(EVENTS)?.last()?.map_or(0, |(k, _)| k.value() + 1);
             let mut meta = tx.open_table(META)?;
@@ -723,7 +723,7 @@ mod tests {
     fn a_queued_position_reads_back_exactly() {
         use c1model::{GeoOrigin, GeoPoint};
         let dir = tempfile::tempdir().unwrap();
-        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb"), &Default::default()).unwrap();
         // A camera's `19,56.5857667E`: the default float parsing reads it one step off,
         // and the edit then no longer matches the catalog it was made against.
         let camera = GeoPoint {
@@ -755,7 +755,7 @@ mod tests {
             Event::new(5, Origin::Source, What::Change(change))
         };
         {
-            let edits = Edits::open(&path).unwrap();
+            let edits = Edits::open(&path, &Default::default()).unwrap();
             let mut batch = edits.batch().unwrap();
             batch.log(&rated(Some(3))).unwrap();
             batch.commit().unwrap();
@@ -772,7 +772,7 @@ mod tests {
             }
             tx.commit().unwrap();
         }
-        let edits = Edits::open(&path).unwrap();
+        let edits = Edits::open(&path, &Default::default()).unwrap();
         let ratings: Vec<Event> = edits.photo_events(&photo.key()).unwrap();
         assert_eq!(ratings, [rated(Some(4)), rated(Some(3))]);
         assert_eq!(edits.events(10).unwrap().len(), 2);
@@ -784,7 +784,7 @@ mod tests {
 
     fn log_of(times: &[i64]) -> (tempfile::TempDir, Edits) {
         let dir = tempfile::tempdir().unwrap();
-        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb"), &Default::default()).unwrap();
         let mut batch = edits.batch().unwrap();
         for &at in times {
             batch.log(&written_at(at)).unwrap();
@@ -826,7 +826,7 @@ mod tests {
             tx.open_table(EVENTS).unwrap().insert(1, br#"{"at":2,"origin":"App","teleported":{}}"#.as_slice()).unwrap();
             tx.commit().unwrap();
         }
-        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb"), &Default::default()).unwrap();
         let seqs: Vec<u64> = edits.range(0..3, &|_| false).unwrap().into_iter().map(|(seq, _)| seq).collect();
         assert_eq!(seqs, [0, 2]);
         assert_eq!(edits.range(1..3, &|_| false).unwrap().len(), 1);
@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn what_a_log_entry_kept_is_in_its_photos_history() {
         let dir = tempfile::tempdir().unwrap();
-        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb"), &Default::default()).unwrap();
         let (a, b) = (
             PhotoId::new(&c1model::SourceId("c1".into()), "1".to_string()),
             PhotoId::new(&c1model::SourceId("c1".into()), "2".to_string()),
@@ -889,7 +889,7 @@ mod tests {
         let kept = Before::Keywords(vec![(photo.clone(), vec![KeywordPath::from_pipe("x")])]);
         let remap = || What::Remap(KeywordRemap::rename(KeywordPath::from_pipe("x"), "y"));
         {
-            let edits = Edits::open(&path).unwrap();
+            let edits = Edits::open(&path, &Default::default()).unwrap();
             let mut batch = edits.batch().unwrap();
             batch.log(&Event::new(1, Origin::App, remap()).with_before(kept.clone())).unwrap();
             batch.log(&Event::new(2, Origin::App, remap()).with_before(kept.clone())).unwrap();
@@ -906,7 +906,7 @@ mod tests {
             tx.open_table(BEFORES).unwrap().insert(1, br#"{"Photo":{"future":true}}"#.as_slice()).unwrap();
             tx.commit().unwrap();
         }
-        let edits = Edits::open(&path).unwrap();
+        let edits = Edits::open(&path, &Default::default()).unwrap();
         let events = edits.events(10).unwrap();
         assert_eq!(events.len(), 2, "the entry reads without it");
         assert_eq!((events[0].before.clone(), events[1].before.clone()), (None, Some(kept)));
@@ -967,7 +967,7 @@ mod tests {
     fn what_the_first_history_builds_kept_in_the_entry_still_reads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edits.redb");
-        drop(Edits::open(&path).unwrap());
+        drop(Edits::open(&path, &Default::default()).unwrap());
         // The first builds of the History tab wrote `before` into the entry itself.
         let photo = serde_json::to_string(&Before::Photo(Box::new(a_photo(7)))).unwrap();
         let whole = format!(
@@ -976,7 +976,7 @@ mod tests {
         // And one of a shape this build cannot read: the entry still does.
         let odd = r#"{"at":6,"origin":"Source","removed":{"photo":{"source":"c1","ext":"8"},"name":"8.raf"},"before":{"Photo":{"future":true}}}"#;
         put_raw(&path, &[(0, &whole), (1, odd)]);
-        let edits = Edits::open(&path).unwrap();
+        let edits = Edits::open(&path, &Default::default()).unwrap();
         let events = edits.events(10).unwrap();
         assert_eq!(events.len(), 2);
         assert!(events.iter().all(|e| e.has_before && matches!(e.what, What::Removed { .. })));
@@ -993,7 +993,7 @@ mod tests {
     #[test]
     fn with_history_off_entries_are_what_0_5_wrote() {
         let dir = tempfile::tempdir().unwrap();
-        let edits = Edits::open(&dir.path().join("edits.redb")).unwrap();
+        let edits = Edits::open(&dir.path().join("edits.redb"), &Default::default()).unwrap();
         edits.set_keep_before(false).unwrap();
         let mut batch = edits.batch().unwrap();
         batch.log(&removed(7)).unwrap();
@@ -1023,14 +1023,14 @@ mod tests {
     fn turning_history_off_is_kept_with_the_log() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("edits.redb");
-        assert!(Edits::open(&path).unwrap().keeps_before());
-        Edits::open(&path).unwrap().set_keep_before(false).unwrap();
+        assert!(Edits::open(&path, &Default::default()).unwrap().keeps_before());
+        Edits::open(&path, &Default::default()).unwrap().set_keep_before(false).unwrap();
         // Another program opening the same log follows it.
-        let again = Edits::open(&path).unwrap();
+        let again = Edits::open(&path, &Default::default()).unwrap();
         assert!(!again.keeps_before());
         again.set_keep_before(true).unwrap();
         drop(again);
-        assert!(Edits::open(&path).unwrap().keeps_before());
+        assert!(Edits::open(&path, &Default::default()).unwrap().keeps_before());
     }
 
     #[test]
@@ -1042,7 +1042,7 @@ mod tests {
             batch.log(&removed(n)).unwrap();
             batch.commit().unwrap();
         };
-        let edits = Edits::open(&path).unwrap();
+        let edits = Edits::open(&path, &Default::default()).unwrap();
         assert!(edits.keeps_before(), "on unless turned off");
         log(&edits, 1);
         edits.set_keep_before(false).unwrap();
@@ -1054,7 +1054,7 @@ mod tests {
         drop(edits);
 
         // Another program opening the library (c1cat) finds it off and logs alike.
-        let edits = Edits::open(&path).unwrap();
+        let edits = Edits::open(&path, &Default::default()).unwrap();
         assert!(!edits.keeps_before());
         log(&edits, 4);
         assert!(edits.events(3).unwrap().iter().all(|e| !e.has_before));
@@ -1065,7 +1065,7 @@ mod tests {
         edits.set_keep_before(true).unwrap();
         drop(edits);
 
-        let edits = Edits::open(&path).unwrap();
+        let edits = Edits::open(&path, &Default::default()).unwrap();
         assert!(edits.keeps_before());
         assert_eq!(edits.off_spans().unwrap(), vec![(1..4)]);
         let kept: Vec<bool> = edits.events(10).unwrap().iter().rev().map(|e| e.has_before).collect();

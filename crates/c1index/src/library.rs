@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard, RwLock};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 use std::time::Instant;
 
 use anyhow::{Context, bail};
@@ -10,7 +11,7 @@ use c1analysis::ClassSettings;
 use c1model::change::{Check, collection_diff, collection_problem, descendants, diff, membership_problem};
 use c1model::{
     Change, Collection, CollectionChange, CollectionId, CollectionKind, Condition, Cursor, KeywordNode, KeywordPath,
-    KeywordRemap, MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceEvent,
+    KeywordRemap, MODEL_VERSION, Op, Photo, PhotoId, PhotoSource, SmartRule, SourceError, SourceEvent,
 };
 use serde::{Deserialize, Serialize};
 use tantivy::collector::{Count, DocSetCollector, TopDocs};
@@ -22,6 +23,7 @@ use tantivy::{
 };
 
 use crate::ai::SuggestionBook;
+use crate::db::{OpenControl, Stopped};
 use crate::edits::{
     self, Before, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key,
 };
@@ -293,6 +295,9 @@ pub struct Library {
     history: history::Cache,
     /// What a vision model suggested for photos, until accepted or rejected (stage 5).
     suggestions: SuggestionBook,
+    /// Set when the library is being closed, or its opening was stopped: a sync under way
+    /// ends without saving anything. Shared with the [`OpenControl`] it was opened with.
+    stop: Arc<AtomicBool>,
 }
 
 /// Trips worked out over the photos of one index generation.
@@ -347,13 +352,20 @@ struct Taken {
 
 impl Library {
     pub fn open(dir: impl Into<PathBuf>) -> anyhow::Result<Self> {
+        Self::open_with(dir, &OpenControl::default())
+    }
+
+    /// [`Library::open`], telling `ctl` which part it is on (and how far a repair got),
+    /// and ending with [`Stopped`](crate::db::Stopped) between parts once asked to stop.
+    /// What each part took is in [`OpenControl::report`].
+    pub fn open_with(dir: impl Into<PathBuf>, ctl: &OpenControl) -> anyhow::Result<Self> {
         let dir = dir.into();
         std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         let store_path = dir.join("store.redb");
         let index_dir = dir.join("index");
         // A store written with another model cannot be read back. It only copies the
         // sources, so it is dropped and the next sync fills it again.
-        let mut store = Store::open(&store_path)?;
+        let mut store = Store::open(&store_path, ctl)?;
         if store.meta("model")?.and_then(|v| v.parse::<u32>().ok()) != Some(MODEL_VERSION) {
             if !store.keys()?.is_empty() || store.meta("index_schema")?.is_some() {
                 drop(store);
@@ -361,7 +373,7 @@ impl Library {
                 if index_dir.exists() {
                     std::fs::remove_dir_all(&index_dir)?;
                 }
-                store = Store::open(&store_path)?;
+                store = Store::open(&store_path, ctl)?;
             }
             let mut batch = store.batch()?;
             batch.set_meta("model", &MODEL_VERSION.to_string())?;
@@ -374,45 +386,52 @@ impl Library {
         }
         std::fs::create_dir_all(&index_dir)?;
         let (schema, fields) = schema::build_schema();
-        let mut index = Index::open_or_create(MmapDirectory::open(&index_dir)?, schema)?;
-        // Search segments in parallel: queries matching most of the library are bound by
-        // counting facets, which splits cleanly across segments.
-        index.set_default_multithread_executor()?;
-        schema::register_tokenizers(&index);
-        let reader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
-        let edits = Edits::open(&dir.join("edits.redb"))?;
-        let looks = Looks::open(&dir.join("analysis.redb"))?;
-        let trip_book = TripBook::open(&dir.join("trips.redb"))?;
-        let place_book = PlaceBook::open(&dir.join("places.redb"))?;
-        let hidden_book = MarkBook::hidden(&dir.join("hidden.redb"))?;
-        let hidden = RwLock::new(hidden_book.all()?);
-        let bin_book = MarkBook::bin(&dir.join("bin.redb"))?;
-        let binned = RwLock::new(bin_book.all()?);
-        let suggestions = SuggestionBook::open(&dir.join("ai.redb"))?;
-        // A photo moved since it was given its place's position is placed for real: its
-        // mark goes. (One with no position keeps it: an undo can be redone.)
-        let mut marks = place_book.coarse()?;
-        let mut moved = Vec::new();
-        let keys: HashMap<u64, &str> = store.rows_of(marks.keys().map(String::as_str))?.into_iter().collect();
-        store.photos(&keys.keys().copied().collect::<Vec<_>>(), |row, p| {
-            if p.geo.is_some_and(|g| !marks[keys[&row]].holds(g.lat, g.lon)) {
-                moved.push((keys[&row].to_owned(), None));
-            }
+        let (index, reader) = ctl.timed("index", || {
+            let mut index = Index::open_or_create(MmapDirectory::open(&index_dir)?, schema)?;
+            // Search segments in parallel: queries matching most of the library are bound by
+            // counting facets, which splits cleanly across segments.
+            index.set_default_multithread_executor()?;
+            schema::register_tokenizers(&index);
+            let reader: IndexReader = index.reader_builder().reload_policy(ReloadPolicy::Manual).try_into()?;
+            Ok((index, reader))
         })?;
-        place_book.set_coarse(&moved)?;
-        for (key, _) in &moved {
-            marks.remove(key);
-        }
-        let coarse = RwLock::new(marks);
+        let edits = Edits::open(&dir.join("edits.redb"), ctl)?;
+        let looks = Looks::open(&dir.join("analysis.redb"), ctl)?;
+        let trip_book = TripBook::open(&dir.join("trips.redb"), ctl)?;
+        let place_book = PlaceBook::open(&dir.join("places.redb"), ctl)?;
+        let hidden_book = MarkBook::hidden(&dir.join("hidden.redb"), ctl)?;
+        let hidden = RwLock::new(hidden_book.all()?);
+        let bin_book = MarkBook::bin(&dir.join("bin.redb"), ctl)?;
+        let binned = RwLock::new(bin_book.all()?);
+        let suggestions = SuggestionBook::open(&dir.join("ai.redb"), ctl)?;
+        let coarse = ctl.timed("coarse places", || {
+            // A photo moved since it was given its place's position is placed for real: its
+            // mark goes. (One with no position keeps it: an undo can be redone.)
+            let mut marks = place_book.coarse()?;
+            let mut moved = Vec::new();
+            let keys: HashMap<u64, &str> = store.rows_of(marks.keys().map(String::as_str))?.into_iter().collect();
+            store.photos(&keys.keys().copied().collect::<Vec<_>>(), |row, p| {
+                if p.geo.is_some_and(|g| !marks[keys[&row]].holds(g.lat, g.lon)) {
+                    moved.push((keys[&row].to_owned(), None));
+                }
+            })?;
+            place_book.set_coarse(&moved)?;
+            for (key, _) in &moved {
+                marks.remove(key);
+            }
+            Ok(RwLock::new(marks))
+        })?;
         let guessed = RwLock::new(place_book.guessed()?);
         let classes = looks.settings()?;
-        let seen = looks
-            .all()?
-            .into_iter()
-            .map(|(key, r)| {
-                (key, Look { analysis: r.analysis, stamp: r.stamp, duplicates: None, series: None, stacked: false })
-            })
-            .collect();
+        let seen = ctl.timed("looks", || {
+            Ok(looks
+                .all()?
+                .into_iter()
+                .map(|(key, r)| {
+                    (key, Look { analysis: r.analysis, stamp: r.stamp, duplicates: None, series: None, stacked: false })
+                })
+                .collect())
+        })?;
 
         let library = Self {
             dir,
@@ -441,12 +460,13 @@ impl Library {
             binned,
             history: history::Cache::default(),
             suggestions,
+            stop: ctl.flag(),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
-        let regrouped = library.group_looks()?;
+        let regrouped = ctl.timed("groups", || library.group_looks())?;
         let flagged = library.store.meta("coarse_flagged")?.is_some();
         if !rebuild {
-            library.reindex_keys(&regrouped)?;
+            ctl.timed("regrouped", || library.reindex_keys(&regrouped))?;
             // Photos given their place's position by a build that did not flag them yet:
             // written again, once.
             if !flagged {
@@ -455,15 +475,25 @@ impl Library {
             }
         }
         if rebuild {
-            library.reindex()?;
+            ctl.timed("reindex", || library.reindex())?;
         }
         if !flagged {
             let mut batch = library.store.batch()?;
             batch.set_meta("coarse_flagged", "1")?;
             batch.commit()?;
         }
-        library.refresh()?;
+        ctl.timed("counts", || library.refresh())?;
         Ok(library)
+    }
+
+    /// Asks a sync under way to end without saving anything, and the syncs after it not to
+    /// start: the library is being closed.
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
     }
 
     pub fn dir(&self) -> &Path {
@@ -1056,10 +1086,17 @@ impl Library {
         // made meanwhile need not wait for it. Only syncs change the cursor and the stored
         // photos, and they go one at a time.
         let mut events = Vec::new();
-        source.snapshot(since.as_ref(), &mut |event| {
+        let read = source.snapshot(since.as_ref(), &mut |event| {
+            if self.stopped() {
+                return Err(SourceError::Other(Stopped.to_string()));
+            }
             events.push(event);
             Ok(())
-        })?;
+        });
+        if self.stopped() {
+            return Err(Stopped.into());
+        }
+        read?;
 
         let _writing = self.writing.lock().unwrap();
         // Queued edits stay on top of whatever the source sends.
@@ -1104,6 +1141,10 @@ impl Library {
         let total = events.len();
         for (done, event) in events.into_iter().enumerate() {
             if done % 256 == 0 {
+                // Stopped: the batch and the writer go without a commit, so nothing changes.
+                if self.stopped() {
+                    return Err(Stopped.into());
+                }
                 progress(SyncStep::Indexing { done, total });
             }
             match event {

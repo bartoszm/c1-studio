@@ -3,6 +3,7 @@
 
 pub mod ai;
 pub mod analyse;
+pub mod db;
 pub mod edits;
 pub mod facets;
 pub mod filter;
@@ -20,6 +21,7 @@ mod store;
 pub mod thumbs;
 pub mod trips;
 
+pub use db::{OpenControl, OpenStep, Stopped};
 pub use edits::{Before, Event, Origin, Pending, QueuedCollection, QueuedRemap, What};
 pub use facets::Counts;
 pub use filter::{
