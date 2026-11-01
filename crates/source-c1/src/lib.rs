@@ -307,6 +307,16 @@ impl PhotoSource for CaptureOne {
         Ok(backup_info(&before))
     }
 
+    /// Waits for a write or restore in progress, which may reuse or prune backups.
+    fn delete_backup(&self, id: &str) -> Result<()> {
+        let _guard = self.snapshot_lock.lock().unwrap();
+        write::delete_backup(&self.catalog, &self.backup_dir(), id)
+    }
+
+    fn backup_folder(&self) -> Option<PathBuf> {
+        Some(self.backup_dir())
+    }
+
     /// Marks the photos' images deleted, the way a write goes: refused while Capture One
     /// or anything else has the catalog open, after a backup, in one transaction.
     fn remove(&self, photos: &[PhotoId]) -> Result<RemoveReport> {

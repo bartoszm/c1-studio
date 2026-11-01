@@ -283,6 +283,14 @@ impl PhotoSource for FolderSource {
         write::restore(self, id)
     }
 
+    fn delete_backup(&self, id: &str) -> Result<()> {
+        write::delete_backup(self, id)
+    }
+
+    fn backup_folder(&self) -> Option<PathBuf> {
+        Some(write::backup_folder(self))
+    }
+
     fn rescan(&self) -> Result<()> {
         self.scan_due.store(true, Ordering::SeqCst);
         Ok(())

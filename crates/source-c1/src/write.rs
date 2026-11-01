@@ -671,6 +671,17 @@ pub(crate) fn restore(catalog: &Path, dir: &Path, keep: usize, name: &str) -> Re
     Ok(before)
 }
 
+/// Deletes one of the catalog's backups (named by file name) and its manifest.
+pub(crate) fn delete_backup(catalog: &Path, dir: &Path, name: &str) -> Result<()> {
+    let chosen = backups(catalog, dir)
+        .into_iter()
+        .find(|b| b.backup.file_name().is_some_and(|f| f.to_string_lossy() == name))
+        .ok_or_else(|| SourceError::NotFound(format!("backup {name}")))?;
+    fs::remove_file(&chosen.backup)?;
+    let _ = fs::remove_file(manifest_path(&chosen.backup));
+    Ok(())
+}
+
 /// Records that the app just wrote to the catalog under `backup`'s cover.
 pub(crate) fn wrote(catalog: &Path, backup: &Backup) -> Result<()> {
     let record = Backup { after_write: Some(file_stamp(catalog)?), ..backup.clone() };
@@ -1054,6 +1065,14 @@ pub(crate) mod tests {
         assert_eq!(kept[0], made[3]);
         assert_eq!(kept[1], made[2]);
         assert!(!made[0].backup.exists(), "the oldest is pruned");
+
+        // Deleting one takes its file and manifest; an unknown name is not found.
+        let name = made[2].backup.file_name().unwrap().to_string_lossy().into_owned();
+        delete_backup(&catalog, &store, &name).unwrap();
+        assert!(!made[2].backup.exists() && !manifest_path(&made[2].backup).exists());
+        assert_eq!(backups(&catalog, &store), vec![made[3].clone()]);
+        assert!(matches!(delete_backup(&catalog, &store, &name), Err(SourceError::NotFound(_))));
+        let kept = backups(&catalog, &store);
 
         // The copy is a working catalog.
         let copy = Connection::open(&kept[0].backup).unwrap();

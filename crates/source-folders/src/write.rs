@@ -298,6 +298,18 @@ pub(crate) fn restore(src: &FolderSource, id: &str) -> Result<BackupInfo> {
     Ok(before)
 }
 
+pub(crate) fn delete_backup(src: &FolderSource, id: &str) -> Result<()> {
+    let _busy = src.busy.lock().unwrap();
+    let chosen =
+        list(src).into_iter().find(|b| b.info.id == id).ok_or_else(|| SourceError::NotFound(format!("backup {id}")))?;
+    fs::remove_file(&chosen.path)?;
+    Ok(())
+}
+
+pub(crate) fn backup_folder(src: &FolderSource) -> PathBuf {
+    backup_dir(src)
+}
+
 /// A backup file as written: the user's part of the store at one generation.
 #[derive(Serialize)]
 struct BackupOut<'a> {
@@ -902,6 +914,13 @@ mod tests {
         assert!(list.windows(2).all(|w| w[0].created_ms > w[1].created_ms), "newest first");
         let files = fs::read_dir(backup_dir(&f.src)).unwrap().count();
         assert_eq!(files, KEEP_BACKUPS, "older files are deleted, no temporary ones left");
+
+        f.src.delete_backup(&list[1].id).unwrap();
+        let after = f.src.backups().unwrap();
+        assert_eq!(after.len(), KEEP_BACKUPS - 1);
+        assert!(after.iter().all(|b| b.id != list[1].id));
+        assert!(f.src.delete_backup(&list[1].id).is_err(), "gone already");
+        assert_eq!(f.src.backup_folder(), Some(backup_dir(&f.src)));
     }
 
     #[test]
