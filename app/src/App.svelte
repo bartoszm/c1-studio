@@ -1892,8 +1892,10 @@
       e.preventDefault();
       return;
     }
-    if (dialogOpen || typingIn(e) || e.defaultPrevented) return;
+    // Read first: stopping a cell's activation is not the key having been handled.
+    const handled = e.defaultPrevented;
     if (activatesCell(e)) e.preventDefault();
+    if (dialogOpen || typingIn(e) || handled) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {

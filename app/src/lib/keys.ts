@@ -9,8 +9,9 @@ export function typingIn(e: { target: EventTarget | null }): boolean {
   return t.tagName === "TEXTAREA" || t.tagName === "SELECT" || !!t.isContentEditable;
 }
 
-/** Enter or Space on a grid cell: the cell keeps DOM focus after a click, whichever photo has
- *  the app's focus by then, so the browser must not activate it and pick that photo again. */
+/** Enter or Space on a grid cell (`.cell` in Grid.svelte). A clicked cell keeps DOM focus while
+ *  the arrows move the focused photo, so if the browser activated it, the clicked photo would be
+ *  picked again: `onkey` in App.svelte prevents that. */
 export function activatesCell(e: { key: string; target: EventTarget | null }): boolean {
   if (e.key !== "Enter" && e.key !== " ") return false;
   return !!(e.target as Element | null)?.closest?.(".cell");
