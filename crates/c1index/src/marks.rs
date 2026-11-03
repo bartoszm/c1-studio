@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 
 /// A set of photos with one mark: photo key → when it was marked (epoch ms).
@@ -21,17 +21,17 @@ pub struct MarkBook {
 
 impl MarkBook {
     /// Photos the user hid.
-    pub fn hidden(path: &Path) -> anyhow::Result<Self> {
-        Self::open(path, "hidden")
+    pub fn hidden(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        Self::open(path, "hidden", ctl)
     }
 
     /// Photos the user deleted, in the app's trash.
-    pub fn bin(path: &Path) -> anyhow::Result<Self> {
-        Self::open(path, "bin")
+    pub fn bin(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        Self::open(path, "bin", ctl)
     }
 
-    fn open(path: &Path, table: &'static str) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening {table} {}", path.display()))?;
+    fn open(path: &Path, table: &'static str, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, table, ctl)?;
         let table = TableDefinition::new(table);
         let tx = db.begin_write()?;
         tx.open_table(table)?;
@@ -78,11 +78,11 @@ mod tests {
     fn the_book_keeps_what_is_marked() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hidden.redb");
-        let book = MarkBook::hidden(&path).unwrap();
+        let book = MarkBook::hidden(&path, &Default::default()).unwrap();
         book.set(&["a".into(), "b".into()], true, 1).unwrap();
         book.set(&["a".into()], false, 2).unwrap();
         drop(book);
-        let book = MarkBook::hidden(&path).unwrap();
+        let book = MarkBook::hidden(&path, &Default::default()).unwrap();
         assert_eq!(book.all().unwrap(), HashSet::from(["b".to_owned()]));
     }
 }

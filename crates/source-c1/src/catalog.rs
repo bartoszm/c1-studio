@@ -80,6 +80,33 @@ impl Drop for TempCopy {
     }
 }
 
+/// How old a snapshot copy must be before [`remove_stale_copies`] takes it for one left
+/// behind: a read takes seconds, so an hour leaves any under way alone.
+pub(crate) const STALE_COPY: Duration = Duration::from_secs(3600);
+
+/// Removes the snapshot copies left in `work_dir` by a run that ended mid-read (the app
+/// killed, the computer turned off): each is as big as the catalog. Copies of this
+/// process, and those younger than `age` (another process may be reading them), stay.
+pub(crate) fn remove_stale_copies(work_dir: &Path, age: Duration) {
+    let Ok(entries) = fs::read_dir(work_dir) else { return };
+    let own = format!("snapshot-{}-", std::process::id());
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("snapshot-") || !name.ends_with(".cocatalogdb") || name.starts_with(&own) {
+            continue;
+        }
+        // Made when copied. On Windows a copy keeps the catalog's modification time and
+        // has its own creation time; elsewhere it may be the other way round, or have no
+        // creation time at all. The newer of the two is never before the copy.
+        let Ok(meta) = entry.metadata() else { continue };
+        let made = meta.created().ok().into_iter().chain(meta.modified().ok()).max();
+        if made.is_some_and(|t| t.elapsed().is_ok_and(|elapsed| elapsed >= age)) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Copies the catalog, retrying if it changed while we copied or if a hot journal
 /// shows Capture One is mid-transaction. A torn copy would be silently wrong data.
 pub(crate) fn copy_for_reading(catalog: &Path, work_dir: &Path) -> Result<TempCopy> {
@@ -231,4 +258,30 @@ pub(crate) fn original_path(con: &Connection, catalog_dir: &Path, variant_pk: i6
     )
     .optional()
     .map_err(db_err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copies_left_by_other_runs_go_once_they_are_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str| {
+            let path = dir.path().join(name);
+            fs::write(&path, b"copy").unwrap();
+            path
+        };
+        let own = file(&format!("snapshot-{}-0.cocatalogdb", std::process::id()));
+        let copy = file("snapshot-1-0.cocatalogdb");
+        let other = file("notes.txt");
+        // Not old enough yet: an hour has not gone by.
+        remove_stale_copies(dir.path(), STALE_COPY);
+        assert!(own.exists() && copy.exists() && other.exists());
+        // Old enough: only another run's copy goes.
+        thread::sleep(Duration::from_millis(50));
+        remove_stale_copies(dir.path(), Duration::from_millis(10));
+        assert!(own.exists() && other.exists());
+        assert!(!copy.exists(), "a copy left by another run goes");
+    }
 }

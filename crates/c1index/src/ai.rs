@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1ai::{RunRecord, Suggestion};
 use c1model::Place;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -87,8 +87,8 @@ pub struct SuggestionBook {
 }
 
 impl SuggestionBook {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "suggestions", ctl)?;
         let tx = db.begin_write()?;
         {
             let mut table = tx.open_table(SUGGESTIONS)?;
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn suggestions_are_replaced_and_every_call_is_counted() {
         let dir = tempfile::tempdir().unwrap();
-        let book = SuggestionBook::open(&dir.path().join("ai.redb")).unwrap();
+        let book = SuggestionBook::open(&dir.path().join("ai.redb"), &Default::default()).unwrap();
         let record = RunRecord { cost: 0.002, ..RunRecord::default() };
         book.put("c1:1", &entry(Status::Proposed), &record).unwrap();
         book.put("c1:1", &entry(Status::Proposed), &record).unwrap();
@@ -409,13 +409,17 @@ mod tests {
                 .unwrap();
             tx.commit().unwrap();
         }
-        let book = SuggestionBook::open(&path).unwrap();
+        let book = SuggestionBook::open(&path, &Default::default()).unwrap();
         let entry = book.get("c1:1").unwrap().expect("moved over");
         assert_eq!((entry.status, entry.suggestion.rating), (Status::Accepted, Some(4)));
         let place = entry.suggestion.place.unwrap();
         assert_eq!(place.city, Some(c1ai::Guess { name: "Kraków".into(), p: 0.6 }));
         assert_eq!(place.country.map(|g| g.name).as_deref(), Some("Poland"));
         drop(book);
-        assert_eq!(SuggestionBook::open(&path).unwrap().all().unwrap().len(), 1, "opened again: still there");
+        assert_eq!(
+            SuggestionBook::open(&path, &Default::default()).unwrap().all().unwrap().len(),
+            1,
+            "opened again: still there"
+        );
     }
 }

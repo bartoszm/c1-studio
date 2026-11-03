@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1geo::{Approx, Level};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::de::DeserializeOwned;
@@ -70,8 +70,8 @@ pub struct PlaceBook {
 }
 
 impl PlaceBook {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening places {}", path.display()))?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "places", ctl)?;
         let tx = db.begin_write()?;
         tx.open_table(ONLINE)?;
         tx.open_table(COARSE)?;

@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use crate::db::OpenControl;
 use anyhow::{Context, bail};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -514,8 +515,8 @@ pub struct TripBook {
 }
 
 impl TripBook {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening trips {}", path.display()))?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "trips", ctl)?;
         let tx = db.begin_write()?;
         tx.open_table(TRIPS)?;
         tx.open_table(META)?;
@@ -786,13 +787,13 @@ mod tests {
     fn the_book_keeps_trips_and_settings() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trips.redb");
-        let book = TripBook::open(&path).unwrap();
+        let book = TripBook::open(&path, &Default::default()).unwrap();
         assert_eq!(book.settings().unwrap(), TripSettings::default());
         let settings = krakow();
         book.set_settings(&settings).unwrap();
         book.save(&[trip(7, 0, 10, Kind::Kept)], 7).unwrap();
         drop(book);
-        let book = TripBook::open(&path).unwrap();
+        let book = TripBook::open(&path, &Default::default()).unwrap();
         assert_eq!(book.settings().unwrap(), settings);
         assert_eq!(book.load().unwrap(), (vec![trip(7, 0, 10, Kind::Kept)], 7));
     }

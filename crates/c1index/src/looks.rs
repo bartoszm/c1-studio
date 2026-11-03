@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Context;
+use crate::db::OpenControl;
 use c1analysis::{Analysis, ClassSettings};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -44,8 +44,8 @@ pub struct Looks {
 }
 
 impl Looks {
-    pub fn open(path: &Path) -> anyhow::Result<Self> {
-        let db = Database::create(path).with_context(|| format!("opening {}", path.display()))?;
+    pub fn open(path: &Path, ctl: &OpenControl) -> anyhow::Result<Self> {
+        let db = crate::db::open(path, "analysis", ctl)?;
         let tx = db.begin_write()?;
         tx.open_table(ANALYSES)?;
         tx.open_table(META)?;

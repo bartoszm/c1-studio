@@ -57,10 +57,14 @@ impl CaptureOne {
         }
         let catalog = std::path::absolute(catalog)?;
         let version = catalog::open_live(&catalog).and_then(|con| compat::read_version(&con))?;
+        let work_dir = work_dir.into();
+        // Each is as big as the catalog: opening does not wait for them to go.
+        let stale = work_dir.clone();
+        std::thread::spawn(move || catalog::remove_stale_copies(&stale, catalog::STALE_COPY));
         Ok(Self {
             id: SourceId(format!("c1:{}", catalog_id(&catalog))),
             catalog,
-            work_dir: work_dir.into(),
+            work_dir,
             version: Mutex::new(version),
             snapshot_lock: Mutex::new(()),
             thumbnail_crops: Mutex::new(None),
