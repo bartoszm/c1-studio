@@ -50,7 +50,7 @@
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
   import { LOCK_HELP, isLockError } from "./lib/lock";
-  import { typingIn } from "./lib/keys";
+  import { activatesCell, typingIn } from "./lib/keys";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import WriteDialog from "./WriteDialog.svelte";
@@ -1893,6 +1893,7 @@
       return;
     }
     if (dialogOpen || typingIn(e) || e.defaultPrevented) return;
+    if (activatesCell(e)) e.preventDefault();
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
