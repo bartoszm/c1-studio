@@ -2,15 +2,16 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
 
-  // The backups made before writes, newest first, and putting one back. A restore backs
-  // the catalog up first, so it shows up here and can be undone the same way.
+  // The backups made before writes, newest first, putting one back, and deleting old ones.
+  // A restore backs the catalog up first, so it shows up here and can be undone the same way.
   let { onclose, onrestored }: { onclose: () => void; onrestored: () => void } = $props();
 
   let list = $state<api.BackupInfo[] | null>(null);
   let status = $state<api.WriteStatus>("ReadOnly");
+  let folder = $state(false);
   let failed = $state<string | null>(null);
-  /** The backup asked to be restored, waiting for a yes. */
-  let asking = $state<api.BackupInfo | null>(null);
+  /** The backup asked to be restored or deleted, waiting for a yes. */
+  let asking = $state<{ b: api.BackupInfo; kind: "restore" | "delete" } | null>(null);
   let busy = $state(false);
   let done = $state<api.BackupInfo | null>(null);
 
@@ -19,6 +20,7 @@
       const b = await api.backups();
       list = b.list;
       status = b.status;
+      folder = b.folder;
     } catch (e) {
       failed = String(e);
     }
@@ -42,6 +44,30 @@
     await load();
   }
 
+  async function remove(b: api.BackupInfo) {
+    busy = true;
+    failed = null;
+    try {
+      await api.deleteBackup(b.id);
+      asking = null;
+      if (done?.id === b.id) done = null;
+    } catch (e) {
+      failed = String(e);
+    } finally {
+      busy = false;
+    }
+    await load();
+  }
+
+  async function openFolder() {
+    failed = null;
+    try {
+      await api.openBackupsFolder();
+    } catch (e) {
+      failed = String(e);
+    }
+  }
+
   const when = (ms: number) =>
     new Date(ms).toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
   function ago(ms: number) {
@@ -62,7 +88,7 @@
     <h2 id="backups-title">Backups</h2>
     <p class="muted">
       Before the app writes, it keeps a copy of the {source.backup}; the newest five are kept. Restoring one brings that copy
-      back.
+      back; deleting one frees its space.
     </p>
 
     {#if done}
@@ -81,17 +107,26 @@
     {:else if list}
       <ul>
         {#each list as b (b.id)}
-          <li class:asking={asking?.id === b.id}>
+          <li class:asking={asking?.b.id === b.id}>
             <span class="what">
               <span><b>{when(b.created_ms)}</b> <span class="muted">· {ago(b.created_ms)} · {mb(b.size)}</span></span>
               {#if b.note}<span class="note">{b.note}</span>{/if}
               <small title={b.path}>{b.id}</small>
             </span>
-            {#if asking?.id !== b.id}
-              <button disabled={status !== "Ready" || busy} onclick={() => (asking = b)}>Restore…</button>
+            {#if asking?.b.id !== b.id}
+              <button disabled={status !== "Ready" || busy} onclick={() => (asking = { b, kind: "restore" })}>Restore…</button>
+              <button disabled={busy} onclick={() => (asking = { b, kind: "delete" })}>Delete…</button>
             {/if}
           </li>
-          {#if asking?.id === b.id}
+          {#if asking?.b.id === b.id && asking.kind === "delete"}
+            <li class="confirm">
+              <p>Delete the backup of <b>{when(b.created_ms)}</b> ({mb(b.size)})? It cannot be brought back.</p>
+              <div class="buttons">
+                <button onclick={() => (asking = null)} disabled={busy}>Cancel</button>
+                <button class="primary danger" disabled={busy} onclick={() => remove(b)}>{busy ? "Deleting…" : "Delete"}</button>
+              </div>
+            </li>
+          {:else if asking?.b.id === b.id}
             <li class="confirm">
               <p>
                 Go back to the {source.backup} as of <b>{when(b.created_ms)}</b>? Everything changed since{#if source.owner}, in
@@ -112,6 +147,7 @@
     {#if failed}<p class="error">{failed}</p>{/if}
 
     <div class="buttons">
+      {#if folder}<button class="left" onclick={openFolder} disabled={busy}>Open folder</button>{/if}
       {#if status !== "Ready"}<button onclick={load} disabled={busy}>Check again</button>{/if}
       <button onclick={onclose} disabled={busy}>Close</button>
     </div>
@@ -150,6 +186,7 @@
   li > button:hover:not(:disabled), .buttons button:hover:not(:disabled) { background: var(--hover); }
   button:disabled { opacity: 0.4; cursor: default; }
   .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  .buttons .left { margin-right: auto; }
   .buttons .primary { border: 0; background: var(--queued); color: #fff; font-weight: 600; }
   .buttons .primary.danger { background: var(--error); }
   .muted { color: var(--muted); }

@@ -49,15 +49,20 @@ impl Log {
         if !self.path.is_file() {
             self.event("Events log started", &[]);
         }
-        #[cfg(windows)]
-        let opener = "explorer";
-        #[cfg(target_os = "macos")]
-        let opener = "open";
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let opener = "xdg-open";
-        // Explorer reports failure even when it opened the file; only starting it counts.
-        std::process::Command::new(opener).arg(&self.path).spawn().map(|_| ())
+        open_in_system(&self.path)
     }
+}
+
+/// Opens a file or folder in the system's viewer for it (a folder in the file manager).
+pub fn open_in_system(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    let opener = "explorer";
+    #[cfg(target_os = "macos")]
+    let opener = "open";
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let opener = "xdg-open";
+    // Explorer reports failure even when it opened the file; only starting it counts.
+    std::process::Command::new(opener).arg(path).spawn().map(|_| ())
 }
 
 #[cfg(test)]

@@ -1994,12 +1994,40 @@ async fn write_apply(app: AppHandle) -> Result<WriteReport, String> {
 struct Backups {
     list: Vec<BackupInfo>,
     status: WriteStatus,
+    /// Whether the source keeps its backups in a folder that can be opened.
+    folder: bool,
 }
 
 #[tauri::command]
 async fn backups(app: State<'_, App>) -> Result<Backups, String> {
     let s = app.session()?;
-    Ok(Backups { list: s.source.backups().map_err(text)?, status: s.source.write_status() })
+    Ok(Backups {
+        list: s.source.backups().map_err(text)?,
+        status: s.source.write_status(),
+        folder: s.source.backup_folder().is_some(),
+    })
+}
+
+/// Deletes a backup for good. The catalog is not touched, so this needs no lock on it.
+#[tauri::command]
+async fn delete_backup(app: AppHandle, id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let s = app.state::<App>().session()?;
+        s.source.delete_backup(&id).map_err(text)?;
+        s.log.event(&format!("Deleted the backup {id}"), &[]);
+        Ok(())
+    })
+    .await
+    .map_err(text)?
+}
+
+/// Opens the folder the backups are kept in, in the system's file manager.
+#[tauri::command]
+async fn open_backups_folder(app: State<'_, App>) -> Result<(), String> {
+    let s = app.session()?;
+    let dir = s.source.backup_folder().ok_or("This source keeps no backups.")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not make {}: {e}", dir.display()))?;
+    events::open_in_system(&dir).map_err(|e| format!("Could not open {}: {e}", dir.display()))
 }
 
 /// Puts a backup back as the catalog, then reads it in. Queued edits stay queued.
@@ -2705,6 +2733,8 @@ pub fn run() {
             collection_changes,
             backups,
             restore_backup,
+            delete_backup,
+            open_backups_folder,
             look,
             analysis_state,
             fill_thumbnails,

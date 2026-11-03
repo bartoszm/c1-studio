@@ -978,7 +978,11 @@ export function watchBrokenImages(): () => void {
 /** A copy of the catalog kept before writing to it. */
 export type BackupInfo = { id: string; path: string; created_ms: number; size: number; note: string | null };
 /** The backups, newest first, and whether the catalog can be written now (a restore needs it). */
-export const backups = () => invoke<{ list: BackupInfo[]; status: WriteStatus }>("backups");
+export const backups = () => invoke<{ list: BackupInfo[]; status: WriteStatus; folder: boolean }>("backups");
+/** Deletes a backup for good; the catalog is not touched. */
+export const deleteBackup = (id: string) => invoke<void>("delete_backup", { id });
+/** Opens the folder the backups are kept in, in the system's file manager. */
+export const openBackupsFolder = () => invoke<void>("open_backups_folder");
 /** Puts a backup back as the catalog; returns the backup of the catalog it replaced. */
 export const restoreBackup = (id: string) => invoke<BackupInfo>("restore_backup", { id });
 /** Queued album changes: number, what it does, the collection it is about. */

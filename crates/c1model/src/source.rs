@@ -425,6 +425,16 @@ pub trait PhotoSource: Send + Sync {
         Err(SourceError::Unsupported("restoring backups"))
     }
 
+    /// Deletes a backup (by [`BackupInfo::id`]) for good. The source itself is not touched.
+    fn delete_backup(&self, _id: &str) -> Result<()> {
+        Err(SourceError::Unsupported("deleting backups"))
+    }
+
+    /// The folder the backups are kept in, for a source that keeps them.
+    fn backup_folder(&self) -> Option<PathBuf> {
+        None
+    }
+
     /// Deletes photos for good, as [`Capabilities::removes`] says: their files go, or the
     /// source marks them deleted. Not undone by the app; a source that keeps backups makes
     /// one first. A photo the source cannot remove (gone already, on an offline drive,
