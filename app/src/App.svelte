@@ -53,6 +53,8 @@
   import { typingIn } from "./lib/keys";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
+  import Compare from "./Compare.svelte";
+  import { COMPARE_MAX, compareRows } from "./lib/compare";
   import WriteDialog from "./WriteDialog.svelte";
 
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
@@ -87,6 +89,8 @@
    *  the viewer never lose it in between. */
   let focusRow = $state<number | undefined>(undefined);
   let viewing = $state(false);
+  /** Photos compared side by side (2 to 4, by row) and the one edits land on. */
+  let comparing = $state<{ rows: number[]; active: number } | null>(null);
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
   let syncFailed = $state<string | null>(null);
@@ -947,8 +951,10 @@
     }
   }
 
-  /** The photos an edit applies to: the picked ones, else the focused one. */
+  /** The photos an edit applies to: the photo active in a comparison, else the picked
+   *  ones, else the focused one. */
   function targets(): number[] {
+    if (comparing) return [comparing.rows[comparing.active]];
     if (picked.size) return [...picked];
     const row = selected === null ? mapRow ?? undefined : focusRow;
     return row === undefined ? [] : [row];
@@ -1829,6 +1835,15 @@
     viewing = false;
   }
 
+  /** `c` or *Compare*: the picked photos side by side, the focused one first, at most four. */
+  function openCompare() {
+    const { rows, left } = compareRows(picked, selected === null ? undefined : focusRow);
+    if (rows.length < 2) return note(`Pick 2 to ${COMPARE_MAX} photos to compare (Ctrl+click)`);
+    viewing = false;
+    comparing = { rows, active: 0 };
+    if (left) note(`Comparing ${COMPARE_MAX} of ${picked.size.toLocaleString()} picked: the focused one and the first picked`);
+  }
+
   /** The History tab shown or not; hidden, it is left, and a pick from it goes. */
   function showsHistory(on: boolean) {
     historyOn = on;
@@ -1893,6 +1908,8 @@
       return;
     }
     if (dialogOpen || typingIn(e) || e.defaultPrevented) return;
+    // Comparing: only the edits reach the photo active; Delete, the picks and the grid wait.
+    if (comparing && (e.key === "Delete" || e.key === "Backspace" || e.key === "Escape" || e.key === "Enter")) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -1904,20 +1921,20 @@
       if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin") setBinned(true, deleting());
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
-      else if (key === "a" && !viewing) pickAll();
+      else if (key === "a" && !viewing && !comparing) pickAll();
       else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
       else if (key === "c" && (e.shiftKey || !window.getSelection()?.toString())) openCopy();
       else if (key === "v" && e.shiftKey) { if (clipboard) pasting = targets(); }
       else if (key === "v") pasteClip();
       else if (key === "s" && e.shiftKey) openSync();
-      else if ((key === "=" || key === "+") && !viewing) grid?.step(true);
-      else if (key === "-" && !viewing) grid?.step(false);
-      else if (key === "0" && !viewing) tiles = DEFAULT_TILES;
+      else if ((key === "=" || key === "+") && !viewing && !comparing) grid?.step(true);
+      else if (key === "-" && !viewing && !comparing) grid?.step(false);
+      else if (key === "0" && !viewing && !comparing) tiles = DEFAULT_TILES;
       else return;
       e.preventDefault();
       return;
     }
-    if (e.altKey && !ctrl && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    if (e.altKey && !ctrl && !comparing && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       travel(e.key === "ArrowLeft");
       e.preventDefault();
       return;
@@ -1926,7 +1943,7 @@
     if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
     else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
     else if (e.key === "i") showInfo = !showInfo;
-    else if (key === "t" && !e.repeat && !viewing) aroundFocused(e.shiftKey);
+    else if (key === "t" && !e.repeat && !viewing && !comparing) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
@@ -1938,7 +1955,8 @@
     else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") {
       setBinned(true, deleting());
     }
-    else if (viewing) return; // the viewer has its own keys
+    else if (viewing || comparing) return; // the viewer and the comparison have their own keys
+    else if (key === "c" && !e.repeat) openCompare();
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
@@ -2361,6 +2379,14 @@
         title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
         onclick={openSync}
       >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
+      <button
+        class="copy-to compare-open"
+        class:hidden={picked.size < 2}
+        title={picked.size > COMPARE_MAX
+          ? `Compare ${COMPARE_MAX} of the picked photos: the focused one and the first picked (c)`
+          : "Compare the picked photos side by side, in a split, an overlay or their difference (c)"}
+        onclick={openCompare}
+      >⧉ Compare {Math.min(picked.size, COMPARE_MAX)}</button>
     </span>
     <button
       class="toggle"
@@ -3059,6 +3085,18 @@
 
 {#if writing}
   <WriteDialog onclose={() => (writing = false)} onchanged={() => { refreshKeywords(); edited(); }} />
+{/if}
+
+{#if comparing}
+  <Compare
+    rows={comparing.rows}
+    active={comparing.active}
+    {version}
+    blocked={dialogOpen || menuOpen}
+    onclose={() => (comparing = null)}
+    onactive={(i) => { if (comparing) comparing = { ...comparing, active: i }; }}
+    onrows={(rows, active) => (comparing = { rows, active })}
+  />
 {/if}
 
 {#if viewing && selected !== null && focusRow !== undefined}

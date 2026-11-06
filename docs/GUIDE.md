@@ -182,6 +182,20 @@ through the result, Esc or a click closes it. Capture One's thumbnail shows at o
 the sharp preview replaces it when ready; the next one loads in the background. With
 the details panel on, it shows beside the photo.
 
+**Compare.** With 2 to 4 photos picked, `c` or *⧉ Compare* in the header shows them next
+to each other, the focused one first (with more picked, the focused one and the first
+picked, up to four). The wheel zooms about the pointer, dragging moves, `z` or a
+double-click goes between the whole photo and 1:1 of the preview, and *Zoom together*
+(`l`) keeps every photo at the same zoom and place. One photo is active, outlined in
+blue: a click, Tab or ← → choose it, and ratings, colour tags and `h` go to it alone.
+Under each photo: its name, time, exposure, stars, colour and the focus measured, with
+the sharpest marked. `x` (or × on its caption) takes the active photo out of the
+comparison. Two photos can also be shown over each other: *Split* (`w`, a line to drag),
+*Overlay* (`o`, with a slider for how see-through the second is), *Difference* (`d`:
+what is the same is black, what moved or changed is bright) and *Blink* (`b`: one at a
+time, Space for the other). Space swaps A and B; Esc closes. Zooming beyond 1:1 only
+magnifies the preview, not the original file.
+
 **Tile size.** The header slider sets about how wide the tiles are, and the count per
 row follows the window. Typing a number in *per row* keeps that many whatever the
 window. *3:2* switches to square tiles and back. Ctrl+wheel over the grid, Ctrl+plus and
