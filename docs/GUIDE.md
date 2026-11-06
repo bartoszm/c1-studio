@@ -180,7 +180,14 @@ apply to all of them.
 **Viewer.** Enter or a double-click opens the focused photo full size. ← and → step
 through the result, Esc or a click closes it. Capture One's thumbnail shows at once and
 the sharp preview replaces it when ready; the next one loads in the background. With
-the details panel on, it shows beside the photo.
+the details panel on, it shows beside the photo. `g` lays a grid over the photo, to judge
+its composition: thirds, the golden ratio (lines at 38.2% and 61.8%), quarters,
+diagonals (corner to corner, with a perpendicular from each other corner), golden
+triangles (one diagonal and its two perpendiculars) or the Fibonacci spiral (the golden
+rectangle cut into squares, stretched to the photo). `g` again goes to the next,
+Shift+G back, and the button at the bottom right names the one shown. `o` turns the
+triangles to the other diagonal and takes the spiral round the four corners. The grid and
+its turn stay for the next photos and the next session.
 
 **Compare.** With 2 to 4 photos picked, `c` or *⧉ Compare* in the header shows them next
 to each other, the focused one first (with more picked, the focused one and the first
@@ -855,6 +862,8 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Esc | Back to one photo; close the viewer, a dialog or a menu |
 | Enter, double-click | Open the viewer |
 | ← → (viewer) | Previous, next photo |
+| `g`, Shift+G (viewer) | Next, previous grid over the photo: none, thirds, golden ratio, quarters, diagonals, golden triangles, Fibonacci spiral |
+| `o` (viewer) | Turn the golden triangles or the Fibonacci spiral |
 | Alt+← Alt+→ | Back to the filter before, forward again |
 | `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
 | `i` | Show or hide the details panel |
