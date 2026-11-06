@@ -136,6 +136,21 @@ test("o takes the spiral round the corners; the triangles flip between two", () 
 test("the guides sit on the image fitted inside the stage's inset", () => {
   assert.equal(frameFor(null, 600, 400, 12), null);
   assert.deepEqual(frameFor([3000, 2000], 624, 624, 12), { left: 12, top: 112, width: 600, height: 400 });
+  // A stage no wider or taller than the two insets has no room for the image.
+  assert.equal(frameFor([3000, 2000], 24, 400, 12), null);
+  assert.equal(frameFor([3000, 2000], 400, 20, 12), null);
+});
+
+test("portrait triangles: a diagonal and the perpendiculars to it", () => {
+  const [w, h] = [200, 300];
+  const all = guideLines("diagonals", w, h);
+  for (const [turn, lines] of [[0, all.slice(0, 3)], [1, all.slice(3)]] as const) {
+    assert.deepEqual(guideLines("triangles", w, h, turn), lines);
+    const [d, ...perps] = lines;
+    for (const p of perps) {
+      assert.ok(Math.abs((d[2] - d[0]) * (p[2] - p[0]) + (d[3] - d[1]) * (p[3] - p[1])) < 1e-6);
+    }
+  }
 });
 
 test("golden triangles draw three lines", () => {

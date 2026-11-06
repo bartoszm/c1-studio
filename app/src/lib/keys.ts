@@ -19,16 +19,16 @@ export function activatesCell(e: { key: string; target: EventTarget | null }): b
 
 /** What a key does in the viewer: close it, step by one, show the next (`g`) or the previous
  *  (Shift+G) grid, turn the grid (`o`), or nothing: typed into a field, handled already, or a dialog or menu is
- *  open over it (`blocked`). */
+ *  open over it (`blocked`). A held arrow keeps stepping; a held `g` or `o` acts once. */
 export function viewerKey(
-  e: { key: string; target: EventTarget | null; defaultPrevented: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean },
+  e: { key: string; target: EventTarget | null; defaultPrevented: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean; repeat?: boolean },
   blocked: boolean,
 ): "close" | 1 | -1 | "grid" | "grid-back" | "turn" | null {
   if (blocked || e.defaultPrevented || typingIn(e)) return null;
   if (e.key === "Escape") return "close";
   if (e.key === "ArrowRight") return 1;
   if (e.key === "ArrowLeft") return -1;
-  if (e.ctrlKey || e.metaKey || e.altKey) return null;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return null;
   // The letter whatever Caps Lock says; Shift alone steps back.
   const k = e.key.toLowerCase();
   if (k === "g") return e.shiftKey ? "grid-back" : "grid";

@@ -329,7 +329,8 @@ footer {
   z-index: 10;
 }
 .stage { position: relative; overflow: hidden; }
-.stage img { position: absolute; inset: 12px; width: calc(100% - 24px); height: calc(100% - 24px); object-fit: contain; }
+/* --inset is set from INSET in Viewer.svelte, which fits the grid to the image with it. */
+.stage img { position: absolute; inset: var(--inset); width: calc(100% - 2 * var(--inset)); height: calc(100% - 2 * var(--inset)); object-fit: contain; }
 .stage .base { filter: blur(0.5px); }
 .stage .full { opacity: 0; transition: opacity 120ms; }
 .stage .full.shown { opacity: 1; }

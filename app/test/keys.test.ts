@@ -69,6 +69,15 @@ test("the viewer steps the grid with g, back with Shift+G, not with a modifier",
   assert.equal(viewerKey({ ...key("G"), shiftKey: true }, false), "grid-back");
   assert.equal(viewerKey({ ...key("g"), altKey: true }, false), null);
   assert.equal(viewerKey({ ...key("o"), metaKey: true }, false), null);
+  assert.equal(viewerKey({ ...key("O"), shiftKey: true }, false), "turn");
+  assert.equal(viewerKey({ ...key("G"), ctrlKey: true, shiftKey: true }, false), null);
+});
+
+test("a held g or o acts once; a held arrow keeps stepping", () => {
+  assert.equal(viewerKey({ ...key("g"), repeat: true }, false), null);
+  assert.equal(viewerKey({ ...key("G"), shiftKey: true, repeat: true }, false), null);
+  assert.equal(viewerKey({ ...key("o"), repeat: true }, false), null);
+  assert.equal(viewerKey({ ...key("ArrowRight"), repeat: true }, false), 1);
 });
 
 test("Enter and Space never activate a grid cell, whatever photo has the focus", () => {

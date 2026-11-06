@@ -63,15 +63,17 @@
   }
 
   // The grid covers the picture itself, not the stage around it: the size of the image
-  // shown (the thumbnail can be framed unlike the preview) fitted into the stage.
+  // shown (the thumbnail can be framed unlike the preview) fitted into the stage. The
+  // images sit INSET pixels in from the stage's sides (`--inset` in app.css).
   const INSET = 12;
   let stageW = $state(0);
   let stageH = $state(0);
   let baseSize = $state<[number, number] | null>(null);
   let fullSize = $state<[number, number] | null>(null);
+  // Stepping keeps the last thumbnail's size until the new one loads, so the grid does
+  // not blink out on every photo; the preview's is dropped, it is only used once shown.
   $effect(() => {
     void row;
-    baseSize = null;
     fullSize = null;
   });
   let frame = $derived(guide === "off" ? null : frameFor((sharp && fullSize) || baseSize || fullSize, stageW, stageH, INSET));
@@ -97,9 +99,9 @@
 
 <div class="viewer" class:side={!!children} role="dialog" aria-label="Photo">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="stage" onclick={onclose} bind:clientWidth={stageW} bind:clientHeight={stageH}>
+  <div class="stage" style:--inset="{INSET}px" onclick={onclose} bind:clientWidth={stageW} bind:clientHeight={stageH}>
     {#key row}
-      <img class="base" src={api.thumbUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) baseSize = size; }} />
+      <img class="base" src={api.thumbUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) baseSize = size; }} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) baseSize = null; }} />
       <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) { fullSize = size; sharp = true; } }} />
     {/key}
     {#if frame}
