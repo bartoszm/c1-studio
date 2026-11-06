@@ -54,7 +54,7 @@
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import Compare from "./Compare.svelte";
-  import { COMPARE_MAX, compareRows } from "./lib/compare";
+  import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
   import WriteDialog from "./WriteDialog.svelte";
 
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
@@ -1251,15 +1251,19 @@
   /** What the Delete keys move to the trash: in the viewer, only the photo shown (the next one
    *  takes its place), else the photos edited here. */
   const deleting = () => (viewing && focusRow !== undefined ? [focusRow] : targets());
-  /** Delete while comparing: the active photo goes to the trash and out of the comparison,
-   *  which closes when fewer than two are left. */
-  async function binCompared() {
+  /** Delete while comparing: the active photo goes to the trash, or out of the album shown
+   *  as in the grid, and out of the comparison, which closes when fewer than two are left. */
+  async function deleteCompared(fromAlbum: boolean) {
     if (!comparing) return;
     const row = comparing.rows[comparing.active];
-    await setBinned(true, [row]);
+    const album = shownAlbum;
+    if (fromAlbum && album) {
+      await applyEdit({ RemoveFromAlbum: album.id }, [row]);
+      if (!editError) note(`1 photo taken out of “${album.name}”`);
+    } else await setBinned(true, [row]);
+    // The keys stayed live meanwhile: the active photo may be another one by now.
     if (!comparing || editError) return;
-    const rows = comparing.rows.filter((r) => r !== row);
-    comparing = rows.length >= 2 ? { rows, active: Math.min(comparing.active, rows.length - 1) } : null;
+    comparing = removeRow(comparing.rows, row, comparing.active);
   }
   /** After photos went into the trash or out of it: the views and its count follow. */
   async function binChanged() {
@@ -1924,8 +1928,9 @@
     if (dialogOpen || typingIn(e) || handled) return;
     // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
     if (comparing) {
-      if (e.key === "Delete" && !e.altKey && !e.shiftKey && deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: false, inBin, removes: status?.removes }) === "bin") {
-        binCompared();
+      const action = e.key === "Delete" && !e.altKey && !e.shiftKey ? deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: !!shownAlbum, inBin, removes: status?.removes }) : "none";
+      if (action !== "none") {
+        deleteCompared(action === "album");
         e.preventDefault();
         return;
       }
@@ -3116,6 +3121,7 @@
     active={comparing.active}
     {version}
     blocked={dialogOpen || menuOpen}
+    album={!!shownAlbum && !inBin}
     message={busy ?? editError ?? editNote}
     failed={!busy && !!editError}
     onclose={() => (comparing = null)}

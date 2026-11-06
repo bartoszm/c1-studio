@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { COMPARE_MAX, FIT, clampView, compareKey, compareRows, dropRow, oneToOne, panBy, zoomAt } from "../src/lib/compare";
+import { COMPARE_MAX, FIT, clampView, compareKey, compareRows, dropRow, oneToOne, panBy, removeRow, zoomAt } from "../src/lib/compare";
 
 test("the focused photo is compared first, then the others in the order picked", () => {
   assert.deepEqual(compareRows([5, 9, 2], 2), { rows: [2, 5, 9], left: 0 });
@@ -30,6 +30,17 @@ test("another photo taken out keeps the active one active", () => {
   assert.deepEqual(dropRow([1, 2, 3, 4], 0, 3), { rows: [2, 3, 4], active: 2 });
 });
 
+test("a photo gone after a wait is found by its id, whichever is active by then", () => {
+  // B deleted while active; Tab moved on to C meanwhile: C stays active.
+  assert.deepEqual(removeRow([1, 2, 3], 2, 2), { rows: [1, 3], active: 1 });
+  // Still active: the one after it is.
+  assert.deepEqual(removeRow([1, 2, 3], 2, 1), { rows: [1, 3], active: 1 });
+  // One left: the comparison closes.
+  assert.equal(removeRow([1, 2], 1, 0), null);
+  // Taken out already: nothing changes.
+  assert.deepEqual(removeRow([1, 3], 2, 0), { rows: [1, 3], active: 0 });
+});
+
 const key = (k: string, more: object = {}) => ({ key: k, target: { tagName: "BODY" } as unknown as EventTarget, defaultPrevented: false, ...more });
 
 test("the comparison's keys", () => {
@@ -49,6 +60,8 @@ test("modes over each other, Swap need two photos; dropping needs three", () => 
   assert.equal(compareKey(key(" "), false, 3), null);
   assert.deepEqual(compareKey(key("s"), false, 3), { kind: "mode", mode: "side" });
   assert.equal(compareKey(key("x"), false, 2), null);
+  // Space held down swaps once, not at the key's repeat rate.
+  assert.equal(compareKey(key(" ", { repeat: true }), false, 2), null);
   assert.deepEqual(compareKey(key("x"), false, 3), { kind: "drop" });
 });
 

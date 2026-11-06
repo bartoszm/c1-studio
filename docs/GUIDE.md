@@ -190,12 +190,15 @@ double-click goes between the whole photo and 1:1 of the preview, and *Zoom toge
 blue: a click, Tab or ← → choose it, and ratings, colour tags and `h` go to it alone.
 Under each photo: its name, time, exposure, stars, colour and the focus measured, with
 the sharpest marked. With three or four photos, × on a caption takes that photo out of
-the comparison (`x` the active one); **Delete** moves the active photo to the trash and out
-of the comparison, which closes when one is left. Ctrl+C copies from the active photo.
+the comparison (`x` the active one); **Delete** moves the active photo to the trash (in an
+album, as in the grid, takes it out of the album; Ctrl+Delete still trashes it) and out of
+the comparison, which closes when one is left. Ctrl+C copies from the active photo.
 Two photos can also be shown over each other: *Split* (`w`, a line to drag),
 *Overlay* (`o`, with a slider for how see-through the second is), *Difference* (`d`:
 what is the same is black, what moved or changed is bright) and *Blink* (`b`: one at a
-time, Space for the other). With two photos Space swaps A and B; Esc closes. Messages
+time, Space for the other). *Split*, *Overlay* and *Difference* wait until both sharp
+previews are in, so a thumbnail is never compared with a preview; *Blink* says when they
+are not. With two photos Space swaps A and B; Esc closes. Messages
 that would show in the footer show in the comparison's bar. Zooming beyond 1:1 only
 magnifies the preview, not the original file, and *Split* and *Difference* line the two
 photos up as they fit the pane: photos of different shapes do not line up.

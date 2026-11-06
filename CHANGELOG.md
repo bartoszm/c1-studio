@@ -1,11 +1,5 @@
 # Changelog
 
-## Unreleased
-
-### New
-
-- **Compare 2 to 4 photos:** `c` or *⧉ Compare* in the header shows the picked photos next to each other (the focused one first; with more than four picked, the focused one and the first picked). Zoom with the wheel and drag, `z` or a double-click for 1:1, and *Zoom together* (`l`) keeps them at the same zoom and place. Ratings, colour tags, hiding, Ctrl+C and **Delete** go to the active photo only (click, Tab or ← →); each caption shows the focus measured, and the sharpest is marked. Two photos can also be compared in a **Split** with a line to drag, an **Overlay** with a slider, their **Difference**, or **Blink**ing with Space.
-
 ## 0.7.0 — 2026-10-24
 
 ### New

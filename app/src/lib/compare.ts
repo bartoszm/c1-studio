@@ -36,6 +36,14 @@ export function dropRow(rows: number[], drop: number, active: number): { rows: n
   return { rows: next, active: Math.min(drop, next.length - 1) };
 }
 
+/** Photo `row` gone (deleted, or out of the album shown) after a wait: out of the comparison
+ *  too. Found by its id, as the active photo may have changed meanwhile. Null when fewer
+ *  than two are left: the comparison closes. */
+export function removeRow(rows: number[], row: number, active: number): { rows: number[]; active: number } | null {
+  const i = rows.indexOf(row);
+  return i < 0 ? { rows, active } : dropRow(rows, i, active);
+}
+
 export type CompareAction =
   | { kind: "close" }
   | { kind: "swap" }
@@ -48,7 +56,7 @@ export type CompareAction =
 /** What a key does in the comparison, or nothing: typed into a field, handled already, or
  *  a dialog or menu is open over it (`blocked`). The modes beyond side by side need two photos. */
 export function compareKey(
-  e: { key: string; target: EventTarget | null; defaultPrevented: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean },
+  e: { key: string; target: EventTarget | null; defaultPrevented: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean; repeat?: boolean },
   blocked: boolean,
   count: number,
 ): CompareAction | null {
@@ -58,7 +66,8 @@ export function compareKey(
   if (e.key === "ArrowRight") return { kind: "active", delta: 1 };
   if (e.key === "ArrowLeft") return { kind: "active", delta: -1 };
   const key = e.key.toLowerCase();
-  if (e.key === " " && count === 2) return { kind: "swap" };
+  // Held down, it would flip the photos at the key's repeat rate.
+  if (e.key === " " && count === 2 && !e.repeat) return { kind: "swap" };
   if (key === "x" && count > 2) return { kind: "drop" };
   if (key === "z") return { kind: "zoom" };
   if (key === "l") return { kind: "sync" };

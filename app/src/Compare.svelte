@@ -5,7 +5,7 @@
   import { COLORS, date, exposure } from "./lib/format";
   import { FIT, MODES, compareKey, dropRow, oneToOne, panBy, zoomAt, type CompareMode, type View } from "./lib/compare";
 
-  let { rows, active, version, blocked, message, failed, onclose, onactive, onrows }: {
+  let { rows, active, version, blocked, album = false, message, failed, onclose, onactive, onrows }: {
     /** The photos compared, 2 to 4, in their order on screen. */
     rows: number[];
     /** Index in `rows` of the photo edits land on. */
@@ -14,6 +14,8 @@
     version: number;
     /** A dialog or menu is open over the comparison: the keys are its own. */
     blocked: boolean;
+    /** An album is shown: Delete takes the photo out of it, as in the grid. */
+    album?: boolean;
     /** The footer's word (work under way, an error, a note), which the comparison covers. */
     message?: string | null;
     /** `message` is an error. */
@@ -69,10 +71,20 @@
     live = fits();
     views = fits();
   }
-  // Another layout: start from the whole photos.
+  /** The photos side by side when the layout last changed: whose view each pane holds. */
+  let laid: number[] = [];
+  // Another layout: start from the whole photos. A photo taken out leaves the others as they were.
   $effect(() => {
     void panes;
-    untrack(resetViews);
+    untrack(() => {
+      const was = laid;
+      laid = stacked ? [] : rows.slice();
+      if (stacked || !rows.every((r) => was.includes(r))) return resetViews();
+      cancelAnimationFrame(frame);
+      frame = 0;
+      live = [...rows.map((r) => live[was.indexOf(r)]), ...fits()].slice(0, 4);
+      views = live.slice();
+    });
   });
   /** Where the split line is, 0..1 of the pane's width. */
   let split = $state(0.5);
@@ -130,6 +142,13 @@
     natural.set(row, [img.naturalWidth, img.naturalHeight]);
     sharp.add(row);
   }
+  /** Previews that could not be read: their thumbnail stays. */
+  const broken = new SvelteSet<number>();
+  /** Every preview is in. Until then one photo over another waits: a thumbnail against a
+   *  preview would differ everywhere. */
+  let ready = $derived(rows.every((r) => sharp.has(r)));
+  /** A photo compared whose preview could not be read. */
+  let lost = $derived(rows.find((r) => broken.has(r)));
 
   let root: HTMLElement;
   let stage: HTMLElement;
@@ -217,10 +236,12 @@
   function cancel(e: PointerEvent) {
     if (drag?.id === e.pointerId) drag = null;
   }
-  /** Double-click: the whole photo, or 1:1 about the point clicked. */
+  /** Double-click: the whole photo, or 1:1 about the point clicked. The pane is found by
+   *  the point: with the pointer captured, the click's target is the board. */
   function dbl(e: MouseEvent) {
-    const el = paneAt(e.target);
-    if (!el || (e.target as HTMLElement).closest(".line")) return;
+    const under = document.elementsFromPoint(e.clientX, e.clientY);
+    const el = under.find((x) => x.matches("[data-pane]")) as HTMLElement | undefined;
+    if (!el || under.some((x) => x.matches(".line"))) return;
     const r = where(el);
     zoom(paneIndex(el), (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
   }
@@ -229,20 +250,17 @@
     if (!el) return;
     if (live[i].s > 1) return setView(i, FIT);
     const r = where(el);
-    const row = stacked ? rows[0] : rows[i];
+    const row = stacked ? rows[mode === "blink" ? active : 0] : rows[i];
     const [nw, nh] = natural.get(row) ?? [0, 0];
     const s = oneToOne(nw, nh, r.width, r.height, window.devicePixelRatio || 1);
     setView(i, zoomAt(live[i], s, px, py, 1, 1));
   }
 
   function swap() {
-    // In Blink the photo shown is the first, and edits land on it.
-    onrows([rows[1], rows[0]], mode === "blink" ? 0 : 1 - active);
+    // In Blink the photo shown is the active one: Space shows the other, in the same order.
+    if (mode === "blink") return onactive(1 - active);
+    onrows([rows[1], rows[0]], 1 - active);
   }
-  // In Blink edits land on the photo shown, which is the first: the active one goes first.
-  $effect(() => {
-    if (mode === "blink" && active !== 0) untrack(swap);
-  });
   function drop(i = active) {
     const next = dropRow(rows, i, active);
     if (next) onrows(next.rows, next.active);
@@ -259,11 +277,7 @@
     switch (action.kind) {
       case "close": return onclose();
       case "swap": return swap();
-      case "active": {
-        // In Blink the photo active is the one shown: stepping shows the other.
-        if (mode === "blink") return swap();
-        return onactive((active + action.delta + rows.length) % rows.length);
-      }
+      case "active": return onactive((active + action.delta + rows.length) % rows.length);
       case "drop": return drop();
       case "zoom": return zoom(stacked ? 0 : active);
       case "sync": return toggleSync();
@@ -278,8 +292,12 @@
 
   /** The transform of a photo in pane `i`: a shift in fractions of the pane, then the scale. */
   const transform = (v: View) => `transform: translate(${v.x * 100}%, ${v.y * 100}%) scale(${v.s})`;
-  /** How the second photo sits over the first in one pane; in Blink it waits, loaded, out of sight. */
-  function over(): string {
+  /** How photo `i` sits in the one pane: the second over the first, or in Blink only the active
+   *  one (the other waits, loaded, out of sight). The second waits too until both previews are in. */
+  function over(i: number): string {
+    if (mode === "blink") return i === active ? "" : "visibility: hidden";
+    if (i === 0) return "";
+    if (!ready) return "visibility: hidden";
     if (mode === "split") return `clip-path: inset(0 0 0 ${split * 100}%)`;
     if (mode === "overlay") return `opacity: ${opacity}`;
     if (mode === "difference") return "mix-blend-mode: difference";
@@ -294,7 +312,7 @@
   <div class="layer" {style}>
     <div class="zoom" style={transform(v)}>
       <img class="base" src={api.thumbUrl(row)} alt="" draggable="false" />
-      <img class="full" class:shown={sharp.has(row)} src={api.previewUrl(row)} alt="" draggable="false" onload={(e) => loaded(row, e)} />
+      <img class="full" class:shown={sharp.has(row)} src={api.previewUrl(row)} alt="" draggable="false" onload={(e) => loaded(row, e)} onerror={() => broken.add(row)} />
     </div>
   </div>
 {/snippet}
@@ -340,7 +358,17 @@
     {#if mode === "overlay"}
       <label class="slider" title="How opaque B is over A">
         A
-        <input type="range" min="0" max="1" step="0.01" bind:value={opacity} onchange={() => root.focus()} />
+        <!-- The keys go back to the comparison after a click, even one that changes nothing; Esc closes from here too. -->
+        <input
+          type="range"
+          min="0"
+          max="1"
+          step="0.01"
+          bind:value={opacity}
+          onchange={() => root.focus()}
+          onpointerup={() => root.focus()}
+          onkeydown={(e) => { if (e.key === "Escape") { e.preventDefault(); onclose(); } }}
+        />
         B
       </label>
     {/if}
@@ -356,7 +384,7 @@
     {#if message}
       <span class="status" class:failed>{message}</span>
     {:else}
-      <span class="hint">wheel zoom · drag move · Tab / ← → active photo · 0–5 and - + * edit it · Delete to the trash · Esc</span>
+      <span class="hint">wheel zoom · drag move · Tab / ← → active photo · 0–5 and - + * edit it · Delete {album ? "out of the album" : "to the trash"} · Esc</span>
     {/if}
     <button class="close" title="Close (Esc)" onclick={onclose}>×</button>
   </div>
@@ -378,16 +406,21 @@
         <div class="frame" class:moving={views[0].s > 1} data-pane="0">
           <!-- Keyed by photo: a swap moves the images rather than loading them again. -->
           {#each rows as row, i (row)}
-            {@render layer(row, views[0], i === 0 ? "" : over())}
+            {@render layer(row, views[0], over(i))}
           {/each}
           {#if mode === "split"}
             <div class="line" style="left: {split * 100}%" title="Drag to move the line"><span>A │ B</span></div>
           {/if}
-          {#if mode === "blink"}<span class="which">{infos.get(rows[0])?.file.name ?? ""} · Space: the other</span>{/if}
+          {#if mode === "blink"}<span class="which">{infos.get(rows[active])?.file.name ?? ""} · Space: the other</span>{/if}
+          {#if !ready}
+            <span class="wait" class:failed={lost !== undefined}>
+              {lost === undefined ? "loading the previews…" : `the preview of ${infos.get(lost)?.file.name ?? "a photo"} could not be read`}
+            </span>
+          {/if}
         </div>
         <div class="captions" class:one={mode === "blink"}>
           {#if mode === "blink"}
-            {@render caption(0)}
+            {@render caption(active)}
           {:else}
             {@render caption(0)}{@render caption(1)}
           {/if}
@@ -398,6 +431,7 @@
         <div class="slot" class:active={i === active}>
           <div class="frame" class:moving={views[i].s > 1} data-pane={i}>
             {@render layer(row, views[i])}
+            {#if broken.has(row)}<span class="wait failed">the preview could not be read: the thumbnail shows</span>{/if}
           </div>
           {@render caption(i)}
         </div>
@@ -501,7 +535,7 @@
     background: rgb(0 0 0 / 60%);
     border-radius: 3px;
   }
-  .which {
+  .which, .wait {
     position: absolute;
     top: 8px;
     left: 8px;
@@ -510,6 +544,8 @@
     background: rgb(0 0 0 / 60%);
     border-radius: 3px;
   }
+  .wait { top: auto; bottom: 8px; }
+  .wait.failed { color: var(--error); }
 
   .captions { display: grid; grid-template-columns: 1fr 1fr; }
   .captions.one { grid-template-columns: 1fr; }
