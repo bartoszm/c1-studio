@@ -490,6 +490,7 @@ impl Library {
             batch.commit()?;
         }
         ctl.timed("counts", || library.refresh())?;
+        ctl.timed("variants", || library.refresh_variants())?;
         Ok(library)
     }
 
@@ -1047,13 +1048,24 @@ impl Library {
             keys[row] = Some(key);
         }
         *self.keys.write().unwrap() = keys;
-        // Edits never move a photo to another image or renumber it: only syncs change these.
-        let mut heads = Vec::new();
-        self.store
-            .for_each_head(|row, h| heads.push((row, format!("{}\x1f{}", h.source, h.asset), h.variant_index)))?;
-        *self.variants.write().unwrap() = Variants::new(heads.iter().map(|(row, image, i)| (*row, image.as_str(), *i)));
         self.refresh_distinct()?;
         self.refresh_smart()
+    }
+
+    /// Which photos are variants of one image, read again from the store: on opening, and
+    /// after a sync that added, changed or removed photos. Edits never move a photo to another
+    /// image or renumber it. An image goes by a hash of its source and id, so nothing is
+    /// copied per photo.
+    fn refresh_variants(&self) -> anyhow::Result<()> {
+        use std::hash::{Hash, Hasher};
+        let mut heads = Vec::new();
+        self.store.for_each_head(|row, h| {
+            let mut image = std::collections::hash_map::DefaultHasher::new();
+            (h.source, h.asset).hash(&mut image);
+            heads.push((row, image.finish(), h.variant_index));
+        })?;
+        *self.variants.write().unwrap() = Variants::new(heads);
+        Ok(())
     }
 
     /// The smart albums' rules, after albums changed (here or in a source).
@@ -1366,6 +1378,7 @@ impl Library {
         self.refresh()?;
         self.unbin(&unbin)?;
         if report.added + report.updated + report.deleted > 0 {
+            self.refresh_variants()?;
             self.places_changed();
             // A photo trashed, retimed or added can change who is in a group, and who is
             // its sharpest (the one that stays when groups are stacked). `writing` is held.
@@ -1659,12 +1672,16 @@ impl Library {
         self.query_plain(&self.stacking(filter)?, options)
     }
 
-    /// `filter` with its history pick resolved, and stacking applied: it leaves out the
-    /// frames behind the sharpest of their group. Where other filters narrow the photos,
-    /// only those whose sharpest frame is among the matches go: a frame that matches stays
-    /// when its sharpest does not, so no burst disappears.
+    /// `filter` with its history pick and one image's variants resolved, stacking applied,
+    /// then the variants collapsed. Stacking leaves out the frames behind the sharpest of
+    /// their group. Where other filters narrow the photos, only those whose sharpest frame is
+    /// among the matches go: a frame that matches stays when its sharpest does not, so no
+    /// burst disappears. Collapsing comes after, so an image stands for itself by a variant
+    /// stacking kept.
     fn stacking(&self, filter: &Filter) -> anyhow::Result<Filter> {
-        let filter = &self.resolve_variants(&self.resolve_history(filter)?)?;
+        let mut filter = self.variants_of(&self.resolve_history(filter)?);
+        let collapse = std::mem::take(&mut filter.collapse_variants);
+        let mut stacked = filter.clone();
         if filter.stacked && filter.group.is_none() && filter.stacked_in.is_none() {
             let base = Filter { stacked: false, ..filter.clone() };
             if base != Filter::default() {
@@ -1673,46 +1690,51 @@ impl Library {
                 let mut counted = self.query_plain(&keepers, &counting)?;
                 let kept: Vec<String> =
                     counted.facets.remove(&Dim::Group).unwrap_or_default().into_iter().map(|(id, _)| id).collect();
-                return Ok(Filter { stacked_in: Some(kept), ..base });
+                stacked = Filter { stacked_in: Some(kept), ..base };
             }
         }
-        Ok(filter.clone())
+        stacked.collapse_variants = collapse;
+        self.collapse_variants(stacked)
     }
 
-    /// `filter` with its variant fields made into rows. `variants_of` picks the rows of one
-    /// image's variants, all of them whatever else would stack or collapse them away.
-    /// `collapse_variants` leaves out, of each image's variants that match, all but the
-    /// lowest-numbered: worked out over the photos of images with several variants only.
-    fn resolve_variants(&self, filter: &Filter) -> anyhow::Result<Filter> {
+    /// `filter` with `variants_of` made into rows: those of one image's variants, all of them
+    /// whatever would stack or collapse them away.
+    fn variants_of(&self, filter: &Filter) -> Filter {
         let mut f = filter.clone();
-        let narrow = |rows: Option<Vec<u64>>, to: Vec<u64>| match rows {
-            Some(rows) => {
-                let keep: HashSet<u64> = to.into_iter().collect();
-                rows.into_iter().filter(|r| keep.contains(r)).collect()
-            }
-            None => to,
-        };
         if let Some(row) = f.variants_of.take() {
             let siblings = self.variants.read().unwrap().siblings(row);
-            f.rows = Some(narrow(f.rows.take(), siblings));
+            f.rows = Some(narrow_rows(f.rows.take(), siblings));
             f.collapse_variants = false;
             f.stacked = false;
             f.stacked_in = None;
+        }
+        f
+    }
+
+    /// `filter` with `collapse_variants` made into rows to leave out: of each image's
+    /// variants that match (stacking as the filter says), all but the lowest-numbered.
+    /// Worked out over the photos of images with several variants only. Like stacking, the
+    /// rows are those of the whole filter: counts that set one of its picks aside (a
+    /// sidebar group's alternatives, the smart albums) count them too.
+    fn collapse_variants(&self, mut f: Filter) -> anyhow::Result<Filter> {
+        if !std::mem::take(&mut f.collapse_variants) {
             return Ok(f);
         }
-        if std::mem::take(&mut f.collapse_variants) {
-            let multi = self.variants.read().unwrap().multi_rows();
-            if multi.is_empty() {
-                return Ok(f);
-            }
-            let probe =
-                Filter { rows: Some(narrow(f.rows.clone(), multi)), stacked: false, stacked_in: None, ..f.clone() };
-            let every = QueryOptions { sort: Sort::Row, ..QueryOptions::default() };
-            let matching = self.query_plain(&probe, &every)?.rows;
-            let away = self.variants.read().unwrap().away(&matching);
-            f.rows_not.extend(away);
+        let multi = self.variants.read().unwrap().multi_rows();
+        if multi.is_empty() {
+            return Ok(f);
         }
+        let probe = Filter { rows: Some(narrow_rows(f.rows.clone(), multi)), ..f.clone() };
+        let every = QueryOptions { sort: Sort::Row, ..QueryOptions::default() };
+        let matching = self.query_plain(&probe, &every)?.rows;
+        let away = self.variants.read().unwrap().away(&matching);
+        f.rows_not.extend(away);
         Ok(f)
+    }
+
+    /// The filter's variant fields resolved, without working out stacking per group.
+    fn resolve_variants(&self, filter: &Filter) -> anyhow::Result<Filter> {
+        self.collapse_variants(self.variants_of(filter))
     }
 
     /// Where each of `rows` is among the photos `filter` selects, in `options`' order: (row,
@@ -2618,6 +2640,17 @@ fn first_ord(column: &StrColumn, holds: impl Fn(&str) -> bool) -> std::io::Resul
 
 /// What the index was built with: its schema, and the rules that turn an analysis into
 /// classes (`c1analysis::CLASSES`). Either changing rebuilds it.
+/// `to`, kept within `rows` when a list of rows already narrows the filter.
+fn narrow_rows(rows: Option<Vec<u64>>, to: Vec<u64>) -> Vec<u64> {
+    match rows {
+        Some(rows) => {
+            let keep: HashSet<u64> = to.into_iter().collect();
+            rows.into_iter().filter(|r| keep.contains(r)).collect()
+        }
+        None => to,
+    }
+}
+
 fn index_version() -> String {
     format!("{SCHEMA_VERSION}.{}", c1analysis::CLASSES)
 }

@@ -220,11 +220,15 @@ the sharp preview once scrolling stops.
 **Variants.** Capture One can keep several variants of one image, and each is a photo in
 the grid. A number at the top left of a tile says how many variants its image has. The
 header's *Variants* button shows one tile per image: of its variants that match the
-filters, the lowest-numbered (variant 1 when it matches). Its number then shows a card
-behind it. Click the number, press `v`, or use *show all* in the details panel to see
-every variant of the image, within the other filters; Esc or the chip goes back. Edits
-reach the variant you see, not the ones collapsed behind it; deleting a photo from a
-Capture One catalog still takes the whole image. The number counts hidden variants too.
+filters, the lowest-numbered (variant 1 when it matches; with *Stack* on too, the variant
+stacking kept). Its number then shows a card behind it. Click the number, press `v`, or
+use *show all* in the details panel to see every variant of the image, within the other
+filters; Esc or the chip goes back. Edits reach the variant you see, not the ones
+collapsed behind it, except those that belong to the image: a position moves every
+variant, and deleting a photo from a Capture One catalog takes the whole image. The
+number counts every variant the library holds, hidden, trashed and deleted ones too, so
+*show all* can show fewer. Like *Stack*, *Variants* changes the grid and its count; the
+map, the timeline and the trips count every variant.
 
 For a Capture One catalog the app shows Capture One's thumbnails and previews, never the
 original files. A photo folders source makes its own; see [Photo folders](#photo-folders).
@@ -606,8 +610,9 @@ picks in different cards, *all of them*. *Main colour* and *Light problems* have
 series in the grid: its sharpest. With a filter on, a frame is hidden only when the
 sharpest frame of its group matches the filter too, so a burst never disappears; the
 counts follow. Picking a group shows all of its photos. Stack and *Variants* (see
-[Browsing](#browsing)) work together: variants of one image are never duplicates of
-each other.
+[Browsing](#browsing)) work together: stacking goes first, then each image shows by the
+lowest-numbered of its variants still shown. Two variants of one image are never
+counted alike to each other, but both can join the same group through a third photo.
 
 **Alike** lists the groups of photos that look alike, *Duplicates* or *Series*:
 

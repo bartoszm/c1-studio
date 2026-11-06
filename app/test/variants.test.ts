@@ -4,6 +4,7 @@ import { markTitle, opensVariants } from "../src/lib/variants";
 
 test("v opens the variants of an image that has several", () => {
   assert.ok(opensVariants({ key: "v" }, 2));
+  assert.ok(opensVariants({ key: "V" }, 2), "Caps Lock on");
   assert.ok(!opensVariants({ key: "v" }, 1), "an image with one variant has nothing to open");
   assert.ok(!opensVariants({ key: "v", repeat: true }, 3), "held, it fires once");
   assert.ok(!opensVariants({ key: "v", ctrlKey: true }, 3), "Ctrl+V pastes");

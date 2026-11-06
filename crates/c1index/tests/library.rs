@@ -2221,6 +2221,40 @@ fn variants_are_marked_collapsed_and_shown_whole() {
     assert_eq!(marks(&lib, 0), [(2, 2), (3, 2), (4, 2)]);
 }
 
+#[test]
+fn collapsed_variants_keep_the_frame_stacking_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    // Image a has variants 1 (v0) and 2 (v1, the sharper); 3 is another image taken at the
+    // same instant that looks alike: one duplicate group of all three, whose sharpest is 2.
+    let shot = |n: u32, asset: &str, index: u32| {
+        let mut p = Photo { asset: AssetId(asset.into()), variant_index: index, ..photo(n) };
+        p.exif.camera_model = Some("X-Pro2".into());
+        p.captured_at = Some(1_700_000_000_000);
+        p
+    };
+    let source = MemorySource::new("mem", vec![shot(1, "a", 0), shot(2, "a", 1), shot(3, "b", 0), photo(4)], vec![]);
+    lib.sync(&source).unwrap();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let c = [90, 90, 90];
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, c, 100.0, h)),
+        (id(2).key(), (1, 1), look(600, 400, c, 900.0, h ^ 0b11)),
+        (id(3).key(), (1, 1), look(600, 400, c, 300.0, h ^ 0b1)),
+    ])
+    .unwrap();
+    lib.regroup().unwrap();
+
+    let both = Filter { stacked: true, collapse_variants: true, ..Filter::default() };
+    assert_eq!(ids(&lib, &Filter { stacked: true, ..Filter::default() }), [2, 4]);
+    assert_eq!(ids(&lib, &Filter { collapse_variants: true, ..Filter::default() }), [1, 3, 4]);
+    // Stacked, a's sharper variant stands for the group, and so for its image.
+    assert_eq!(ids(&lib, &both), [2, 4]);
+    // With another filter on too.
+    assert_eq!(ids(&lib, &Filter { cameras: vec!["X-Pro2".into()], ..both }), [2]);
+}
+
 /// A moment later than every entry so far: log times are the clock's, and the tests cut
 /// the log into dates by it.
 fn tick() -> i64 {

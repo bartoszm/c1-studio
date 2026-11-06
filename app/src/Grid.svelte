@@ -261,7 +261,10 @@
             onvariants(i);
           } else onselect(i, { add: e.ctrlKey || e.metaKey, range: e.shiftKey });
         }}
-        ondblclick={() => onopen(i)}
+        ondblclick={(e) => {
+          // A double click on the variants mark: its first click already showed the variants.
+          if (!(e.target as Element | null)?.closest?.(".variants-mark")) onopen(i);
+        }}
         draggable={row !== undefined && !!ondragcell}
         ondragstart={(e) => {
           e.dataTransfer?.setData("text/plain", "photos");

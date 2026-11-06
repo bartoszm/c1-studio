@@ -16,9 +16,9 @@ pub struct Variants {
 }
 
 impl Variants {
-    /// Groups `(row, image key, variant number)` by image.
-    pub fn new<'a>(photos: impl IntoIterator<Item = (u64, &'a str, u32)>) -> Self {
-        let mut images: HashMap<&str, Vec<(u32, u64)>> = HashMap::new();
+    /// Groups `(row, image, variant number)` by image.
+    pub fn new<K: std::hash::Hash + Eq>(photos: impl IntoIterator<Item = (u64, K, u32)>) -> Self {
+        let mut images: HashMap<K, Vec<(u32, u64)>> = HashMap::new();
         for (row, image, index) in photos {
             images.entry(image).or_default().push((index, row));
         }

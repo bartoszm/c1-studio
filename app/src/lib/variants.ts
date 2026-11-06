@@ -3,9 +3,10 @@
 
 type Key = { key: string; repeat?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean };
 
-/** `v` on a photo whose image has `count` variants: show them all. Held, it fires once. */
+/** `v` on a photo whose image has `count` variants: show them all. Held, it fires once;
+ *  Caps Lock on, it still works. */
 export function opensVariants(e: Key, count: number): boolean {
-  return e.key === "v" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && count > 1;
+  return e.key.toLowerCase() === "v" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && count > 1;
 }
 
 /** What a cell's mark says when pointed at. */
