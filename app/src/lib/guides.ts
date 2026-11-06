@@ -37,6 +37,18 @@ export function storedTurn(s: string | null): number {
   return Number.isInteger(n) && n >= 0 && n < 4 ? n : 0;
 }
 
+/** Turn 0 and 1 are the triangles' two diagonals; the spiral goes round the corners in
+ *  this order (by turn bit: none, mirrored left to right, both, top to bottom). */
+const SPIRAL_TURNS = [0, 1, 3, 2];
+
+/** The turn after `turn` for guide `g`. The triangles flip only the low bit, so the
+ *  spiral's top-to-bottom mirror stays. */
+export function nextTurn(g: Guide, turn: number): number {
+  if (TURNS[g] === 2) return turn ^ 1;
+  if (TURNS[g] === 4) return SPIRAL_TURNS[(SPIRAL_TURNS.indexOf(turn) + 1) % 4];
+  return turn;
+}
+
 /** A line from (x1, y1) to (x2, y2). */
 export type Line = [number, number, number, number];
 
@@ -93,9 +105,10 @@ const SQUARES = 10;
 
 /** The Fibonacci (golden) spiral over a `w` × `h` frame: the golden rectangle cut into
  *  squares (`lines`) and a quarter circle in each (`arcs`), stretched to the frame as
- *  editors do. Turn 0 starts at the bottom-left corner and winds in towards the right;
- *  turn bit 1 mirrors it left to right, bit 2 top to bottom. A portrait frame gets it
- *  turned on its side, the first cut across. */
+ *  editors do. On a landscape frame turn 0 starts at the bottom-left corner and winds in
+ *  towards the right; turn bit 1 mirrors it left to right, bit 2 top to bottom. A
+ *  portrait frame gets it mirrored across its diagonal (x and y swapped), the first cut
+ *  across: turn 0 starts top-right, bit 1 mirrors top to bottom, bit 2 left to right. */
 export function spiral(w: number, h: number, turn = 0): { lines: Line[]; arcs: Arc[] } {
   if (!(w > 0 && h > 0)) return { lines: [], arcs: [] };
   const tall = h > w;
@@ -175,6 +188,14 @@ export function guidePath(g: Guide, w: number, h: number, turn = 0): string {
     }
   }
   return parts.join("");
+}
+
+/** Where the guides go over an image of `size` shown fitted into a `w` × `h` stage
+ *  `inset` pixels in from each side (`.stage img`), in the stage's pixels. */
+export function frameFor(size: [number, number] | null, w: number, h: number, inset: number) {
+  if (!size) return null;
+  const box = fitted(size[0], size[1], w - 2 * inset, h - 2 * inset);
+  return box && { ...box, left: box.left + inset, top: box.top + inset };
 }
 
 /** Where an image `nw` × `nh` shows when fitted (object-fit: contain) into `w` × `h`. */

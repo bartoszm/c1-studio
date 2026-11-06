@@ -13,7 +13,7 @@ export function typingIn(e: { target: EventTarget | null }): boolean {
  *  (Shift+G) grid, turn the grid (`o`), or nothing: typed into a field, handled already, or a dialog or menu is
  *  open over it (`blocked`). */
 export function viewerKey(
-  e: { key: string; target: EventTarget | null; defaultPrevented: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean },
+  e: { key: string; target: EventTarget | null; defaultPrevented: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean },
   blocked: boolean,
 ): "close" | 1 | -1 | "grid" | "grid-back" | "turn" | null {
   if (blocked || e.defaultPrevented || typingIn(e)) return null;
@@ -21,8 +21,9 @@ export function viewerKey(
   if (e.key === "ArrowRight") return 1;
   if (e.key === "ArrowLeft") return -1;
   if (e.ctrlKey || e.metaKey || e.altKey) return null;
-  if (e.key === "g") return "grid";
-  if (e.key === "G") return "grid-back";
-  if (e.key === "o" || e.key === "O") return "turn";
+  // The letter whatever Caps Lock says; Shift alone steps back.
+  const k = e.key.toLowerCase();
+  if (k === "g") return e.shiftKey ? "grid-back" : "grid";
+  if (k === "o") return "turn";
   return null;
 }

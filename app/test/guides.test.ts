@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GUIDES, PHI, fitted, guideLines, guidePath, nextGuide, spiral, storedGuide, storedTurn } from "../src/lib/guides";
+import { GUIDES, PHI, fitted, frameFor, guideLines, guidePath, nextGuide, nextTurn, spiral, storedGuide, storedTurn } from "../src/lib/guides";
 
 test("the grids go round, both ways", () => {
   assert.equal(nextGuide("off"), "thirds");
@@ -102,4 +102,42 @@ test("a guide is one path; none draws nothing", () => {
   assert.equal((guidePath("thirds", 300, 200).match(/M/g) ?? []).length, 4);
   assert.equal((guidePath("spiral", 300, 200).match(/A/g) ?? []).length, 10);
   assert.equal(guidePath("spiral", 0, 200), "");
+});
+
+test("each spiral arc bends round the corner on the spiral's side", () => {
+  for (const [w, h] of [[300, 200], [200, 300], [1000, 300]]) {
+    for (let turn = 0; turn < 4; turn++) {
+      const { arcs } = spiral(w, h, turn);
+      const eye = [arcs[arcs.length - 1].x2, arcs[arcs.length - 1].y2];
+      for (const a of arcs.slice(0, 6)) {
+        // The two corners a quarter ellipse can turn round; the sweep picks the one it
+        // goes round clockwise (on screen, y down: a positive cross product) or not.
+        const clockwise = (p: number[]) => (a.x1 - p[0]) * (a.y2 - p[1]) - (a.y1 - p[1]) * (a.x2 - p[0]) > 0;
+        const [p, q] = [[a.x1, a.y2], [a.x2, a.y1]];
+        const [c, other] = clockwise(p) === a.cw ? [p, q] : [q, p];
+        const d = (p: number[]) => Math.hypot(p[0] - eye[0], p[1] - eye[1]);
+        assert.ok(d(c) < d(other), `${w}x${h} turn ${turn}`);
+      }
+    }
+  }
+});
+
+test("o takes the spiral round the corners; the triangles flip between two", () => {
+  const corner = (t: number) => { const a = spiral(300, 200, t).arcs[0]; return `${a.x1},${a.y1}`; };
+  const seen = [0];
+  for (let i = 0; i < 3; i++) seen.push(nextTurn("spiral", seen[seen.length - 1]));
+  assert.deepEqual(seen.map(corner), ["0,200", "300,200", "300,0", "0,0"]);
+  assert.equal(nextTurn("spiral", 2), 0);
+  assert.equal(nextTurn("triangles", 2), 3);
+  assert.equal(nextTurn("triangles", 3), 2);
+  assert.equal(nextTurn("thirds", 1), 1);
+});
+
+test("the guides sit on the image fitted inside the stage's inset", () => {
+  assert.equal(frameFor(null, 600, 400, 12), null);
+  assert.deepEqual(frameFor([3000, 2000], 624, 624, 12), { left: 12, top: 112, width: 600, height: 400 });
+});
+
+test("golden triangles draw three lines", () => {
+  assert.equal((guidePath("triangles", 300, 200).match(/M/g) ?? []).length, 3);
 });

@@ -3,7 +3,7 @@
   import * as api from "./lib/api";
   import { exposure } from "./lib/format";
   import { viewerKey } from "./lib/keys";
-  import { GUIDE_NAMES, TURNS, fitted, guidePath, nextGuide, storedGuide, storedTurn, type Guide } from "./lib/guides";
+  import { GUIDE_NAMES, TURNS, frameFor, guidePath, nextGuide, nextTurn, storedGuide, storedTurn, type Guide } from "./lib/guides";
 
   let { row, next, version, blocked, onclose, onstep, children }: {
     row: number;
@@ -57,10 +57,8 @@
     try { localStorage.setItem("guide", guide); } catch { /* not remembered */ }
   }
   function turnGuide() {
-    // The triangles flip the low bit only, so the spiral's mirror top to bottom stays.
-    if (TURNS[guide] === 2) turn ^= 1;
-    else if (TURNS[guide] === 4) turn = (turn + 1) % 4;
-    else return;
+    if (TURNS[guide] < 2) return;
+    turn = nextTurn(guide, turn);
     try { localStorage.setItem("guideTurn", String(turn)); } catch { /* not remembered */ }
   }
 
@@ -76,16 +74,13 @@
     baseSize = null;
     fullSize = null;
   });
-  let frame = $derived.by(() => {
-    const size = (sharp && fullSize) || baseSize || fullSize;
-    if (guide === "off" || !size) return null;
-    const box = fitted(size[0], size[1], stageW - 2 * INSET, stageH - 2 * INSET);
-    return box && { ...box, left: box.left + INSET, top: box.top + INSET };
-  });
+  let frame = $derived(guide === "off" ? null : frameFor((sharp && fullSize) || baseSize || fullSize, stageW, stageH, INSET));
   let path = $derived(frame ? guidePath(guide, frame.width, frame.height, turn) : "");
-  const natural = (e: Event): [number, number] => {
+  /** An image's size when loaded, or none from one already left: an image dropped by
+   *  stepping on keeps loading, and its load must not reach the photo shown now. */
+  const loaded = (e: Event): [number, number] | null => {
     const img = e.currentTarget as HTMLImageElement;
-    return [img.naturalWidth, img.naturalHeight];
+    return img.isConnected ? [img.naturalWidth, img.naturalHeight] : null;
   };
 
   function onkey(e: KeyboardEvent) {
@@ -104,8 +99,8 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="stage" onclick={onclose} bind:clientWidth={stageW} bind:clientHeight={stageH}>
     {#key row}
-      <img class="base" src={api.thumbUrl(row)} alt="" onload={(e) => (baseSize = natural(e))} />
-      <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={(e) => { fullSize = natural(e); sharp = true; }} />
+      <img class="base" src={api.thumbUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) baseSize = size; }} />
+      <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) { fullSize = size; sharp = true; } }} />
     {/key}
     {#if frame}
       <svg
@@ -131,7 +126,7 @@
       {#if info.place.city || info.place.country}<span>{[info.place.city, info.place.country].filter(Boolean).join(", ")}</span>{/if}
       {#if info.keywords.length}<span class="kw">{info.keywords.map((k) => k.join(" › ")).join("   ")}</span>{/if}
     {/if}
-    <button class="grid-pick" title={TURNS[guide] > 1 ? "Grid over the photo (g, Shift+G); o turns it" : "Grid over the photo (g, Shift+G)"} onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
+    <button class="grid-pick" aria-label="Grid: {GUIDE_NAMES[guide]}. Show the next" title={TURNS[guide] > 1 ? "Grid over the photo (g, Shift+G); o turns it" : "Grid over the photo (g, Shift+G)"} onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
     <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i · g{TURNS[guide] > 1 ? " · o" : ""}</span>
   </div>
   {@render children?.()}

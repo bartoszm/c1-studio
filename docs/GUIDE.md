@@ -186,7 +186,7 @@ diagonals (corner to corner, with a perpendicular from each other corner), golde
 triangles (one diagonal and its two perpendiculars) or the Fibonacci spiral (the golden
 rectangle cut into squares, stretched to the photo). `g` again goes to the next,
 Shift+G back, and the button at the bottom right names the one shown. `o` turns the
-triangles to the other diagonal and starts the spiral from another corner. The grid and
+triangles to the other diagonal and takes the spiral round the four corners. The grid and
 its turn stay for the next photos and the next session.
 
 **Tile size.** The header slider sets about how wide the tiles are, and the count per
