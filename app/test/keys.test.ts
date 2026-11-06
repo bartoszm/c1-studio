@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { typingIn, viewerKey } from "../src/lib/keys";
+import { activatesCell, typingIn, viewerKey } from "../src/lib/keys";
 
 const on = (target: object | null) => ({ target: target as EventTarget | null });
 
@@ -69,4 +69,14 @@ test("the viewer steps the grid with g, back with Shift+G, not with a modifier",
   assert.equal(viewerKey({ ...key("G"), shiftKey: true }, false), "grid-back");
   assert.equal(viewerKey({ ...key("g"), altKey: true }, false), null);
   assert.equal(viewerKey({ ...key("o"), metaKey: true }, false), null);
+});
+
+test("Enter and Space never activate a grid cell, whatever photo has the focus", () => {
+  const cell = { closest: (s: string) => (s === ".cell" ? {} : null) } as unknown as EventTarget;
+  const button = { closest: () => null } as unknown as EventTarget;
+  assert.ok(activatesCell({ key: "Enter", target: cell }));
+  assert.ok(activatesCell({ key: " ", target: cell }));
+  assert.ok(!activatesCell({ key: "ArrowRight", target: cell }));
+  assert.ok(!activatesCell({ key: "Enter", target: button }));
+  assert.ok(!activatesCell({ key: "Enter", target: null }));
 });

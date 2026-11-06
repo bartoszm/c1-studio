@@ -9,6 +9,14 @@ export function typingIn(e: { target: EventTarget | null }): boolean {
   return t.tagName === "TEXTAREA" || t.tagName === "SELECT" || !!t.isContentEditable;
 }
 
+/** Enter or Space on a grid cell (`.cell` in Grid.svelte). A clicked cell keeps DOM focus while
+ *  the arrows move the focused photo, so if the browser activated it, the clicked photo would be
+ *  picked again: `onkey` in App.svelte prevents that. */
+export function activatesCell(e: { key: string; target: EventTarget | null }): boolean {
+  if (e.key !== "Enter" && e.key !== " ") return false;
+  return !!(e.target as Element | null)?.closest?.(".cell");
+}
+
 /** What a key does in the viewer: close it, step by one, show the next (`g`) or the previous
  *  (Shift+G) grid, turn the grid (`o`), or nothing: typed into a field, handled already, or a dialog or menu is
  *  open over it (`blocked`). */
