@@ -50,7 +50,7 @@
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
   import { LOCK_HELP, isLockError } from "./lib/lock";
-  import { typingIn } from "./lib/keys";
+  import { activatesCell, typingIn } from "./lib/keys";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import Compare from "./Compare.svelte";
@@ -1918,7 +1918,10 @@
       e.preventDefault();
       return;
     }
-    if (dialogOpen || typingIn(e) || e.defaultPrevented) return;
+    // Read first: stopping a cell's activation is not the key having been handled.
+    const handled = e.defaultPrevented;
+    if (activatesCell(e)) e.preventDefault();
+    if (dialogOpen || typingIn(e) || handled) return;
     // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
     if (comparing) {
       if (e.key === "Delete" && !e.altKey && !e.shiftKey && deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: false, inBin, removes: status?.removes }) === "bin") {
