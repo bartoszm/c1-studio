@@ -3,7 +3,8 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.7.0: [the selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward),
+New in 0.8.0: [compare photos](#compare-photos), [a composition grid](#a-composition-grid)
+and [variants](#variants). New in 0.7.0: [the selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward),
 [photos around a photo](#photos-around-a-photo) and [AI suggestions corrected, and lessons](#correct-the-ai-and-teach-it). New in 0.6.0: [describe photos with AI](#describe-photos-with-ai),
 [History](#history-the-catalog-over-time) and [plus codes, map and grid in sync](#no-location-plus-codes-map-and-grid-in-sync). New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
 [photo folders](#photo-folders) and [places from neighbours in time](#places-from-neighbours-in-time).
@@ -11,6 +12,9 @@ New in 0.7.0: [the selection through filters, Back and Forward](#the-selection-t
 - [Find anything, instantly](#find-anything-instantly)
 - [Photo folders](#photo-folders)
 - [Browse](#browse)
+- [Compare photos](#compare-photos)
+- [A composition grid](#a-composition-grid)
+- [Variants](#variants)
 - [The selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward)
 - [Photos around a photo](#photos-around-a-photo)
 - [Sort](#sort)
@@ -63,6 +67,32 @@ viewer, showing each photo as Capture One renders it: its thumbnails and preview
 your edits and crop.
 
 ![Picking a photo, the viewer, and resizing the tiles](media/features/browse.gif)
+
+[In the guide: Browsing](GUIDE.md#browsing)
+
+## Compare photos
+
+*New in 0.8.0.* Pick 2 to 4 photos and press `c`: they show side by side, zoomed and
+moved together or apart, with their exposure, stars and the focus measured under each,
+the sharpest marked. Rate, tag or delete the active one without leaving. Two photos can
+be **split** by a line you drag, **overlaid**, shown as their **difference**, or
+**blinked** one over the other.
+
+[In the guide: Browsing](GUIDE.md#browsing)
+
+## A composition grid
+
+*New in 0.8.0.* In the viewer, `g` lays a grid over the photo: thirds, the golden ratio,
+quarters, diagonals, golden triangles or the Fibonacci spiral, and `o` turns the last
+two. It stays on for the next photos.
+
+[In the guide: Browsing](GUIDE.md#browsing)
+
+## Variants
+
+*New in 0.8.0.* A number on a tile says how many variants its image has in Capture One.
+**Variants** in the header shows one tile per image; click the number, or press `v`, to
+see all of one image's variants.
 
 [In the guide: Browsing](GUIDE.md#browsing)
 
