@@ -37,12 +37,13 @@
   import { SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
+  import { markTitle } from "./lib/variants";
 
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
   let {
-    total, rowAt, need, selected, picked, queued, hidden = () => false, offline, onselect, onopen, ondragcell, children,
-    tiles, shape, ontiles, layout = $bindable(),
+    total, rowAt, need, selected, picked, queued, hidden = () => false, offline, variants = () => 1, collapsed = false,
+    onvariants, onselect, onopen, ondragcell, children, tiles, shape, ontiles, layout = $bindable(),
   }: {
     total: number;
     /** The photo at a position, once its page has loaded. */
@@ -59,6 +60,12 @@
     hidden?: (i: number) => boolean;
     /** Is its original out of reach now (a drive that is not connected)? */
     offline?: (i: number) => boolean;
+    /** How many variants its image has (1: only this one). */
+    variants?: (i: number) => number;
+    /** Are the other variants of each image left out? */
+    collapsed?: boolean;
+    /** Its mark clicked: show every variant of its image. */
+    onvariants?: (i: number) => void;
     /** A click, with its modifier keys for adding to the selection. */
     onselect: (i: number, how?: { add: boolean; range: boolean }) => void;
     onopen: (i: number) => void;
@@ -245,8 +252,19 @@
         style:width="{cellW}px"
         style:height="{cellH}px"
         style:transform="translate({PAD + (i % cols) * (cellW + GAP)}px, {PAD + Math.floor(i / cols) * lineH}px)"
-        onclick={(e) => onselect(i, { add: e.ctrlKey || e.metaKey, range: e.shiftKey })}
-        ondblclick={() => onopen(i)}
+        onclick={(e) => {
+          // The variants mark is inside the cell (a button holds no button): a click on it
+          // focuses the photo and opens its image's variants.
+          const mark = onvariants && (e.target as Element | null)?.closest?.(".variants-mark");
+          if (mark && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+            onselect(i);
+            onvariants(i);
+          } else onselect(i, { add: e.ctrlKey || e.metaKey, range: e.shiftKey });
+        }}
+        ondblclick={(e) => {
+          // A double click on the variants mark: its first click already showed the variants.
+          if (!(e.target as Element | null)?.closest?.(".variants-mark")) onopen(i);
+        }}
         draggable={row !== undefined && !!ondragcell}
         ondragstart={(e) => {
           e.dataTransfer?.setData("text/plain", "photos");
@@ -264,6 +282,10 @@
         {/if}
         {#if queued(i)}<span class="queued" title="Edited here, not yet written to {source.word}"></span>{/if}
         {#if hidden(i)}<span class="hidden-mark" title="Hidden: left out of every view unless Hidden is on">hidden</span>{/if}
+        {#if variants(i) > 1}
+          {@const n = variants(i)}
+          <span class="variants-mark" class:collapsed title={markTitle(n, collapsed)}>{n}</span>
+        {/if}
       </button>
     {/each}
   </div>

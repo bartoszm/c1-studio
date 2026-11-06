@@ -51,6 +51,7 @@
   import SortControl from "./SortControl.svelte";
   import { LOCK_HELP, isLockError } from "./lib/lock";
   import { activatesCell, typingIn } from "./lib/keys";
+  import { opensVariants } from "./lib/variants";
   import SettingsDialog from "./SettingsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import Compare from "./Compare.svelte";
@@ -370,12 +371,33 @@
   /** One photo per burst or duplicate group: its sharpest. */
   let stack = $state((() => { try { return localStorage.getItem("stack") === "1"; } catch { return false; } })());
   /** The filter with Match applied, and the stacking when it is on: what the grid shows. */
-  const asking = (f: Filter): Filter => ({ ...compiled(f), ...(stack ? { stacked: true } : {}) });
+  const asking = (f: Filter): Filter => ({
+    ...compiled(f),
+    ...(stack ? { stacked: true } : {}),
+    ...(collapse ? { collapse_variants: true } : {}),
+  });
   function toggleStack() {
     stack = !stack;
     try { localStorage.setItem("stack", stack ? "1" : "0"); } catch { /* not remembered */ }
     run();
   }
+  /** One photo per image: of its variants that match, the lowest-numbered. */
+  let collapse = $state((() => { try { return localStorage.getItem("variants") === "1"; } catch { return false; } })());
+  function toggleCollapse() {
+    collapse = !collapse;
+    try { localStorage.setItem("variants", collapse ? "1" : "0"); } catch { /* not remembered */ }
+    run();
+  }
+  /** Every variant of the image of the photo at `i`, within the other filters. */
+  function showVariants(i: number) {
+    const row = rowAt(i);
+    if (row === undefined) return;
+    filter = { ...filter, variants_of: row };
+    showTab("photos");
+    run();
+  }
+  /** How many variants the image of the photo at `i` has, once its page has loaded. */
+  const variantsAt = (i: number) => variantPages.get(Math.floor(i / PAGE))?.get(i % PAGE) ?? 1;
   let writing = $state(false);
   let showBackups = $state(false);
   /** Write the queue to Capture One by itself; off unless turned on. */
@@ -528,6 +550,8 @@
   let pages = $state.raw(new SvelteMap<number, number[]>());
   /** Page → positions in it of the photos whose file is offline; swapped with `pages`. */
   let offlinePages = $state.raw(new SvelteMap<number, Set<number>>());
+  /** Page → position in it → how many variants that photo's image has (several only). */
+  let variantPages = $state.raw(new SvelteMap<number, Map<number, number>>());
   let loading = new Map<number, Promise<void>>();
 
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks.
@@ -583,6 +607,7 @@
       // then the grid and the details panel keep the old ones.
       const shown = grid?.range() ?? [0, 0];
       const offline = new Map<number, Set<number>>();
+      const variants = new Map<number, Map<number, number>>();
       const { result: r, pages: fresh } = keep
         ? await refreshPages(
             first,
@@ -593,16 +618,19 @@
             result?.total ?? 0,
             (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => {
               if (p.offline.length) offline.set(page, new Set(p.offline));
+              if (p.variants.length) variants.set(page, new Map(p.variants));
               return p.rows;
             }),
           )
         : await first.then((r) => ({ result: r, pages: new Map([[0, r.rows]]) }));
       if (mine !== generation) return;
       if (r.offline.length) offline.set(0, new Set(r.offline));
+      if (r.variants.length) variants.set(0, new Map(r.variants));
       result = r;
       counted = groups;
       pages = new SvelteMap(fresh);
       offlinePages = new SvelteMap(offline);
+      variantPages = new SvelteMap(variants);
       loading = new Map();
       error = null;
       onScreen = shownNow();
@@ -768,10 +796,12 @@
     const mine = generation;
     const into = pages;
     const intoOffline = offlinePages;
+    const intoVariants = variantPages;
     const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
       .then((r) => {
         if (mine !== generation) return;
         if (r.offline.length) intoOffline.set(page, new Set(r.offline));
+        if (r.variants.length) intoVariants.set(page, new Map(r.variants));
         into.set(page, r.rows);
       })
       .catch((e) => { if (mine === generation) error = String(e); });
@@ -1990,7 +2020,9 @@
       picked.clear();
       const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
-    } else if (e.key === "Enter" && selected !== null) viewing = true;
+    } else if (e.key === "Escape" && filter.variants_of !== undefined) dropChip("variants_of", undefined);
+    else if (selected !== null && opensVariants(e, variantsAt(selected))) showVariants(selected);
+    else if (e.key === "Enter" && selected !== null) viewing = true;
     // On Analysis, History and AI the page keys scroll the view; arrows move in the strip.
     else if ((tab === "analysis" || tab === "history" || tab === "ai") && ["PageUp", "PageDown", "Home", "End"].includes(e.key)) return;
     else if (grid?.move(e.key, e.shiftKey)) e.preventDefault();
@@ -2184,6 +2216,9 @@
     trashed: () => [],
     // Set from the header's Stack button, not a filter the user picks.
     stacked: () => [],
+    // Set from the header's Variants button.
+    collapse_variants: () => [],
+    variants_of: () => [{ text: "one image's variants", title: "Esc goes back" }],
     offline: (v) => [{ text: v ? "offline" : "online" }],
     within: (v) => [{ what: "Map", text: sameBox(v, mapTile) ? "one tile" : "area" }],
   };
@@ -2285,6 +2320,8 @@
     {analysed}
     picked={Math.max(picked.size, row === undefined ? 0 : 1)}
     queued={(row !== undefined && queued.get(row)) || []}
+    variants={selected === null || rowAt(selected) !== row ? 1 : variantsAt(selected)}
+    onvariants={filter.variants_of === undefined && selected !== null ? () => selected !== null && showVariants(selected) : undefined}
     onrate={(n) => applyEdit({ Rating: n })}
     oncolor={(c) => applyEdit({ Color: c })}
     keywords={keywordList}
@@ -2369,6 +2406,13 @@
       title="Show one photo per burst or duplicate group (its sharpest). With a filter on, a frame is hidden only when the sharpest frame of its group matches too; open a group to see all its frames."
       onclick={toggleStack}
     >Stack</button>
+    <button
+      class="toggle"
+      class:on={collapse}
+      aria-pressed={collapse}
+      title="Show one photo per image when it has several variants: of those that match, the lowest-numbered. The number on a photo says how many variants its image has; click it, or press V, to see them all."
+      onclick={toggleCollapse}
+    >Variants</button>
     <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
       <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
       <input
@@ -2776,6 +2820,9 @@
     queued={(i) => queued.has(rowAt(i) ?? -1)}
     hidden={(i) => hiddenHere.has(rowAt(i) ?? -1)}
     offline={(i) => offlinePages.get(Math.floor(i / PAGE))?.has(i % PAGE) ?? false}
+    variants={variantsAt}
+    collapsed={collapse && filter.variants_of === undefined}
+    onvariants={showVariants}
     onselect={pick}
     ondragcell={dragCell}
     onopen={(i) => { pick(i); viewing = true; }}

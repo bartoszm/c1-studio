@@ -20,6 +20,7 @@ pub mod sessions;
 mod store;
 pub mod thumbs;
 pub mod trips;
+mod variants;
 
 pub use db::{OpenControl, OpenStep, Stopped};
 pub use edits::{Before, Event, Origin, Pending, QueuedCollection, QueuedRemap, What};

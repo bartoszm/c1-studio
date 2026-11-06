@@ -79,7 +79,8 @@ up at the next of these, or on the next start.
 ## The window
 
 - **Header:** the source menu, the search box, the *Photos*, *Map* and *Analysis* tabs, the
-  sort box (see [Sorting](#sorting)), *Stack* (see [Look](#look)), tile size controls,
+  sort box (see [Sorting](#sorting)), *Stack* (see [Look](#look)), *Variants* (see
+  [Variants](#browsing)), tile size controls,
   *Hidden* (see [Hidden photos](#hidden-photos)), the *Timeline* and *Details* toggles, ⚙
   Settings, and the number of matching photos with how long the query took. On a narrow
   window the search box gives way first; the map's own tools sit in a row above the map.
@@ -215,6 +216,19 @@ row follows the window. Typing a number in *per row* keeps that many whatever th
 window. *3:2* switches to square tiles and back. Ctrl+wheel over the grid, Ctrl+plus and
 Ctrl+minus step one tile per row; Ctrl+0 resets. Tiles bigger than the thumbnail load
 the sharp preview once scrolling stops.
+
+**Variants.** Capture One can keep several variants of one image, and each is a photo in
+the grid. A number at the top left of a tile says how many variants its image has. The
+header's *Variants* button shows one tile per image: of its variants that match the
+filters, the lowest-numbered (variant 1 when it matches; with *Stack* on too, the variant
+stacking kept). Its number then shows a card behind it. Click the number, press `v`, or
+use *show all* in the details panel to see every variant of the image, within the other
+filters; Esc or the chip goes back. Edits reach the variant you see, not the ones
+collapsed behind it, except those that belong to the image: a position moves every
+variant, and deleting a photo from a Capture One catalog takes the whole image. The
+number counts every variant the library holds, hidden, trashed and deleted ones too, so
+*show all* can show fewer. Like *Stack*, *Variants* changes the grid and its count; the
+map, the timeline and the trips count every variant.
 
 For a Capture One catalog the app shows Capture One's thumbnails and previews, never the
 original files. A photo folders source makes its own; see [Photo folders](#photo-folders).
@@ -595,7 +609,10 @@ picks in different cards, *all of them*. *Main colour* and *Light problems* have
 **Stack** (on the Look tab, and in the header) shows one photo per duplicate group or
 series in the grid: its sharpest. With a filter on, a frame is hidden only when the
 sharpest frame of its group matches the filter too, so a burst never disappears; the
-counts follow. Picking a group shows all of its photos.
+counts follow. Picking a group shows all of its photos. Stack and *Variants* (see
+[Browsing](#browsing)) work together: stacking goes first, then each image shows by the
+lowest-numbered of its variants still shown. Two variants of one image are never
+counted alike to each other, but both can join the same group through a third photo.
 
 **Alike** lists the groups of photos that look alike, *Duplicates* or *Series*:
 
@@ -859,13 +876,14 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Arrows, Page Up/Down, Home, End | Move the focus; with Shift, pick a range |
 | Click, Ctrl+click, Shift+click | Focus one; add or remove one; add a range |
 | Ctrl+A | Pick the whole result |
-| Esc | Back to one photo; close the viewer, a dialog or a menu |
+| Esc | Back to one photo; close the viewer, a dialog or a menu; leave one image's variants |
 | Enter, double-click | Open the viewer |
 | ← → (viewer) | Previous, next photo |
 | `g`, Shift+G (viewer) | Next, previous grid over the photo: none, thirds, golden ratio, quarters, diagonals, golden triangles, Fibonacci spiral |
 | `o` (viewer) | Turn the golden triangles or the Fibonacci spiral |
 | Alt+← Alt+→ | Back to the filter before, forward again |
 | `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
+| `v` | Show every variant of the focused photo's image |
 | `i` | Show or hide the details panel |
 | `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
@@ -891,5 +909,5 @@ Keys do not act while you type in a field.
 - The kinds of source offered: `%APPDATA%\c1studio\providers.json`.
 - Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is
   the first eight characters of the source's `id` in its `.c1folders` file.
-- The sidebar layout, tile size, sort order, stacking, the strip's height and the copy
+- The sidebar layout, tile size, sort order, stacking, collapsed variants, the strip's height and the copy
   clipboard: the app's own browser storage.
