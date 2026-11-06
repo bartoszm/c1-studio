@@ -858,6 +858,19 @@ async fn groups(
     app.session()?.library.groups_sorted(&filter, series, sort, reverse, offset, limit).map_err(text)
 }
 
+/// To keep one of each duplicate: in every duplicate group among the photos `filter`
+/// selects, in `sort` order, all but the first whose picture is at most `max_bits` hash
+/// bits from the first's.
+#[tauri::command]
+async fn duplicate_extras(
+    app: State<'_, App>,
+    filter: Filter,
+    sort: c1index::Sort,
+    max_bits: u32,
+) -> Result<Vec<u64>, String> {
+    app.session()?.library.duplicate_extras(&filter, sort, max_bits).map_err(text)
+}
+
 #[tauri::command]
 async fn analysis_state(app: State<'_, App>) -> Result<AnalysisState, String> {
     Ok(app.session()?.analysis.lock().unwrap().clone())
@@ -2709,6 +2722,7 @@ pub fn run() {
             gpx_plan,
             gpx_apply,
             groups,
+            duplicate_extras,
             set_hidden,
             hidden_rows,
             hidden_of,

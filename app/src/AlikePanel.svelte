@@ -10,7 +10,7 @@
   // in the order asked for, and the lines that decide what counts as one (applied on request;
   // the photos are sorted again, not measured again).
   let {
-    filter, version, total, counts, onflag, ongroup, onclasses,
+    filter, version, total, counts, onflag, ongroup, onclasses, stack, order, onpickextras,
   }: {
     filter: Filter;
     /** Bumped when photos were edited or measured again. */
@@ -23,6 +23,12 @@
     ongroup: (id: string) => void;
     /** The lines moved: classes and groups changed. */
     onclasses: () => void;
+    /** One photo per group is shown in the grid. */
+    stack: boolean;
+    /** The grid's order in words: the first photo of a group in it is kept. */
+    order: string;
+    /** Selects all but the first of each duplicate group; says how many were selected. */
+    onpickextras: (maxBits: number) => Promise<number>;
   } = $props();
 
   type Kind = "duplicates" | "series";
@@ -102,6 +108,26 @@
       // The button stays for another try.
     } finally {
       adding = false;
+    }
+  }
+
+  // Selecting the extra copies: all but the first of each duplicate group in the grid's order,
+  // those whose picture is at most this many bits from the first's.
+  const EXTRA_BITS = 3;
+  let extraBits = $state(Math.min(EXTRA_BITS, Number(remembered("alikeExtraBits", ["0", "1", "2", "3"], "0"))));
+  let picking = $state(false);
+  let pickedNote = $state("");
+  async function pickExtras() {
+    if (picking || stack) return;
+    picking = true;
+    pickedNote = "";
+    try {
+      const n = await onpickextras(extraBits);
+      pickedNote = n ? `${n.toLocaleString()} photo${n === 1 ? "" : "s"} selected` : "None to select";
+    } catch (e) {
+      pickedNote = String(e);
+    } finally {
+      picking = false;
     }
   }
 
@@ -229,6 +255,35 @@
       </span>
     </h3>
     <p class="muted hint">{hint}</p>
+    {#if key === "duplicates"}
+      <div class="extras">
+        <button
+          disabled={picking || stack || counts.duplicates === 0}
+          title={stack
+            ? "Turn Stack off first: the photos selected would be hidden in the grid"
+            : `Select every photo of each group but the first in the grid's order (${order}), so the first stays`}
+          onclick={pickExtras}
+        >Select all but the first</button>
+        <label>
+          differing by up to
+          <input
+            type="number"
+            min="0"
+            max={EXTRA_BITS}
+            step="1"
+            value={extraBits}
+            onchange={(e) => {
+              const v = Math.round(Number(e.currentTarget.value));
+              extraBits = Number.isFinite(v) ? Math.max(0, Math.min(EXTRA_BITS, v)) : 0;
+              e.currentTarget.value = String(extraBits);
+              remember("alikeExtraBits", String(extraBits));
+            }}
+          />
+          bits <span class="muted">(0: the same picture)</span>
+        </label>
+        <span class="muted">· keeps the first by {order}{pickedNote ? ` · ${pickedNote}` : ""}</span>
+      </div>
+    {/if}
     <div class="groups">
       {#each list.groups as g (g.id)}
         <button
@@ -281,6 +336,10 @@
   .link:hover, .link.on { text-decoration: underline; }
   .link.on { font-weight: 600; }
   .hint { margin: 0; }
+  .extras { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+  .extras button { padding: 3px 12px; border: 1px solid var(--line, #444); border-radius: 3px; }
+  .extras button:hover:not(:disabled) { background: var(--hover, #333); }
+  .extras input { width: 3.5em; margin: 0 4px; }
   .groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px; }
   .group { display: block; width: 100%; min-width: 0; overflow: hidden; position: relative; padding: 4px; border: 1px solid var(--line, #333); border-radius: 3px; text-align: left; }
   .group:hover { background: var(--hover, #333); }

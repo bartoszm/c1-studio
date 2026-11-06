@@ -576,6 +576,15 @@ counts follow. Picking a group shows all of its photos.
 - A *series* is a burst: three or more photos from one camera, seconds apart, each
   looking much like the one before.
 
+**Select all but the first** (on *Duplicates*) selects, in every duplicate group the filter
+shows, each photo but the first in the grid's order, so one of each stays unselected for you
+to keep: sort the grid by sharpness to keep the sharpest, by rating to keep the best rated.
+(By date all copies tie, taken at the same instant; the grid's own order between them
+decides.) *Differing by up to* 0–3 bits selects only the copies whose picture is that close
+to the first one's; 0 selects only the same picture. Photos the filter hides are neither
+kept nor selected, and a group it leaves one photo of has nothing to select. The line says
+how many were selected. It is off while **Stack** is on, which would hide them.
+
 Each group's badge is its size; under a filter that picks only part of it, *2 of 7*. A
 group the filter leaves too little of is not listed. The sort box above the list orders
 the groups by matching photos, size, date or sharpness, either way. The first 60 show,

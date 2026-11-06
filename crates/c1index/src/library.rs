@@ -666,6 +666,31 @@ impl Library {
         Ok(GroupPage { total, groups: out.into_iter().skip(offset).take(limit).collect() })
     }
 
+    /// The photos to pick to keep one of each duplicate: in every duplicate group among the
+    /// photos `filter` selects, in `sort` order, all but the first (the one kept) whose
+    /// picture is at most `max_bits` hash bits from the kept one's (0: the same picture).
+    /// A group the filter leaves one photo of has nothing to pick; photos the filter does
+    /// not select are never picked. Stacking is left out of the filter, as for
+    /// [`Library::groups_sorted`]. Rows in `sort` order.
+    pub fn duplicate_extras(&self, filter: &Filter, sort: Sort, max_bits: u32) -> anyhow::Result<Vec<u64>> {
+        let narrowed = Filter { duplicates: true, stacked: false, ..filter.clone() };
+        let rows = self.query(&narrowed, &QueryOptions { sort, ..QueryOptions::default() })?.rows;
+        let mut kept: HashMap<String, u64> = HashMap::new();
+        let mut out = Vec::new();
+        for row in rows {
+            let Some(look) = self.look(row) else { continue };
+            let Some(id) = look.duplicates else { continue };
+            match kept.get(&id) {
+                None => {
+                    kept.insert(id, look.analysis.hash);
+                }
+                Some(&first) if c1analysis::distance(first, look.analysis.hash) <= max_bits => out.push(row),
+                Some(_) => {}
+            }
+        }
+        Ok(out)
+    }
+
     /// What the analysis found for a photo, if it has been measured.
     pub fn look(&self, row: u64) -> Option<Look> {
         let key = self.keys.read().unwrap().get(row as usize)?.clone()?;

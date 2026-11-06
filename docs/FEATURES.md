@@ -175,7 +175,9 @@ The details panel says why a photo is red, bright or sharp.
 Duplicates (one moment saved twice) and series (bursts) are found across the whole
 library and listed together, sorted by size, date or sharpness. **Stack** shows one photo
 per burst in the grid, its sharpest, without ever hiding a frame that matches your
-filter when its sharpest does not.
+filter when its sharpest does not. **Select all but the first** selects the extra copies
+of every duplicate, keeping the first in the grid's order (the sharpest, the best rated),
+only those within 0–3 bits of it if you like.
 
 ![Duplicates and series by size, then stacking the grid](media/features/alike.gif)
 

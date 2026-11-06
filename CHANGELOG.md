@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Select the extra copies of duplicates:** *Select all but the first* on *Alike › Duplicates* selects, in every duplicate group the filter shows, each photo but the first in the grid's order (sort by sharpness to keep the sharpest, by rating to keep the best rated), so the first stays. *Differing by up to* 0–3 bits picks only the copies that close to the first: 0 selects only the same picture. Photos the filter hides are never selected. Off while Stack is on, which would hide what is selected.
+
 ## 0.7.0 — 2026-10-24
 
 ### New

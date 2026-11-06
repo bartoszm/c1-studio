@@ -47,7 +47,7 @@
   import { hiddenNote, hides, withHidden } from "./lib/hidden";
   import { binNote, deleteAction, withBin } from "./lib/bin";
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
-  import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
+  import { FIELDS, effectiveField, info, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
   import { LOCK_HELP, isLockError } from "./lib/lock";
   import { typingIn } from "./lib/keys";
@@ -1356,6 +1356,15 @@
     mapRow = null;
   }
 
+  /** Selects, in each duplicate group the filter shows, every photo but the first in the
+   *  grid's order whose picture is at most `maxBits` hash bits from that first one's. */
+  async function pickExtras(maxBits: number): Promise<number> {
+    const rows = await api.duplicateExtras(compiled($state.snapshot(filter)), sortBy, maxBits);
+    picked.clear();
+    for (const r of rows) picked.add(r);
+    return rows.length;
+  }
+
   async function pickAll() {
     if (!result) return;
     const all = await api.query(asking($state.snapshot(filter)), { sort: sortBy });
@@ -2659,6 +2668,8 @@
       onshow={() => showTab("photos")}
       onstack={toggleStack}
       onclasses={() => { version++; analysed++; refresh(true); }}
+      order={`${info(sortShown).label}: ${words(sortShown, sortShown === sortField && sortReversed)}`}
+      onpickextras={pickExtras}
       onallof={toggleAllOf}
     />
   {/if}

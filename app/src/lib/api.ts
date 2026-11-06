@@ -625,6 +625,11 @@ export const groups = (
   sort: GroupSort = "Matched",
   reverse = false,
 ) => invoke<GroupPage>("groups", { filter, series, sort, reverse, offset, limit });
+/** To keep one of each duplicate: in every duplicate group among the photos the filter
+ *  selects, in `sort` order, all but the first whose picture is at most `maxBits` hash bits
+ *  from the first's (0: the same picture). Rows in that order. */
+export const duplicateExtras = (filter: Filter, sort: Sort, maxBits: number) =>
+  invoke<number[]>("duplicate_extras", { filter, sort, maxBits });
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */

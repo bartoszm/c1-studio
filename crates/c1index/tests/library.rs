@@ -1277,6 +1277,52 @@ fn stacking_under_a_filter_hides_only_frames_whose_sharpest_matches_and_follows_
 }
 
 #[test]
+fn duplicate_extras_keep_the_first_in_sort_order_within_the_bits_asked() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let (a, b) = (0x3333_cccc_5555_aaaau64, 0x5555_0f0f_3333_ccccu64);
+    let c = [90, 90, 90];
+    // Two duplicate groups: 2, 4 and 6 (4 is 1 bit from 2, 6 is 3 bits from 2 and 2 from 4),
+    // and 7 and 8 (the same picture). Ratings from the setup: 2, 4, 1, 2, 3.
+    lib.put_analyses(vec![
+        (id(2).key(), (1, 1), look(600, 400, c, 50.0, a)),
+        (id(4).key(), (1, 1), look(600, 400, c, 500.0, a ^ 1)),
+        (id(6).key(), (1, 1), look(600, 400, c, 100.0, a ^ 0b111)),
+        (id(7).key(), (1, 1), look(600, 400, c, 10.0, b)),
+        (id(8).key(), (1, 1), look(600, 400, c, 20.0, b)),
+    ])
+    .unwrap();
+    for (same_as, n) in [(2, 4), (2, 6), (7, 8)] {
+        let when = source.photo(&id(same_as)).unwrap().captured_at;
+        source.edit_externally(&id(n), |p| p.captured_at = when);
+    }
+    lib.sync(&source).unwrap();
+    lib.regroup().unwrap();
+
+    let extras = |filter: &Filter, sort, bits| -> Vec<u32> {
+        let rows = lib.duplicate_extras(filter, sort, bits).unwrap();
+        rows.iter().map(|r| lib.photo_id(*r).unwrap().ext.parse().unwrap()).collect()
+    };
+    let all = Filter::default();
+    // Sharpest first: 4 and 8 are kept.
+    assert_eq!(extras(&all, Sort::SharpnessDesc, 3), [6, 2, 7]);
+    assert_eq!(extras(&all, Sort::SharpnessDesc, 1), [2, 7], "6 is 2 bits from 4");
+    assert_eq!(extras(&all, Sort::SharpnessDesc, 0), [7], "only the same picture");
+    // Softest first: 7 and 2 are kept, and 6 is 3 bits from 2.
+    assert_eq!(extras(&all, Sort::Sharpness, 3), [8, 6, 4]);
+    assert_eq!(extras(&all, Sort::Sharpness, 2), [8, 4]);
+
+    // Within a filter: 6 (one star) is neither kept nor picked.
+    let rated = Filter { rating: Some(parse_rating(">=2").unwrap()), ..Filter::default() };
+    assert_eq!(extras(&rated, Sort::SharpnessDesc, 3), [2, 7]);
+    // One photo of a group left: nothing to pick.
+    let four = Filter { rating: Some(parse_rating("4").unwrap()), ..Filter::default() };
+    assert!(extras(&four, Sort::SharpnessDesc, 3).is_empty());
+    // Stacking does not hide what is picked from the choice.
+    assert_eq!(extras(&Filter { stacked: true, ..all }, Sort::SharpnessDesc, 3), [6, 2, 7]);
+}
+
+#[test]
 fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
     let (_d, lib, source) = setup();
     for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {

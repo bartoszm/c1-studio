@@ -9,7 +9,7 @@
 
   type Key = "shape" | "hues" | "light" | "focus";
   let {
-    filter, facets, total, analysis, version, stack, allOf, picked, ontoggle, onflag, ongroup, onshow, onstack, onclasses, onallof,
+    filter, facets, total, analysis, version, stack, allOf, picked, ontoggle, onflag, ongroup, onshow, onstack, onclasses, onallof, order, onpickextras,
   }: {
     /** Cards asking for every pick rather than any. */
     allOf: AllOf;
@@ -33,6 +33,10 @@
     onstack: () => void;
     /** The lines between classes moved. */
     onclasses: () => void;
+    /** The grid's order in words ("Sharpness: Sharpest first"): it decides which duplicate is kept. */
+    order: string;
+    /** Selects all but the first of each duplicate group; says how many were selected. */
+    onpickextras: (maxBits: number) => Promise<number>;
   } = $props();
 
   /** Each chart: what it explains, dimension, title, filter field, its values in order (empty:
@@ -188,6 +192,9 @@
       onflag={onflag}
       {ongroup}
       {onclasses}
+      {stack}
+      {order}
+      {onpickextras}
     />
   {/if}
   </div>
