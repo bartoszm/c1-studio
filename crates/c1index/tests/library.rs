@@ -2154,6 +2154,73 @@ fn a_source_that_trashes_whole_assets_takes_every_variant_to_the_trash() {
     assert!(ids(&lib, &Filter { bin: Bin::Only, ..Filter::default() }).is_empty());
 }
 
+#[test]
+fn variants_are_marked_collapsed_and_shown_whole() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    let variant =
+        |n: u32, asset: &str, index: u32| Photo { asset: AssetId(asset.into()), variant_index: index, ..photo(n) };
+    // Image a has three variants (1, 2, 3), b one (4), c two whose variant 0 is gone (5, 6),
+    // d one (7).
+    let source = MemorySource::new(
+        "mem",
+        vec![
+            variant(1, "a", 0),
+            variant(2, "a", 1),
+            variant(3, "a", 2),
+            variant(4, "b", 0),
+            variant(5, "c", 1),
+            variant(6, "c", 2),
+            variant(7, "d", 0),
+        ],
+        vec![],
+    );
+    lib.sync(&source).unwrap();
+    let collapsed = |f: Filter| ids(&lib, &Filter { collapse_variants: true, ..f });
+    let marks = |lib: &Library, offset: usize| {
+        let options = QueryOptions { sort: Sort::Row, limit: Some(3), offset, ..QueryOptions::default() };
+        let page = lib.query(&Filter::default(), &options).unwrap();
+        let ext = |i: u32| lib.photo_id(page.rows[i as usize]).unwrap().ext.parse::<u32>().unwrap();
+        page.variants.iter().map(|&(i, n)| (ext(i), n)).collect::<Vec<_>>()
+    };
+
+    // A page marks its photos of images with several variants, by position, with the count.
+    assert_eq!(marks(&lib, 0), [(1, 3), (2, 3), (3, 3)]);
+    assert_eq!(marks(&lib, 3), [(5, 2), (6, 2)]);
+    assert_eq!(ids(&lib, &Filter::default()).len(), 7);
+
+    // Collapsed: one per image, its lowest-numbered variant.
+    assert_eq!(collapsed(Filter::default()), [1, 4, 5, 7]);
+    // Of those that match: variant 0 does not, so variant 1 stands for image a.
+    let some = |ns: &[u32]| Filter { ids: ns.iter().map(u32::to_string).collect(), ..Filter::default() };
+    assert_eq!(collapsed(some(&[2, 3, 6])), [2, 6]);
+    let options = QueryOptions { facets: vec![Dim::Source], ..QueryOptions::default() };
+    let counted = lib.query(&Filter { collapse_variants: true, ..Filter::default() }, &options).unwrap();
+    assert_eq!((counted.total, counted.facets[&Dim::Source][0].1), (4, 4), "counts follow the collapse");
+
+    // One image's variants: all of them, collapsed and stacked or not, narrowed by the rest.
+    let of = |n: u32, f: Filter| {
+        ids(&lib, &Filter { variants_of: Some(row_of(&lib, n)), collapse_variants: true, stacked: true, ..f })
+    };
+    assert_eq!(of(2, Filter::default()), [1, 2, 3]);
+    assert_eq!(of(2, some(&[1, 3])), [1, 3]);
+    assert_eq!(of(4, Filter::default()), [4]);
+
+    // Variant 0 of a goes and b gets a second variant: marks and collapse follow the sync.
+    source.remove_externally(&lib.photo_id(row_of(&lib, 1)).unwrap());
+    source.add_externally(variant(8, "b", 1));
+    lib.sync(&source).unwrap();
+    assert_eq!(collapsed(Filter::default()), [2, 4, 5, 7]);
+    assert_eq!(of(4, Filter::default()), [4, 8]);
+    assert_eq!(marks(&lib, 0), [(2, 2), (3, 2), (4, 2)]);
+
+    // And are worked out again on opening.
+    drop(lib);
+    let lib = Library::open(dir.path()).unwrap();
+    assert_eq!(ids(&lib, &Filter { collapse_variants: true, ..Filter::default() }), [2, 4, 5, 7]);
+    assert_eq!(marks(&lib, 0), [(2, 2), (3, 2), (4, 2)]);
+}
+
 /// A moment later than every entry so far: log times are the clock's, and the tests cut
 /// the log into dates by it.
 fn tick() -> i64 {

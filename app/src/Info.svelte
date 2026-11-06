@@ -22,9 +22,13 @@
     onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
     onaddalbum, onremovealbum, ongroup, onaround,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
-    allHidden = false, onhide, inBin = false, ondelete,
+    allHidden = false, onhide, inBin = false, ondelete, variants = 1, onvariants,
   }: {
     row: number | undefined;
+    /** How many variants the photo's image has. */
+    variants?: number;
+    /** Show every variant of its image in the grid. */
+    onvariants?: () => void;
     /** Bumped after edits, to read the photo again. */
     version: number;
     /** Bumped when the analysis has measured photos again, to read Look again. */
@@ -770,7 +774,13 @@
       <dd><button class="link path" onclick={() => p.file.path && onfolder(folderOf(p.file.path))}>{folderOf(p.file.path)}</button></dd>
     {/if}
     {#if p.file.size !== null}<dt>File size</dt><dd>{bytes(p.file.size)}</dd>{/if}
-    {#if p.variant_index > 0}<dt>Variant</dt><dd>{p.variant_index + 1}</dd>{/if}
+    {#if variants > 1}
+      <dt>Variant</dt>
+      <dd>
+        {p.variant_index + 1} · one of {variants}
+        {#if onvariants}<button class="link" title="In the grid, within the other filters" onclick={onvariants}>show all</button>{/if}
+      </dd>
+    {:else if p.variant_index > 0}<dt>Variant</dt><dd>{p.variant_index + 1}</dd>{/if}
     {#if p.imported_at !== null}<dt>Imported</dt><dd>{date(p.imported_at)}</dd>{/if}
     {#if p.edit.styles.length}<dt>Styles</dt><dd>{p.edit.styles.join(", ")}</dd>{/if}
     {#if p.edit.local_layers || p.edit.retouch_layers}

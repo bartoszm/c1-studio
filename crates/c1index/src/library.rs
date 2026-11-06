@@ -36,6 +36,7 @@ use crate::places::{Coarse, Guessed, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
+use crate::variants::Variants;
 
 mod describing;
 mod history;
@@ -136,6 +137,9 @@ pub struct QueryResult {
     /// Positions in `rows` of the photos whose file is offline (a folder source's drive
     /// not mounted), so a page marks them without asking again.
     pub offline: Vec<u32>,
+    /// (position in `rows`, how many variants its image has) for the photos whose image
+    /// has more than one, so a page marks them.
+    pub variants: Vec<(u32, u32)>,
     pub facets: Counts,
     pub micros: u128,
 }
@@ -255,6 +259,8 @@ pub struct Library {
     reader: IndexReader,
     /// row → photo key, for turning results into ids without touching the store.
     keys: RwLock<Vec<Option<String>>>,
+    /// The variants of each image that has several, worked out from the store.
+    variants: RwLock<Variants>,
     distinct: RwLock<Distinct>,
     /// Smart album id → its rule, for expanding a filter that picks one.
     smart: RwLock<HashMap<String, SmartRule>>,
@@ -440,6 +446,7 @@ impl Library {
             fields,
             reader,
             keys: RwLock::new(Vec::new()),
+            variants: RwLock::new(Variants::default()),
             distinct: RwLock::new(Distinct::new()),
             smart: RwLock::new(HashMap::new()),
             edits,
@@ -1040,6 +1047,11 @@ impl Library {
             keys[row] = Some(key);
         }
         *self.keys.write().unwrap() = keys;
+        // Edits never move a photo to another image or renumber it: only syncs change these.
+        let mut heads = Vec::new();
+        self.store
+            .for_each_head(|row, h| heads.push((row, format!("{}\x1f{}", h.source, h.asset), h.variant_index)))?;
+        *self.variants.write().unwrap() = Variants::new(heads.iter().map(|(row, image, i)| (*row, image.as_str(), *i)));
         self.refresh_distinct()?;
         self.refresh_smart()
     }
@@ -1652,7 +1664,7 @@ impl Library {
     /// only those whose sharpest frame is among the matches go: a frame that matches stays
     /// when its sharpest does not, so no burst disappears.
     fn stacking(&self, filter: &Filter) -> anyhow::Result<Filter> {
-        let filter = &self.resolve_history(filter)?;
+        let filter = &self.resolve_variants(&self.resolve_history(filter)?)?;
         if filter.stacked && filter.group.is_none() && filter.stacked_in.is_none() {
             let base = Filter { stacked: false, ..filter.clone() };
             if base != Filter::default() {
@@ -1665,6 +1677,42 @@ impl Library {
             }
         }
         Ok(filter.clone())
+    }
+
+    /// `filter` with its variant fields made into rows. `variants_of` picks the rows of one
+    /// image's variants, all of them whatever else would stack or collapse them away.
+    /// `collapse_variants` leaves out, of each image's variants that match, all but the
+    /// lowest-numbered: worked out over the photos of images with several variants only.
+    fn resolve_variants(&self, filter: &Filter) -> anyhow::Result<Filter> {
+        let mut f = filter.clone();
+        let narrow = |rows: Option<Vec<u64>>, to: Vec<u64>| match rows {
+            Some(rows) => {
+                let keep: HashSet<u64> = to.into_iter().collect();
+                rows.into_iter().filter(|r| keep.contains(r)).collect()
+            }
+            None => to,
+        };
+        if let Some(row) = f.variants_of.take() {
+            let siblings = self.variants.read().unwrap().siblings(row);
+            f.rows = Some(narrow(f.rows.take(), siblings));
+            f.collapse_variants = false;
+            f.stacked = false;
+            f.stacked_in = None;
+            return Ok(f);
+        }
+        if std::mem::take(&mut f.collapse_variants) {
+            let multi = self.variants.read().unwrap().multi_rows();
+            if multi.is_empty() {
+                return Ok(f);
+            }
+            let probe =
+                Filter { rows: Some(narrow(f.rows.clone(), multi)), stacked: false, stacked_in: None, ..f.clone() };
+            let every = QueryOptions { sort: Sort::Row, ..QueryOptions::default() };
+            let matching = self.query_plain(&probe, &every)?.rows;
+            let away = self.variants.read().unwrap().away(&matching);
+            f.rows_not.extend(away);
+        }
+        Ok(f)
     }
 
     /// Where each of `rows` is among the photos `filter` selects, in `options`' order: (row,
@@ -2030,7 +2078,7 @@ impl Library {
     }
 
     fn compile(&self, filter: &Filter) -> anyhow::Result<Box<dyn Query>> {
-        let filter = &self.resolve_history(filter)?;
+        let filter = &self.resolve_variants(&self.resolve_history(filter)?)?;
         let distinct = self.distinct.read().unwrap();
         let smart = self.smart.read().unwrap();
         expand(filter, &smart)?.to_query(&self.index, &self.fields, &distinct)
@@ -2039,7 +2087,8 @@ impl Library {
     /// How many photos each smart album holds among those `filter` selects, setting
     /// aside the albums it picks. Albums whose rule cannot be evaluated are left out.
     pub fn smart_counts(&self, filter: &Filter) -> anyhow::Result<Vec<(String, u64)>> {
-        let filter = &self.resolve_history(filter)?;
+        // Before the locks below: resolving runs a query, which takes them too.
+        let filter = &self.resolve_variants(&self.resolve_history(filter)?)?;
         let distinct = self.distinct.read().unwrap();
         let smart = self.smart.read().unwrap();
         let searcher = self.reader.searcher();
@@ -2169,7 +2218,18 @@ impl Library {
             }
         };
         let (rows, offline) = self.rows_of(searcher, &docs)?;
-        Ok(QueryResult { total, rows, offline, facets, micros: 0 })
+        let variants = {
+            let v = self.variants.read().unwrap();
+            if v.is_empty() {
+                Vec::new()
+            } else {
+                rows.iter()
+                    .enumerate()
+                    .filter_map(|(at, &row)| Some((at as u32, v.count(row))).filter(|&(_, n)| n > 1))
+                    .collect()
+            }
+        };
+        Ok(QueryResult { total, rows, offline, variants, facets, micros: 0 })
     }
 
     /// The rows of `docs`, and the positions among them of the photos flagged offline.

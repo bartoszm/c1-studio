@@ -246,6 +246,12 @@ pub struct Filter {
     /// stacked away in these groups (those whose sharpest frame is among the matches) are
     /// left out. A frame whose sharpest does not match stays, so no burst vanishes.
     pub stacked_in: Option<Vec<String>>,
+    /// One photo per image: of the image's variants that match, the lowest-numbered. Not
+    /// while `variants_of` is set. The library makes `rows_not` of it.
+    pub collapse_variants: bool,
+    /// Every variant of this photo's image (a row), whatever `collapse_variants` and
+    /// `stacked` say. The library makes `rows` of it.
+    pub variants_of: Option<u64>,
     /// Detail in the sharpest part of the picture (see `c1analysis::Analysis::sharpness`).
     pub sharpness: Option<Range>,
     /// The photos a part of the change log is about. The only one the UI sends: the

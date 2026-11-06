@@ -23,6 +23,19 @@ const COLLECTIONS: TableDefinition<&str, &[u8]> = TableDefinition::new("collecti
 const KEYWORDS: TableDefinition<&str, &[u8]> = TableDefinition::new("keywords");
 const META: TableDefinition<&str, &str> = TableDefinition::new("meta");
 
+/// The first fields of a stored [`Photo`], borrowed from its bytes: postcard writes fields in
+/// order, so these read the start of a record and leave the rest. They must stay `Photo`'s
+/// first fields, in this order (a test below holds them to it).
+#[derive(Debug, serde::Deserialize)]
+pub struct PhotoHead<'a> {
+    pub source: &'a str,
+    /// Read past: it comes before `asset`.
+    #[allow(dead_code)]
+    pub ext: &'a str,
+    pub asset: &'a str,
+    pub variant_index: u32,
+}
+
 pub struct Store {
     db: Database,
 }
@@ -82,6 +95,18 @@ impl Store {
         for entry in tx.open_table(PHOTOS)?.iter()? {
             let (row, bytes) = entry?;
             f(row.value(), postcard::from_bytes(bytes.value())?)?;
+        }
+        Ok(())
+    }
+
+    /// Every stored photo's source, image and variant number, in row order: only the head of
+    /// each record is read (see [`PhotoHead`]).
+    pub fn for_each_head(&self, mut f: impl FnMut(u64, PhotoHead<'_>)) -> anyhow::Result<()> {
+        let tx = self.db.begin_read()?;
+        for entry in tx.open_table(PHOTOS)?.iter()? {
+            let (row, bytes) = entry?;
+            let (head, _) = postcard::take_from_bytes::<PhotoHead>(bytes.value())?;
+            f(row.value(), head);
         }
         Ok(())
     }
@@ -224,5 +249,36 @@ impl Batch<'_> {
     pub fn commit(self) -> anyhow::Result<()> {
         self.tx.commit()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PhotoHead;
+    use c1model::*;
+
+    #[test]
+    fn a_head_reads_the_start_of_a_stored_photo() {
+        let photo = Photo {
+            id: PhotoId::new(&SourceId("c1:fuji".into()), "42"),
+            asset: AssetId("7".into()),
+            variant_index: 3,
+            file: FileInfo { name: "a.raf".into(), ext: "raf".into(), path: None, size: None, offline: false },
+            captured_at: Some(1),
+            imported_at: None,
+            exif: Exif::default(),
+            rating: Some(4),
+            color: None,
+            keywords: vec![KeywordPath::from_pipe("street")],
+            iptc: Iptc::default(),
+            place: Place::default(),
+            geo: None,
+            collections: vec![],
+            edit: EditInfo::default(),
+            trashed: false,
+        };
+        let bytes = postcard::to_stdvec(&photo).unwrap();
+        let (head, _) = postcard::take_from_bytes::<PhotoHead>(&bytes).unwrap();
+        assert_eq!((head.source, head.ext, head.asset, head.variant_index), ("c1:fuji", "42", "7", 3));
     }
 }

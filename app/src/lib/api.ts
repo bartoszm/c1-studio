@@ -82,6 +82,10 @@ export type Filter = {
   trashed?: "Exclude" | "Include" | "Only";
   /** One photo per duplicate group or series (its sharpest), unless one group is picked. */
   stacked?: boolean;
+  /** One photo per image: of its variants that match, the lowest-numbered. */
+  collapse_variants?: boolean;
+  /** Every variant of this photo's image (a row), collapsed or stacked or not. */
+  variants_of?: number;
   /** Only photos whose original cannot be reached now, or only those that can. */
   offline?: boolean;
   /** Only photos with a position inside this area (the map's view). */
@@ -181,6 +185,8 @@ export type QueryResult = {
   rows: number[];
   /** Positions in `rows` of the photos whose file is offline. */
   offline: number[];
+  /** [position in `rows`, how many variants its image has] for images with several. */
+  variants: [number, number][];
   facets: Partial<Record<Dim, [string, number][]>>;
   micros: number;
 };
