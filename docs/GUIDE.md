@@ -180,7 +180,11 @@ apply to all of them.
 **Viewer.** Enter or a double-click opens the focused photo full size. ← and → step
 through the result, Esc or a click closes it. Capture One's thumbnail shows at once and
 the sharp preview replaces it when ready; the next one loads in the background. With
-the details panel on, it shows beside the photo.
+the details panel on, it shows beside the photo. `g` lays a grid over the photo, to judge
+its composition: thirds, the golden ratio (lines at 38.2% and 61.8%), quarters, or
+diagonals (corner to corner, with a perpendicular from each other corner); `g` again goes
+to the next, Shift+G back, and the button at the bottom right names the one shown. The
+grid stays for the next photos and the next session.
 
 **Tile size.** The header slider sets about how wide the tiles are, and the count per
 row follows the window. Typing a number in *per row* keeps that many whatever the
@@ -834,6 +838,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Esc | Back to one photo; close the viewer, a dialog or a menu |
 | Enter, double-click | Open the viewer |
 | ← → (viewer) | Previous, next photo |
+| `g`, Shift+G (viewer) | Next, previous grid over the photo: none, thirds, golden ratio, quarters, diagonals |
 | Alt+← Alt+→ | Back to the filter before, forward again |
 | `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
 | `i` | Show or hide the details panel |

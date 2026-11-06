@@ -3,6 +3,7 @@
   import * as api from "./lib/api";
   import { exposure } from "./lib/format";
   import { viewerKey } from "./lib/keys";
+  import { GUIDE_NAMES, fitted, guideLines, nextGuide, storedGuide, type Guide } from "./lib/guides";
 
   let { row, next, version, blocked, onclose, onstep, children }: {
     row: number;
@@ -45,10 +46,42 @@
     if (next !== undefined) new Image().src = api.previewUrl(next);
   });
 
+  // The composition grid over the photo, remembered between photos and sessions.
+  let guide = $state<Guide>(storedGuide((() => { try { return localStorage.getItem("guide"); } catch { return null; } })()));
+  function stepGuide(back = false) {
+    guide = nextGuide(guide, back);
+    try { localStorage.setItem("guide", guide); } catch { /* not remembered */ }
+  }
+
+  // The grid covers the picture itself, not the stage around it: the size of the image
+  // shown (the thumbnail can be framed unlike the preview) fitted into the stage.
+  const INSET = 12;
+  let stageW = $state(0);
+  let stageH = $state(0);
+  let baseSize = $state<[number, number] | null>(null);
+  let fullSize = $state<[number, number] | null>(null);
+  $effect(() => {
+    void row;
+    baseSize = null;
+    fullSize = null;
+  });
+  let frame = $derived.by(() => {
+    const size = (sharp && fullSize) || baseSize || fullSize;
+    if (guide === "off" || !size) return null;
+    const box = fitted(size[0], size[1], stageW - 2 * INSET, stageH - 2 * INSET);
+    return box && { ...box, left: box.left + INSET, top: box.top + INSET };
+  });
+  let lines = $derived(frame ? guideLines(guide, frame.width, frame.height) : []);
+  const natural = (e: Event): [number, number] => {
+    const img = e.currentTarget as HTMLImageElement;
+    return [img.naturalWidth, img.naturalHeight];
+  };
+
   function onkey(e: KeyboardEvent) {
     // Arrows and Escape in a field of the panel move the caret or leave the field.
     const action = viewerKey(e, blocked);
     if (action === "close") onclose();
+    else if (action === "grid" || action === "grid-back") stepGuide(action === "grid-back");
     else if (action) onstep(action);
   }
 </script>
@@ -57,11 +90,26 @@
 
 <div class="viewer" class:side={!!children} role="dialog" aria-label="Photo">
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="stage" onclick={onclose}>
+  <div class="stage" onclick={onclose} bind:clientWidth={stageW} bind:clientHeight={stageH}>
     {#key row}
-      <img class="base" src={api.thumbUrl(row)} alt="" />
-      <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={() => (sharp = true)} />
+      <img class="base" src={api.thumbUrl(row)} alt="" onload={(e) => (baseSize = natural(e))} />
+      <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={(e) => { fullSize = natural(e); sharp = true; }} />
     {/key}
+    {#if frame}
+      <svg
+        class="guides"
+        style:left="{frame.left}px"
+        style:top="{frame.top}px"
+        width={frame.width}
+        height={frame.height}
+        aria-hidden="true"
+      >
+        {#each lines as [x1, y1, x2, y2]}
+          <line {x1} {y1} {x2} {y2} class="shade" />
+          <line {x1} {y1} {x2} {y2} />
+        {/each}
+      </svg>
+    {/if}
   </div>
   <div class="info">
     {#if info}
@@ -73,7 +121,8 @@
       {#if info.place.city || info.place.country}<span>{[info.place.city, info.place.country].filter(Boolean).join(", ")}</span>{/if}
       {#if info.keywords.length}<span class="kw">{info.keywords.map((k) => k.join(" › ")).join("   ")}</span>{/if}
     {/if}
-    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i</span>
+    <button class="grid-pick" title="Grid over the photo (g, Shift+G)" onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
+    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i · g</span>
   </div>
   {@render children?.()}
 </div>

@@ -55,3 +55,11 @@ test("the viewer leaves keys to a dialog or menu over it, or to whoever handled 
   assert.equal(viewerKey(key("ArrowRight"), true), null);
   assert.equal(viewerKey(key("Escape", undefined, true), false), null);
 });
+
+test("the viewer steps the grid with g, back with Shift+G, not with a modifier", () => {
+  assert.equal(viewerKey(key("g"), false), "grid");
+  assert.equal(viewerKey(key("G"), false), "grid-back");
+  assert.equal(viewerKey({ ...key("g"), ctrlKey: true }, false), null);
+  assert.equal(viewerKey(key("g", { tagName: "INPUT", type: "text" }), false), null);
+  assert.equal(viewerKey(key("g"), true), null);
+});
