@@ -189,12 +189,16 @@ double-click goes between the whole photo and 1:1 of the preview, and *Zoom toge
 (`l`) keeps every photo at the same zoom and place. One photo is active, outlined in
 blue: a click, Tab or ← → choose it, and ratings, colour tags and `h` go to it alone.
 Under each photo: its name, time, exposure, stars, colour and the focus measured, with
-the sharpest marked. `x` (or × on its caption) takes the active photo out of the
-comparison. Two photos can also be shown over each other: *Split* (`w`, a line to drag),
+the sharpest marked. With three or four photos, × on a caption takes that photo out of
+the comparison (`x` the active one); **Delete** moves the active photo to the trash and out
+of the comparison, which closes when one is left. Ctrl+C copies from the active photo.
+Two photos can also be shown over each other: *Split* (`w`, a line to drag),
 *Overlay* (`o`, with a slider for how see-through the second is), *Difference* (`d`:
 what is the same is black, what moved or changed is bright) and *Blink* (`b`: one at a
-time, Space for the other). Space swaps A and B; Esc closes. Zooming beyond 1:1 only
-magnifies the preview, not the original file.
+time, Space for the other). With two photos Space swaps A and B; Esc closes. Messages
+that would show in the footer show in the comparison's bar. Zooming beyond 1:1 only
+magnifies the preview, not the original file, and *Split* and *Difference* line the two
+photos up as they fit the pane: photos of different shapes do not line up.
 
 **Tile size.** The header slider sets about how wide the tiles are, and the count per
 row follows the window. Typing a number in *per row* keeps that many whatever the

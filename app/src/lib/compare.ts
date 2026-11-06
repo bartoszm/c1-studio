@@ -26,12 +26,14 @@ export function compareRows(picked: Iterable<number>, focus?: number): { rows: n
   return { rows, left: all.length - rows.length };
 }
 
-/** A photo taken out of the comparison (never below two): the photo after it becomes the
- *  active one, or the one before when it was the last. */
-export function dropRow(rows: number[], active: number): { rows: number[]; active: number } | null {
-  if (rows.length <= 2 || active < 0 || active >= rows.length) return null;
-  const next = rows.filter((_, i) => i !== active);
-  return { rows: next, active: Math.min(active, next.length - 1) };
+/** Photo `drop` taken out of the comparison (never below two). The active photo stays
+ *  active; when it is the one taken out, the photo after it is, or the one before when it
+ *  was the last. */
+export function dropRow(rows: number[], drop: number, active: number): { rows: number[]; active: number } | null {
+  if (rows.length <= 2 || drop < 0 || drop >= rows.length) return null;
+  const next = rows.filter((_, i) => i !== drop);
+  if (drop !== active) return { rows: next, active: next.indexOf(rows[active]) };
+  return { rows: next, active: Math.min(drop, next.length - 1) };
 }
 
 export type CompareAction =

@@ -1091,14 +1091,15 @@
   );
 
   async function openCopy() {
-    const row = selected === null ? undefined : focusRow;
+    const row = comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow;
     if (row === undefined) return;
     copying = await api.photo(row);
   }
 
   async function openSync() {
     const row = selected === null ? undefined : focusRow;
-    if (row === undefined || picked.size < 2) return;
+    // Comparing, edits reach the active photo alone: there is no rest to copy into.
+    if (comparing || row === undefined || picked.size < 2) return;
     const from = await api.photo(row);
     if (from) syncing = { from, row };
   }
@@ -1250,6 +1251,16 @@
   /** What the Delete keys move to the trash: in the viewer, only the photo shown (the next one
    *  takes its place), else the photos edited here. */
   const deleting = () => (viewing && focusRow !== undefined ? [focusRow] : targets());
+  /** Delete while comparing: the active photo goes to the trash and out of the comparison,
+   *  which closes when fewer than two are left. */
+  async function binCompared() {
+    if (!comparing) return;
+    const row = comparing.rows[comparing.active];
+    await setBinned(true, [row]);
+    if (!comparing || editError) return;
+    const rows = comparing.rows.filter((r) => r !== row);
+    comparing = rows.length >= 2 ? { rows, active: Math.min(comparing.active, rows.length - 1) } : null;
+  }
   /** After photos went into the trash or out of it: the views and its count follow. */
   async function binChanged() {
     await edited();
@@ -1908,8 +1919,17 @@
       return;
     }
     if (dialogOpen || typingIn(e) || e.defaultPrevented) return;
-    // Comparing: only the edits reach the photo active; Delete, the picks and the grid wait.
-    if (comparing && (e.key === "Delete" || e.key === "Backspace" || e.key === "Escape" || e.key === "Enter")) return;
+    // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
+    if (comparing) {
+      if (e.key === "Delete" && !e.altKey && !e.shiftKey && deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: false, inBin, removes: status?.removes }) === "bin") {
+        binCompared();
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "Delete" || e.key === "Backspace" || e.key === "Escape" || e.key === "Enter" || e.key === "i") return;
+      // The details panel is behind the comparison: nothing to type keywords into.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") return;
+    }
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     if (ctrl && e.altKey && !e.shiftKey && key === "v") {
@@ -2774,7 +2794,7 @@
   </Grid>
   </div>
 
-  {#if showInfo && !viewing}{@render details()}{/if}
+  {#if showInfo && !viewing && !comparing}{@render details()}{/if}
 
   <footer>
     {#if status}
@@ -3093,6 +3113,8 @@
     active={comparing.active}
     {version}
     blocked={dialogOpen || menuOpen}
+    message={busy ?? editError ?? editNote}
+    failed={!busy && !!editError}
     onclose={() => (comparing = null)}
     onactive={(i) => { if (comparing) comparing = { ...comparing, active: i }; }}
     onrows={(rows, active) => (comparing = { rows, active })}

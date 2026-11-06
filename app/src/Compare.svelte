@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onMount, untrack } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import { COLORS, date, exposure } from "./lib/format";
-  import { FIT, MODES, clampView, compareKey, dropRow, oneToOne, panBy, zoomAt, type CompareMode, type View } from "./lib/compare";
+  import { FIT, MODES, compareKey, dropRow, oneToOne, panBy, zoomAt, type CompareMode, type View } from "./lib/compare";
 
-  let { rows, active, version, blocked, onclose, onactive, onrows }: {
+  let { rows, active, version, blocked, message, failed, onclose, onactive, onrows }: {
     /** The photos compared, 2 to 4, in their order on screen. */
     rows: number[];
     /** Index in `rows` of the photo edits land on. */
@@ -14,6 +14,10 @@
     version: number;
     /** A dialog or menu is open over the comparison: the keys are its own. */
     blocked: boolean;
+    /** The footer's word (work under way, an error, a note), which the comparison covers. */
+    message?: string | null;
+    /** `message` is an error. */
+    failed?: boolean;
     onclose: () => void;
     onactive: (i: number) => void;
     /** The photos reordered or one taken out, with the active one after it. */
@@ -45,34 +49,69 @@
 
   /** Zoom and pan are the same in every pane, unless unlocked. */
   let sync = $state(true);
-  let views = $state<View[]>([FIT, FIT, FIT, FIT]);
+  // Views are in fractions of the pane, so they hold through any change of its size. `live`
+  // takes every wheel and move at once; the screen follows it once a frame.
+  const fits = () => [FIT, FIT, FIT, FIT];
+  let live: View[] = fits();
+  let views = $state<View[]>(fits());
+  let frame = 0;
+  function setView(i: number, v: View) {
+    if (sync) live = live.map(() => v);
+    else live[i] = v;
+    frame ||= requestAnimationFrame(() => {
+      frame = 0;
+      views = live.slice();
+    });
+  }
+  function resetViews() {
+    cancelAnimationFrame(frame);
+    frame = 0;
+    live = fits();
+    views = fits();
+  }
+  // Another layout: start from the whole photos.
+  $effect(() => {
+    void panes;
+    untrack(resetViews);
+  });
   /** Where the split line is, 0..1 of the pane's width. */
   let split = $state(0.5);
   /** How opaque the second photo is in the overlay, 0..1. */
   let opacity = $state(0.5);
 
-  function setView(i: number, v: View) {
-    if (sync) views = views.map(() => v);
-    else views[i] = v;
-  }
-  // Another layout, other pane sizes: start from the whole photos.
-  $effect(() => {
-    void panes;
-    views = [FIT, FIT, FIT, FIT];
-  });
-
-  // Details of each photo, read again after edits. Only the newest read's reply is used.
+  // Details of each photo: read once, and the photo's own again after an edit (its
+  // analysis does not change with edits). Only the newest read of a photo is used.
   const infos = new SvelteMap<number, api.Photo>();
   const looks = new SvelteMap<number, api.LookView>();
-  let asked = 0;
+  const reading = new Map<number, number>();
+  const lookAsked = new Set<number>();
+  let reads = 0;
+  function readPhoto(row: number) {
+    const mine = ++reads;
+    reading.set(row, mine);
+    api.photo(row).then((p) => { if (reading.get(row) === mine && p) infos.set(row, p); }).catch(() => {});
+  }
+  // Not the order, nor the active photo: only which photos are compared.
+  let compared = $derived([...rows].sort((a, b) => a - b).join());
   $effect(() => {
-    const now = [...rows];
-    void version;
-    const mine = ++asked;
-    for (const row of now) {
-      api.photo(row).then((p) => { if (mine === asked && p) infos.set(row, p); }).catch(() => {});
-      api.look(row).then((l) => { if (mine === asked && l) looks.set(row, l); }).catch(() => {});
-    }
+    void compared;
+    untrack(() => {
+      for (const row of rows) {
+        if (!reading.has(row)) readPhoto(row);
+        if (lookAsked.has(row)) continue;
+        lookAsked.add(row);
+        api.look(row).then((l) => { if (l) looks.set(row, l); }).catch(() => {});
+      }
+    });
+  });
+  let seen = untrack(() => version);
+  $effect(() => {
+    const now = version;
+    untrack(() => {
+      if (now === seen) return;
+      seen = now;
+      for (const row of rows) readPhoto(row);
+    });
   });
   /** The sharpest of the photos, when every one is measured and they differ. */
   let sharpest = $derived.by(() => {
@@ -92,9 +131,41 @@
     sharp.add(row);
   }
 
+  let root: HTMLElement;
   let stage: HTMLElement;
   const paneAt = (el: EventTarget | null) => (el as HTMLElement | null)?.closest<HTMLElement>("[data-pane]");
   const paneIndex = (el: HTMLElement) => +(el.dataset.pane ?? 0);
+
+  // Keys come here, not to the button that opened the comparison: Enter or Space on it
+  // would open it again.
+  onMount(() => root.focus());
+  /** After a click on the bar, its button lets go of the keys. */
+  function refocus(e: MouseEvent) {
+    if (!(e.target as HTMLElement).closest("input")) root.focus();
+  }
+
+  // Each pane's size, read when it changes rather than on every wheel or move.
+  const sizes = new Map<Element, DOMRect>();
+  $effect(() => {
+    void panes;
+    void rows.length;
+    sizes.clear();
+    const observer = new ResizeObserver((entries) => {
+      for (const e of entries) sizes.delete(e.target);
+    });
+    for (const el of stage.querySelectorAll("[data-pane]")) observer.observe(el);
+    return () => observer.disconnect();
+  });
+  function rect(el: HTMLElement): DOMRect {
+    let r = sizes.get(el);
+    if (!r) sizes.set(el, (r = el.getBoundingClientRect()));
+    return r;
+  }
+  // Panes move when the bar wraps: their place is read again with each new press or zoom.
+  const where = (el: HTMLElement) => {
+    sizes.delete(el);
+    return rect(el);
+  };
 
   // The wheel zooms about the pointer. Not a passive listener: the page must not scroll.
   $effect(() => {
@@ -103,64 +174,65 @@
       if (!el || !e.deltaY) return;
       e.preventDefault();
       const i = paneIndex(el);
-      const r = el.getBoundingClientRect();
-      setView(i, zoomAt(views[i], Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top, r.width, r.height));
+      const r = rect(el);
+      setView(i, zoomAt(live[i], Math.exp(-e.deltaY * 0.0015), (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, 1, 1));
     };
     stage.addEventListener("wheel", wheel, { passive: false });
     return () => stage.removeEventListener("wheel", wheel);
   });
 
   /** A press on a pane: dragging pans it (or moves the split line); a click without moving
-   *  makes the photo under it the active one. */
-  let drag: { i: number; x: number; y: number; moved: boolean; line: boolean; el: HTMLElement } | null = null;
+   *  makes the photo under it the active one. One pointer at a time. */
+  let drag = $state<{ id: number; i: number; x: number; y: number; moved: boolean; line: boolean; r: DOMRect } | null>(null);
   function down(e: PointerEvent) {
     const el = paneAt(e.target);
-    if (!el || e.button !== 0) return;
+    if (drag || !el || e.button !== 0) return;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     const line = !!(e.target as HTMLElement).closest(".line");
-    drag = { i: paneIndex(el), x: e.clientX, y: e.clientY, moved: false, line, el };
+    drag = { id: e.pointerId, i: paneIndex(el), x: e.clientX, y: e.clientY, moved: false, line, r: where(el) };
   }
   function move(e: PointerEvent) {
-    if (!drag) return;
+    if (!drag || e.pointerId !== drag.id) return;
     const dx = e.clientX - drag.x;
     const dy = e.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 3) return;
     drag.moved = true;
-    const r = drag.el.getBoundingClientRect();
+    const r = drag.r;
     if (drag.line) {
       split = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
       return;
     }
     drag.x = e.clientX;
     drag.y = e.clientY;
-    setView(drag.i, panBy(views[drag.i], dx, dy, r.width, r.height));
+    setView(drag.i, panBy(live[drag.i], dx / r.width, dy / r.height, 1, 1));
   }
   function up(e: PointerEvent) {
+    if (!drag || e.pointerId !== drag.id) return;
     const was = drag;
     drag = null;
-    if (!was || was.moved) return;
+    if (was.moved) return;
     if (!stacked) onactive(was.i);
-    else if (mode === "split") {
-      const r = was.el.getBoundingClientRect();
-      onactive((e.clientX - r.left) / r.width < split ? 0 : 1);
-    }
+    else if (mode === "split") onactive((e.clientX - was.r.left) / was.r.width < split ? 0 : 1);
+  }
+  function cancel(e: PointerEvent) {
+    if (drag?.id === e.pointerId) drag = null;
   }
   /** Double-click: the whole photo, or 1:1 about the point clicked. */
   function dbl(e: MouseEvent) {
     const el = paneAt(e.target);
     if (!el || (e.target as HTMLElement).closest(".line")) return;
-    const r = el.getBoundingClientRect();
-    zoom(paneIndex(el), e.clientX - r.left, e.clientY - r.top);
+    const r = where(el);
+    zoom(paneIndex(el), (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
   }
-  function zoom(i: number, px?: number, py?: number) {
+  function zoom(i: number, px = 0.5, py = 0.5) {
     const el = stage.querySelector<HTMLElement>(`[data-pane="${i}"]`);
     if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (views[i].s > 1) return setView(i, FIT);
+    if (live[i].s > 1) return setView(i, FIT);
+    const r = where(el);
     const row = stacked ? rows[0] : rows[i];
     const [nw, nh] = natural.get(row) ?? [0, 0];
     const s = oneToOne(nw, nh, r.width, r.height, window.devicePixelRatio || 1);
-    setView(i, zoomAt(views[i], s, px ?? r.width / 2, py ?? r.height / 2, r.width, r.height));
+    setView(i, zoomAt(live[i], s, px, py, 1, 1));
   }
 
   function swap() {
@@ -172,13 +244,17 @@
     if (mode === "blink" && active !== 0) untrack(swap);
   });
   function drop(i = active) {
-    const next = dropRow(rows, i);
+    const next = dropRow(rows, i, active);
     if (next) onrows(next.rows, next.active);
   }
 
   function onkey(e: KeyboardEvent) {
     const action = compareKey(e, blocked, rows.length);
-    if (!action) return;
+    if (!action) {
+      // Enter and Space never press a button left focused behind the keys.
+      if (!blocked && !e.defaultPrevented && (e.key === "Enter" || e.key === " ") && !(e.target as HTMLElement | null)?.closest?.("input")) e.preventDefault();
+      return;
+    }
     e.preventDefault();
     switch (action.kind) {
       case "close": return onclose();
@@ -197,22 +273,22 @@
   function toggleSync() {
     sync = !sync;
     // Locked again: every pane takes the active one's view.
-    if (sync) views = views.map(() => views[stacked ? 0 : active]);
+    if (sync) setView(stacked ? 0 : active, live[stacked ? 0 : active]);
   }
 
-  /** The transform of a photo in pane `i`. */
-  const transform = (v: View) => `transform: translate(${v.x}px, ${v.y}px) scale(${v.s})`;
-  /** How the second photo sits over the first in one pane. */
+  /** The transform of a photo in pane `i`: a shift in fractions of the pane, then the scale. */
+  const transform = (v: View) => `transform: translate(${v.x * 100}%, ${v.y * 100}%) scale(${v.s})`;
+  /** How the second photo sits over the first in one pane; in Blink it waits, loaded, out of sight. */
   function over(): string {
     if (mode === "split") return `clip-path: inset(0 0 0 ${split * 100}%)`;
     if (mode === "overlay") return `opacity: ${opacity}`;
     if (mode === "difference") return "mix-blend-mode: difference";
-    return "display: none";
+    return "visibility: hidden";
   }
   const pct = (v: View) => `${Math.round(v.s * 100)}%`;
 </script>
 
-<svelte:window onkeydown={onkey} onresize={() => (views = [FIT, FIT, FIT, FIT])} />
+<svelte:window onkeydown={onkey} />
 
 {#snippet layer(row: number, v: View, style = "")}
   <div class="layer" {style}>
@@ -242,13 +318,14 @@
       {#if sharpest === row}<span class="best">sharpest</span>{/if}
     {/if}
     {#if rows.length > 2}
-      <button class="drop" title="Take out of the comparison (x)" onclick={(e) => { e.stopPropagation(); drop(i); }}>×</button>
+      <button class="drop" title="Take this photo out of the comparison (x for the active one)" onclick={(e) => { e.stopPropagation(); drop(i); root.focus(); }}>×</button>
     {/if}
   </div>
 {/snippet}
 
-<div class="compare" role="dialog" aria-label="Compare photos">
-  <div class="bar">
+<div class="compare" role="dialog" aria-modal="true" aria-label="Compare photos" tabindex="-1" bind:this={root}>
+  <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+  <div class="bar" onclick={refocus}>
     <div class="modes" role="group" aria-label="How to compare">
       {#each MODES as m (m.mode)}
         <button
@@ -263,7 +340,7 @@
     {#if mode === "overlay"}
       <label class="slider" title="How opaque B is over A">
         A
-        <input type="range" min="0" max="1" step="0.01" bind:value={opacity} onpointerup={(e) => e.currentTarget.blur()} />
+        <input type="range" min="0" max="1" step="0.01" bind:value={opacity} onchange={() => root.focus()} />
         B
       </label>
     {/if}
@@ -276,26 +353,33 @@
     <button class="toggle" title="The whole photo, or 1:1 (z or double-click); the wheel zooms, dragging moves" onclick={() => zoom(stacked ? 0 : active)}>
       {views[stacked ? 0 : active].s > 1 ? `${pct(views[stacked ? 0 : active])} · Fit` : "1:1"}
     </button>
-    <span class="hint">wheel zoom · drag move · Tab / ← → active photo · 0–5 and - + * edit it · Esc</span>
+    {#if message}
+      <span class="status" class:failed>{message}</span>
+    {:else}
+      <span class="hint">wheel zoom · drag move · Tab / ← → active photo · 0–5 and - + * edit it · Delete to the trash · Esc</span>
+    {/if}
     <button class="close" title="Close (Esc)" onclick={onclose}>×</button>
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="board"
-        style="--cols: {panes === 4 ? 2 : panes}"
+    class:dragging={drag?.moved && !drag.line}
+    style="--cols: {panes === 4 ? 2 : panes}"
     bind:this={stage}
     onpointerdown={down}
     onpointermove={move}
     onpointerup={up}
-    onpointercancel={() => (drag = null)}
+    onpointercancel={cancel}
     ondblclick={dbl}
   >
     {#if stacked}
       <div class="slot">
         <div class="frame" class:moving={views[0].s > 1} data-pane="0">
-          {@render layer(rows[0], views[0])}
-          {#if mode !== "blink"}{@render layer(rows[1], views[0], over())}{/if}
+          <!-- Keyed by photo: a swap moves the images rather than loading them again. -->
+          {#each rows as row, i (row)}
+            {@render layer(row, views[0], i === 0 ? "" : over())}
+          {/each}
           {#if mode === "split"}
             <div class="line" style="left: {split * 100}%" title="Drag to move the line"><span>A │ B</span></div>
           {/if}
@@ -331,6 +415,7 @@
     grid-template-rows: auto 1fr;
     background: #111;
   }
+  .compare:focus { outline: none; }
   .bar {
     display: flex;
     flex-wrap: wrap;
@@ -345,6 +430,8 @@
   .slider { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .slider input { width: 140px; accent-color: var(--accent); }
   .hint { margin-left: auto; color: var(--muted); font-size: 12px; }
+  .status { margin-left: auto; font-size: 12px; color: var(--text); }
+  .status.failed { color: var(--error); }
   .close { padding: 0 6px; font-size: 20px; line-height: 1; color: var(--muted); }
   .close:hover { color: var(--text); }
 
@@ -376,6 +463,8 @@
   .frame.moving { cursor: grab; }
   .layer { position: absolute; inset: 0; overflow: hidden; }
   .zoom { position: absolute; inset: 0; transform-origin: 0 0; }
+  /* A layer of its own only while dragging: a scale held in one would look soft. */
+  .board.dragging .zoom { will-change: transform; }
   .zoom img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
   .zoom .base { filter: blur(0.5px); }
   .zoom .full { opacity: 0; transition: opacity 120ms; }

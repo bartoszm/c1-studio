@@ -16,11 +16,18 @@ test("at most four photos are compared; the rest are counted", () => {
   assert.equal(left, 2);
 });
 
-test("a photo taken out leaves at least two; the next one becomes active", () => {
-  assert.deepEqual(dropRow([1, 2, 3], 1), { rows: [1, 3], active: 1 });
-  assert.deepEqual(dropRow([1, 2, 3, 4], 3), { rows: [1, 2, 3], active: 2 });
-  assert.equal(dropRow([1, 2], 0), null);
-  assert.equal(dropRow([1, 2, 3], 5), null);
+test("the active photo taken out leaves at least two; the next one becomes active", () => {
+  assert.deepEqual(dropRow([1, 2, 3], 1, 1), { rows: [1, 3], active: 1 });
+  assert.deepEqual(dropRow([1, 2, 3, 4], 3, 3), { rows: [1, 2, 3], active: 2 });
+  assert.equal(dropRow([1, 2], 0, 0), null);
+  assert.equal(dropRow([1, 2, 3], 5, 0), null);
+});
+
+test("another photo taken out keeps the active one active", () => {
+  // A active, C taken out: still A, not D.
+  assert.deepEqual(dropRow([1, 2, 3, 4], 2, 0), { rows: [1, 2, 4], active: 0 });
+  // D active, A taken out: D moves to index 2 and stays active.
+  assert.deepEqual(dropRow([1, 2, 3, 4], 0, 3), { rows: [2, 3, 4], active: 2 });
 });
 
 const key = (k: string, more: object = {}) => ({ key: k, target: { tagName: "BODY" } as unknown as EventTarget, defaultPrevented: false, ...more });
