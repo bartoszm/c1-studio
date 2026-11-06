@@ -3,7 +3,7 @@
   import * as api from "./lib/api";
   import { exposure } from "./lib/format";
   import { viewerKey } from "./lib/keys";
-  import { GUIDE_NAMES, fitted, guideLines, nextGuide, storedGuide, type Guide } from "./lib/guides";
+  import { GUIDE_NAMES, TURNS, fitted, guidePath, nextGuide, storedGuide, storedTurn, type Guide } from "./lib/guides";
 
   let { row, next, version, blocked, onclose, onstep, children }: {
     row: number;
@@ -47,10 +47,21 @@
   });
 
   // The composition grid over the photo, remembered between photos and sessions.
-  let guide = $state<Guide>(storedGuide((() => { try { return localStorage.getItem("guide"); } catch { return null; } })()));
+  const stored = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
+  let guide = $state<Guide>(storedGuide(stored("guide")));
+  /** Which way the spiral or the triangles lie (`o`); kept apart from the guide, so
+   *  stepping through the others and back finds it as it was. */
+  let turn = $state(storedTurn(stored("guideTurn")));
   function stepGuide(back = false) {
     guide = nextGuide(guide, back);
     try { localStorage.setItem("guide", guide); } catch { /* not remembered */ }
+  }
+  function turnGuide() {
+    // The triangles flip the low bit only, so the spiral's mirror top to bottom stays.
+    if (TURNS[guide] === 2) turn ^= 1;
+    else if (TURNS[guide] === 4) turn = (turn + 1) % 4;
+    else return;
+    try { localStorage.setItem("guideTurn", String(turn)); } catch { /* not remembered */ }
   }
 
   // The grid covers the picture itself, not the stage around it: the size of the image
@@ -71,7 +82,7 @@
     const box = fitted(size[0], size[1], stageW - 2 * INSET, stageH - 2 * INSET);
     return box && { ...box, left: box.left + INSET, top: box.top + INSET };
   });
-  let lines = $derived(frame ? guideLines(guide, frame.width, frame.height) : []);
+  let path = $derived(frame ? guidePath(guide, frame.width, frame.height, turn) : "");
   const natural = (e: Event): [number, number] => {
     const img = e.currentTarget as HTMLImageElement;
     return [img.naturalWidth, img.naturalHeight];
@@ -82,6 +93,7 @@
     const action = viewerKey(e, blocked);
     if (action === "close") onclose();
     else if (action === "grid" || action === "grid-back") stepGuide(action === "grid-back");
+    else if (action === "turn") turnGuide();
     else if (action) onstep(action);
   }
 </script>
@@ -104,10 +116,8 @@
         height={frame.height}
         aria-hidden="true"
       >
-        {#each lines as [x1, y1, x2, y2]}
-          <line {x1} {y1} {x2} {y2} class="shade" />
-          <line {x1} {y1} {x2} {y2} />
-        {/each}
+        <path d={path} class="shade" />
+        <path d={path} />
       </svg>
     {/if}
   </div>
@@ -121,8 +131,8 @@
       {#if info.place.city || info.place.country}<span>{[info.place.city, info.place.country].filter(Boolean).join(", ")}</span>{/if}
       {#if info.keywords.length}<span class="kw">{info.keywords.map((k) => k.join(" › ")).join("   ")}</span>{/if}
     {/if}
-    <button class="grid-pick" title="Grid over the photo (g, Shift+G)" onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
-    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i · g</span>
+    <button class="grid-pick" title={TURNS[guide] > 1 ? "Grid over the photo (g, Shift+G); o turns it" : "Grid over the photo (g, Shift+G)"} onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
+    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i · g{TURNS[guide] > 1 ? " · o" : ""}</span>
   </div>
   {@render children?.()}
 </div>

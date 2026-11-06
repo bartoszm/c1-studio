@@ -62,4 +62,6 @@ test("the viewer steps the grid with g, back with Shift+G, not with a modifier",
   assert.equal(viewerKey({ ...key("g"), ctrlKey: true }, false), null);
   assert.equal(viewerKey(key("g", { tagName: "INPUT", type: "text" }), false), null);
   assert.equal(viewerKey(key("g"), true), null);
+  assert.equal(viewerKey(key("o"), false), "turn");
+  assert.equal(viewerKey({ ...key("o"), metaKey: true }, false), null);
 });
