@@ -514,7 +514,8 @@ footer .busy { color: var(--text); }
 .info-panel .look .why.counts { color: var(--text); }
 .info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
-.copy-slot { flex: none; width: 16em; display: flex; justify-content: flex-end; }
+.copy-slot { flex: none; width: 24em; display: flex; justify-content: flex-end; gap: 6px; }
+.copy-to.compare-open { background: var(--on); color: var(--text); }
 .copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; white-space: nowrap; }
 .copy-to.hidden { visibility: hidden; }
 .app.busy, .app.busy * { cursor: progress; }
