@@ -4,6 +4,11 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.8.0:** [compare 2 to 4 photos](docs/FEATURES.md#compare-photos) side by side,
+split, overlaid, as a difference or blinking; a [composition grid](docs/FEATURES.md#a-composition-grid)
+in the viewer; and Capture One [variants](docs/FEATURES.md#variants) marked in the grid
+and collapsed to one per image. Opening a library can be stopped.
+
 **New in 0.7.0:** picked photos [stay picked through a filter](docs/FEATURES.md#the-selection-through-filters-back-and-forward),
 **Back and Forward** go through the filters, and a filter follows an edit instead of
 emptying. *Around* shows a photo's [shoot or its day](docs/FEATURES.md#photos-around-a-photo).

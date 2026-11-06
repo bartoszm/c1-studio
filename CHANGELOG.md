@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0 — 2026-11-06
+
+### New
+
+- **Compare 2 to 4 photos:** with photos picked, `c` or *⧉ Compare* shows them side by side. The wheel zooms about the pointer, dragging moves, `z` or a double-click goes to 1:1 of the preview, and *Zoom together* (`l`) keeps them in step. Ratings, colour tags, `h` and Delete go to the active photo (Tab or ← → to choose; in an album, Delete takes it out of the album and Ctrl+Delete moves it to the trash). With two photos: **Split** (`w`), **Overlay** (`o`), **Difference** (`d`) and **Blink** (`b`), each shown once both previews have loaded (#89).
+- **A composition grid in the viewer:** `g` lays thirds, the golden ratio, quarters, diagonals, golden triangles or the Fibonacci spiral over the photo, Shift+G goes back, and `o` turns the triangles and the spiral. The grid stays for the next photos and sessions (#90).
+- **Variants:** a number at the top left of a tile says how many variants its image has in Capture One. The header's **Variants** button shows one tile per image (of its variants that match, the lowest-numbered; with Stack on, the one stacking kept). Click the number, press `v` or use *show all* in the details panel to see all of an image's variants; Esc goes back (#91).
+- **Opening a library can be stopped:** the start-up dialog says which part it is on, shows a repair with a percentage, and has **Abort** (or Esc), with *Try again* and *Open…* after. The event log says how long opening took and which parts were slow (#86).
+- **Backups:** *Delete…* for one backup, and *Open folder* to see them in the file manager (#87).
+
+### Fixed
+
+- **Enter opened the photo last clicked**, not the one the arrows had moved to, when a clicked tile kept the keyboard focus. Enter and Space no longer act on a tile behind an open dialog (#88).
+
+### Install
+
+Run `C1.Studio_0.8.0_x64-setup.exe`. It installs over 0.7.x for the current user and keeps your settings and your library: the search index is not rebuilt and the catalog is not read again.
+
 ## 0.7.0 — 2026-10-24
 
 ### New
