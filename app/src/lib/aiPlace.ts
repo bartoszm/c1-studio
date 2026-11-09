@@ -1,7 +1,7 @@
 // A model's place guess on a review card: which levels start ticked, and what accepting
 // takes from them.
 
-import type { Accept, Guess, PlaceGuess, PlaceNames, Seen } from "./api";
+import type { Accept, Guess, PlaceGuess, PlaceNames, Seen, SuggestionRow } from "./api";
 import { codeFor, looseKey } from "./countries";
 import { parsePath } from "./places";
 
@@ -119,6 +119,30 @@ export function placeReplaces(g: PlaceGuess, ticks: PlaceTicks, now: PlaceNames 
 }
 
 export const percent = (p: number) => `${Math.round(p * 100)}%`;
+
+/** What a card shows a photo to have: a field taken is set only while the photo still has it. */
+export const seenOf = (r: SuggestionRow): Seen => ({
+  caption: r.current?.caption ?? null,
+  headline: r.current?.headline ?? null,
+  rating: r.current?.rating ?? null,
+  place: r.current?.place ?? { country: null, country_code: null, state: null, city: null, location: null },
+});
+
+/** What accepting a scene's card takes, the AI tab's or a pin's: `lead` for its first photo,
+ *  and for each other the place of `forOthers` (`lead` unless given: the position may go to
+ *  them though the first keeps its own) by [memberPick]; the position only where the photo
+ *  may take one (`locked` says not) and its own check did not doubt it (its p lower than the
+ *  first's: taken too far from its neighbours in time). */
+export function scenePicks(
+  lead: Accept, first: SuggestionRow, others: SuggestionRow[], locked: (r: SuggestionRow) => boolean, forOthers: Accept = lead,
+): Accept[] {
+  const p = first.suggestion.place?.point?.p;
+  return [lead, ...others.map((r) => {
+    const own = r.suggestion.place?.point?.p;
+    const doubted = p !== undefined && own !== undefined && own < p;
+    return memberPick(forOthers, r.row, r.current?.place ?? null, locked(r) || doubted, seenOf(r));
+  })];
+}
 
 /** What another photo of a scene takes of what its card takes: the same levels, except
  *  one it names otherwise already and those below it (its own name stays, and nothing is

@@ -958,6 +958,8 @@ export type Accept = {
 /** The ops that undo it, and the photos whose taken field changed since shown (left as is). */
 export type Accepted = { undo: [number, Op][]; changed: number[] };
 export const aiSettings = () => invoke<AiView>("ai_settings");
+/** Settings > AI's ticks alone (%): cheap to read on every edit. */
+export const aiThresholds = () => invoke<{ place_tick: number; precise: number }>("ai_thresholds");
 export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
 /** Stores the key in the Windows Credential Manager; an empty one removes it. */
 export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });

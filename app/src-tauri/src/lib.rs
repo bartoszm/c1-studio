@@ -2958,6 +2958,7 @@ pub fn run() {
             growth,
             log_days,
             ai::ai_settings,
+            ai::ai_thresholds,
             ai::set_ai_settings,
             ai::set_ai_key,
             ai::ai_prompt,

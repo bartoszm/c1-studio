@@ -3,8 +3,8 @@
   import * as api from "./lib/api";
   import { SvelteSet } from "svelte/reactivity";
   import {
-    BASIS, LEVELS, chooseName, guessNames, levelOptions, memberPick, percent, placeIndex, placeReplaces, placeTicks,
-    preciseOffered, takenPlace, type Level, type Names, type PlaceIndex, type PlaceTicks,
+    BASIS, LEVELS, chooseName, guessNames, levelOptions, percent, placeIndex, placeReplaces, placeTicks,
+    preciseOffered, scenePicks, seenOf, takenPlace, type Level, type Names, type PlaceIndex, type PlaceTicks,
   } from "./lib/aiPlace";
   import { catalogPlaces } from "./lib/placeHints";
   import { REFINE_LINES, changes, chipText, digest, shows, type Shown as ReviewShown } from "./lib/reviews";
@@ -185,7 +185,9 @@
   // ---- the review ---------------------------------------------------------------------
   type Show = SuggestionStatus | "All" | "Reviewed";
   let show = $state<Show>("Proposed");
-  let rows = $state<SuggestionRow[]>([]);
+  /** Replaced whole, never changed in place: the cards' edits are in `drafts`. */
+  let rows = $state.raw<SuggestionRow[]>([]);
+  let byRow = $derived(new Map(rows.map((r) => [r.row, r])));
   /** What each card takes, as the user edited it: by row. `at` and `seen` say which
    *  suggestion, and which state of the photo, it was made for. */
   type Draft = {
@@ -202,12 +204,6 @@
     precise: boolean;
   };
   let drafts = $state<Record<number, Draft>>({});
-  const seenOf = (r: SuggestionRow): api.Seen => ({
-    caption: r.current?.caption ?? null,
-    headline: r.current?.headline ?? null,
-    rating: r.current?.rating ?? null,
-    place: r.current?.place ?? { country: null, country_code: null, state: null, city: null, location: null },
-  });
   const samePlace = (a: api.PlaceNames | null, b: api.PlaceNames | null) =>
     LEVELS.every((l) => (a?.[l] ?? null) === (b?.[l] ?? null));
   const sameSeen = (a: api.Seen, b: api.Seen) =>
@@ -450,7 +446,7 @@
 
   function pickOf(row: number): Accept {
     const d = drafts[row];
-    const guess = rows.find((r) => r.row === row)?.suggestion.place;
+    const guess = byRow.get(row)?.suggestion.place;
     const point = guess?.point && d.place?.point ? ([guess.point.lat, guess.point.lon] as [number, number]) : undefined;
     return {
       place: guess && d.place ? takenPlace(guess, d.place, d.names ?? undefined) : undefined,
@@ -524,16 +520,8 @@
   /** What accepting cards takes: each card's pick, and for a scene's other photos the same place. */
   function picksOf(list: number[]): Accept[] {
     return list.flatMap((row) => {
-      const lead = pickOf(row);
-      const leadPoint = rows.find((r) => r.row === row)?.suggestion.place?.point;
-      const rest = (scenes.get(row) ?? []).slice(1);
-      return [lead, ...rest.map((r) => {
-        // A photo whose own check doubted the point (taken too far from its neighbours in
-        // time) is not given it.
-        const own = r.suggestion.place?.point;
-        const doubted = !!leadPoint && !!own && own.p < leadPoint.p;
-        return memberPick(lead, r.row, r.current?.place ?? null, pointLocked(r) || doubted, seenOf(r));
-      })];
+      const first = byRow.get(row);
+      return first ? scenePicks(pickOf(row), first, (scenes.get(row) ?? []).slice(1), pointLocked) : [];
     });
   }
   /** What the card's photos were warned of, each once: a scene's photos are checked each

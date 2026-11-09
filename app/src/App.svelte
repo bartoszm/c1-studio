@@ -997,6 +997,17 @@
   /** What an edit changed: its photos, and the edit itself when it is one. */
   type EditDone = { rows: number[]; edit?: api.Edit };
 
+  /** Suggestions accepted (in the AI tab, or a guess on the map): one undo step. */
+  async function aiAccepted(undo: [number, api.Op][]) {
+    if (undo.length) {
+      undoStack.push({ ops: undo });
+      redoStack = [];
+      note(`Queued suggestions for ${opRows(undo).toLocaleString()} photo${opRows(undo) === 1 ? "" : "s"}`);
+    }
+    editError = null;
+    await edited(rowsOf(undo));
+  }
+
   async function edited(done?: EditDone) {
     const focus = selected === null ? undefined : focusRow;
     version++;
@@ -2758,6 +2769,7 @@
             ? { placed, approx: true, gps: undefined, place_under: undefined }
             : { placed, gps: false, approx: undefined, place_under: undefined },
         )}
+      onaccepted={aiAccepted}
     />
   {/if}
   {#if tab === "analysis"}
@@ -2800,15 +2812,7 @@
       keywords={keywordList}
       onsettings={() => { settingsTab = "ai"; showSettings = true; }}
       onselect={(row) => { picked.clear(); selected = null; mapRow = row; }}
-      onaccepted={async (undo) => {
-        if (undo.length) {
-          undoStack.push({ ops: undo });
-          redoStack = [];
-          note(`Queued suggestions for ${opRows(undo).toLocaleString()} photo${opRows(undo) === 1 ? "" : "s"}`);
-        }
-        editError = null;
-        await edited(rowsOf(undo));
-      }}
+      onaccepted={aiAccepted}
       onerror={(m) => (editError = m)}
     />
   {/if}
