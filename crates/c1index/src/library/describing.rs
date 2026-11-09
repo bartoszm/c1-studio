@@ -194,8 +194,13 @@ pub fn check_place(guess: &mut PlaceGuess) -> Vec<String> {
         }
     }
     guess.coherent();
+    // Where the point is: in the named country's terms when one of its cities covers it,
+    // as a bigger city across a border may reach it too.
+    let at_point = |lat: f64, lon: f64| {
+        found.country.filter(|_| country_known).and_then(|k| g.reverse_in(lat, lon, k)).or_else(|| g.reverse(lat, lon))
+    };
     if let Some(point) = guess.point.as_mut()
-        && let Some(at) = g.reverse(point.lat, point.lon)
+        && let Some(at) = at_point(point.lat, point.lon)
     {
         let differ = |named: Option<u32>, there: Option<u32>| named.is_some() && there.is_some() && named != there;
         // A village is often found as the town whose reach covers it: a point near the city
@@ -573,5 +578,30 @@ mod tests {
         };
         check_place(&mut krakow);
         assert_eq!(krakow.point.unwrap().p, DOUBTED, "Wieliczka");
+    }
+
+    #[test]
+    fn a_point_by_a_border_is_where_the_country_named_says() {
+        // Tin Shui Wai, in Hong Kong: Shenzhen's reach covers it better.
+        let g = |name: &str, p: f32| Some(Guess { name: name.into(), p });
+        let mut hk = PlaceGuess {
+            country: g("Hong Kong", 0.99),
+            city: g("Hong Kong", 0.99),
+            location: g("Tin Shui Wai", 0.92),
+            point: Some(PointGuess { lat: 22.4488, lon: 114.0031, p: 0.9, radius_km: 0.5 }),
+            ..PlaceGuess::default()
+        };
+        let why = check_place(&mut hk);
+        assert_eq!(hk.point.unwrap().p, 0.9, "{why:?}");
+        assert_eq!(hk.country_code.as_deref(), Some("HK"));
+        // Named as China, it is in Shenzhen's reach: as it was.
+        let mut cn = PlaceGuess {
+            country: g("China", 0.99),
+            city: g("Shenzhen", 0.9),
+            point: Some(PointGuess { lat: 22.4488, lon: 114.0031, p: 0.9, radius_km: 0.5 }),
+            ..PlaceGuess::default()
+        };
+        check_place(&mut cn);
+        assert_eq!(cn.point.unwrap().p, 0.9);
     }
 }
