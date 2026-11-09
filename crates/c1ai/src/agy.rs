@@ -143,7 +143,7 @@ impl Agy {
             program,
             options,
             system: crate::system_prompt(brief),
-            schema: crate::schema(&brief.fields).to_string(),
+            schema: crate::schema(brief).to_string(),
             prompt: prompt_hash(brief, sheets),
             sheets,
             vocabulary,

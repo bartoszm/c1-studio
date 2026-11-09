@@ -1,19 +1,20 @@
 //! Describes JPEGs with Claude Code signed in with a Claude plan, with the Claude API
 //! when `ANTHROPIC_API_KEY` is set and `--api` given, or with Gemini through agy
 //! (`--agy`; `--sheet` puts the photos on one contact sheet): a live check of a provider
-//! outside the app.
+//! outside the app. `--locate` asks where the photos were taken instead.
 //!
-//! `cargo run -p c1ai --example describe -- photo.jpg [more.jpg…] [--model=ID] [--api | --agy [--sheet]]`
+//! `cargo run -p c1ai --example describe -- photo.jpg [more.jpg…] [--model=ID] [--api | --agy [--sheet]] [--locate]`
 
 use c1ai::agy::{self, Agy};
 use c1ai::claude::{Claude, Options};
 use c1ai::claude_code::{self, ClaudeCode};
-use c1ai::{Brief, PhotoRequest, RunRecord, SheetRequest, VisionProvider, Vocabulary};
+use c1ai::{Brief, PhotoRequest, RunRecord, SheetRequest, Task, VisionProvider, Vocabulary};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
     let (api, gemini, sheet) = (flag("--api"), flag("--agy"), flag("--sheet"));
+    let task = if flag("--locate") { Task::Locate } else { Task::Describe };
     let model = args.iter().find_map(|a| a.strip_prefix("--model=")).map(str::to_string);
     let paths: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
     if paths.is_empty() {
@@ -21,7 +22,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let default = if gemini { agy::DEFAULT_MODEL } else { "claude-haiku-5-5" };
     let options = Options { model: model.unwrap_or_else(|| default.into()), ..Options::default() };
-    let brief = Brief { vocabulary: vec!["street".into(), "people".into(), "Hong Kong".into()], ..Default::default() };
+    let brief =
+        Brief { task, vocabulary: vec!["street".into(), "people".into(), "Hong Kong".into()], ..Default::default() };
     let vocabulary = Vocabulary::new([("street", 10), ("people", 5), ("places|China|Hong Kong", 3)]);
     let provider: Box<dyn VisionProvider> = if gemini {
         let program = agy::find().ok_or("agy is not installed")?;

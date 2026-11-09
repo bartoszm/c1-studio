@@ -121,7 +121,7 @@ impl Claude {
         let model =
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
         let system = crate::system_prompt(brief);
-        let schema = crate::schema(&brief.fields);
+        let schema = crate::schema(brief);
         let prompt = crate::prompt_hash(brief);
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { placeReplaces, placeTicks, takenPlace } from "../src/lib/aiPlace";
+import { placeReplaces, placeTicks, preciseOffered, takenPlace } from "../src/lib/aiPlace";
 import type { PlaceGuess, PlaceNames } from "../src/lib/api";
 
 const guess: PlaceGuess = {
@@ -29,4 +29,13 @@ test("accepting takes the ticked levels, the country with its code", () => {
 test("a ticked level over another name is told", () => {
   const ticks = { point: false, country: true, state: false, city: true, location: false };
   assert.deepEqual(placeReplaces(guess, ticks, { ...none, country: "Poland", city: "Wieliczka" }), ["city"]);
+});
+
+test("a landmark's close, likely position is offered as precise", () => {
+  const wawel: PlaceGuess = { ...guess, point: { lat: 50.054, lon: 19.935, p: 0.95, radius_km: 0.2 }, basis: "landmark" };
+  assert.equal(preciseOffered(wawel, 0.9), true);
+  assert.equal(preciseOffered({ ...wawel, basis: "scene" }, 0.9), false, "not a landmark");
+  assert.equal(preciseOffered({ ...wawel, point: { ...wawel.point!, radius_km: 2 } }, 0.9), false, "too wide");
+  assert.equal(preciseOffered(wawel, 0.97), false, "not likely enough");
+  assert.equal(preciseOffered(guess, 0.5), false, "no basis");
 });

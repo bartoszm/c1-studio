@@ -40,11 +40,13 @@ use crate::variants::Variants;
 
 mod describing;
 mod history;
+mod locating;
 mod placing;
 mod selection;
 
 pub use describing::{Accept, Accepted, ReviewRow, Seen};
 pub use history::{HistoryOff, LogDays, LogPage};
+pub use locating::LOCATE_WINDOW_MINUTES;
 
 pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
 pub use selection::{Merged, Selection, group_places};
@@ -280,6 +282,9 @@ pub struct Library {
     trip_book: TripBook,
     /// Trips as last worked out, for the index generation they were worked out on.
     trip_cache: Mutex<Option<TripCache>>,
+    /// The catalog's own positions by time ([`Library::fixes`]), as of an index
+    /// generation; cleared when guesses change.
+    fix_cache: Mutex<Option<(u64, Arc<Vec<crate::gpx::Fix>>)>>,
     /// Places looked up online, and photos given only their place's position.
     place_book: PlaceBook,
     /// Where places are, as worked out from their names.
@@ -457,6 +462,7 @@ impl Library {
             syncing: Mutex::new(()),
             trip_book,
             trip_cache: Mutex::new(None),
+            fix_cache: Mutex::new(None),
             place_book,
             place_cache: Mutex::default(),
             coarse,

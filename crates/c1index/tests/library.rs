@@ -2691,7 +2691,7 @@ fn compare_says_when_a_keyword_tree_change_kept_no_photos() {
 
 #[test]
 fn accepted_suggestions_are_queued_as_the_model_s_edits() {
-    use c1index::ai::{Entry, Status};
+    use c1index::ai::{Entry, Status, Task};
     let (_d, lib, _s) = setup();
     let row = row_of(&lib, 7);
     let suggestion = c1ai::Suggestion { headline: Some("Market square".into()), ..c1ai::Suggestion::default() };
@@ -2704,10 +2704,11 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
         warnings: vec![],
         cost: 0.001,
         status: Status::Proposed,
+        ..Entry::default()
     };
-    lib.put_suggestion(row, &entry, &c1ai::RunRecord::default()).unwrap();
-    assert_eq!(lib.described(&[row, row_of(&lib, 8)], "claude-haiku-5-5", 7).unwrap().len(), 1);
-    assert!(lib.described(&[row], "claude-opus-5-5", 7).unwrap().is_empty());
+    lib.put_suggestion(Task::Describe, row, &entry, &c1ai::RunRecord::default()).unwrap();
+    assert_eq!(lib.described(Task::Describe, &[row, row_of(&lib, 8)], "claude-haiku-5-5", 7).unwrap().len(), 1);
+    assert!(lib.described(Task::Describe, &[row], "claude-opus-5-5", 7).unwrap().is_empty());
     assert_eq!(lib.vocabulary().unwrap()[0].0, "street");
 
     let before = lib.photo(row).unwrap().unwrap();
@@ -2724,7 +2725,7 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
         },
         ..c1index::Accept::default()
     };
-    let accepted = lib.accept_suggestions(&[pick]).unwrap();
+    let accepted = lib.accept_suggestions(Task::Describe, &[pick]).unwrap();
     assert!(accepted.changed.is_empty());
     let undo = accepted.undo;
     let photo = lib.photo(row).unwrap().unwrap();
@@ -2735,8 +2736,8 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
     assert!(photo.keywords.contains(&KeywordPath::from_pipe("market")));
     assert!(!undo.is_empty());
     assert!(lib.events(10).unwrap().iter().any(|e| e.origin == Origin::Ai));
-    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
-    assert!(lib.suggestions(Some(Status::Proposed)).unwrap().is_empty());
+    assert_eq!(lib.suggestion(Task::Describe, row).unwrap().unwrap().status, Status::Accepted);
+    assert!(lib.suggestions(Task::Describe, Some(Status::Proposed)).unwrap().is_empty());
 
     // The review is kept with what was taken; one rejected too, once, and they go when removed.
     let reviews = lib.reviews().unwrap().0;
@@ -2746,17 +2747,17 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
     assert_eq!(taken.keywords, ["street", "market"]);
     assert_eq!((taken.headline.as_deref(), taken.rating), (Some("Market square"), Some(5)));
     let other = row_of(&lib, 8);
-    lib.put_suggestion(other, &entry, &c1ai::RunRecord::default()).unwrap();
-    lib.set_suggestion_status(&[other], Status::Rejected).unwrap();
-    lib.set_suggestion_status(&[other], Status::Rejected).unwrap();
+    lib.put_suggestion(Task::Describe, other, &entry, &c1ai::RunRecord::default()).unwrap();
+    lib.set_suggestion_status(Task::Describe, &[other], Status::Rejected).unwrap();
+    lib.set_suggestion_status(Task::Describe, &[other], Status::Rejected).unwrap();
     let (reviews, unreadable) = lib.reviews().unwrap();
     assert_eq!((reviews.len(), unreadable), (2, 0), "rejected once is one review");
     assert_eq!((reviews[0].row, reviews[0].review.status), (Some(other), Status::Rejected), "newest first");
     assert!(reviews[0].review.taken.is_none());
     // Reviewed again and accepted: the accept replaces the reject, it does not sit beside it.
-    lib.set_suggestion_status(&[other], Status::Proposed).unwrap();
+    lib.set_suggestion_status(Task::Describe, &[other], Status::Proposed).unwrap();
     let pick = c1index::Accept { row: other, keywords: vec!["street".into()], ..c1index::Accept::default() };
-    lib.accept_suggestions(&[pick]).unwrap();
+    lib.accept_suggestions(Task::Describe, &[pick]).unwrap();
     let reviews = lib.reviews().unwrap().0;
     assert_eq!(reviews.len(), 2);
     assert_eq!((reviews[0].row, reviews[0].review.status), (Some(other), Status::Accepted));
@@ -2774,7 +2775,7 @@ fn accepted_suggestions_are_queued_as_the_model_s_edits() {
 /// field is left, the rest is taken, and the suggestion stays to review again.
 #[test]
 fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
-    use c1index::ai::{Entry, Status};
+    use c1index::ai::{Entry, Status, Task};
     let (_d, lib, _s) = setup();
     let row = row_of(&lib, 7);
     let entry = Entry {
@@ -2786,8 +2787,9 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
         warnings: vec![],
         cost: 0.0,
         status: Status::Proposed,
+        ..Entry::default()
     };
-    lib.put_suggestion(row, &entry, &c1ai::RunRecord::default()).unwrap();
+    lib.put_suggestion(Task::Describe, row, &entry, &c1ai::RunRecord::default()).unwrap();
     let before = lib.photo(row).unwrap().unwrap();
     assert_eq!(before.iptc.description.as_deref(), Some("Rynek we Wrocławiu"));
     // The card was shown when the photo had no caption, and no rating.
@@ -2800,7 +2802,7 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
         ..c1index::Accept::default()
     };
     let rated = before.rating.is_some();
-    let accepted = lib.accept_suggestions(&[pick]).unwrap();
+    let accepted = lib.accept_suggestions(Task::Describe, &[pick]).unwrap();
     assert_eq!(accepted.changed, vec![row]);
     let photo = lib.photo(row).unwrap().unwrap();
     assert_eq!(photo.iptc.description.as_deref(), Some("Rynek we Wrocławiu"), "the caption written since is kept");
@@ -2808,7 +2810,7 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
         assert_eq!(photo.rating, before.rating, "the rating set since is kept");
     }
     assert!(photo.keywords.contains(&KeywordPath::from_pipe("market")), "the rest is taken");
-    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Proposed);
+    assert_eq!(lib.suggestion(Task::Describe, row).unwrap().unwrap().status, Status::Proposed);
 
     // Shown as it is now, it is taken.
     let pick = c1index::Accept {
@@ -2822,10 +2824,10 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
         },
         ..c1index::Accept::default()
     };
-    assert!(lib.accept_suggestions(&[pick]).unwrap().changed.is_empty());
+    assert!(lib.accept_suggestions(Task::Describe, &[pick]).unwrap().changed.is_empty());
     let photo = lib.photo(row).unwrap().unwrap();
     assert_eq!(photo.iptc.description.as_deref(), Some("A market square at dusk."));
-    assert_eq!(lib.suggestion(row).unwrap().unwrap().status, Status::Accepted);
+    assert_eq!(lib.suggestion(Task::Describe, row).unwrap().unwrap().status, Status::Accepted);
 }
 
 /// A place guessed level by level is checked against the gazetteer when stored, and taken
@@ -2834,7 +2836,7 @@ fn accepting_leaves_a_field_that_changed_since_it_was_shown() {
 #[test]
 fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
     use c1ai::{Guess, PlaceGuess, PointGuess};
-    use c1index::ai::{Entry, Status};
+    use c1index::ai::{Entry, Status, Task};
     let (_d, lib, _s) = setup();
     let guess = |city: &str, p: f32| PlaceGuess {
         country: Some(Guess { name: "Poland".into(), p: 0.95 }),
@@ -2851,10 +2853,11 @@ fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
         warnings: vec![],
         cost: 0.0,
         status: Status::Proposed,
+        ..Entry::default()
     };
     let (eight, seven) = (row_of(&lib, 8), row_of(&lib, 7));
-    lib.put_suggestion(eight, &entry(guess("Kraków", 0.9)), &c1ai::RunRecord::default()).unwrap();
-    let stored = lib.suggestion(eight).unwrap().unwrap();
+    lib.put_suggestion(Task::Describe, eight, &entry(guess("Kraków", 0.9)), &c1ai::RunRecord::default()).unwrap();
+    let stored = lib.suggestion(Task::Describe, eight).unwrap().unwrap();
     let place = stored.suggestion.place.unwrap();
     assert_eq!(place.country_code.as_deref(), Some("PL"));
     assert_eq!(place.city.unwrap().p, 0.9);
@@ -2863,14 +2866,14 @@ fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
     // A country it does not know is doubted, though the city is known (and brings its own).
     let mut misspelt = guess("Kraków", 0.9);
     misspelt.country = Some(Guess { name: "Narnia".into(), p: 0.95 });
-    lib.put_suggestion(eight, &entry(misspelt), &c1ai::RunRecord::default()).unwrap();
-    let place = lib.suggestion(eight).unwrap().unwrap().suggestion.place.unwrap();
+    lib.put_suggestion(Task::Describe, eight, &entry(misspelt), &c1ai::RunRecord::default()).unwrap();
+    let place = lib.suggestion(Task::Describe, eight).unwrap().unwrap().suggestion.place.unwrap();
     assert_eq!((place.country.unwrap().p, place.country_code), (0.5, None));
-    lib.put_suggestion(eight, &entry(guess("Kraków", 0.9)), &c1ai::RunRecord::default()).unwrap();
+    lib.put_suggestion(Task::Describe, eight, &entry(guess("Kraków", 0.9)), &c1ai::RunRecord::default()).unwrap();
 
     // A city the gazetteer does not have in that country is doubted; a point elsewhere too.
-    lib.put_suggestion(seven, &entry(guess("Atlantis", 0.9)), &c1ai::RunRecord::default()).unwrap();
-    let doubted = lib.suggestion(seven).unwrap().unwrap();
+    lib.put_suggestion(Task::Describe, seven, &entry(guess("Atlantis", 0.9)), &c1ai::RunRecord::default()).unwrap();
+    let doubted = lib.suggestion(Task::Describe, seven).unwrap().unwrap();
     let place = doubted.suggestion.place.unwrap();
     assert_eq!(place.city.unwrap().p, 0.5);
     assert_eq!(doubted.warnings.len(), 1, "{:?}", doubted.warnings);
@@ -2889,7 +2892,7 @@ fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
         ..c1index::Accept::default()
     };
     let before = lib.photo(seven).unwrap().unwrap();
-    let accepted = lib.accept_suggestions(&[pick(eight), pick(seven)]).unwrap();
+    let accepted = lib.accept_suggestions(Task::Describe, &[pick(eight), pick(seven)]).unwrap();
     assert!(accepted.changed.is_empty());
 
     let eight_now = lib.photo(eight).unwrap().unwrap();
@@ -2903,4 +2906,74 @@ fn an_accepted_place_fills_the_levels_and_a_position_only_where_none() {
     assert_eq!(seven_now.geo, before.geo, "a position the photo has stays");
     assert_eq!(seven_now.place.city.as_deref(), Some("Kraków"), "the city shown was replaced, as ticked");
     assert!(lib.events(10).unwrap().iter().any(|e| e.origin == Origin::Ai));
+}
+
+#[test]
+fn a_place_found_by_a_locating_run_can_move_an_approximate_position_and_be_taken_as_precise() {
+    use c1ai::{Basis, Guess, PlaceGuess, PointGuess};
+    use c1index::ai::{Entry, Status, Task};
+    let (_d, lib, _s) = setup();
+    let entry = |lat: f64, lon: f64| Entry {
+        model: "claude-haiku-5-5".into(),
+        prompt: 9,
+        suggestion: c1ai::Suggestion {
+            place: Some(PlaceGuess {
+                country: Some(Guess { name: "Poland".into(), p: 0.95 }),
+                city: Some(Guess { name: "Kraków".into(), p: 0.95 }),
+                point: Some(PointGuess { lat, lon, p: 0.95, radius_km: 0.2 }),
+                basis: Some(Basis::Landmark),
+                landmark: Some("Wawel".into()),
+                ..PlaceGuess::default()
+            }),
+            ..c1ai::Suggestion::default()
+        },
+        status: Status::Proposed,
+        ..Entry::default()
+    };
+    let (eight, seven) = (row_of(&lib, 8), row_of(&lib, 7));
+    let described = Entry {
+        suggestion: c1ai::Suggestion { headline: Some("Tram".into()), ..Default::default() },
+        ..entry(0.0, 0.0)
+    };
+    lib.put_suggestion(Task::Describe, eight, &described, &c1ai::RunRecord::default()).unwrap();
+    lib.put_suggestion(Task::Locate, eight, &entry(50.054, 19.935), &c1ai::RunRecord::default()).unwrap();
+    assert_eq!(lib.suggestion(Task::Describe, eight).unwrap().unwrap().suggestion.headline.as_deref(), Some("Tram"));
+    assert_eq!(lib.described(Task::Locate, &[eight, seven], "claude-haiku-5-5", 9).unwrap().len(), 1);
+
+    // Photo 7 has a position of its own: a locating run leaves it out.
+    assert!(!lib.unpositioned(&[seven]).unwrap().contains(&seven));
+    assert_eq!(lib.unpositioned(&[eight]).unwrap(), [eight]);
+
+    // First an approximate position, as a description's place gives it.
+    let pick = |row: u64, point: [f64; 2], precise: bool| c1index::Accept {
+        row,
+        point: Some(point),
+        precise,
+        seen: c1index::Seen { place: lib.photo(row).unwrap().unwrap().place, ..c1index::Seen::default() },
+        ..c1index::Accept::default()
+    };
+    lib.accept_suggestions(Task::Describe, &[pick(eight, [50.06, 19.94], false)]).unwrap();
+    let approx = Filter { gps: Some(true), approx: Some(true), ..Filter::default() };
+    assert_eq!(ids(&lib, &approx), [8]);
+    assert_eq!(lib.unpositioned(&[eight]).unwrap(), [eight], "≈ only: still to locate");
+
+    // The landmark's position replaces it, as the photo's own.
+    let before7 = lib.photo(seven).unwrap().unwrap().geo;
+    lib.accept_suggestions(Task::Locate, &[pick(eight, [50.054, 19.935], true), pick(seven, [50.054, 19.935], true)])
+        .unwrap();
+    let geo = lib.photo(eight).unwrap().unwrap().geo.unwrap();
+    assert_eq!((geo.lat, geo.lon, geo.origin), (50.054, 19.935, GeoOrigin::Manual));
+    assert!(ids(&lib, &approx).is_empty(), "no longer ≈");
+    assert!(lib.unpositioned(&[eight]).unwrap().is_empty(), "located");
+    // A guess all the same: never told to the model as where the photographer was.
+    let ten = row_of(&lib, 10);
+    let clues = lib.locate_context(&[ten], 2880).unwrap();
+    assert!(!clues[&ten].iter().any(|c| c.contains("50.0540")), "{clues:?}");
+    assert_eq!(lib.photo(seven).unwrap().unwrap().geo, before7, "a position of its own stays");
+    assert_eq!(lib.suggestion(Task::Locate, eight).unwrap().unwrap().status, Status::Accepted);
+    assert_eq!(lib.suggestion(Task::Describe, eight).unwrap().unwrap().status, Status::Accepted);
+    let (reviews, _) = lib.reviews().unwrap();
+    assert!(
+        reviews.iter().any(|r| r.review.task == Task::Locate && r.review.taken.as_ref().is_some_and(|t| t.precise))
+    );
 }

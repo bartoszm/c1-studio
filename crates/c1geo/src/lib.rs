@@ -227,6 +227,11 @@ impl Gazetteer {
         self.countries.get(id as usize).map(|c| c.code.as_str())
     }
 
+    /// The state a city [`Gazetteer::resolve`] found lies in.
+    pub fn city_state(&self, id: u32) -> Option<u32> {
+        self.cities.get(id as usize).and_then(|c| c.state)
+    }
+
     pub fn country_name(&self, code: &str) -> Option<&str> {
         let id = self.country_by_code.get(&code.trim().to_ascii_uppercase())?;
         Some(&self.countries[*id as usize].name)
@@ -328,6 +333,17 @@ impl Gazetteer {
     /// The place `lat, lon` is in: the city whose reach covers it best, or, away from any
     /// city, the state and country of the nearest one within 60 km.
     pub fn reverse(&self, lat: f64, lon: f64) -> Option<Found> {
+        self.reverse_where(lat, lon, None)
+    }
+
+    /// [`Gazetteer::reverse`] among the cities of one country only: where a point is in
+    /// that country's terms, when a bigger city across a border reaches it too (Tin Shui
+    /// Wai, in Hong Kong, is nearer Shenzhen). None when no city of it covers the point.
+    pub fn reverse_in(&self, lat: f64, lon: f64, country: u32) -> Option<Found> {
+        self.reverse_where(lat, lon, Some(country)).filter(|f| f.ids.city.is_some())
+    }
+
+    fn reverse_where(&self, lat: f64, lon: f64, country: Option<u32>) -> Option<Found> {
         let (cy, cx) = cell(lat, lon);
         let mut best: Option<(f64, u32)> = None;
         let mut nearest: Option<(f64, u32)> = None;
@@ -340,6 +356,9 @@ impl Gazetteer {
                 let x = (cx + dx + 180).rem_euclid(360) - 180;
                 for &id in self.grid.get(&(cy + dy, x)).into_iter().flatten() {
                     let c = &self.cities[id as usize];
+                    if country.is_some_and(|k| k != c.country) {
+                        continue;
+                    }
                     let d = km(lat, lon, c.lat, c.lon);
                     let reach = reach_km(c.population);
                     if d <= reach + 8.0 {

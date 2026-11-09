@@ -151,7 +151,7 @@ enum Says {
 }
 
 /// Faster than this between two photos, they were taken from a plane: no line between them.
-const MAX_KMH: f64 = 150.0;
+pub(super) const MAX_KMH: f64 = 150.0;
 
 /// The levels of a place path: `Poland|—|Kraków` → country, no state, city.
 pub fn place_of_path(path: &str) -> Place {
@@ -280,7 +280,7 @@ fn valid(a: &Approx) -> bool {
     a.lat.is_finite() && a.lon.is_finite() && a.lat.abs() <= 90.0 && a.lon.abs() <= 180.0
 }
 
-fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
+pub(super) fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
     let dlat = (b.0 - a.0).to_radians();
     let dlon = wrapped(b.1 - a.1).to_radians() * ((a.0 + b.0) / 2.0).to_radians().cos();
     6371.0 * dlat.hypot(dlon)
@@ -293,7 +293,7 @@ fn wrapped(dlon: f64) -> f64 {
 
 /// Where a photo taken at `at` was, between the fixes either side of it if they are at
 /// most `gap` ms apart and were not taken from a plane; the short way round the world.
-fn between(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
+pub(super) fn between(fixes: &[Fix], at: i64, gap: i64) -> Option<(f64, f64)> {
     let after = fixes.partition_point(|f| f.at < at);
     let next = fixes.get(after)?;
     if next.at == at {
@@ -756,7 +756,7 @@ impl Library {
 
     /// The catalog's positions of their own, by time: none given from a place's name or
     /// from neighbours.
-    fn fixes(&self, searcher: &Searcher) -> anyhow::Result<Vec<Fix>> {
+    pub(super) fn fixes(&self, searcher: &Searcher) -> anyhow::Result<Vec<Fix>> {
         let mut fixes = Vec::new();
         let own = self.seen(searcher, &Filter { approx: Some(false), ..Filter::default() }, false)?;
         let (guessed, keys) = (self.guessed.read().unwrap(), self.keys.read().unwrap());
@@ -772,7 +772,7 @@ impl Library {
     }
 
     /// The catalog's photos with a place, by time: when, the place's path, the row.
-    fn placed(&self, searcher: &Searcher) -> anyhow::Result<Vec<(i64, Arc<str>, u64)>> {
+    pub(super) fn placed(&self, searcher: &Searcher) -> anyhow::Result<Vec<(i64, Arc<str>, u64)>> {
         let mut placed = Vec::new();
         for s in self.seen(searcher, &Filter { placed: Some(true), ..Filter::default() }, true)? {
             if let (Some(at), Some(path)) = (s.at, s.path) {
@@ -911,6 +911,7 @@ impl Library {
         // without its mark would pass for one taken there.
         self.place_book.set_guessed(&guesses)?;
         self.guessed.write().unwrap().extend(guesses.into_iter().filter_map(|(k, g)| Some((k, g?))));
+        self.fixes_changed();
         self.edit(&changes)
     }
 }

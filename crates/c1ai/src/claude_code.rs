@@ -101,7 +101,7 @@ pub struct ClaudeCode {
 
 impl ClaudeCode {
     pub fn new(program: PathBuf, options: Options, brief: &Brief, vocabulary: Vocabulary) -> Result<Self, AiError> {
-        let mut cli = ClaudeCode::asking(program, options, &crate::system_prompt(brief), crate::schema(&brief.fields))?;
+        let mut cli = ClaudeCode::asking(program, options, &crate::system_prompt(brief), crate::schema(brief))?;
         cli.prompt = crate::prompt_hash(brief);
         cli.vocabulary = vocabulary;
         Ok(cli)
@@ -378,7 +378,7 @@ mod tests {
         let after = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
         assert_eq!(after("--tools"), "");
         assert_eq!(after("--model"), "claude-opus-5-5");
-        assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), crate::schema(&brief.fields));
+        assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), crate::schema(&brief));
         assert!(std::fs::read_to_string(after("--system-prompt-file")).unwrap().contains("street"));
         let message =
             ClaudeCode::message(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into(), progress: None });
