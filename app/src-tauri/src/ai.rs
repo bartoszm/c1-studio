@@ -1121,7 +1121,13 @@ fn locate_scene(
     let mut cells = Vec::new();
     let mut first: Option<Photo> = None;
     let mut times = Vec::new();
-    for i in c1index::library::scene_sample(rows.len(), scene.max) {
+    // The photos spread over the scene first; one with no image gives way to the rest.
+    let spread = c1index::library::scene_sample(rows.len(), scene.max);
+    let rest = (0..rows.len()).filter(|i| !spread.contains(i));
+    for i in spread.iter().copied().chain(rest) {
+        if cells.len() >= scene.max {
+            break;
+        }
         let row = rows[i];
         let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { continue };
         let Some(cell) = pixels(s, &id, image, SCENE_PHOTO_EDGE)? else { continue };
@@ -1204,6 +1210,10 @@ fn locate_scene(
 /// What a clue line tells of, its time aside: "12 min before it, the photographer was at
 /// X" and "11 min before it, …" tell of the same photo.
 fn clue_key(line: &str) -> String {
+    // The point between the photos either side, worked out for each photo: the first's.
+    if line.starts_with("On a straight line between") {
+        return "between".into();
+    }
     let timed =
         line.starts_with(|c: char| c.is_ascii_digit()) && (line.contains(" before it") || line.contains(" after it"));
     match line.split_once(", ") {
@@ -1422,5 +1432,9 @@ mod tests {
         assert_ne!(clue_key(a), clue_key(c));
         let home = "The photographer lives in Kraków, Poland";
         assert_eq!(clue_key(home), home);
+        assert_eq!(
+            clue_key("On a straight line between the two, by time: about 50.3200, 19.4600"),
+            clue_key("On a straight line between the two, by time: about 50.3210, 19.4630")
+        );
     }
 }

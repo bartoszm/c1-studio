@@ -121,13 +121,16 @@ export function placeReplaces(g: PlaceGuess, ticks: PlaceTicks, now: PlaceNames 
 export const percent = (p: number) => `${Math.round(p * 100)}%`;
 
 /** What another photo of a scene takes of what its card takes: the same levels, except
- *  one it names otherwise already (its own name stays); the position unless it has one of
+ *  one it names otherwise already and those below it (its own name stays, and nothing is
+ *  put under it that the card found under another); the position unless it has one of
  *  its own (`locked`). */
 export function memberPick(lead: Accept, row: number, now: PlaceNames | null, locked: boolean, seen: Seen): Accept {
   const place: Partial<PlaceNames> = { ...lead.place };
+  let differs = false;
   for (const level of LEVELS) {
-    const has = now?.[level];
-    if (place[level] && has && has.trim() && has.trim() !== place[level]) delete place[level];
+    const has = now?.[level]?.trim();
+    if (has && place[level] && has !== place[level]) differs = true;
+    if (differs) delete place[level];
   }
   if (!place.country) delete place.country_code;
   const point = locked ? undefined : lead.point;

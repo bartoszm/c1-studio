@@ -525,10 +525,22 @@
   function picksOf(list: number[]): Accept[] {
     return list.flatMap((row) => {
       const lead = pickOf(row);
+      const leadPoint = rows.find((r) => r.row === row)?.suggestion.place?.point;
       const rest = (scenes.get(row) ?? []).slice(1);
-      return [lead, ...rest.map((r) => memberPick(lead, r.row, r.current?.place ?? null, pointLocked(r), seenOf(r)))];
+      return [lead, ...rest.map((r) => {
+        // A photo whose own check doubted the point (taken too far from its neighbours in
+        // time) is not given it.
+        const own = r.suggestion.place?.point;
+        const doubted = !!leadPoint && !!own && own.p < leadPoint.p;
+        return memberPick(lead, r.row, r.current?.place ?? null, pointLocked(r) || doubted, seenOf(r));
+      })];
     });
   }
+  /** What the card's photos were warned of, each once: a scene's photos are checked each
+   *  against its own neighbours. */
+  const warningsOf = (r: SuggestionRow) => [...new Set((scenes.get(r.row) ?? [r]).flatMap((m) => m.warnings))];
+  /** Photos a list of cards stands for. */
+  const photoCount = (list: SuggestionRow[]) => list.reduce((n, r) => n + (scenes.get(r.row)?.length ?? 1), 0);
 
   let minConfidence = $state(0.7);
   let proposed = $derived(cardRows.filter((r) => r.status === "Proposed"));
@@ -728,8 +740,8 @@
           disabled={working || !sure.length}
           title="Takes what each card has ticked: a caption, headline or rating a photo already has is kept unless ticked on its card"
           onclick={() => accept(sure.map((r) => r.row))}
-        >Accept {sure.length.toLocaleString()}</button>
-        <button class="btn" disabled={working} onclick={() => setStatus(proposed.map((r) => r.row), "Rejected")}>Reject all {proposed.length.toLocaleString()}</button>
+        >Accept {photoCount(sure).toLocaleString()}</button>
+        <button class="btn" disabled={working} onclick={() => setStatus(proposed.map((r) => r.row), "Rejected")}>Reject all {photoCount(proposed).toLocaleString()}</button>
       </div>
     {/if}
   </div>
@@ -989,8 +1001,8 @@
               {#if s.subject && s.headline}<span>subject: {s.subject}</span>{/if}
               <span title={r.model}>{money(r.cost)}</span>
             </div>
-            {#if r.warnings.length}
-              <p class="warn">{r.warnings.join(" · ")}</p>
+            {#if warningsOf(r).length}
+              <p class="warn">{warningsOf(r).join(" · ")}</p>
             {/if}
             <div class="actions">
               {#if r.status === "Proposed"}

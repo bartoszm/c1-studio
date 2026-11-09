@@ -86,8 +86,9 @@ pub(super) struct SceneShot {
 
 /// Photos taken one after another at one place, for a model to locate together: no two
 /// more than `gap` ms apart, the whole at most `span` ms, on one trip, with no two places
-/// written that differ (a photo with none goes with any). A photo with no capture time is
-/// a scene of its own. Scenes come in the order taken; rows within them too.
+/// written that differ (a photo with none goes with any, and one less specific with one
+/// saying the same and more: `Poland` with `Poland|—|Laski`). A photo with no capture
+/// time is a scene of its own. Scenes come in the order taken; rows within them too.
 pub(super) fn scenes(mut shots: Vec<SceneShot>, gap: i64, span: i64) -> Vec<Vec<u64>> {
     shots.sort_by_key(|s| (s.at.is_none(), s.at, s.row));
     let mut out: Vec<Vec<u64>> = Vec::new();
@@ -99,15 +100,21 @@ pub(super) fn scenes(mut shots: Vec<SceneShot>, gap: i64, span: i64) -> Vec<Vec<
                 at - last <= gap
                     && at - first <= span
                     && *trip == s.trip
-                    && !matches!((place, &s.place), (Some(a), Some(b)) if a != b)
+                    && match (place, &s.place) {
+                        (Some(a), Some(b)) => within(a, b) || within(b, a),
+                        _ => true,
+                    }
             }
             _ => false,
         };
         if joins {
             let scene = open.as_mut().expect("joins an open scene");
             scene.1 = s.at.expect("joins with a time");
-            if scene.2.is_none() {
-                scene.2 = s.place.clone();
+            // The scene's place is the most specific of its photos'.
+            if let Some(p) = &s.place
+                && scene.2.as_ref().is_none_or(|q| q.len() < p.len())
+            {
+                scene.2 = Some(p.clone());
             }
             out.last_mut().expect("an open scene is listed").push(s.row);
         } else {
@@ -116,6 +123,11 @@ pub(super) fn scenes(mut shots: Vec<SceneShot>, gap: i64, span: i64) -> Vec<Vec<
         }
     }
     out
+}
+
+/// Place path `a` is `b` or a place within it: `Poland|—|Laski` within `Poland`.
+fn within(a: &str, b: &str) -> bool {
+    a == b || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('|'))
 }
 
 /// Which of `n` photos a scene sends, at most `max`: spread evenly, first and last in.
@@ -282,7 +294,11 @@ impl Library {
         };
         let mut shots = Vec::with_capacity(rows.len());
         for &row in rows {
-            let Some(photo) = self.photo(row)? else { continue };
+            // A photo that cannot be read goes alone: every row asked for is in a scene.
+            let Some(photo) = self.photo(row)? else {
+                shots.push(SceneShot { row, at: None, place: None, trip: None });
+                continue;
+            };
             let at = photo.captured_at;
             shots.push(SceneShot {
                 row,
@@ -398,7 +414,37 @@ mod tests {
     }
 
     #[test]
+    fn scenes_at_their_edges() {
+        let (gap, span) = (10 * 60_000, 60 * 60_000);
+        assert!(scenes(Vec::new(), gap, span).is_empty());
+        // Exactly the gap and the span apart: still one scene.
+        let edge = vec![
+            shot(1, 0, None, None),
+            shot(2, 10, None, None),
+            shot(3, 20, None, None),
+            shot(4, 30, None, None),
+            shot(5, 40, None, None),
+            shot(6, 50, None, None),
+            shot(7, 60, None, None),
+            shot(8, 71, None, None),
+        ];
+        assert_eq!(scenes(edge, gap, span), vec![vec![1, 2, 3, 4, 5, 6, 7], vec![8]]);
+        // A country alone goes with a place in it; the scene then has the finer place.
+        let finer = vec![
+            shot(1, 0, Some("Poland"), None),
+            shot(2, 1, Some("Poland|—|Laski"), None),
+            shot(3, 2, Some("Poland|—|Bolesław"), None),
+        ];
+        assert_eq!(scenes(finer, gap, span), vec![vec![1, 2], vec![3]]);
+        assert!(within("Poland|—|Laski", "Poland") && !within("Polandia", "Poland"));
+    }
+
+    #[test]
     fn a_big_scene_sends_photos_spread_evenly() {
+        assert_eq!(sample(0, 9), Vec::<usize>::new());
+        assert_eq!(sample(3, 0), [0]);
+        assert_eq!(sample(3, 1), [0]);
+        assert_eq!(sample(9, 9).len(), 9);
         assert_eq!(sample(4, 9), [0, 1, 2, 3]);
         assert_eq!(sample(20, 5), [0, 4, 9, 14, 19]);
         assert_eq!(sample(10, 9).len(), 9);

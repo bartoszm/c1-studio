@@ -51,7 +51,17 @@ test("a scene's other photos take its place, keeping names of their own", () => 
   assert.deepEqual(bare.place, lead.place);
   assert.deepEqual([bare.point, bare.precise, bare.row], [[50.32, 19.46], true, 2]);
   const own = memberPick(lead, 3, { ...none, country: "Polska", city: "Laski" }, true, seen);
-  assert.deepEqual(own.place, { city: "Laski", location: "Piezometr" }, "its own country stays, with its code");
+  assert.deepEqual(own.place, {}, "its own country stays, and nothing goes under it");
   assert.equal(own.point, undefined, "a position of its own stays");
   assert.equal(own.precise, false);
+});
+
+test("a scene's photo with a city of its own gets nothing the card found under another", () => {
+  const lead = {
+    row: 1, keywords: [], place: { country: "Poland", country_code: "PL", city: "Laski", location: "Piezometr" },
+    seen: { caption: null, headline: null, rating: null, place: none },
+  };
+  const seen = { caption: null, headline: null, rating: null, place: none };
+  const krakow = memberPick(lead, 2, { ...none, country: "Poland", city: "Kraków" }, false, seen);
+  assert.deepEqual(krakow.place, { country: "Poland", country_code: "PL" });
 });
