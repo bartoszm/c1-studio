@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { circle, guessPins, pinPicks } from "../src/lib/aiGuesses";
+import { circle, guessPins, pinPicks, pointTicked } from "../src/lib/aiGuesses";
 import type { PlaceGuess, PlaceNames, SuggestionRow } from "../src/lib/api";
 
 const none: PlaceNames = { country: null, country_code: null, state: null, city: null, location: null };
@@ -56,4 +56,25 @@ test("a pin moved by hand is the photo's own position; one with its own GPS keep
   assert.deepEqual([kept.point, kept.precise], [undefined, false]);
   const [approx] = guessPins([row(6, null, { placed: true, approx: true })]);
   assert.deepEqual(pinPicks(approx, null, 0.8, true)[0].point, [50.3233, 19.4725], "≈ only: replaced");
+});
+
+test("a circle across the date line stays one ring; a tiny radius is drawn as the smallest told", () => {
+  const ring = circle(-17, 179.99, 5);
+  const lons = ring.map(([lon]) => lon);
+  assert.ok(Math.max(...lons) > 180 && Math.min(...lons) > 179, "runs on past 180, no jump to -180");
+  const [pin] = guessPins([{ ...row(7, null), suggestion: { ...row(7, null).suggestion, place: { ...place, point: { ...place.point!, radius_km: 0 } } } }]);
+  assert.equal(pin.radius_km, 0.05);
+});
+
+test("a position below the tick is left unless asked for; the scene's others get it past a first photo's own", () => {
+  const low = { ...place, point: { ...place.point!, p: 0.5 } };
+  const lowRow = (n: number, group: number | null, current = {}) => ({ ...row(n, group, current), suggestion: { ...row(n, group).suggestion, place: low } });
+  const [pin] = guessPins([lowRow(1, null)]);
+  assert.equal(pointTicked(pin, 0.8), false);
+  assert.equal(pinPicks(pin, null, 0.8, false, false)[0].point, undefined);
+  assert.deepEqual(pinPicks(pin, null, 0.8, false, true)[0].point, [50.3233, 19.4725], "ticked by hand");
+  const [scene] = guessPins([row(1, 1, { placed: true }), row(2, 1)]);
+  const [first, other] = pinPicks(scene, null, 0.8, true);
+  assert.deepEqual([first.point, first.precise], [undefined, false]);
+  assert.deepEqual([other.point, other.precise], [[50.3233, 19.4725], true]);
 });

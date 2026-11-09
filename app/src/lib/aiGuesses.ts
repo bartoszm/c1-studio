@@ -24,23 +24,32 @@ export function guessPins(rows: SuggestionRow[]): GuessPin[] {
   }
   return [...by.values()].map(([lead, ...members]) => {
     const pt = lead.suggestion.place!.point!;
-    return { lead, members, lat: pt.lat, lon: pt.lon, radius_km: pt.radius_km, p: pt.p };
+    return { lead, members, lat: pt.lat, lon: pt.lon, radius_km: Math.max(pt.radius_km, MIN_RADIUS_KM), p: pt.p };
   });
+}
+
+/** The smallest circle drawn and told of: closer than this a guess is not. */
+export const MIN_RADIUS_KM = 0.05;
+
+/** The position starts ticked when it is as likely as `tick` (0..1) asks. */
+export function pointTicked(pin: GuessPin, tick: number): boolean {
+  return pin.p >= tick;
 }
 
 /** The photo has a position of its own: a guessed one is never given. */
 export const ownPosition = (r: SuggestionRow) => !!r.current?.placed && !r.current?.approx;
 
-/** A circle `km` round a point, as a polygon ring of lon, lat pairs (closed). */
+/** A circle `km` round a point, as a polygon ring of lon, lat pairs (closed). Longitudes
+ *  run on past ±180 rather than wrap, so a circle across the date line stays one ring. */
 export function circle(lat: number, lon: number, km: number, steps = 64): [number, number][] {
-  const r = Math.max(km, 0.05) / 6371;
+  const r = Math.max(km, MIN_RADIUS_KM) / 6371;
   const [φ1, λ1] = [(lat * Math.PI) / 180, (lon * Math.PI) / 180];
   const ring: [number, number][] = [];
   for (let i = 0; i <= steps; i++) {
     const θ = (2 * Math.PI * i) / steps;
     const φ2 = Math.asin(Math.sin(φ1) * Math.cos(r) + Math.cos(φ1) * Math.sin(r) * Math.cos(θ));
     const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(r) * Math.cos(φ1), Math.cos(r) - Math.sin(φ1) * Math.sin(φ2));
-    ring.push([(((λ2 * 180) / Math.PI + 540) % 360) - 180, (φ2 * 180) / Math.PI]);
+    ring.push([(λ2 * 180) / Math.PI, (φ2 * 180) / Math.PI]);
   }
   return ring;
 }
@@ -49,11 +58,13 @@ export function circle(lat: number, lon: number, km: number, steps = 64): [numbe
 export const precisePin = (pin: GuessPin, precise: number) =>
   !!pin.lead.suggestion.place && preciseOffered(pin.lead.suggestion.place, precise);
 
-/** What accepting a pin takes: the levels likely enough where the photo has none, and the
- *  position, `at` (moved by the user: then it is the photo's own) or the guess's; a scene's
- *  other photos the same, each keeping names and a position of their own. `tick` and
- *  `precise` are fractions (0..1). */
-export function pinPicks(pin: GuessPin, at: [number, number] | null, tick: number, precise: boolean): Accept[] {
+/** What accepting a pin takes: the levels likely enough (`tick`, 0..1) where the photo has
+ *  none, and, when `takePoint` or moved, the position: `at` (moved by the user: then the
+ *  photo's own) or the guess's, as precise if asked. A scene's other photos the same, each
+ *  keeping names and a position of its own, whether or not the first photo has one. */
+export function pinPicks(
+  pin: GuessPin, at: [number, number] | null, tick: number, precise: boolean, takePoint = true,
+): Accept[] {
   const r = pin.lead;
   const g = r.suggestion.place!;
   const now = r.current?.place ?? null;
@@ -64,14 +75,17 @@ export function pinPicks(pin: GuessPin, at: [number, number] | null, tick: numbe
     rating: row.current?.rating ?? null,
     place: row.current?.place ?? { country: null, country_code: null, state: null, city: null, location: null },
   });
-  const point: [number, number] | undefined = ownPosition(r) ? undefined : (at ?? [pin.lat, pin.lon]);
+  const chosen: [number, number] | undefined = at ?? (takePoint ? [pin.lat, pin.lon] : undefined);
+  const asOwn = !!chosen && (precise || !!at);
   const lead: Accept = {
     row: r.row,
     keywords: [],
     place: takenPlace(g, ticks, guessNames(g)),
-    point,
-    precise: !!point && (precise || !!at),
+    point: ownPosition(r) ? undefined : chosen,
+    precise: !ownPosition(r) && asOwn,
     seen: seen(r),
   };
-  return [lead, ...pin.members.map((m) => memberPick(lead, m.row, m.current?.place ?? null, ownPosition(m), seen(m)))];
+  // The scene's others take the position even when the first photo keeps one of its own.
+  const forOthers: Accept = { ...lead, point: chosen, precise: asOwn };
+  return [lead, ...pin.members.map((m) => memberPick(forOthers, m.row, m.current?.place ?? null, ownPosition(m), seen(m)))];
 }

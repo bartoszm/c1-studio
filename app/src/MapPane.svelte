@@ -14,7 +14,7 @@
   import { settings } from "./lib/settings.svelte";
   import UnplacedTray from "./UnplacedTray.svelte";
   import { BASIS, LEVELS, percent } from "./lib/aiPlace";
-  import { circle, guessPins, ownPosition, pinPicks, precisePin, type GuessPin } from "./lib/aiGuesses";
+  import { circle, guessPins, ownPosition, pinPicks, pointTicked, precisePin, type GuessPin } from "./lib/aiGuesses";
 
   let {
     filter, version, focus, dragRows, pickedRows, tile, trip, center, onbox, onview, ontile, onselect, onsetgeo, onerror,
@@ -61,7 +61,7 @@
     /** A position belongs to the image, so its variants move with it (Capture One). */
     geoPerAsset?: boolean;
     /** An AI guess was accepted from the map: the ops that undo it. */
-    onaccepted: (undo: [number, api.Op][]) => void;
+    onaccepted: (undo: [number, api.Op][]) => void | Promise<void>;
   } = $props();
 
   // OpenFreeMap: free vector tiles, no key. Painted light, turned dark by a CSS filter
@@ -476,7 +476,8 @@
     map.on("moveend", moved);
     map.on("movestart", () => {
       popup = null;
-      if (aiPopup && !aiPopup.at) aiPopup = null;
+      // The card stands where the pin was on screen: it goes, a pin moved stays moved.
+      aiPopup = null;
     });
     // The remembered centre is the canvas's: it stays where it is as the padding is set.
     pad();
@@ -557,8 +558,15 @@
   const aiMarkers = new Map<number, maplibregl.Marker>();
   /** A pin is being dragged, or was just let go. */
   let dragging = false;
-  /** A pin clicked or dragged: its card, where it is (moved: by the user), taken as precise. */
-  let aiPopup = $state<{ pin: GuessPin; x: number; y: number; at: [number, number] | null; precise: boolean } | null>(null);
+  /** The pins were to be drawn again while one was dragged: they are, once it is let go. */
+  let redrawLater = false;
+  /** Pins moved by the user, by their card's row: where to, until accepted, rejected or put back. */
+  const movedPins = new Map<number, [number, number]>();
+  /** A pin clicked or dragged: its card, where it is (moved: by the user), the position
+   *  taken, and as precise. */
+  let aiPopup = $state<{
+    pin: GuessPin; x: number; y: number; at: [number, number] | null; point: boolean; precise: boolean;
+  } | null>(null);
   let aiWorking = $state(false);
   let aiAsked = 0;
   async function loadAi() {
@@ -573,6 +581,9 @@
       if (mine !== aiAsked) return;
       aiTicks = { place: view.settings.place_tick / 100, precise: view.settings.locate.precise / 100 };
       aiPins = guessPins(rows);
+      // A pin no longer shown is no longer moved.
+      const shown = new Set(aiPins.map((p) => p.lead.row));
+      for (const row of [...movedPins.keys()]) if (!shown.has(row)) movedPins.delete(row);
       drawAi();
     } catch (e) {
       if (mine === aiAsked) onerror(String(e));
@@ -609,6 +620,11 @@
   }
   function drawAi() {
     if (!map) return;
+    // Not under a pin being dragged: once it is let go.
+    if (dragging) {
+      redrawLater = true;
+      return;
+    }
     for (const m of aiMarkers.values()) m.remove();
     aiMarkers.clear();
     if (!ensureAiLayers()) return;
@@ -640,10 +656,15 @@
       el.append(card, stem, dot);
       el.title = `AI: ${guessLabel(pin)} · ${percent(pin.p)}, within ${km(pin.radius_km)} · click to review, drag to move`;
       const locked = ownPosition(pin.lead);
-      const marker = new maplibregl.Marker({ element: el, anchor: "bottom", draggable: !locked }).setLngLat([pin.lon, pin.lat]).addTo(map);
-      const open = (at: [number, number] | null) => {
+      const at = movedPins.get(pin.lead.row) ?? null;
+      const marker = new maplibregl.Marker({ element: el, anchor: "bottom", draggable: !locked })
+        .setLngLat(at ? [at[1], at[0]] : [pin.lon, pin.lat])
+        .addTo(map);
+      const open = () => {
+        const at = movedPins.get(pin.lead.row) ?? null;
         const p = map!.project(at ? [at[1], at[0]] : [pin.lon, pin.lat]);
-        aiPopup = { pin, x: p.x, y: p.y, at, precise: !!at || precisePin(pin, aiTicks.precise) };
+        const point = !!at || pointTicked(pin, aiTicks.place);
+        aiPopup = { pin, x: p.x, y: p.y, at, point, precise: point && (!!at || precisePin(pin, aiTicks.precise)) };
       };
       el.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -652,15 +673,20 @@
           dragging = false;
           return;
         }
-        open(aiPopup?.pin === pin ? aiPopup.at : null);
+        open();
       });
       el.addEventListener("dblclick", (e) => e.stopPropagation());
       marker.on("dragstart", () => (dragging = true));
       marker.on("dragend", () => {
-        // A click follows the drop only on the pin itself: let it go if none comes.
+        // The click that follows the drop comes at once, if at all.
         setTimeout(() => (dragging = false), 300);
-        const ll = marker.getLngLat();
-        open([ll.lat, ll.lng]);
+        const ll = marker.getLngLat().wrap();
+        movedPins.set(pin.lead.row, [ll.lat, ll.lng]);
+        open();
+        if (redrawLater) {
+          redrawLater = false;
+          setTimeout(drawAi, 350);
+        }
       });
       aiMarkers.set(pin.lead.row, marker);
     }
@@ -674,17 +700,22 @@
   }
   /** Back where the model put it. */
   function unmove(pin: GuessPin) {
+    movedPins.delete(pin.lead.row);
     aiMarkers.get(pin.lead.row)?.setLngLat([pin.lon, pin.lat]);
-    if (aiPopup) aiPopup = { ...aiPopup, at: null, precise: precisePin(pin, aiTicks.precise) };
+    if (aiPopup) {
+      const point = pointTicked(pin, aiTicks.place);
+      aiPopup = { ...aiPopup, at: null, point, precise: point && precisePin(pin, aiTicks.precise) };
+    }
   }
   async function acceptPin() {
     if (!aiPopup) return;
-    const { pin, at, precise } = aiPopup;
+    const { pin, at, point, precise } = aiPopup;
     aiWorking = true;
     try {
-      const { undo } = await api.acceptSuggestions(pinPicks(pin, at, aiTicks.place, precise), "locate");
+      const { undo } = await api.acceptSuggestions(pinPicks(pin, at, aiTicks.place, precise, point), "locate");
       aiPopup = null;
-      onaccepted(undo);
+      movedPins.delete(pin.lead.row);
+      await onaccepted(undo);
     } catch (e) {
       onerror(String(e));
     } finally {
@@ -698,6 +729,7 @@
     try {
       await api.setSuggestionStatus([pin.lead.row, ...pin.members.map((m) => m.row)], "Rejected", "locate");
       aiPopup = null;
+      movedPins.delete(pin.lead.row);
       await loadAi();
     } catch (e) {
       onerror(String(e));
@@ -1101,9 +1133,12 @@
       {#if aiPopup.at}
         <span>Moved by you: taken as {count > 1 ? "their" : "its"} own position. <button class="link" onclick={() => unmove(pin)}>Put it back</button></span>
       {:else}
-        <label><input type="checkbox" bind:checked={aiPopup.precise} disabled={ownPosition(pin.lead)} /> precise: {count > 1 ? "their" : "its"} own position, not ≈</label>
+        <label title="Take the position too; ticked when it is as likely as Settings > AI > Place asks">
+          <input type="checkbox" bind:checked={aiPopup.point} disabled={ownPosition(pin.lead) && !pin.members.length} /> position
+        </label>
+        <label><input type="checkbox" bind:checked={aiPopup.precise} disabled={!aiPopup.point} /> precise: {count > 1 ? "their" : "its"} own position, not ≈</label>
       {/if}
-      {#if ownPosition(pin.lead)}<span class="muted">It has a position of its own: only the place is taken.</span>{/if}
+      {#if ownPosition(pin.lead)}<span class="muted">{count > 1 ? "The first photo has" : "It has"} a position of its own: {count > 1 ? "it keeps it" : "only the place is taken"}.</span>{/if}
       <div class="buttons">
         <button class="primary" disabled={aiWorking} onclick={acceptPin}>Accept{count > 1 ? ` ${count}` : ""}</button>
         <button disabled={aiWorking} onclick={rejectPin}>Reject</button>
