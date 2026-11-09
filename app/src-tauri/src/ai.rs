@@ -95,11 +95,26 @@ pub(crate) struct LocateSettings {
     /// A position found from a landmark at least this likely (%), within
     /// 0.5 km, is offered as the photo's own rather than approximate.
     precise: u8,
+    /// Photos taken one after another at one place go together, a call per scene.
+    group: bool,
+    /// ... at most this many minutes apart,
+    group_gap_minutes: i64,
+    /// ... a scene spanning at most this many minutes,
+    group_span_minutes: i64,
+    /// ... and at most this many of a scene's photos sent, on one sheet.
+    group_max: usize,
 }
 
 impl Default for LocateSettings {
     fn default() -> Self {
-        LocateSettings { window_minutes: c1index::library::LOCATE_WINDOW_MINUTES, precise: 90 }
+        LocateSettings {
+            window_minutes: c1index::library::LOCATE_WINDOW_MINUTES,
+            precise: 90,
+            group: true,
+            group_gap_minutes: 10,
+            group_span_minutes: 60,
+            group_max: c1image::SCENE_COLUMNS * c1image::SCENE_COLUMNS,
+        }
     }
 }
 
@@ -408,6 +423,10 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     let locate = LocateSettings {
         window_minutes: settings.locate.window_minutes.clamp(1, 2880),
         precise: settings.locate.precise.clamp(1, 100),
+        group_gap_minutes: settings.locate.group_gap_minutes.clamp(1, 240),
+        group_span_minutes: settings.locate.group_span_minutes.clamp(1, 1440),
+        group_max: settings.locate.group_max.clamp(1, c1image::SCENE_COLUMNS * c1image::SCENE_COLUMNS),
+        ..settings.locate
     };
     let settings = AiSettings {
         parallel: settings.parallel.clamp(1, 8),
@@ -442,6 +461,8 @@ pub(crate) struct Estimate {
     skipped: usize,
     /// Photos a locating run leaves out: they have a position of their own.
     positioned: usize,
+    /// Scenes of more than one photo a locating run sends together.
+    scenes: usize,
     /// US dollars, roughly; nothing on a plan.
     cost: f64,
     model: String,
@@ -540,10 +561,19 @@ fn provider(s: &Session, settings: &AiSettings, task: Task) -> Result<Box<dyn Vi
     })
 }
 
+/// What a run would do: the photos, the calls (each a photo, a contact sheet or a scene)
+/// when they are scenes, and the estimate.
+struct Planned {
+    todo: Vec<u64>,
+    /// A locating run's scenes: photos taken one after another at one place, a call each.
+    scenes: Option<Vec<Vec<u64>>>,
+    estimate: Estimate,
+}
+
 /// Of `rows`, the photos a run would describe (`again` takes those described before
 /// too), and what that would cost. A locating run takes only photos with no position of
-/// their own.
-fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<(Vec<u64>, Estimate), String> {
+/// their own, and sends those taken one after another at one place together.
+fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<Planned, String> {
     let settings = load_settings(s);
     let brief = brief(s, &settings, task)?.0;
     let asked = rows.len();
@@ -566,18 +596,36 @@ fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<(Vec<u64>,
     };
     let done = if again { Default::default() } else { s.library.described(task, rows, &id, prompt).map_err(text)? };
     let todo: Vec<u64> = rows.iter().copied().filter(|r| !done.contains(r)).collect();
+    let l = &settings.locate;
+    let scenes = (task == Task::Locate && l.group)
+        .then(|| s.library.locate_scenes(&todo, l.group_gap_minutes, l.group_span_minutes))
+        .transpose()
+        .map_err(text)?;
     let sheets = settings.access == Access::Gemini && settings.sheets;
+    let calls = match &scenes {
+        Some(scenes) => scenes.len(),
+        None if sheets => todo.len().div_ceil(c1image::PER_SHEET),
+        None => todo.len(),
+    };
     let estimate = Estimate {
         photos: todo.len(),
         skipped: rows.len() - todo.len(),
         positioned: asked - rows.len(),
-        cost: price.map_or(0.0, |model| claude::estimate(&model, todo.len(), settings.image == AiImage::Preview)),
+        scenes: scenes.as_ref().map_or(0, |s| s.iter().filter(|s| s.len() > 1).count()),
+        // A scene's sheet costs about what one photo does.
+        cost: price.map_or(0.0, |model| {
+            claude::estimate(
+                &model,
+                if scenes.is_some() { calls } else { todo.len() },
+                settings.image == AiImage::Preview,
+            )
+        }),
         model: name,
         plan: price.is_none(),
-        calls: if sheets { todo.len().div_ceil(c1image::PER_SHEET) } else { todo.len() },
+        calls,
         via: if settings.access == Access::Gemini { "Gemini" } else { "Claude" },
     };
-    Ok((todo, estimate))
+    Ok(Planned { todo, scenes, estimate })
 }
 
 #[tauri::command]
@@ -589,7 +637,9 @@ pub(crate) async fn ai_estimate(
 ) -> Result<Estimate, String> {
     let s = app.session()?;
     let task = task.unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || plan(&s, &rows, again, task).map(|(_, e)| e)).await.map_err(text)?
+    tauri::async_runtime::spawn_blocking(move || plan(&s, &rows, again, task).map(|p| p.estimate))
+        .await
+        .map_err(text)?
 }
 
 /// One line of what the catalog knows of a photo: context for the model.
@@ -719,16 +769,17 @@ pub(crate) async fn start_describe(
     }
     let started = (|| {
         let settings = load_settings(&s);
-        let (todo, _) = plan(&s, &rows, again, task)?;
+        let Planned { todo, scenes, .. } = plan(&s, &rows, again, task)?;
         Ok::<_, String>((
             Arc::<dyn VisionProvider>::from(provider(&s, &settings, task)?),
             todo,
+            scenes,
             settings.parallel.clamp(1, 8),
             settings.image,
-            settings.locate.window_minutes,
+            (settings.locate.window_minutes, settings.locate.group_max),
         ))
     })();
-    let (provider, todo, parallel, image, window) = match started {
+    let (provider, todo, scenes, parallel, image, (window, scene_max)) = match started {
         Ok(started) => started,
         Err(e) => {
             s.describing.store(false, Ordering::SeqCst);
@@ -737,18 +788,20 @@ pub(crate) async fn start_describe(
     };
     s.describe_stop.store(false, Ordering::SeqCst);
     let sheets = provider.sheets();
-    // One photo per call, or a contact sheet of up to 36.
-    let units: Vec<Vec<u64>> = if sheets {
-        todo.chunks(c1image::PER_SHEET).map(<[u64]>::to_vec).collect()
-    } else {
-        todo.iter().map(|&row| vec![row]).collect()
+    // A locating run's scenes, a call each; else one photo per call, or a contact sheet
+    // of up to 36.
+    let grouped = scenes.is_some();
+    let units: Vec<Vec<u64>> = match scenes {
+        Some(scenes) => scenes,
+        None if sheets => todo.chunks(c1image::PER_SHEET).map(<[u64]>::to_vec).collect(),
+        None => todo.iter().map(|&row| vec![row]).collect(),
     };
     *lock(&s.describe) = DescribeState {
         task,
         running: true,
         total: todo.len(),
         started: now(),
-        sheets,
+        sheets: sheets || units.iter().any(|u| u.len() > 1),
         calls_total: units.len(),
         ..Default::default()
     };
@@ -777,6 +830,8 @@ pub(crate) async fn start_describe(
                         let Some(unit) = units.get(index) else { break };
                         let call = index + 1;
                         let began = now();
+                        // A contact sheet's call, or a scene's of several photos.
+                        let sheets = sheets && !grouped || unit.len() > 1;
                         {
                             let mut st = lock(&s.describe);
                             st.working.extend(unit);
@@ -799,6 +854,10 @@ pub(crate) async fn start_describe(
                             [row] if !sheets => {
                                 describe_one(&s, provider.as_ref(), task, image, *row, &clues, progress)
                                     .map(|cost| Described { no_image: 0, unanswered: 0, cost })
+                            }
+                            rows if grouped => {
+                                let scene = Scene { rows, max: scene_max, call };
+                                locate_scene(&s, provider.as_ref(), image, &scene, &clues, progress)
                             }
                             rows => describe_sheet(&s, provider.as_ref(), task, image, rows, &clues, call, progress),
                         }))
@@ -1036,6 +1095,126 @@ fn describe_sheet(
     Ok(Described { no_image, unanswered, cost: reply.record.cost })
 }
 
+/// A scene to locate: photos taken one after another at one place (in that order), the
+/// most of them sent, and the call's number.
+struct Scene<'a> {
+    rows: &'a [u64],
+    max: usize,
+    call: usize,
+}
+
+/// The long edge a scene's photos are loaded at: a sheet of a few fills [`claude::LONG_EDGE`].
+const SCENE_PHOTO_EDGE: u32 = 800;
+
+/// Locates a scene in one call: a few of its photos, spread over it, on one numbered
+/// sheet, with what the catalog knows of where they were. The place found is stored for
+/// every photo of the scene, sent or not, marked as the scene's.
+fn locate_scene(
+    s: &Session,
+    provider: &dyn VisionProvider,
+    image: AiImage,
+    scene: &Scene,
+    clues: &Clues,
+    progress: Progress,
+) -> anyhow::Result<Described> {
+    let (rows, call) = (scene.rows, scene.call);
+    let mut cells = Vec::new();
+    let mut first: Option<Photo> = None;
+    let mut times = Vec::new();
+    for i in c1index::library::scene_sample(rows.len(), scene.max) {
+        let row = rows[i];
+        let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { continue };
+        let Some(cell) = pixels(s, &id, image, SCENE_PHOTO_EDGE)? else { continue };
+        cells.push(cell);
+        times.extend(photo.captured_at);
+        first.get_or_insert(photo);
+    }
+    let Some(first) = first else { anyhow::bail!("no preview or thumbnail") };
+    let jpeg = c1image::encode_jpeg(&c1image::scene_sheet(&cells), 85);
+    {
+        let sent = if cells.len() < rows.len() {
+            format!("{} of its {} photos", cells.len(), rows.len())
+        } else {
+            format!("{} photos", rows.len())
+        };
+        lock(&s.describe).note(call, true, format!("Sheet {call}: a scene, {sent}"));
+        let mut kept = lock(&s.describe_sheets);
+        kept.push_back((call, jpeg.clone()));
+        while kept.len() > SHEETS_KEPT {
+            kept.pop_front();
+        }
+    }
+    // The scene's clues: each photo's, in the order taken, once; a line telling of the
+    // same photo or place as one before ("11 min before it, …", "12 min before it, …") is
+    // told by the first photo's.
+    let mut lines: Vec<String> = Vec::new();
+    let mut said = std::collections::HashSet::new();
+    for row in rows {
+        for line in clues.get(row).into_iter().flatten() {
+            if said.insert(clue_key(line)) {
+                lines.push(line.clone());
+            }
+        }
+    }
+    let lines: Vec<String> = lines.into_iter().take(SCENE_CLUES).collect();
+    let minutes = match (times.iter().min(), times.iter().max()) {
+        (Some(a), Some(b)) => (b - a) / 60_000,
+        _ => 0,
+    };
+    let within = if minutes < 1 { "a minute".to_string() } else { format!("{minutes} min") };
+    let scene = format!(
+        "The image is a sheet of {} photos of one scene, numbered, from {} taken one after another within {within} \
+         at one place: locate the scene, where most of them were taken",
+        cells.len(),
+        rows.len()
+    );
+    let context = format!("{scene}. {}", context_with(&first, &lines));
+    let request = PhotoRequest { jpeg, context, progress: Some(progress) };
+    let reply = match provider.describe(&request) {
+        Ok(reply) => reply,
+        Err(failed) => {
+            if let Some(record) = &failed.record {
+                s.library.record_call(rows[0], record)?;
+            }
+            return Err(failed.into());
+        }
+    };
+    let mut told = vec![scene];
+    told.extend(lines);
+    let entry = Entry {
+        at: chrono::Utc::now().timestamp_millis(),
+        provider: provider.id().to_string(),
+        model: provider.model().to_string(),
+        prompt: provider.prompt_hash(),
+        suggestion: reply.suggestion,
+        warnings: reply.warnings,
+        cost: reply.record.cost,
+        status: Status::Proposed,
+        context: told,
+        group: Some(rows[0]),
+    };
+    // The call is recorded once, with the scene's first photo.
+    s.library.put_suggestion(Task::Locate, rows[0], &entry, &reply.record)?;
+    for &row in &rows[1..] {
+        s.library.put_suggestion_only(Task::Locate, row, &Entry { cost: 0.0, ..entry.clone() })?;
+    }
+    Ok(Described { no_image: 0, unanswered: 0, cost: reply.record.cost })
+}
+
+/// What a clue line tells of, its time aside: "12 min before it, the photographer was at
+/// X" and "11 min before it, …" tell of the same photo.
+fn clue_key(line: &str) -> String {
+    let timed =
+        line.starts_with(|c: char| c.is_ascii_digit()) && (line.contains(" before it") || line.contains(" after it"));
+    match line.split_once(", ") {
+        Some((_, rest)) if timed => rest.to_string(),
+        _ => line.to_string(),
+    }
+}
+
+/// The most clue lines a scene sends: its photos' together, the rest are much the same.
+const SCENE_CLUES: usize = 10;
+
 /// Stops the run: calls under way end as soon as they can.
 #[tauri::command]
 pub(crate) async fn stop_describe(app: State<'_, App>) -> Result<(), String> {
@@ -1228,4 +1407,20 @@ pub(crate) async fn set_suggestion_status(
     task: Option<Task>,
 ) -> Result<(), String> {
     app.session()?.library.set_suggestion_status(task.unwrap_or_default(), &rows, status).map_err(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scene_tells_of_a_photo_once_whatever_the_minutes() {
+        let a = "12 min before it, the photographer was at 50.3181, 19.4611 (Bolesław, Poland)";
+        let b = "11 min before it, the photographer was at 50.3181, 19.4611 (Bolesław, Poland)";
+        let c = "11 min after it, at 50.3181, 19.4611 (Bolesław, Poland)";
+        assert_eq!(clue_key(a), clue_key(b));
+        assert_ne!(clue_key(a), clue_key(c));
+        let home = "The photographer lives in Kraków, Poland";
+        assert_eq!(clue_key(home), home);
+    }
 }

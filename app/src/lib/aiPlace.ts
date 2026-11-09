@@ -1,7 +1,7 @@
 // A model's place guess on a review card: which levels start ticked, and what accepting
 // takes from them.
 
-import type { Guess, PlaceGuess, PlaceNames } from "./api";
+import type { Accept, Guess, PlaceGuess, PlaceNames, Seen } from "./api";
 import { codeFor, looseKey } from "./countries";
 import { parsePath } from "./places";
 
@@ -119,6 +119,20 @@ export function placeReplaces(g: PlaceGuess, ticks: PlaceTicks, now: PlaceNames 
 }
 
 export const percent = (p: number) => `${Math.round(p * 100)}%`;
+
+/** What another photo of a scene takes of what its card takes: the same levels, except
+ *  one it names otherwise already (its own name stays); the position unless it has one of
+ *  its own (`locked`). */
+export function memberPick(lead: Accept, row: number, now: PlaceNames | null, locked: boolean, seen: Seen): Accept {
+  const place: Partial<PlaceNames> = { ...lead.place };
+  for (const level of LEVELS) {
+    const has = now?.[level];
+    if (place[level] && has && has.trim() && has.trim() !== place[level]) delete place[level];
+  }
+  if (!place.country) delete place.country_code;
+  const point = locked ? undefined : lead.point;
+  return { row, keywords: [], place, point, precise: !!point && !!lead.precise, seen };
+}
 
 /** A landmark's position within this many km may be taken as the photo's own. */
 export const PRECISE_KM = 0.5;

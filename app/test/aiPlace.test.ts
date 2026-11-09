@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { placeReplaces, placeTicks, preciseOffered, takenPlace } from "../src/lib/aiPlace";
+import { memberPick, placeReplaces, placeTicks, preciseOffered, takenPlace } from "../src/lib/aiPlace";
 import type { PlaceGuess, PlaceNames } from "../src/lib/api";
 
 const guess: PlaceGuess = {
@@ -38,4 +38,20 @@ test("a landmark's close, likely position is offered as precise", () => {
   assert.equal(preciseOffered({ ...wawel, point: { ...wawel.point!, radius_km: 2 } }, 0.9), false, "too wide");
   assert.equal(preciseOffered(wawel, 0.97), false, "not likely enough");
   assert.equal(preciseOffered(guess, 0.5), false, "no basis");
+});
+
+test("a scene's other photos take its place, keeping names of their own", () => {
+  const lead = {
+    row: 1, keywords: [], point: [50.32, 19.46] as [number, number], precise: true,
+    place: { country: "Poland", country_code: "PL", city: "Laski", location: "Piezometr" },
+    seen: { caption: null, headline: null, rating: null, place: none },
+  };
+  const seen = { caption: null, headline: null, rating: null, place: none };
+  const bare = memberPick(lead, 2, none, false, seen);
+  assert.deepEqual(bare.place, lead.place);
+  assert.deepEqual([bare.point, bare.precise, bare.row], [[50.32, 19.46], true, 2]);
+  const own = memberPick(lead, 3, { ...none, country: "Polska", city: "Laski" }, true, seen);
+  assert.deepEqual(own.place, { city: "Laski", location: "Piezometr" }, "its own country stays, with its code");
+  assert.equal(own.point, undefined, "a position of its own stays");
+  assert.equal(own.precise, false);
 });

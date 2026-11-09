@@ -799,6 +799,13 @@ export type LocateSettings = {
   window_minutes: number;
   /** A landmark's position at least this likely (%) and within PRECISE_KM starts ticked as precise. */
   precise: number;
+  /** Photos taken one after another at one place go together, a call per scene ... */
+  group: boolean;
+  /** ... at most this many minutes apart, spanning at most this many, ... */
+  group_gap_minutes: number;
+  group_span_minutes: number;
+  /** ... at most this many of a scene's photos sent. */
+  group_max: number;
 };
 /** The source's thumbnail (for Capture One its render of the edits) or the preview. */
 export type AiImage = "thumb" | "preview";
@@ -829,6 +836,8 @@ export type AiEstimate = {
   photos: number; skipped: number; cost: number; model: string; plan: boolean;
   /** Left out of a locating run: they have a position of their own. */
   positioned: number;
+  /** Scenes of several photos a locating run sends together. */
+  scenes: number;
   /** One per photo, or per contact sheet. */
   calls: number;
   via: "Claude" | "Gemini";
