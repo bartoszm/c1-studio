@@ -227,6 +227,11 @@ impl Gazetteer {
         self.countries.get(id as usize).map(|c| c.code.as_str())
     }
 
+    /// The state a city [`Gazetteer::resolve`] found lies in.
+    pub fn city_state(&self, id: u32) -> Option<u32> {
+        self.cities.get(id as usize).and_then(|c| c.state)
+    }
+
     pub fn country_name(&self, code: &str) -> Option<&str> {
         let id = self.country_by_code.get(&code.trim().to_ascii_uppercase())?;
         Some(&self.countries[*id as usize].name)

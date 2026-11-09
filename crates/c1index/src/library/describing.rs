@@ -21,6 +21,10 @@ const REFINE_KEY: &str = "refine";
 /// most: a hint for the review, never a tick by default.
 pub(super) const DOUBTED: f32 = 0.5;
 
+/// A guessed point this close to the city named (beyond its radius) is taken to be in it,
+/// whatever city the gazetteer finds there.
+const NEAR_KM: f64 = 5.0;
+
 /// What the user takes from one photo's suggestion, as edited in the review: any field
 /// left out is not touched.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -194,7 +198,23 @@ pub fn check_place(guess: &mut PlaceGuess) -> Vec<String> {
         && let Some(at) = g.reverse(point.lat, point.lon)
     {
         let differ = |named: Option<u32>, there: Option<u32>| named.is_some() && there.is_some() && named != there;
-        if (differ(found.country, at.ids.country) || differ(found.city, at.ids.city)) && point.p > DOUBTED {
+        // A village is often found as the town whose reach covers it: a point near the city
+        // named is not doubted for it. Nor is one in the region named when the city found
+        // by that name lies in another region: a namesake (the gazetteer lacks the village
+        // named, Laski in Małopolska, and found Laski in Łódzkie).
+        let near_named = || {
+            g.locate(&place).is_some_and(|c| {
+                c.level == Level::City
+                    && super::placing::km((c.lat, c.lon), (point.lat, point.lon)) <= point.radius_km as f64 + NEAR_KM
+            })
+        };
+        let state_named =
+            alone(Place { country: place.country.clone(), state: place.state.clone(), ..Place::default() }).state;
+        let namesake = state_named.is_some()
+            && state_named == at.ids.state
+            && found.city.is_some_and(|c| g.city_state(c) != state_named);
+        let city_differs = differ(found.city, at.ids.city) && !namesake && !near_named();
+        if (differ(found.country, at.ids.country) || city_differs) && point.p > DOUBTED {
             why.push(format!(
                 "the position is in {}, not the place named: {:.0}% lowered to {:.0}%",
                 at.city.as_deref().unwrap_or(&at.country),
@@ -512,5 +532,46 @@ impl Library {
         let mut changed: Vec<u64> = changed.into_iter().collect();
         changed.sort_unstable();
         Ok(Accepted { undo, changed })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use c1ai::{Guess, PointGuess};
+
+    fn laski(lat: f64, lon: f64) -> PlaceGuess {
+        let g = |name: &str, p: f32| Some(Guess { name: name.into(), p });
+        PlaceGuess {
+            country: g("Poland", 0.99),
+            state: g("Małopolska", 0.98),
+            city: g("Laski", 0.96),
+            point: Some(PointGuess { lat, lon, p: 0.9, radius_km: 1.0 }),
+            ..PlaceGuess::default()
+        }
+    }
+
+    #[test]
+    fn a_point_by_the_village_named_is_not_doubted_for_the_town_around_it() {
+        // The piezometer in Laski, which the gazetteer finds in Bolesław's reach.
+        let mut near = laski(50.3233, 19.4725);
+        let why = check_place(&mut near);
+        assert_eq!(near.point.unwrap().p, 0.9, "{why:?}");
+        // In another region: doubted.
+        let mut far = laski(52.2297, 21.0122);
+        check_place(&mut far);
+        assert_eq!(far.point.unwrap().p, DOUBTED, "Warsaw");
+        // Kraków, in the region named, is in reach of the namesake rule: a city found where
+        // the gazetteer knows the city named is still doubted (Wieliczka for Kraków).
+        let g = |name: &str, p: f32| Some(Guess { name: name.into(), p });
+        let mut krakow = PlaceGuess {
+            country: g("Poland", 0.99),
+            state: g("Małopolska", 0.98),
+            city: g("Kraków", 0.96),
+            point: Some(PointGuess { lat: 49.9839, lon: 20.0547, p: 0.9, radius_km: 1.0 }),
+            ..PlaceGuess::default()
+        };
+        check_place(&mut krakow);
+        assert_eq!(krakow.point.unwrap().p, DOUBTED, "Wieliczka");
     }
 }

@@ -131,8 +131,9 @@ the photo plainly shows otherwise; a place already written is the photographer's
 /// The place's line for a locating run: the levels and the position, with the evidence.
 const LOCATE_PLACE: &str = "- location_guess: where the photo was taken, level by level: country, state (the region or province), \
 city (the town or village), and location (a district, a street, a landmark or a venue), each a name and p, the probability \
-from 0 to 1 that it is right. Use the names in common local use (Kraków, not Cracow). A deeper level is never more likely \
-than the one above it; a level you cannot judge has an empty name and p 0.
+from 0 to 1 that it is right. Write each name the way the catalog data already writes that place (its language and \
+spelling: \"Poland\" if it says Poland); a place it does not name, by the name in common local use (Kraków, not Cracow). \
+A deeper level is never more likely than the one above it; a level you cannot judge has an empty name and p 0.
   coordinates: lat and lon in decimal degrees of where the photographer stood (or of the subject, when that is all you can tell), \
 radius_km how far off they may be, and p, the probability that the true position lies within that radius; all 0 when you cannot \
 place it. A recognised landmark seen from a known side can be placed within 0.1 to 0.5 km; a city from its look alone within its size.
