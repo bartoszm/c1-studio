@@ -13,10 +13,12 @@
   import { parsePlusCode } from "./lib/pluscode";
   import { settings } from "./lib/settings.svelte";
   import UnplacedTray from "./UnplacedTray.svelte";
+  import { BASIS, LEVELS, percent } from "./lib/aiPlace";
+  import { circle, guessPins, ownPosition, pinPicks, precisePin, type GuessPin } from "./lib/aiGuesses";
 
   let {
     filter, version, focus, dragRows, pickedRows, tile, trip, center, onbox, onview, ontile, onselect, onsetgeo, onerror,
-    onplace, onpromote, ondragrows, onneighbours, onunplaced, geoPerAsset = false,
+    onplace, onpromote, ondragrows, onneighbours, onunplaced, onaccepted, geoPerAsset = false,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
     filter: Filter;
@@ -58,6 +60,8 @@
     onunplaced: (placed: boolean) => void;
     /** A position belongs to the image, so its variants move with it (Capture One). */
     geoPerAsset?: boolean;
+    /** An AI guess was accepted from the map: the ops that undo it. */
+    onaccepted: (undo: [number, api.Op][]) => void;
   } = $props();
 
   // OpenFreeMap: free vector tiles, no key. Painted light, turned dark by a CSS filter
@@ -470,12 +474,16 @@
     box.addEventListener("mousedown", startBox, true);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
-    map.on("movestart", () => (popup = null));
+    map.on("movestart", () => {
+      popup = null;
+      if (aiPopup && !aiPopup.at) aiPopup = null;
+    });
     // The remembered centre is the canvas's: it stays where it is as the padding is set.
     pad();
     // A click on the map itself lets the picked tile go (Shift+drag draws an area instead).
     map.on("click", (e) => {
       popup = null;
+      aiPopup = null;
       if (!e.originalEvent.shiftKey && untrack(() => tile)) ontile(null, null);
     });
     map.on("error", (e: unknown) => {
@@ -483,7 +491,7 @@
       const text = String((e as { error?: Error }).error?.message ?? e);
       if (/Failed to fetch|NetworkError|style/i.test(text)) failed = "The map's tiles could not be loaded (needs a network).";
     });
-    map.once("load", () => { failed = null; moved(); drawRoute(); });
+    map.once("load", () => { failed = null; moved(); drawRoute(); drawAi(); });
     return () => {
       // Answers still on the way are for a map that is gone: they draw nothing.
       asked++;
@@ -495,6 +503,7 @@
       map = undefined;
       markers.clear();
       approxMarkers.clear();
+      aiMarkers.clear();
     };
   });
 
@@ -508,8 +517,11 @@
     searched = false;
     chosen = null;
     map?.setStyle(online ? STYLE : OFFLINE);
-    // A new style drops the route's layers: draw them again once it is in.
-    map?.once("idle", drawRoute);
+    // A new style drops the route's and the guesses' layers: draw them again once it is in.
+    map?.once("idle", () => {
+      drawRoute();
+      drawAi();
+    });
   });
 
   // The filter or an edit changed, or places by name were turned on or off: draw again.
@@ -520,6 +532,179 @@
     popup = null;
     untrack(refresh);
   });
+
+  // ---- AI Locate's guesses -------------------------------------------------------------
+  /** The guesses not yet reviewed are shown: pins with the circle they may be off by. */
+  let showAi = $state(readFlag("map-ai"));
+  function readFlag(key: string): boolean {
+    try {
+      return localStorage.getItem(key) === "1";
+    } catch {
+      return false;
+    }
+  }
+  $effect(() => {
+    const on = showAi;
+    try {
+      localStorage.setItem("map-ai", on ? "1" : "0");
+    } catch {
+      // Not kept: it starts off next time.
+    }
+  });
+  let aiPins = $state.raw<GuessPin[]>([]);
+  /** Settings > AI's ticks, as fractions: what a pin's Accept takes. */
+  let aiTicks = { place: 0.8, precise: 0.9 };
+  const aiMarkers = new Map<number, maplibregl.Marker>();
+  /** A pin is being dragged, or was just let go. */
+  let dragging = false;
+  /** A pin clicked or dragged: its card, where it is (moved: by the user), taken as precise. */
+  let aiPopup = $state<{ pin: GuessPin; x: number; y: number; at: [number, number] | null; precise: boolean } | null>(null);
+  let aiWorking = $state(false);
+  let aiAsked = 0;
+  async function loadAi() {
+    const mine = ++aiAsked;
+    if (!showAi) {
+      aiPins = [];
+      drawAi();
+      return;
+    }
+    try {
+      const [rows, view] = await Promise.all([api.suggestions("Proposed", "locate"), api.aiSettings()]);
+      if (mine !== aiAsked) return;
+      aiTicks = { place: view.settings.place_tick / 100, precise: view.settings.locate.precise / 100 };
+      aiPins = guessPins(rows);
+      drawAi();
+    } catch (e) {
+      if (mine === aiAsked) onerror(String(e));
+    }
+  }
+  $effect(() => {
+    void version;
+    void showAi;
+    aiPopup = null;
+    untrack(loadAi);
+  });
+  /** The circles' layers are there; like the route's, drawn again once the style takes them. */
+  let aiWaiting = false;
+  function ensureAiLayers(): boolean {
+    if (!map) return false;
+    if (map.getSource("ai-circles")) return true;
+    try {
+      map.addSource("ai-circles", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+      map.addLayer({ id: "ai-fill", type: "fill", source: "ai-circles", paint: { "fill-color": AI_COLOR, "fill-opacity": ["*", 0.12, ["get", "p"]] } });
+      map.addLayer({ id: "ai-line", type: "line", source: "ai-circles", paint: { "line-color": AI_COLOR, "line-width": 1.5, "line-dasharray": [3, 2] } });
+      return true;
+    } catch {
+      for (const id of ["ai-line", "ai-fill"]) if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource("ai-circles")) map.removeSource("ai-circles");
+      if (!aiWaiting) {
+        aiWaiting = true;
+        map.once("idle", () => {
+          aiWaiting = false;
+          drawAi();
+        });
+      }
+      return false;
+    }
+  }
+  function drawAi() {
+    if (!map) return;
+    for (const m of aiMarkers.values()) m.remove();
+    aiMarkers.clear();
+    if (!ensureAiLayers()) return;
+    (map.getSource("ai-circles") as maplibregl.GeoJSONSource).setData({
+      type: "FeatureCollection",
+      features: aiPins.map((pin) => ({
+        type: "Feature" as const,
+        properties: { p: pin.p },
+        geometry: { type: "Polygon" as const, coordinates: [circle(pin.lat, pin.lon, pin.radius_km)] },
+      })),
+    });
+    for (const pin of aiPins) {
+      const el = document.createElement("div");
+      el.className = "pin ai";
+      const card = document.createElement("div");
+      card.className = "card";
+      const img = document.createElement("img");
+      img.src = api.thumbUrl(pin.lead.row);
+      img.draggable = false;
+      img.alt = "";
+      const n = document.createElement("span");
+      const count = pin.members.length + 1;
+      n.textContent = count > 1 ? `AI ${count}` : `AI ${percent(pin.p)}`;
+      card.append(img, n);
+      const stem = document.createElement("div");
+      stem.className = "stem";
+      const dot = document.createElement("div");
+      dot.className = "dot";
+      el.append(card, stem, dot);
+      el.title = `AI: ${guessLabel(pin)} · ${percent(pin.p)}, within ${km(pin.radius_km)} · click to review, drag to move`;
+      const locked = ownPosition(pin.lead);
+      const marker = new maplibregl.Marker({ element: el, anchor: "bottom", draggable: !locked }).setLngLat([pin.lon, pin.lat]).addTo(map);
+      const open = (at: [number, number] | null) => {
+        const p = map!.project(at ? [at[1], at[0]] : [pin.lon, pin.lat]);
+        aiPopup = { pin, x: p.x, y: p.y, at, precise: !!at || precisePin(pin, aiTicks.precise) };
+      };
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // The click that ends a drag is not one: the card the drag opened stays.
+        if (dragging) {
+          dragging = false;
+          return;
+        }
+        open(aiPopup?.pin === pin ? aiPopup.at : null);
+      });
+      el.addEventListener("dblclick", (e) => e.stopPropagation());
+      marker.on("dragstart", () => (dragging = true));
+      marker.on("dragend", () => {
+        // A click follows the drop only on the pin itself: let it go if none comes.
+        setTimeout(() => (dragging = false), 300);
+        const ll = marker.getLngLat();
+        open([ll.lat, ll.lng]);
+      });
+      aiMarkers.set(pin.lead.row, marker);
+    }
+  }
+  const km = (v: number) => (v < 1 ? `${Math.round(v * 1000)} m` : `${v} km`);
+  /** A guess's place, finest level first. */
+  function guessLabel(pin: GuessPin): string {
+    const g = pin.lead.suggestion.place;
+    const names = [...LEVELS].reverse().map((l) => g?.[l]?.name).filter(Boolean);
+    return names.slice(0, 2).join(", ") || "somewhere";
+  }
+  /** Back where the model put it. */
+  function unmove(pin: GuessPin) {
+    aiMarkers.get(pin.lead.row)?.setLngLat([pin.lon, pin.lat]);
+    if (aiPopup) aiPopup = { ...aiPopup, at: null, precise: precisePin(pin, aiTicks.precise) };
+  }
+  async function acceptPin() {
+    if (!aiPopup) return;
+    const { pin, at, precise } = aiPopup;
+    aiWorking = true;
+    try {
+      const { undo } = await api.acceptSuggestions(pinPicks(pin, at, aiTicks.place, precise), "locate");
+      aiPopup = null;
+      onaccepted(undo);
+    } catch (e) {
+      onerror(String(e));
+    } finally {
+      aiWorking = false;
+    }
+  }
+  async function rejectPin() {
+    if (!aiPopup) return;
+    const { pin } = aiPopup;
+    aiWorking = true;
+    try {
+      await api.setSuggestionStatus([pin.lead.row, ...pin.members.map((m) => m.row)], "Rejected", "locate");
+      aiPopup = null;
+      await loadAi();
+    } catch (e) {
+      onerror(String(e));
+    } finally {
+      aiWorking = false;
+    }
+  }
   $effect(() => {
     void focus;
     void tile;
@@ -590,6 +775,8 @@
   // The canvas is painted inverted (see the style below): these read as grey and amber.
   const ROUTE_ALL = "#8a8a8a";
   const ROUTE_DONE = "#7a4f00";
+  /** The guesses' circles: purple once the canvas is turned dark (it inverts colours). */
+  const AI_COLOR = "#6d28d9";
 
   async function loadRoute() {
     const mine = ++routeAsked;
@@ -891,6 +1078,40 @@
       >Put {pickedRows.length.toLocaleString()} picked photo{pickedRows.length === 1 ? "" : "s"} here</button>
     {/if}
   </form>
+  <button
+    class="ai-toggle"
+    class:on={showAi}
+    aria-pressed={showAi}
+    title="Show the places AI Locate found that are not reviewed yet: a pin each (or each scene) with the circle it may be off by. Click one to accept or reject it, drag it to put it right."
+    onclick={() => (showAi = !showAi)}
+  >AI guesses{showAi && aiPins.length ? ` ${aiPins.length.toLocaleString()}` : ""}</button>
+  {#if aiPopup}
+    {@const pin = aiPopup.pin}
+    {@const g = pin.lead.suggestion.place}
+    {@const count = pin.members.length + 1}
+    <div class="popup ai" style:left="{aiPopup.x}px" style:top="{aiPopup.y}px" role="dialog" aria-label="AI guess: {guessLabel(pin)}">
+      <b>{guessLabel(pin)}</b>
+      <span class="muted">
+        {#each LEVELS as level (level)}{#if g?.[level]}{g[level]!.name} {percent(g[level]!.p)}{level === "location" ? "" : " · "}{/if}{/each}
+      </span>
+      <span class="muted">
+        {count > 1 ? `A scene of ${count} photos · ` : ""}within {km(pin.radius_km)} · {percent(pin.p)}{g?.basis ? ` · ${BASIS[g.basis]}` : ""}{g?.landmark ? `: ${g.landmark}` : ""}
+      </span>
+      {#if g?.clues?.length}<span class="muted clue">{g.clues.slice(0, 3).join(" · ")}</span>{/if}
+      {#if aiPopup.at}
+        <span>Moved by you: taken as {count > 1 ? "their" : "its"} own position. <button class="link" onclick={() => unmove(pin)}>Put it back</button></span>
+      {:else}
+        <label><input type="checkbox" bind:checked={aiPopup.precise} disabled={ownPosition(pin.lead)} /> precise: {count > 1 ? "their" : "its"} own position, not ≈</label>
+      {/if}
+      {#if ownPosition(pin.lead)}<span class="muted">It has a position of its own: only the place is taken.</span>{/if}
+      <div class="buttons">
+        <button class="primary" disabled={aiWorking} onclick={acceptPin}>Accept{count > 1 ? ` ${count}` : ""}</button>
+        <button disabled={aiWorking} onclick={rejectPin}>Reject</button>
+        <button onclick={() => { onselect(pin.lead.row); }}>Show photo</button>
+        <button onclick={() => (aiPopup = null)}>Close</button>
+      </div>
+    </div>
+  {/if}
   {#if popup}
     {@const c = popup.cluster}
     <div class="popup" style:left="{popup.x}px" style:top="{popup.y}px" role="dialog" aria-label="Photos at {placeLabel(c.place)}">
@@ -988,6 +1209,19 @@
   .popup button { padding: 2px 8px; border-radius: 3px; border: 1px solid var(--line, #444); }
   .popup button:hover { background: var(--hover, #333); }
   .popup .primary { border: 0; background: var(--queued, #3b82f6); color: #fff; font-weight: 600; }
+  .ai-toggle {
+    position: absolute; right: 10px; top: 80px; z-index: 4; padding: 2px 8px; font-size: 12px; border-radius: 3px;
+    background: rgba(20, 20, 20, 0.9); border: 1px dashed #c084fc; color: #e9d5ff;
+  }
+  .ai-toggle.on { background: #6b21a8; border-style: solid; color: #fff; }
+  .popup.ai { border-color: #c084fc; width: 300px; }
+  .popup .clue { font-style: italic; }
+  .popup .link { padding: 0; border: 0; color: #c084fc; }
+  /* AI guesses: purple and dashed, never mistaken for a photo's own position. */
+  .canvas :global(.pin.ai .card) { border: 2px dashed #c084fc; }
+  .canvas :global(.pin.ai span) { background: #7e22ce; right: auto; left: -6px; }
+  .canvas :global(.pin.ai .dot) { background: #c084fc; }
+  .canvas :global(.pin.ai .stem) { background: #c084fc; }
   /* Photos placed by their place's name: dashed, see-through, never mistaken for a GPS pin. */
   .canvas :global(.pin.approx .card) { border: 2px dashed #fbbf24; opacity: 0.85; }
   .canvas :global(.pin.approx span) { background: #b7791f; }

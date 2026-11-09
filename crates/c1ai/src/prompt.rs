@@ -132,7 +132,8 @@ the photo plainly shows otherwise; a place already written is the photographer's
 const LOCATE_PLACE: &str = "- location_guess: where the photo was taken, level by level: country, state (the region or province), \
 city (the town or village), and location (a district, a street, a landmark or a venue), each a name and p, the probability \
 from 0 to 1 that it is right. Write each name the way the catalog data already writes that place (its language and \
-spelling: \"Poland\" if it says Poland); a place it does not name, by the name in common local use (Kraków, not Cracow). \
+spelling: \"Poland\" if it says Poland); a place it does not name, by the name in common local use (Kraków, not Cracow), \
+in the catalog's script (Latin letters when it writes in them: Asakusa Hisago-dori, not 浅草ひさご通り). \
 A deeper level is never more likely than the one above it; a level you cannot judge has an empty name and p 0.
   coordinates: lat and lon in decimal degrees of where the photographer stood (or of the subject, when that is all you can tell), \
 radius_km how far off they may be, and p, the probability that the true position lies within that radius; all 0 when you cannot \
