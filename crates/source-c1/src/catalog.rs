@@ -202,6 +202,18 @@ pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option
     .map_err(db_err)
 }
 
+/// Every variant's image sidecar path, which names its `.cop` preview
+/// ([`config::preview_path`]).
+pub(crate) fn preview_sidecars(con: &Connection) -> Result<Vec<(i64, String)>> {
+    let mut statement = con
+        .prepare("SELECT v.Z_PK, i.ZSIDECARPATH FROM ZVARIANT v JOIN ZIMAGE i ON i.Z_PK = v.ZIMAGE")
+        .map_err(db_err)?;
+    let rows = statement
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))
+        .map_err(db_err)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(db_err)
+}
+
 /// The crop of every variant that has one (its own, or the one straightening makes),
 /// measured for its `.cot` thumbnail, which is straightened onto a grown canvas already.
 pub(crate) fn thumbnail_crops(con: &Connection) -> Result<std::collections::HashMap<i64, c1model::Crop>> {

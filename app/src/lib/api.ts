@@ -217,6 +217,8 @@ export type Status = {
   provider: string;
   /** The source can be asked to look at its files again. */
   can_rescan: boolean;
+  /** The source can list the photos without a preview of its own (Capture One). */
+  can_list_missing_previews: boolean;
   /** Roots of a folder source that could not be reached at the last scan. */
   offline_roots: string[];
   /** How far a scan has got, while one runs. */
@@ -758,6 +760,15 @@ export const analysisState = () => invoke<AnalysisState>("analysis_state");
 export const thumbsState = () => invoke<ThumbsState>("thumbs_state");
 /** Makes a thumbnail for every photo without one, in the background ("thumbs" events). */
 export const fillThumbnails = () => invoke<void>("fill_thumbnails");
+/** Photos counted without a preview of the source's own ("no-preview" events); null until
+ *  counted, or for a source that cannot tell. */
+export const noPreviewCount = () => invoke<number | null>("no_preview_count");
+/** Of the photos `filter` selects, those without a preview of the source's own. */
+export const rowsWithoutPreview = (filter: Filter) => invoke<number[]>("rows_without_preview", { filter });
+/** What `largeUrl(row)` last sent: the source's preview, or the original standing in for
+ *  one it lacks or cannot read. Asked once the image has loaded. */
+export type PreviewKind = "preview" | "original";
+export const previewKind = (row: number) => invoke<PreviewKind>("preview_kind", { row });
 /** Opens the events log (background work and what failed) in the system's text viewer. */
 export const openLog = () => invoke<void>("open_log");
 
@@ -1061,7 +1072,12 @@ export const writeApply = () => invoke<WriteReport>("write_apply");
 // WebView2 on Windows reaches custom protocols as http://<scheme>.localhost.
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
+/** The source's own large preview, or a 404 without one: for grid tiles, which must not
+ *  decode originals. */
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
+/** The preview, else the original standing in for it (scaled, without the edits): for the
+ *  viewer and Compare. `previewKind` says which was sent. */
+export const largeUrl = (row: number) => `${base}/large/${row}`;
 /** The contact sheet an AI run (started at `run`, Unix ms) sent in call `call`, while kept. */
 export const sheetUrl = (run: number, call: number) => `${base}/sheet/${run}/${call}`;
 

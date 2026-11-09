@@ -312,7 +312,7 @@
   <div class="layer" {style}>
     <div class="zoom" style={transform(v)}>
       <img class="base" src={api.thumbUrl(row)} alt="" draggable="false" />
-      <img class="full" class:shown={sharp.has(row)} src={api.previewUrl(row)} alt="" draggable="false" onload={(e) => loaded(row, e)} onerror={() => broken.add(row)} />
+      <img class="full" class:shown={sharp.has(row)} src={api.largeUrl(row)} alt="" draggable="false" onload={(e) => loaded(row, e)} onerror={() => broken.add(row)} />
     </div>
   </div>
 {/snippet}

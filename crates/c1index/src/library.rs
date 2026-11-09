@@ -2293,6 +2293,15 @@ impl Library {
         keys.get(row as usize)?.as_deref().and_then(PhotoId::from_key)
     }
 
+    /// Of `rows`, those whose photo's key ([`PhotoId::key`]) `keep` accepts: one look at
+    /// the keys for a whole listing, with no [`PhotoId`] made for each row.
+    pub fn rows_with_key(&self, rows: Vec<u64>, mut keep: impl FnMut(&str) -> bool) -> Vec<u64> {
+        let keys = self.keys.read().unwrap();
+        rows.into_iter()
+            .filter(|&row| keys.get(row as usize).and_then(Option::as_deref).is_some_and(&mut keep))
+            .collect()
+    }
+
     pub fn photo(&self, row: u64) -> anyhow::Result<Option<Photo>> {
         self.store.photo(row)
     }

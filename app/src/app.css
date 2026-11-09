@@ -351,7 +351,8 @@ footer {
 .stage { position: relative; overflow: hidden; }
 /* --inset is set from INSET in Viewer.svelte, which fits the grid to the image with it. */
 .stage img { position: absolute; inset: var(--inset); width: calc(100% - 2 * var(--inset)); height: calc(100% - 2 * var(--inset)); object-fit: contain; }
-.stage .base { filter: blur(0.5px); }
+/* Softens the thumbnail while the preview loads; not when the thumbnail is all there is. */
+.stage .base:not(.alone) { filter: blur(0.5px); }
 .stage .full { opacity: 0; transition: opacity 120ms; }
 .stage .full.shown { opacity: 1; }
 /* The composition grid: a light line on a dark one, seen on any photo; clicks go through. */

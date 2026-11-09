@@ -102,6 +102,43 @@ pub(crate) fn preview_path(catalog_dir: &Path, sidecar: &str) -> Option<PathBuf>
         .map(|e| e.path())
 }
 
+/// [`preview_path`]'s file as a key into [`preview_names`]: the path under
+/// `Cache\Previews`, lower-cased, `/`-separated. `None` for an image with no sidecar path.
+pub(crate) fn preview_key(sidecar: &str) -> Option<String> {
+    let parts: Vec<&str> = sidecar.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("{}.cop", parts.join("/")).to_lowercase())
+}
+
+/// Every `.cop` preview under `Cache\Previews`, as [`preview_key`]s: one walk of the
+/// folder, for checking a whole catalog at once (100,000 previews take a few seconds).
+/// No such folder (a catalog Capture One never rendered previews for) gives none.
+pub(crate) fn preview_names(catalog_dir: &Path) -> std::io::Result<std::collections::HashSet<String>> {
+    let root = catalog_dir.join("Cache").join("Previews");
+    let mut names = std::collections::HashSet::new();
+    let mut folders = vec![(root, String::new())];
+    while let Some((folder, prefix)) = folders.pop() {
+        let entries = match std::fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_lowercase();
+            let key = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+            if entry.file_type()?.is_dir() {
+                folders.push((entry.path(), key));
+            } else if key.ends_with(".cop") {
+                names.insert(key);
+            }
+        }
+    }
+    Ok(names)
+}
+
 /// `ZWHITEBALANCE`: `R;G;B` multipliers with G normalised to 1.
 pub(crate) fn parse_white_balance(text: &str) -> Option<[f32; 3]> {
     let values: Vec<f32> = text.split(';').map(|v| v.trim().parse::<f32>()).collect::<Result<_, _>>().ok()?;
@@ -294,6 +331,22 @@ mod tests {
         assert!(found.file_name().unwrap().eq_ignore_ascii_case("DSCF8638.RAF.cop"));
         assert_eq!(preview_path(dir.path(), "2026/9/missing.raf"), None);
         assert_eq!(preview_path(dir.path(), ""), None);
+    }
+
+    #[test]
+    fn preview_names_match_preview_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("Cache").join("Previews").join("2026").join("9");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("DSCF8638.RAF.cop"), b"").unwrap();
+        std::fs::write(folder.join("notes.txt"), b"").unwrap();
+        let names = preview_names(dir.path()).unwrap();
+        assert_eq!(names.len(), 1);
+        assert!(names.contains(&preview_key("2026\\9\\dscf8638.raf").unwrap()));
+        assert!(!names.contains(&preview_key("2026/9/DSCF8639.RAF").unwrap()));
+        assert_eq!(preview_key(""), None);
+        // A catalog without the folder has no previews, which is no error.
+        assert!(preview_names(&dir.path().join("elsewhere")).unwrap().is_empty());
     }
 
     #[test]

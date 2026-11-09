@@ -138,6 +138,7 @@ impl PhotoSource for CaptureOne {
             makes_images: false,
             removes: Removal::MarksTrashed,
             progress: false,
+            lists_missing_previews: true,
         }
     }
 
@@ -249,6 +250,19 @@ impl PhotoSource for CaptureOne {
                 }))
             }
         }
+    }
+
+    /// Variants whose `.cop` Capture One never built (an import it did not finish
+    /// rendering): one catalog query and one walk of `Cache\Previews`, matched as
+    /// [`config::preview_path`] finds a single one, case aside.
+    fn missing_previews(&self) -> Result<Vec<PhotoId>> {
+        let sidecars = catalog::preview_sidecars(&catalog::open_live(&self.catalog)?)?;
+        let previews = config::preview_names(self.catalog_dir())?;
+        Ok(sidecars
+            .into_iter()
+            .filter(|(_, sidecar)| config::preview_key(sidecar).is_none_or(|key| !previews.contains(&key)))
+            .map(|(vpk, _)| PhotoId::new(&self.id, vpk.to_string()))
+            .collect())
     }
 
     fn write_status(&self) -> WriteStatus {
@@ -600,6 +614,35 @@ mod tests {
         assert!((crop.width - 0.5).abs() < 1e-3 && (crop.height - 0.5).abs() < 1e-3, "{crop:?}");
         // Variant 2's original is not on disk.
         assert_eq!(original("2"), None);
+    }
+
+    #[test]
+    fn missing_previews_are_the_variants_without_a_cop() {
+        let Some((dir, source)) = source() else { return };
+        let con = catalog::open_live(source.catalog_path()).unwrap();
+        let sidecars = catalog::preview_sidecars(&con).unwrap();
+        let ids = |list: Vec<PhotoId>| {
+            let mut pks: Vec<i64> = list.iter().map(|p| p.ext.parse().unwrap()).collect();
+            pks.sort();
+            pks
+        };
+        let mut all: Vec<i64> = sidecars.iter().map(|(vpk, _)| *vpk).collect();
+        all.sort();
+        assert!(!all.is_empty());
+        // No Cache\Previews at all: every variant is missing its preview.
+        assert_eq!(ids(source.missing_previews().unwrap()), all);
+        // Render the first variant's, in another case than the catalog records.
+        let (first, sidecar) = sidecars.iter().find(|(_, s)| !s.is_empty()).expect("a variant with a sidecar path");
+        let mut path = dir.path().join("Cache").join("Previews");
+        path.extend(sidecar.split(['\\', '/']).filter(|s| !s.is_empty()));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let name = format!("{}.COP", path.file_name().unwrap().to_string_lossy().to_uppercase());
+        std::fs::write(path.with_file_name(name), b"").unwrap();
+        let missing = ids(source.missing_previews().unwrap());
+        let same_sidecar: Vec<i64> =
+            sidecars.iter().filter(|(_, s)| s.eq_ignore_ascii_case(sidecar)).map(|(v, _)| *v).collect();
+        assert!(same_sidecar.contains(first));
+        assert_eq!(missing, all.into_iter().filter(|v| !same_sidecar.contains(v)).collect::<Vec<_>>());
     }
 
     #[test]

@@ -433,6 +433,8 @@
     return targets();
   });
   let thumbs = $state<api.ThumbsState | null>(null);
+  /** Photos without a preview of the source's own (Capture One never built it), once counted. */
+  let noPreview = $state<number | null>(null);
   let thumbsRetried = 0;
   let countsAt = 0;
   /** What is being dragged: photos (onto an album) or an album (onto a group). */
@@ -868,6 +870,7 @@
     api.analysisState().then((s) => (analysis = s)).catch(() => {});
     api.describeState().then((s) => (describing = s)).catch(() => {});
     api.thumbsState().then((s) => (thumbs = s)).catch(() => {});
+    api.noPreviewCount().then((n) => (noPreview = n)).catch(() => {});
   }
 
   onMount(() => {
@@ -889,6 +892,7 @@
         }
       }),
       listen("thumbs-done", () => api.retryBrokenImages()),
+      listen<number | null>("no-preview", (e) => { noPreview = e.payload; }),
       // The details panel reads the photo (and its history) again: Capture One may have changed it.
       listen("library-changed", () => { syncNote = ""; syncFailed = null; version++; refresh(true); }),
       listen<api.SourceProgress | null>("source-progress", (e) => { progress = e.payload; }),
@@ -2098,6 +2102,21 @@
       editError = String(e);
     }
   }
+  /** Picks the photos shown that have no preview of the source's own, to have Capture One
+   *  build theirs (they show blurred, or from the original, until it does). */
+  async function pickWithoutPreview() {
+    try {
+      const rows = await api.rowsWithoutPreview(asking($state.snapshot(filter)));
+      // None of them shown: the photos picked stay picked.
+      if (!rows.length) return note(`None of the photos shown lacks a ${source.word} preview`);
+      picked.clear();
+      carried = null;
+      for (const r of rows) picked.add(r);
+      note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} without a ${source.word} preview picked`);
+    } catch (e) {
+      editError = String(e);
+    }
+  }
   function showFolder(path: string) {
     const parts = path.split("/");
     for (let i = 1; i < parts.length; i++) expanded.add("f:" + parts.slice(0, i).join("/"));
@@ -2928,6 +2947,14 @@
           : `${source.name} has no thumbnail for these. Make them from each photo's preview, or its original when there is none.`}
         onclick={() => api.fillThumbnails().catch((e) => (editError = String(e)))}
       >{thumbs.missing.toLocaleString()} photo{thumbs.missing === 1 ? "" : "s"} without a thumbnail · {thumbs.total ? "Try again" : "Make them"}</button>
+    {/if}
+    {#if status?.can_list_missing_previews && noPreview}
+      <button
+        class="thumbs"
+        title={`${source.name} has no preview for these, so they show blurred, or from the original while its drive is connected.
+Pick those among the photos shown, then have ${source.word} build their previews.`}
+        onclick={pickWithoutPreview}
+      >{noPreview.toLocaleString()} without a preview · Select</button>
     {/if}
     {#if analysis?.running && analysis.total}
       <span class="sync" title="Shape, colours, light, focus and a likeness hash, from each photo's thumbnail">

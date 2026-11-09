@@ -105,6 +105,10 @@ pub struct Capabilities {
     /// worth asking while one runs.
     #[serde(default)]
     pub progress: bool,
+    /// [`PhotoSource::missing_previews`] lists the photos without a preview of the
+    /// source's own (Capture One's previews it never built).
+    #[serde(default)]
+    pub lists_missing_previews: bool,
 }
 
 /// What deleting a photo for good does at the source.
@@ -335,6 +339,15 @@ pub trait PhotoSource: Send + Sync {
     /// [`Capabilities::rescan`] first; a source with it false returns `Unsupported`.
     fn rescan(&self) -> Result<()> {
         Err(SourceError::Unsupported("rescanning"))
+    }
+
+    /// Every photo with no [`ImageTier::Preview`] of the source's own, in one go: a
+    /// photo-by-photo [`PhotoSource::has_image`] is too slow over a whole catalog. Takes
+    /// seconds, so called off the UI thread. Callers ask
+    /// [`Capabilities::lists_missing_previews`] first; a source with it false returns
+    /// `Unsupported`.
+    fn missing_previews(&self) -> Result<Vec<PhotoId>> {
+        Err(SourceError::Unsupported("listing photos without a preview"))
     }
 
     /// Makes what the source keeps for itself durable, for a program about to exit

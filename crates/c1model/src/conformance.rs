@@ -254,10 +254,12 @@ pub fn check_backup(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
 }
 
 /// Capabilities match what the source does: [`PhotoSource::rescan`] succeeds exactly when
-/// `capabilities().rescan` says it can, and [`PhotoSource::progress`] is `None` once a
-/// snapshot has finished, and all along for a source whose `capabilities().progress` is
-/// false (it is not asked). A source that can rescan is asked to, so its next snapshot reads
-/// its files again (and is then taken).
+/// `capabilities().rescan` says it can, [`PhotoSource::missing_previews`] exactly when
+/// `capabilities().lists_missing_previews` does (and agrees with
+/// [`PhotoSource::has_image`]: [`check_missing_previews`]), and [`PhotoSource::progress`]
+/// is `None` once a snapshot has finished, and all along for a source whose
+/// `capabilities().progress` is false (it is not asked). A source that can rescan is asked
+/// to, so its next snapshot reads its files again (and is then taken).
 pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
     let mut problems = Vec::new();
     let can = source.capabilities().rescan;
@@ -267,11 +269,32 @@ pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
         (false, Err(SourceError::Unsupported(_))) | (true, Ok(())) => {}
         (false, Err(e)) => problems.push(format!("rescan() without the capability is not Unsupported: {e}")),
     }
+    let listed = match (source.capabilities().lists_missing_previews, source.missing_previews()) {
+        (true, Ok(listed)) => Some(listed),
+        (true, Err(e)) => {
+            problems.push(format!("capabilities().lists_missing_previews is true, but missing_previews() failed: {e}"));
+            None
+        }
+        (false, Ok(_)) => {
+            problems
+                .push("missing_previews() succeeded, but capabilities().lists_missing_previews is false".to_owned());
+            None
+        }
+        (false, Err(SourceError::Unsupported(_))) => None,
+        (false, Err(e)) => {
+            problems.push(format!("missing_previews() without the capability is not Unsupported: {e}"));
+            None
+        }
+    };
     let quiet = !source.capabilities().progress;
     let mut told = None;
-    let snapshot = source.snapshot(None, &mut |_| {
+    let mut sent = Vec::new();
+    let snapshot = source.snapshot(None, &mut |event| {
         if quiet && told.is_none() {
             told = source.progress();
+        }
+        if let SourceEvent::Upsert(photo) = event {
+            sent.push(photo.id);
         }
         Ok(())
     });
@@ -283,6 +306,45 @@ pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
     }
     if let Some(p) = source.progress() {
         problems.push(format!("progress() after the snapshot ended: {p:?}"));
+    }
+    if let Some(listed) = listed {
+        problems.extend(check_missing_previews(source, &listed, &sent));
+    }
+    problems
+}
+
+/// How many photos [`check_missing_previews`] asks about one by one, of those listed and
+/// of the rest: enough to catch a source whose list and `has_image` disagree, and cheap
+/// on a catalog of 100,000.
+const PREVIEW_SAMPLE: usize = 25;
+
+/// [`PhotoSource::missing_previews`] (`listed`) agrees with [`PhotoSource::has_image`]:
+/// every photo listed is the source's own, and a sample of them, spread over the list,
+/// has no [`ImageTier::Preview`]; a sample of the photos the snapshot `sent` that are not
+/// listed has one.
+pub fn check_missing_previews(source: &dyn PhotoSource, listed: &[PhotoId], sent: &[PhotoId]) -> Vec<String> {
+    let mut problems = Vec::new();
+    let own = source.info().id;
+    if let Some(stranger) = listed.iter().find(|id| id.source != own) {
+        problems.push(format!("missing_previews() lists {stranger}, which is not the source's"));
+    }
+    let sample = |ids: &[&PhotoId]| -> Vec<PhotoId> {
+        ids.iter().step_by(ids.len().div_ceil(PREVIEW_SAMPLE).max(1)).map(|&id| id.clone()).collect()
+    };
+    for id in sample(&listed.iter().collect::<Vec<_>>()) {
+        match source.has_image(&id, ImageTier::Preview) {
+            Ok(false) => {}
+            Ok(true) => problems.push(format!("missing_previews() lists {id}, but has_image() finds its preview")),
+            Err(e) => problems.push(format!("has_image() of {id}, listed without a preview, failed: {e}")),
+        }
+    }
+    let listed: HashSet<&PhotoId> = listed.iter().collect();
+    for id in sample(&sent.iter().filter(|id| !listed.contains(id)).collect::<Vec<_>>()) {
+        match source.has_image(&id, ImageTier::Preview) {
+            Ok(true) => {}
+            Ok(false) => problems.push(format!("{id} has no preview, but missing_previews() leaves it out")),
+            Err(e) => problems.push(format!("has_image() of {id} failed: {e}")),
+        }
     }
     problems
 }
@@ -445,6 +507,78 @@ mod tests {
         let s = source();
         assert_eq!(check_capabilities(&s), Vec::<String>::new());
         assert_eq!(check_images(&s, &PhotoId::new(&SourceId("mem".into()), "2")), Vec::<String>::new());
+    }
+
+    /// The memory source, with previews for the photos in `previews` and a list of those
+    /// without one that may tell the truth or not.
+    struct Previews {
+        inner: MemorySource,
+        previews: HashSet<String>,
+        listed: Vec<PhotoId>,
+    }
+
+    impl PhotoSource for Previews {
+        fn info(&self) -> crate::source::SourceInfo {
+            self.inner.info()
+        }
+        fn capabilities(&self) -> crate::source::Capabilities {
+            crate::source::Capabilities { lists_missing_previews: true, ..self.inner.capabilities() }
+        }
+        fn snapshot(
+            &self,
+            since: Option<&Cursor>,
+            sink: &mut dyn FnMut(SourceEvent) -> crate::source::Result<()>,
+        ) -> crate::source::Result<()> {
+            self.inner.snapshot(since, sink)
+        }
+        fn image(&self, id: &PhotoId, tier: ImageTier) -> crate::source::Result<Option<crate::source::ImageRef>> {
+            Ok((tier == ImageTier::Preview && self.previews.contains(&id.ext)).then(|| crate::source::ImageRef {
+                path: format!("{}.cop", id.ext).into(),
+                format: crate::source::ImageFormat::JpegXl,
+                white_balance: None,
+                rotation: 0,
+                as_stored: false,
+                monochrome: false,
+                look: None,
+                straighten: 0.0,
+                crop: None,
+            }))
+        }
+        fn missing_previews(&self) -> crate::source::Result<Vec<PhotoId>> {
+            Ok(self.listed.clone())
+        }
+        fn write_status(&self) -> WriteStatus {
+            self.inner.write_status()
+        }
+        fn plan(&self, changes: &[Change]) -> crate::source::Result<crate::change::ApplyPlan> {
+            self.inner.plan(changes)
+        }
+        fn apply(&self, plan: &crate::change::ApplyPlan) -> crate::source::Result<crate::change::ApplyReport> {
+            self.inner.apply(plan)
+        }
+    }
+
+    #[test]
+    fn missing_previews_must_agree_with_has_image() {
+        let mem = SourceId("mem".into());
+        let with = |previews: &[u32], listed: Vec<PhotoId>| Previews {
+            inner: source(),
+            previews: previews.iter().map(u32::to_string).collect(),
+            listed,
+        };
+        let ids = |ns: &[u32]| ns.iter().map(|n| PhotoId::new(&mem, n.to_string())).collect::<Vec<_>>();
+        // Photos 1 to 8 have previews; 9 and 10 do not, and are listed.
+        let honest = with(&[1, 2, 3, 4, 5, 6, 7, 8], ids(&[9, 10]));
+        assert_eq!(check_capabilities(&honest), Vec::<String>::new());
+        // Listing one that has a preview, leaving out one that has none, or listing
+        // another source's photo is each caught.
+        let problems = check_capabilities(&with(&[1, 2, 3, 4, 5, 6, 7, 8], ids(&[8, 9])));
+        assert!(problems.iter().any(|p| p.contains("mem:8") && p.contains("finds its preview")), "{problems:?}");
+        assert!(problems.iter().any(|p| p.contains("mem:10") && p.contains("leaves it out")), "{problems:?}");
+        let mut stranger = ids(&[9, 10]);
+        stranger.push(PhotoId::new(&SourceId("other".into()), "9"));
+        let problems = check_capabilities(&with(&[1, 2, 3, 4, 5, 6, 7, 8], stranger));
+        assert!(problems.iter().any(|p| p.contains("not the source's")), "{problems:?}");
     }
 
     #[test]

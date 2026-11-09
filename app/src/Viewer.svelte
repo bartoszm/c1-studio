@@ -3,6 +3,7 @@
   import * as api from "./lib/api";
   import { exposure } from "./lib/format";
   import { viewerKey } from "./lib/keys";
+  import { source } from "./lib/source.svelte";
   import { GUIDE_NAMES, TURNS, frameFor, guidePath, nextGuide, nextTurn, storedGuide, storedTurn, type Guide } from "./lib/guides";
 
   let { row, next, version, blocked, onclose, onstep, children }: {
@@ -21,6 +22,32 @@
   let info = $state<api.Photo | null>(null);
   // Capture One's thumbnail shows at once; the rendered preview replaces it when ready.
   let sharp = $state(false);
+  /** What the large image is: the source's preview, the original standing in for one it
+   *  lacks or cannot read, or none ("none" once it failed to load); undefined until known. */
+  let kind = $state<"preview" | "original" | "none" | undefined>(undefined);
+  $effect(() => {
+    void row;
+    kind = undefined;
+  });
+  /** The large image is in: asks what it was made from (what the app sent last for it, so
+   *  no look at the source), then shows it with its hint. */
+  function shown(e: Event) {
+    const size = loaded(e);
+    if (!size) return;
+    const current = row;
+    const show = (k: api.PreviewKind) => {
+      if (current !== row) return;
+      kind = k;
+      fullSize = size;
+      sharp = true;
+    };
+    api.previewKind(current).then(show, () => show("preview"));
+  }
+  let hint = $derived(
+    sharp
+      ? kind === "original" ? `original — no ${source.word} preview, edits not shown` : "preview"
+      : kind === "none" ? `thumbnail only — no ${source.word} preview` : "thumbnail",
+  );
 
   // Not state: which photo `info` is about, and the newest read asked for. An edit reads
   // the same photo again and keeps the old details until the new ones are in; another
@@ -43,7 +70,7 @@
 
   // Warm the next preview while this one is being looked at.
   $effect(() => {
-    if (next !== undefined) new Image().src = api.previewUrl(next);
+    if (next !== undefined) new Image().src = api.largeUrl(next);
   });
 
   // The composition grid over the photo, remembered between photos and sessions.
@@ -101,8 +128,8 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="stage" style:--inset="{INSET}px" onclick={onclose} bind:clientWidth={stageW} bind:clientHeight={stageH}>
     {#key row}
-      <img class="base" src={api.thumbUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) baseSize = size; }} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) baseSize = null; }} />
-      <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) { fullSize = size; sharp = true; } }} />
+      <img class="base" class:alone={kind === "none"} src={api.thumbUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) baseSize = size; }} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) baseSize = null; }} />
+      <img class="full" class:shown={sharp} src={api.largeUrl(row)} alt="" onload={shown} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) kind = "none"; }} />
     {/key}
     {#if frame}
       <svg
@@ -129,7 +156,7 @@
       {#if info.keywords.length}<span class="kw">{info.keywords.map((k) => k.join(" › ")).join("   ")}</span>{/if}
     {/if}
     <button class="grid-pick" aria-label="Grid: {GUIDE_NAMES[guide]}. Show the next" title={TURNS[guide] > 1 ? "Grid over the photo (g, Shift+G); o turns it" : "Grid over the photo (g, Shift+G)"} onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
-    <span class="hint">{sharp ? "preview" : "thumbnail"} · ← → Esc · i · g{TURNS[guide] > 1 ? " · o" : ""}</span>
+    <span class="hint">{hint} · ← → Esc · i · g{TURNS[guide] > 1 ? " · o" : ""}</span>
   </div>
   {@render children?.()}
 </div>
