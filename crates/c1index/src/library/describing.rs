@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use super::Library;
 use crate::ai::{Entry, Review, Status, Taken, Task};
 use crate::edits::Origin;
-use crate::places::{Coarse, same_spot};
+use crate::places::{Coarse, Guessed, same_spot};
 use crate::schema;
 
 /// The key a refine call is recorded under: it is about no photo.
@@ -334,6 +334,39 @@ impl Library {
         self.suggestions.spent()
     }
 
+    /// Stores position marks (`None` takes one off) and keeps them in memory.
+    fn set_marks(
+        &self,
+        coarse: &[(String, Option<Coarse>)],
+        guessed: &[(String, Option<Guessed>)],
+    ) -> anyhow::Result<()> {
+        if coarse.is_empty() && guessed.is_empty() {
+            return Ok(());
+        }
+        self.place_book.set_coarse(coarse)?;
+        self.place_book.set_guessed(guessed)?;
+        {
+            let mut marks = self.coarse.write().unwrap();
+            for (key, mark) in coarse {
+                match mark {
+                    Some(mark) => marks.insert(key.clone(), mark.clone()),
+                    None => marks.remove(key),
+                };
+            }
+        }
+        {
+            let mut marks = self.guessed.write().unwrap();
+            for (key, mark) in guessed {
+                match mark {
+                    Some(mark) => marks.insert(key.clone(), *mark),
+                    None => marks.remove(key),
+                };
+            }
+        }
+        self.fixes_changed();
+        Ok(())
+    }
+
     /// Whether a photo may be given a position from a suggestion: one with none, or for
     /// a locating run one with only an approximate position (its place's).
     fn may_place(&self, task: Task, photo: &c1model::Photo) -> bool {
@@ -353,39 +386,32 @@ impl Library {
     pub fn accept_suggestions(&self, task: Task, picks: &[Accept]) -> anyhow::Result<Accepted> {
         let by_row: HashMap<u64, &Accept> = picks.iter().map(|p| (p.row, p)).collect();
         let rows: Vec<u64> = by_row.keys().copied().collect();
-        // A position taken is marked approximate before it is set, as a place's position
-        // is: a mark on a photo not at its point is ignored, a position without its mark
-        // would pass for one taken there. One taken as precise has its old mark taken off.
-        let mut marks = Vec::new();
-        let mut placeable = HashSet::new();
+        // A position taken is marked before it is set: a mark on a photo not at its point
+        // is ignored, a position without its mark would pass for one taken there. An
+        // approximate one is marked as a place's position is (≈); a precise one as a
+        // guess: shown as the photo's own, but never used to place or locate other photos.
+        let mut coarse_marks = Vec::new();
+        let mut guess_marks = Vec::new();
+        // The position each photo may be given one over, as it was when marked: one set
+        // since (in the panel, by a sync) is not replaced.
+        let mut placeable: HashMap<u64, Option<GeoPoint>> = HashMap::new();
         for pick in picks {
             let Some([lat, lon]) = pick.point else { continue };
             let Some(photo) = self.photo(pick.row)? else { continue };
             if !self.may_place(task, &photo) {
                 continue;
             }
-            placeable.insert(pick.row);
+            placeable.insert(pick.row, photo.geo);
             if pick.precise {
-                if photo.geo.is_some() {
-                    marks.push((photo.id.key(), None));
-                }
+                guess_marks.push((photo.id.key(), Some(Guessed { lat, lon })));
                 continue;
             }
             let (place, _) = taken_place(&photo.place, pick);
             let level = Level::named(&place).unwrap_or(Level::Country);
             let path = schema::place_tree(&place).pop().unwrap_or_default();
-            marks.push((photo.id.key(), Some(Coarse { lat, lon, level, path })));
+            coarse_marks.push((photo.id.key(), Some(Coarse { lat, lon, level, path })));
         }
-        self.place_book.set_coarse(&marks)?;
-        {
-            let mut coarse = self.coarse.write().unwrap();
-            for (key, mark) in marks {
-                match mark {
-                    Some(mark) => coarse.insert(key, mark),
-                    None => coarse.remove(&key),
-                };
-            }
-        }
+        self.set_marks(&coarse_marks, &guess_marks)?;
         let changed = std::sync::Mutex::new(HashSet::new());
         let undo = self.edit_photos_as(
             &rows,
@@ -436,7 +462,7 @@ impl Library {
                 }
                 // Never over a position of the photo's own.
                 if let Some([lat, lon]) = pick.point
-                    && placeable.contains(&row)
+                    && placeable.get(&row).is_some_and(|was| *was == photo.geo)
                     && photo.geo.is_none_or(|g| !same_spot((g.lat, g.lon), (lat, lon)))
                 {
                     let origin = if pick.precise { GeoOrigin::Manual } else { GeoOrigin::Geocoded };
@@ -450,6 +476,26 @@ impl Library {
             },
             Origin::Ai,
         )?;
+        // A photo now at the position taken loses the mark of the other kind it had (≈ on
+        // one taken as precise, a guess on one taken as ≈); one the edit left where it was
+        // keeps its marks.
+        let (mut coarse_off, mut guess_off) = (Vec::new(), Vec::new());
+        for pick in picks {
+            let Some([lat, lon]) = pick.point.filter(|_| placeable.contains_key(&pick.row)) else { continue };
+            let Some(photo) = self.photo(pick.row)? else { continue };
+            if !photo.geo.is_some_and(|g| same_spot((g.lat, g.lon), (lat, lon))) {
+                continue;
+            }
+            let key = photo.id.key();
+            if pick.precise {
+                if self.coarse.read().unwrap().contains_key(&key) {
+                    coarse_off.push((key, None));
+                }
+            } else if self.guessed.read().unwrap().contains_key(&key) {
+                guess_off.push((key, None));
+            }
+        }
+        self.set_marks(&coarse_off, &guess_off)?;
         let changed = changed.into_inner().unwrap();
         let done: Vec<u64> = rows.iter().copied().filter(|r| !changed.contains(r)).collect();
         let mut keys = Vec::new();

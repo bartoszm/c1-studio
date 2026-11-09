@@ -282,6 +282,9 @@ pub struct Library {
     trip_book: TripBook,
     /// Trips as last worked out, for the index generation they were worked out on.
     trip_cache: Mutex<Option<TripCache>>,
+    /// The catalog's own positions by time ([`Library::fixes`]), as of an index
+    /// generation; cleared when guesses change.
+    fix_cache: Mutex<Option<(u64, Arc<Vec<crate::gpx::Fix>>)>>,
     /// Places looked up online, and photos given only their place's position.
     place_book: PlaceBook,
     /// Where places are, as worked out from their names.
@@ -459,6 +462,7 @@ impl Library {
             syncing: Mutex::new(()),
             trip_book,
             trip_cache: Mutex::new(None),
+            fix_cache: Mutex::new(None),
             place_book,
             place_cache: Mutex::default(),
             coarse,

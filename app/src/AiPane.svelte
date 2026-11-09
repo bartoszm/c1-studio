@@ -232,11 +232,24 @@
       onerror(String(e));
     }
   }
+  /** The task the cards and reviews shown are of. */
+  let shownTask: AiTask | null = null;
   $effect(() => {
     void version;
     void show;
-    void task;
-    untrack(loadRows);
+    const t = task;
+    untrack(() => {
+      // Another task: its cards go at once, so nothing is accepted as the other's.
+      if (shownTask !== t) {
+        shownTask = t;
+        rows = [];
+        drafts = {};
+        reviews = [];
+        ticked.clear();
+        refined = null;
+      }
+      loadRows();
+    });
   });
   // While a run goes, new suggestions come in every few seconds at most, not once per
   // photo; its end bumps `version`, which reads them all. Reviews do not change as photos
@@ -371,7 +384,8 @@
     try {
       const got = await api.aiReviews();
       if (mine !== asked) return;
-      reviews = got.reviews;
+      // Each task's own: lessons are drawn from descriptions reviewed.
+      reviews = got.reviews.filter((r) => (r.task ?? "describe") === task);
       unreadable = got.unreadable;
       const seqs = new Set(got.reviews.map((r) => r.seq));
       for (const s of [...ticked]) if (!seqs.has(s)) ticked.delete(s);
@@ -654,6 +668,7 @@
     {#if show === "Reviewed"}
       <div class="bulk">
         <button class="btn" disabled={!ticked.size} onclick={() => removeReviews([...ticked])}>Remove {ticked.size || ""}</button>
+        {#if !locating}
         <button
           class="btn primary"
           disabled={refining || !sent.length}
@@ -662,6 +677,7 @@
         >{refining
           ? `Asking Claude with ${refineVia}…`
           : `Refine the prompt from ${sent.length < corrections.length ? `the ${sent.length.toLocaleString()} newest of ${corrections.length.toLocaleString()}` : sent.length.toLocaleString()} correction${corrections.length === 1 ? "" : "s"}…`}</button>
+        {/if}
       </div>
     {:else if proposed.length}
       <div class="bulk">

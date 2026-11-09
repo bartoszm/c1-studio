@@ -720,19 +720,15 @@ pub(crate) async fn start_describe(
     let started = (|| {
         let settings = load_settings(&s);
         let (todo, _) = plan(&s, &rows, again, task)?;
-        let clues = match task {
-            Task::Describe => Clues::new(),
-            Task::Locate => s.library.locate_context(&todo, settings.locate.window_minutes).map_err(text)?,
-        };
         Ok::<_, String>((
             Arc::<dyn VisionProvider>::from(provider(&s, &settings, task)?),
             todo,
             settings.parallel.clamp(1, 8),
             settings.image,
-            clues,
+            settings.locate.window_minutes,
         ))
     })();
-    let (provider, todo, parallel, image, clues) = match started {
+    let (provider, todo, parallel, image, window) = match started {
         Ok(started) => started,
         Err(e) => {
             s.describing.store(false, Ordering::SeqCst);
@@ -761,6 +757,15 @@ pub(crate) async fn start_describe(
     publish(&app, &s);
     std::thread::spawn(move || {
         let _done = Lowers(&s.describing);
+        // A locating run's clues, gathered once the run shows as started: they read every
+        // photo with a position.
+        let clues = match task {
+            Task::Describe => Clues::new(),
+            Task::Locate => s.library.locate_context(&todo, window).unwrap_or_else(|e| {
+                lock(&s.describe).note(0, false, format!("The clues could not be gathered, sent without them: {e:#}"));
+                Clues::new()
+            }),
+        };
         let next = AtomicUsize::new(0);
         // Photos failed one after another: past FAILING, the rest would fail the same way.
         let failing = AtomicUsize::new(0);

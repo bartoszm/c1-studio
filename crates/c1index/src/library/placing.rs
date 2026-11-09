@@ -911,6 +911,7 @@ impl Library {
         // without its mark would pass for one taken there.
         self.place_book.set_guessed(&guesses)?;
         self.guessed.write().unwrap().extend(guesses.into_iter().filter_map(|(k, g)| Some((k, g?))));
+        self.fixes_changed();
         self.edit(&changes)
     }
 }

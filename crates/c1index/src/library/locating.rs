@@ -25,6 +25,11 @@ pub const LOCATE_WINDOW_MINUTES: i64 = 180;
 /// between them allows, is doubted.
 const REACH_SLACK_KM: f64 = 5.0;
 
+/// How far around a photo, in time, the reach of a guessed position is checked: past a
+/// few hours, at [`MAX_KMH`], nearly anywhere within a country is in reach. Fixed, not the
+/// run's clue window: a check worth making whatever was sent.
+const REACH_WINDOW_MINUTES: i64 = 180;
+
 /// A span of time as said in a clue: "40 s", "12 min", "3 h 5 min", "2 days".
 fn span(ms: i64) -> String {
     let s = ms.abs() / 1000;
@@ -69,10 +74,10 @@ fn at_point(lat: f64, lon: f64) -> String {
     }
 }
 
-/// The photos with a position of their own nearest before and after `at`, each within
-/// `window` ms.
+/// The photos with a position of their own nearest before (or at) and after `at`, each
+/// within `window` ms.
 fn around(fixes: &[Fix], at: i64, window: i64) -> (Option<&Fix>, Option<&Fix>) {
-    let i = fixes.partition_point(|f| f.at < at);
+    let i = fixes.partition_point(|f| f.at <= at);
     let before = i.checked_sub(1).and_then(|i| fixes.get(i)).filter(|f| at - f.at <= window);
     let after = fixes.get(i).filter(|f| f.at - at <= window);
     (before, after)
@@ -88,7 +93,7 @@ fn fix_clues(fixes: &[Fix], at: i64, window: i64) -> Vec<String> {
             d => format!("{} before it, the photographer was at {}", span(d), at_point(f.lat, f.lon)),
         });
     }
-    if let Some(f) = after.filter(|f| f.at != at || before.is_none()) {
+    if let Some(f) = after {
         lines.push(format!("{} after it, at {}", span(f.at - at), at_point(f.lat, f.lon)));
     }
     if let (Some(b), Some(a)) = (before, after)
@@ -149,7 +154,7 @@ impl Library {
     pub fn locate_context(&self, rows: &[u64], window_minutes: i64) -> anyhow::Result<HashMap<u64, Vec<String>>> {
         let window = window_minutes.clamp(1, 2880) * 60_000;
         let searcher = self.reader.searcher();
-        let fixes = self.fixes(&searcher)?;
+        let fixes = self.fixes_cached()?;
         let placed = self.placed(&searcher)?;
         let (trips, home) = {
             let cache = self.trip_cache()?;
@@ -196,8 +201,8 @@ impl Library {
     pub(super) fn check_reach(&self, row: u64, guess: &mut PlaceGuess) -> anyhow::Result<Vec<String>> {
         let Some(point) = guess.point.as_mut() else { return Ok(Vec::new()) };
         let Some(at) = self.photo(row)?.and_then(|p| p.captured_at) else { return Ok(Vec::new()) };
-        let fixes = self.fixes(&self.reader.searcher())?;
-        let window = LOCATE_WINDOW_MINUTES * 60_000;
+        let fixes = self.fixes_cached()?;
+        let window = REACH_WINDOW_MINUTES * 60_000;
         let Some(why) = unreachable(&fixes, at, window, point.lat, point.lon, point.radius_km as f64) else {
             return Ok(Vec::new());
         };
@@ -208,6 +213,26 @@ impl Library {
         } else {
             Ok(vec![format!("the position is {why}")])
         }
+    }
+
+    /// [`Library::fixes`], read once per index generation: a run checks every answer
+    /// against them.
+    fn fixes_cached(&self) -> anyhow::Result<Arc<Vec<Fix>>> {
+        let searcher = self.reader.searcher();
+        let generation = searcher.generation().generation_id();
+        if let Some((g, fixes)) = self.fix_cache.lock().unwrap().as_ref()
+            && *g == generation
+        {
+            return Ok(Arc::clone(fixes));
+        }
+        let fixes = Arc::new(self.fixes(&searcher)?);
+        *self.fix_cache.lock().unwrap() = Some((generation, Arc::clone(&fixes)));
+        Ok(fixes)
+    }
+
+    /// Positions were marked as guesses or freed of the mark: the fixes are read again.
+    pub(super) fn fixes_changed(&self) {
+        *self.fix_cache.lock().unwrap() = None;
     }
 
     /// Of `rows`, those with no position of their own: none, or only their place's (≈).
@@ -253,6 +278,15 @@ mod tests {
         assert!(lines[2].contains("about 50.0557, 19.9433"), "{lines:?}");
         // Out of the window: nothing.
         assert!(fix_clues(&fixes, 10 * 60_000, 5 * 60_000).is_empty());
+    }
+
+    #[test]
+    fn a_photo_taken_at_the_same_moment_is_told() {
+        let fixes = [fix(0, 50.0, 19.0), fix(10, 50.06, 19.94), fix(20, 50.07, 19.95)];
+        let lines = fix_clues(&fixes, 10 * 60_000, 180 * 60_000);
+        assert!(lines[0].starts_with("A photo taken at the same moment") && lines[0].contains("50.0600"), "{lines:?}");
+        assert!(lines[1].starts_with("10 min after it"), "{lines:?}");
+        assert_eq!(lines.len(), 2, "no point between: the moment is known, {lines:?}");
     }
 
     #[test]

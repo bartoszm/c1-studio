@@ -2964,6 +2964,11 @@ fn a_place_found_by_a_locating_run_can_move_an_approximate_position_and_be_taken
     let geo = lib.photo(eight).unwrap().unwrap().geo.unwrap();
     assert_eq!((geo.lat, geo.lon, geo.origin), (50.054, 19.935, GeoOrigin::Manual));
     assert!(ids(&lib, &approx).is_empty(), "no longer ≈");
+    assert!(lib.unpositioned(&[eight]).unwrap().is_empty(), "located");
+    // A guess all the same: never told to the model as where the photographer was.
+    let ten = row_of(&lib, 10);
+    let clues = lib.locate_context(&[ten], 2880).unwrap();
+    assert!(!clues[&ten].iter().any(|c| c.contains("50.0540")), "{clues:?}");
     assert_eq!(lib.photo(seven).unwrap().unwrap().geo, before7, "a position of its own stays");
     assert_eq!(lib.suggestion(Task::Locate, eight).unwrap().unwrap().status, Status::Accepted);
     assert_eq!(lib.suggestion(Task::Describe, eight).unwrap().unwrap().status, Status::Accepted);
