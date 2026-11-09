@@ -119,3 +119,19 @@ export function placeReplaces(g: PlaceGuess, ticks: PlaceTicks, now: PlaceNames 
 }
 
 export const percent = (p: number) => `${Math.round(p * 100)}%`;
+
+/** A landmark's position within this many km may be taken as the photo's own. */
+export const PRECISE_KM = 0.5;
+
+/** What a located position rests on, as a card names it. */
+export const BASIS: Record<NonNullable<PlaceGuess["basis"]>, string> = {
+  landmark: "landmark recognised",
+  scene: "from the scene",
+  context: "from the photos around it",
+  region: "the kind of place only",
+};
+
+/** A located position starts ticked as precise (the photo's own, not ≈): a landmark
+ *  recognised, at least `threshold` (0..1) likely, within [PRECISE_KM]. */
+export const preciseOffered = (g: PlaceGuess, threshold: number): boolean =>
+  !!g.point && g.basis === "landmark" && g.point.p >= threshold && g.point.radius_km <= PRECISE_KM;

@@ -1,6 +1,9 @@
-//! Describing photos with a vision model (stage 5): the run in the background, its cost
-//! up front, the API key, and accepting or rejecting what was suggested.
+//! Describing photos with a vision model (stage 5), or locating them: the run in the
+//! background, its cost up front, the API key, and accepting or rejecting what was
+//! suggested. A run is for one [`Task`]; describing and locating share the machinery but
+//! keep their suggestions apart.
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -11,8 +14,8 @@ use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
 use c1ai::{
-    AiError, Brief, Failed, Fields, Language, LeftOut, PhotoRequest, Progress, SheetRequest, Step, VisionProvider,
-    Vocabulary,
+    AiError, Brief, Failed, Fields, Language, LeftOut, PhotoRequest, Progress, SheetRequest, Step, Task,
+    VisionProvider, Vocabulary,
 };
 use c1index::ai::{Entry, Status};
 use c1index::{Accept, Accepted};
@@ -78,6 +81,26 @@ pub(crate) struct AiSettings {
     image: AiImage,
     /// Keywords not offered to the model, nor matched in its answers.
     left_out: LeftOut,
+    /// How photos are located.
+    locate: LocateSettings,
+}
+
+/// What the user chose for locating photos.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct LocateSettings {
+    /// Photos with a position of their own taken this many minutes either side of one
+    /// being located are told of as clues.
+    window_minutes: i64,
+    /// A position found from a landmark at least this likely (%), within
+    /// 0.5 km, is offered as the photo's own rather than approximate.
+    precise: u8,
+}
+
+impl Default for LocateSettings {
+    fn default() -> Self {
+        LocateSettings { window_minutes: c1index::library::LOCATE_WINDOW_MINUTES, precise: 90 }
+    }
 }
 
 impl Default for AiSettings {
@@ -97,6 +120,7 @@ impl Default for AiSettings {
             sheets: false,
             image: AiImage::Thumb,
             left_out: LeftOut::default(),
+            locate: LocateSettings::default(),
         }
     }
 }
@@ -112,6 +136,8 @@ fn load_settings(s: &Session) -> AiSettings {
 /// How far a run has got, for the footer and the AI tab.
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct DescribeState {
+    /// What the run is for: describing or locating.
+    task: Task,
     running: bool,
     done: usize,
     total: usize,
@@ -379,9 +405,14 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     }
     let before = load_settings(&s);
     let lessons_at = if lessons == before.lessons { before.lessons_at } else { lessons.as_ref().map(|_| now()) };
+    let locate = LocateSettings {
+        window_minutes: settings.locate.window_minutes.clamp(1, 2880),
+        precise: settings.locate.precise.clamp(1, 100),
+    };
     let settings = AiSettings {
         parallel: settings.parallel.clamp(1, 8),
         place_tick: settings.place_tick.clamp(1, 100),
+        locate,
         instructions,
         lessons,
         lessons_at,
@@ -409,6 +440,8 @@ pub(crate) struct Estimate {
     photos: usize,
     /// Photos left out: described already with this model and prompt.
     skipped: usize,
+    /// Photos a locating run leaves out: they have a position of their own.
+    positioned: usize,
     /// US dollars, roughly; nothing on a plan.
     cost: f64,
     model: String,
@@ -422,10 +455,11 @@ pub(crate) struct Estimate {
 
 /// The instructions for a run with these settings, and the vocabulary answers are
 /// checked against.
-fn brief(s: &Session, settings: &AiSettings) -> Result<(Brief, Vocabulary), String> {
+fn brief(s: &Session, settings: &AiSettings, task: Task) -> Result<(Brief, Vocabulary), String> {
     let (paths, withheld): (Vec<_>, Vec<_>) =
         s.library.vocabulary().map_err(text)?.into_iter().partition(|(path, _)| !settings.left_out.covers(path));
     let brief = Brief {
+        task,
         language: settings.language,
         vocabulary: paths.iter().map(|(p, _)| p.rsplit('|').next().unwrap_or(p).to_string()).fold(
             Vec::new(),
@@ -453,12 +487,12 @@ pub(crate) struct PromptView {
 }
 
 #[tauri::command]
-pub(crate) async fn ai_prompt(app: State<'_, App>) -> Result<PromptView, String> {
+pub(crate) async fn ai_prompt(app: State<'_, App>, task: Option<Task>) -> Result<PromptView, String> {
     let s = app.session()?;
     tauri::async_runtime::spawn_blocking(move || {
         let settings = load_settings(&s);
-        let (brief, _) = brief(&s, &settings)?;
-        Ok(PromptView { system: c1ai::system_prompt(&brief), schema: c1ai::schema(&brief.fields) })
+        let (brief, _) = brief(&s, &settings, task.unwrap_or_default())?;
+        Ok(PromptView { system: c1ai::system_prompt(&brief), schema: c1ai::schema(&brief) })
     })
     .await
     .map_err(text)?
@@ -466,8 +500,8 @@ pub(crate) async fn ai_prompt(app: State<'_, App>) -> Result<PromptView, String>
 
 /// The provider for a run with these settings: the API with the stored key, or Claude
 /// Code signed in with a plan.
-fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider>, String> {
-    let (brief, vocabulary) = brief(s, settings)?;
+fn provider(s: &Session, settings: &AiSettings, task: Task) -> Result<Box<dyn VisionProvider>, String> {
+    let (brief, vocabulary) = brief(s, settings, task)?;
     let options = claude::Options {
         model: settings.model.clone(),
         effort: settings.effort.clone(),
@@ -507,10 +541,17 @@ fn provider(s: &Session, settings: &AiSettings) -> Result<Box<dyn VisionProvider
 }
 
 /// Of `rows`, the photos a run would describe (`again` takes those described before
-/// too), and what that would cost.
-fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), String> {
+/// too), and what that would cost. A locating run takes only photos with no position of
+/// their own.
+fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<(Vec<u64>, Estimate), String> {
     let settings = load_settings(s);
-    let brief = brief(s, &settings)?.0;
+    let brief = brief(s, &settings, task)?.0;
+    let asked = rows.len();
+    let rows = match task {
+        Task::Describe => rows.to_vec(),
+        Task::Locate => s.library.unpositioned(rows).map_err(text)?,
+    };
+    let rows = rows.as_slice();
     let (id, name, prompt, price) = match settings.access {
         Access::Gemini => {
             let id = settings.gemini_model.clone();
@@ -523,12 +564,13 @@ fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), 
             (model.id.to_string(), model.name.to_string(), c1ai::prompt_hash(&brief), price)
         }
     };
-    let done = if again { Default::default() } else { s.library.described(rows, &id, prompt).map_err(text)? };
+    let done = if again { Default::default() } else { s.library.described(task, rows, &id, prompt).map_err(text)? };
     let todo: Vec<u64> = rows.iter().copied().filter(|r| !done.contains(r)).collect();
     let sheets = settings.access == Access::Gemini && settings.sheets;
     let estimate = Estimate {
         photos: todo.len(),
         skipped: rows.len() - todo.len(),
+        positioned: asked - rows.len(),
         cost: price.map_or(0.0, |model| claude::estimate(&model, todo.len(), settings.image == AiImage::Preview)),
         model: name,
         plan: price.is_none(),
@@ -539,9 +581,15 @@ fn plan(s: &Session, rows: &[u64], again: bool) -> Result<(Vec<u64>, Estimate), 
 }
 
 #[tauri::command]
-pub(crate) async fn ai_estimate(app: State<'_, App>, rows: Vec<u64>, again: bool) -> Result<Estimate, String> {
+pub(crate) async fn ai_estimate(
+    app: State<'_, App>,
+    rows: Vec<u64>,
+    again: bool,
+    task: Option<Task>,
+) -> Result<Estimate, String> {
     let s = app.session()?;
-    tauri::async_runtime::spawn_blocking(move || plan(&s, &rows, again).map(|(_, e)| e)).await.map_err(text)?
+    let task = task.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || plan(&s, &rows, again, task).map(|(_, e)| e)).await.map_err(text)?
 }
 
 /// One line of what the catalog knows of a photo: context for the model.
@@ -582,18 +630,35 @@ fn context(photo: &Photo) -> String {
     format!("Catalog data: {}", parts.join(" · "))
 }
 
+/// [`context`] with the clues a locating run sends to where the photo was taken.
+fn context_with(photo: &Photo, clues: &[String]) -> String {
+    match clues {
+        [] => context(photo),
+        clues => format!("{} · Clues to where it was taken: {}", context(photo), clues.join("; ")),
+    }
+}
+
+/// What a run sends of each photo besides its catalog data: a locating run's clues, by row.
+type Clues = HashMap<u64, Vec<String>>;
+
 /// The most of a caption or headline, in characters, and of a photo's keywords, sent
 /// with it as context.
 const CONTEXT_TEXT: usize = 600;
 const CONTEXT_KEYWORDS: usize = 60;
 
 /// The photo as the model sees it, at most [`claude::LONG_EDGE`] on the long side.
-fn request(s: &Session, image: AiImage, row: u64, progress: Progress) -> anyhow::Result<Option<PhotoRequest>> {
+fn request(
+    s: &Session,
+    image: AiImage,
+    row: u64,
+    clues: &[String],
+    progress: Progress,
+) -> anyhow::Result<Option<PhotoRequest>> {
     let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { return Ok(None) };
     let Some(pixels) = pixels(s, &id, image, claude::LONG_EDGE)? else { return Ok(None) };
     Ok(Some(PhotoRequest {
         jpeg: c1image::encode_jpeg(&pixels, 85),
-        context: context(&photo),
+        context: context_with(&photo, clues),
         progress: Some(progress),
     }))
 }
@@ -637,25 +702,37 @@ fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::
     }
 }
 
-/// Describes these photos in the background, a few at a time, unless a run is under way.
-/// Each answer is stored as it comes, so a run stopped or crashed keeps what it got.
+/// Describes (or locates) these photos in the background, a few at a time, unless a run
+/// is under way. Each answer is stored as it comes, so a run stopped or crashed keeps
+/// what it got.
 #[tauri::command]
-pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) -> Result<(), String> {
+pub(crate) async fn start_describe(
+    app: AppHandle,
+    rows: Vec<u64>,
+    again: bool,
+    task: Option<Task>,
+) -> Result<(), String> {
+    let task = task.unwrap_or_default();
     let s = app.state::<App>().session()?;
     if s.describing.swap(true, Ordering::SeqCst) {
-        return Err("Photos are being described already".into());
+        return Err("An AI run is under way already".into());
     }
     let started = (|| {
         let settings = load_settings(&s);
-        let (todo, _) = plan(&s, &rows, again)?;
+        let (todo, _) = plan(&s, &rows, again, task)?;
+        let clues = match task {
+            Task::Describe => Clues::new(),
+            Task::Locate => s.library.locate_context(&todo, settings.locate.window_minutes).map_err(text)?,
+        };
         Ok::<_, String>((
-            Arc::<dyn VisionProvider>::from(provider(&s, &settings)?),
+            Arc::<dyn VisionProvider>::from(provider(&s, &settings, task)?),
             todo,
             settings.parallel.clamp(1, 8),
             settings.image,
+            clues,
         ))
     })();
-    let (provider, todo, parallel, image) = match started {
+    let (provider, todo, parallel, image, clues) = match started {
         Ok(started) => started,
         Err(e) => {
             s.describing.store(false, Ordering::SeqCst);
@@ -671,6 +748,7 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
         todo.iter().map(|&row| vec![row]).collect()
     };
     *lock(&s.describe) = DescribeState {
+        task,
         running: true,
         total: todo.len(),
         started: now(),
@@ -713,9 +791,11 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
                         // A panic is this photo's failure, not the run's end with the
                         // state left saying it runs.
                         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match unit.as_slice() {
-                            [row] if !sheets => describe_one(&s, provider.as_ref(), image, *row, progress)
-                                .map(|cost| Described { no_image: 0, unanswered: 0, cost }),
-                            rows => describe_sheet(&s, provider.as_ref(), image, rows, call, progress),
+                            [row] if !sheets => {
+                                describe_one(&s, provider.as_ref(), task, image, *row, &clues, progress)
+                                    .map(|cost| Described { no_image: 0, unanswered: 0, cost })
+                            }
+                            rows => describe_sheet(&s, provider.as_ref(), task, image, rows, &clues, call, progress),
                         }))
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
                         let name = call_name(call, sheets);
@@ -790,7 +870,8 @@ pub(crate) async fn start_describe(app: AppHandle, rows: Vec<u64>, again: bool) 
             st.running = false;
             st.working.clear();
             st.units.clear();
-            let summary = format!("Described {} photos, {} failed", st.done - st.failed, st.failed);
+            let verb = if task == Task::Locate { "Located" } else { "Described" };
+            let summary = format!("{verb} {} photos, {} failed", st.done - st.failed, st.failed);
             let ok = st.failed == 0;
             st.note(0, ok, summary.clone());
             format!("{summary}, ${:.4}", st.cost)
@@ -822,11 +903,14 @@ fn failed_with(e: &anyhow::Error) -> Option<&AiError> {
 fn describe_one(
     s: &Session,
     provider: &dyn VisionProvider,
+    task: Task,
     image: AiImage,
     row: u64,
+    clues: &Clues,
     progress: Progress,
 ) -> anyhow::Result<f64> {
-    let Some(request) = request(s, image, row, progress)? else { anyhow::bail!("no preview or thumbnail") };
+    let clues = clues.get(&row).map(Vec::as_slice).unwrap_or_default();
+    let Some(request) = request(s, image, row, clues, progress)? else { anyhow::bail!("no preview or thumbnail") };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
         Err(failed) => {
@@ -847,8 +931,10 @@ fn describe_one(
         warnings: reply.warnings,
         cost: reply.record.cost,
         status: Status::Proposed,
+        context: clues.to_vec(),
+        group: None,
     };
-    s.library.put_suggestion(row, &entry, &reply.record)?;
+    s.library.put_suggestion(task, row, &entry, &reply.record)?;
     Ok(reply.record.cost)
 }
 
@@ -862,11 +948,14 @@ struct Described {
 
 /// Describes a contact sheet of `rows` in one call (number `call`) and stores each photo's
 /// suggestion.
+#[allow(clippy::too_many_arguments)]
 fn describe_sheet(
     s: &Session,
     provider: &dyn VisionProvider,
+    task: Task,
     image: AiImage,
     rows: &[u64],
+    clues: &Clues,
     call: usize,
     progress: Progress,
 ) -> anyhow::Result<Described> {
@@ -877,7 +966,7 @@ fn describe_sheet(
         let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { continue };
         let Some(cell) = pixels(s, &id, image, c1image::SHEET_CELL)? else { continue };
         cells.push(cell);
-        contexts.push(context(&photo));
+        contexts.push(context_with(&photo, clues.get(&row).map(Vec::as_slice).unwrap_or_default()));
         on_sheet.push(row);
     }
     if on_sheet.is_empty() {
@@ -927,11 +1016,13 @@ fn describe_sheet(
             warnings,
             cost: 0.0,
             status: Status::Proposed,
+            context: clues.get(&row).cloned().unwrap_or_default(),
+            group: None,
         };
         // The call is recorded once, with the first photo it gave a suggestion for.
         match first.take() {
-            Some(()) => s.library.put_suggestion(row, &entry, &reply.record)?,
-            None => s.library.put_suggestion_only(row, &entry)?,
+            Some(()) => s.library.put_suggestion(task, row, &entry, &reply.record)?,
+            None => s.library.put_suggestion_only(task, row, &entry)?,
         }
     }
     if first.is_some() {
@@ -964,10 +1055,12 @@ pub(crate) struct Current {
     place: Place,
     /// It has a position: a guessed one is never given.
     placed: bool,
+    /// ... only an approximate one, its place's (≈), which a located one may replace.
+    approx: bool,
 }
 
 impl Current {
-    fn of(photo: &Photo) -> Current {
+    fn of(photo: &Photo, approx: bool) -> Current {
         let text = |v: &Option<String>| v.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(str::to_string);
         Current {
             caption: text(&photo.iptc.description),
@@ -976,6 +1069,7 @@ impl Current {
             keywords: photo.keywords.iter().map(|k| k.to_pipe()).collect(),
             place: photo.place.clone(),
             placed: photo.geo.is_some(),
+            approx: approx && photo.geo.is_some(),
         }
     }
 }
@@ -991,13 +1085,21 @@ pub(crate) struct SuggestionRow {
 /// Stored suggestions, newest first: `proposed`, `accepted`, `rejected`, or all; each
 /// with what its photo has now (edits queued included).
 #[tauri::command]
-pub(crate) async fn suggestions(app: State<'_, App>, status: Option<Status>) -> Result<Vec<SuggestionRow>, String> {
+pub(crate) async fn suggestions(
+    app: State<'_, App>,
+    status: Option<Status>,
+    task: Option<Task>,
+) -> Result<Vec<SuggestionRow>, String> {
     let s = app.session()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let list = s.library.suggestions(status).map_err(text)?;
+        let list = s.library.suggestions(task.unwrap_or_default(), status).map_err(text)?;
+        let rows: Vec<u64> = list.iter().map(|(row, _)| *row).collect();
+        let unpositioned: std::collections::HashSet<u64> =
+            s.library.unpositioned(&rows).map_err(text)?.into_iter().collect();
         list.into_iter()
             .map(|(row, entry)| {
-                let current = s.library.photo(row).map_err(text)?.as_ref().map(Current::of);
+                let photo = s.library.photo(row).map_err(text)?;
+                let current = photo.as_ref().map(|p| Current::of(p, unpositioned.contains(&row)));
                 Ok(SuggestionRow { row, entry, current })
             })
             .collect()
@@ -1007,18 +1109,25 @@ pub(crate) async fn suggestions(app: State<'_, App>, status: Option<Status>) -> 
 }
 
 #[tauri::command]
-pub(crate) async fn suggestion(app: State<'_, App>, row: u64) -> Result<Option<Entry>, String> {
-    app.session()?.library.suggestion(row).map_err(text)
+pub(crate) async fn suggestion(app: State<'_, App>, row: u64, task: Option<Task>) -> Result<Option<Entry>, String> {
+    app.session()?.library.suggestion(task.unwrap_or_default(), row).map_err(text)
 }
 
 /// Queues what the user took from suggestions. Returns the ops that undo it.
 #[tauri::command]
-pub(crate) async fn accept_suggestions(app: State<'_, App>, picks: Vec<Accept>) -> Result<Accepted, String> {
+pub(crate) async fn accept_suggestions(
+    app: State<'_, App>,
+    picks: Vec<Accept>,
+    task: Option<Task>,
+) -> Result<Accepted, String> {
     let s = app.session()?;
     s.touched();
-    tauri::async_runtime::spawn_blocking(move || s.library.accept_suggestions(&picks).map_err(|e| format!("{e:#}")))
-        .await
-        .map_err(text)?
+    let task = task.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        s.library.accept_suggestions(task, &picks).map_err(|e| format!("{e:#}"))
+    })
+    .await
+    .map_err(text)?
 }
 
 /// The suggestions reviewed, newest first, and how many could not be read.
@@ -1107,6 +1216,11 @@ pub(crate) async fn refine_lessons(
 
 /// Sets suggestions aside (`rejected`), or back to `proposed`.
 #[tauri::command]
-pub(crate) async fn set_suggestion_status(app: State<'_, App>, rows: Vec<u64>, status: Status) -> Result<(), String> {
-    app.session()?.library.set_suggestion_status(&rows, status).map_err(text)
+pub(crate) async fn set_suggestion_status(
+    app: State<'_, App>,
+    rows: Vec<u64>,
+    status: Status,
+    task: Option<Task>,
+) -> Result<(), String> {
+    app.session()?.library.set_suggestion_status(task.unwrap_or_default(), &rows, status).map_err(text)
 }

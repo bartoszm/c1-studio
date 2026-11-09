@@ -40,11 +40,13 @@ use crate::variants::Variants;
 
 mod describing;
 mod history;
+mod locating;
 mod placing;
 mod selection;
 
 pub use describing::{Accept, Accepted, ReviewRow, Seen};
 pub use history::{HistoryOff, LogDays, LogPage};
+pub use locating::LOCATE_WINDOW_MINUTES;
 
 pub use placing::{FillGroup, NeighbourPlan, NeighbourSettings, PlaceLookup, Unresolved, place_of_path};
 pub use selection::{Merged, Selection, group_places};

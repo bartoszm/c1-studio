@@ -20,7 +20,9 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-pub use prompt::{Brief, Fields, INSTRUCTIONS, Language, prompt_hash, schema, system_prompt};
+pub use prompt::{
+    Brief, Fields, INSTRUCTIONS, LOCATE_INSTRUCTIONS, Language, Task, prompt_hash, schema, system_prompt,
+};
 
 /// Bumped when the prompt or the schema changes: photos described by another version are
 /// described again when asked.
@@ -79,6 +81,11 @@ pub struct RawPlace {
     pub city: RawLevel,
     pub location: RawLevel,
     pub coordinates: RawPoint,
+    /// Asked for by a locating run only: what the position rests on, the landmark
+    /// recognised, the evidence.
+    pub basis: String,
+    pub landmark: String,
+    pub clues: Vec<String>,
 }
 
 /// One level of a place: its name and the probability it is right.
@@ -134,7 +141,42 @@ pub struct PlaceGuess {
     /// The country's ISO code, once the gazetteer knows the country.
     pub country_code: Option<String>,
     pub point: Option<PointGuess>,
+    /// What the position rests on most (a locating run's).
+    pub basis: Option<Basis>,
+    /// The landmark or view recognised.
+    pub landmark: Option<String>,
+    /// The evidence the guess rests on, most telling first.
+    pub clues: Vec<String>,
 }
+
+/// What a guessed position rests on most.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Basis {
+    /// A building or a view recognised for certain.
+    Landmark,
+    /// Details of the photo: signs, streets, terrain.
+    Scene,
+    /// The catalog data: photos taken around it, the trip.
+    Context,
+    /// Only the kind of place: country, landscape, climate.
+    Region,
+}
+
+impl Basis {
+    fn parse(s: &str) -> Option<Basis> {
+        match s.trim().to_lowercase().as_str() {
+            "landmark" => Some(Basis::Landmark),
+            "scene" => Some(Basis::Scene),
+            "context" => Some(Basis::Context),
+            "region" => Some(Basis::Region),
+            _ => None,
+        }
+    }
+}
+
+/// Clues kept of a guess, at most.
+pub const MAX_CLUES: usize = 5;
 
 /// A place level guessed: a name and the probability that it is right (0..1].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -207,6 +249,9 @@ fn place_guess(raw: &RawPlace, warnings: &mut Vec<String>) -> Option<PlaceGuess>
         city: level(&raw.city),
         location: level(&raw.location),
         country_code: None,
+        basis: point.as_ref().and_then(|_| Basis::parse(&raw.basis)),
+        landmark: text(&raw.landmark),
+        clues: raw.clues.iter().filter_map(|c| text(c)).take(MAX_CLUES).collect(),
         point,
     };
     for (name, was, now) in guess.coherent() {
@@ -590,6 +635,7 @@ mod tests {
                 city: level("Kraków", 1.4),
                 location: level("Kazimierz", 0.0),
                 coordinates: RawPoint { lat: 50.05, lon: 19.94, p: 0.5, radius_km: 3.0 },
+                ..Default::default()
             },
             ..Default::default()
         };
@@ -612,5 +658,43 @@ mod tests {
         let (s, warnings) = validate(&off, &vocabulary());
         assert_eq!(s.place, None);
         assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_located_place_keeps_its_evidence() {
+        let raw = RawAnswer {
+            location_guess: RawPlace {
+                city: RawLevel { name: "Kraków".into(), p: 0.9 },
+                coordinates: RawPoint { lat: 50.054, lon: 19.935, p: 0.9, radius_km: 0.2 },
+                basis: " Landmark ".into(),
+                landmark: "Wawel Castle".into(),
+                clues: vec![
+                    "the cathedral's gold dome".into(),
+                    " ".into(),
+                    "1".into(),
+                    "2".into(),
+                    "3".into(),
+                    "4".into(),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let place = validate(&raw, &vocabulary()).0.place.unwrap();
+        assert_eq!(place.basis, Some(Basis::Landmark));
+        assert_eq!(place.landmark.as_deref(), Some("Wawel Castle"));
+        assert_eq!(place.clues.len(), MAX_CLUES);
+        assert_eq!(place.clues[0], "the cathedral's gold dome");
+
+        // No position: nothing for a basis to be about.
+        let raw = RawAnswer {
+            location_guess: RawPlace {
+                country: RawLevel { name: "Poland".into(), p: 0.7 },
+                basis: "region".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(validate(&raw, &vocabulary()).0.place.unwrap().basis, None);
     }
 }

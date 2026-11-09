@@ -762,6 +762,8 @@ export const fillThumbnails = () => invoke<void>("fill_thumbnails");
 export const openLog = () => invoke<void>("open_log");
 
 // Describing photos with a vision model (crates/c1ai, app/src-tauri/src/ai.rs).
+/** What a run is for: describing photos, or locating them (the place alone, with clues). */
+export type AiTask = "describe" | "locate";
 export type AiLanguage = "en" | "pl" | "both";
 /** The API with a key, or Claude Code signed in with a Claude plan. */
 export type AiAccess = "api" | "plan" | "gemini";
@@ -789,6 +791,14 @@ export type AiSettings = {
   image: AiImage;
   /** Keywords not offered to the model, nor matched in its answers. */
   left_out: LeftOut;
+  /** How photos are located. */
+  locate: LocateSettings;
+};
+export type LocateSettings = {
+  /** Photos with a position taken this many minutes either side are told of as clues. */
+  window_minutes: number;
+  /** A landmark's position at least this likely (%) and within PRECISE_KM starts ticked as precise. */
+  precise: number;
 };
 /** The source's thumbnail (for Capture One its render of the edits) or the preview. */
 export type AiImage = "thumb" | "preview";
@@ -817,11 +827,14 @@ export type AiView = {
 export type AiPrompt = { system: string; schema: unknown };
 export type AiEstimate = {
   photos: number; skipped: number; cost: number; model: string; plan: boolean;
+  /** Left out of a locating run: they have a position of their own. */
+  positioned: number;
   /** One per photo, or per contact sheet. */
   calls: number;
   via: "Claude" | "Gemini";
 };
 export type DescribeState = {
+  task: AiTask;
   running: boolean; done: number; total: number; failed: number;
   /** Rows being described now. */
   working: number[];
@@ -880,6 +893,10 @@ export type PlaceGuess = {
   /** Known when the gazetteer knows the country. */
   country_code: string | null;
   point: { lat: number; lon: number; p: number; radius_km: number } | null;
+  /** A locating run's: what the position rests on most, the landmark recognised, the evidence. */
+  basis?: "landmark" | "scene" | "context" | "region" | null;
+  landmark?: string | null;
+  clues?: string[];
 };
 export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
 export type SuggestionRow = {
@@ -891,12 +908,18 @@ export type SuggestionRow = {
   warnings: string[];
   cost: number;
   status: SuggestionStatus;
+  /** What the model was told of the photo's whereabouts (a locating run's clues). */
+  context?: string[];
+  /** Photos located together share this. */
+  group?: number | null;
   /** What the photo has now, for comparing. */
   current: {
     caption: string | null; headline: string | null; rating: number | null; keywords: string[];
     place: PlaceNames;
     /** It has a position: a guessed one is never given. */
     placed: boolean;
+    /** ... only its place's (≈), which a located position may replace. */
+    approx?: boolean;
   } | null;
 };
 /** What the review showed a photo to have: a field taken is set only while it still has it. */
@@ -906,8 +929,10 @@ export type Accept = {
   row: number; keywords: string[]; caption?: string; headline?: string; rating?: number;
   /** The place levels taken. */
   place?: Partial<PlaceNames>;
-  /** A position taken, given only to a photo with none (marked ≈). */
+  /** A position taken, given only to a photo with none (marked ≈ unless precise). */
   point?: [number, number];
+  /** The position is taken as the photo's own, not ≈. */
+  precise?: boolean;
   seen: Seen;
 };
 /** The ops that undo it, and the photos whose taken field changed since shown (left as is). */
@@ -916,17 +941,21 @@ export const aiSettings = () => invoke<AiView>("ai_settings");
 export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
 /** Stores the key in the Windows Credential Manager; an empty one removes it. */
 export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
-export const aiPrompt = () => invoke<AiPrompt>("ai_prompt");
-export const aiEstimate = (rows: number[], again: boolean) => invoke<AiEstimate>("ai_estimate", { rows, again });
-/** Describes the photos in the background ("describe" events, then "describe-done"). */
-export const startDescribe = (rows: number[], again: boolean) => invoke<void>("start_describe", { rows, again });
+export const aiPrompt = (task: AiTask = "describe") => invoke<AiPrompt>("ai_prompt", { task });
+export const aiEstimate = (rows: number[], again: boolean, task: AiTask = "describe") =>
+  invoke<AiEstimate>("ai_estimate", { rows, again, task });
+/** Describes (or locates) the photos in the background ("describe" events, then "describe-done"). */
+export const startDescribe = (rows: number[], again: boolean, task: AiTask = "describe") =>
+  invoke<void>("start_describe", { rows, again, task });
 export const stopDescribe = () => invoke<void>("stop_describe");
 export const describeState = () => invoke<DescribeState>("describe_state");
-export const suggestions = (status: SuggestionStatus | null) => invoke<SuggestionRow[]>("suggestions", { status });
+export const suggestions = (status: SuggestionStatus | null, task: AiTask = "describe") =>
+  invoke<SuggestionRow[]>("suggestions", { status, task });
 /** Queues what was taken. */
-export const acceptSuggestions = (picks: Accept[]) => invoke<Accepted>("accept_suggestions", { picks });
-export const setSuggestionStatus = (rows: number[], status: SuggestionStatus) =>
-  invoke<void>("set_suggestion_status", { rows, status });
+export const acceptSuggestions = (picks: Accept[], task: AiTask = "describe") =>
+  invoke<Accepted>("accept_suggestions", { picks, task });
+export const setSuggestionStatus = (rows: number[], status: SuggestionStatus, task: AiTask = "describe") =>
+  invoke<void>("set_suggestion_status", { rows, status, task });
 /** What was taken from a suggestion accepted, as the card had it. */
 export type Taken = {
   /** Pipe paths ticked, those the photo had included. */
@@ -935,6 +964,8 @@ export type Taken = {
   place: PlaceNames;
   /** The guessed position was taken. */
   point: boolean;
+  /** ... as the photo's own, not ≈. */
+  precise?: boolean;
 };
 /** A suggestion accepted or rejected, kept until removed: what lessons are drawn from. */
 export type Review = {
@@ -942,6 +973,8 @@ export type Review = {
   /** Its photo, while in the library. */
   row: number | null;
   at: number; key: string; model: string; prompt: number;
+  /** A description's review, or a place found. */
+  task?: AiTask;
   status: SuggestionStatus;
   suggestion: Suggestion;
   taken: Taken | null;

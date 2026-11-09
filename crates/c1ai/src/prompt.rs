@@ -55,12 +55,26 @@ impl Fields {
     }
 }
 
+/// What a run is for: describing photos (the fields chosen), or locating them, where
+/// the model is asked for nothing but the place, with the evidence it went by.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Task {
+    #[default]
+    Describe,
+    Locate,
+}
+
 /// What a run asks for, besides the photo: the fields, the caption languages, the
 /// catalog's keyword names the model should choose from (most used first), the user's
 /// own instructions in place of [`INSTRUCTIONS`], and the lessons drawn from how the user
-/// corrected earlier suggestions.
+/// corrected earlier suggestions. A [`Task::Locate`] run asks for the place alone: its
+/// instructions are [`LOCATE_INSTRUCTIONS`]; the fields, the language and the vocabulary
+/// play no part.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Brief {
+    #[serde(default)]
+    pub task: Task,
     pub language: Language,
     pub vocabulary: Vec<String>,
     pub fields: Fields,
@@ -102,7 +116,39 @@ the script, the architecture, the landscape) or from the catalog data given; oth
 coordinates: lat and lon in decimal degrees, radius_km how far off they may be, and p; all 0 when you cannot place it.";
 const CONFIDENCE: &str = "- confidence: 0 to 1, how sure you are of the whole answer.";
 
+/// What a locating run is told.
+pub const LOCATE_INSTRUCTIONS: &str = "You find where photographs from a photographer's Capture One catalog were taken. \
+Your answer becomes a suggested place and position that the photographer reviews before anything is saved, \
+so be calibrated: a probability says how often a guess like it would be right, and a level you cannot judge stays empty.
+
+Work like a geolocator. Look for evidence in the photo: landmarks and well-known buildings, signs and their script and language, \
+shop names, licence plates, road markings and traffic signs, the side of the road traffic drives on, architecture and building \
+materials, vegetation, terrain, the coast or mountains, the light and the season. Then weigh what the catalog knows, given with \
+each photo: its date, camera, any place already written, and where the photographer was before and after it (positions of photos \
+taken around it, the trip it belongs to, home). A photo taken minutes after one with a known position was taken near it, unless \
+the photo plainly shows otherwise; a place already written is the photographer's own and usually right.";
+
+/// The place's line for a locating run: the levels and the position, with the evidence.
+const LOCATE_PLACE: &str = "- location_guess: where the photo was taken, level by level: country, state (the region or province), \
+city (the town or village), and location (a district, a street, a landmark or a venue), each a name and p, the probability \
+from 0 to 1 that it is right. Use the names in common local use (Kraków, not Cracow). A deeper level is never more likely \
+than the one above it; a level you cannot judge has an empty name and p 0.
+  coordinates: lat and lon in decimal degrees of where the photographer stood (or of the subject, when that is all you can tell), \
+radius_km how far off they may be, and p, the probability that the true position lies within that radius; all 0 when you cannot \
+place it. A recognised landmark seen from a known side can be placed within 0.1 to 0.5 km; a city from its look alone within its size.
+  basis: what the position rests on most: \"landmark\" (a building or a view recognised for certain), \"scene\" (details of the \
+photo: signs, streets, terrain), \"context\" (the catalog data: photos around it, the trip), or \"region\" (only the kind of \
+place: country, landscape, climate); empty when there is no position.
+  landmark: the name of the landmark or view recognised, empty if none.
+  clues: up to five short lines, the evidence the guess rests on, most telling first (\"Polish shop sign\", \
+\"tram in Kraków's livery\", \"taken 4 min after a photo in Kazimierz\").";
+
 pub fn system_prompt(brief: &Brief) -> String {
+    if brief.task == Task::Locate {
+        let mut prompt = format!("{LOCATE_INSTRUCTIONS}\n\nFields:\n{LOCATE_PLACE}\n{CONFIDENCE}\n");
+        push_lessons(&mut prompt, brief);
+        return prompt;
+    }
     let f = brief.fields;
     let instructions = brief.instructions.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(INSTRUCTIONS);
     let lines: Vec<&str> = [
@@ -120,10 +166,7 @@ pub fn system_prompt(brief: &Brief) -> String {
     .filter_map(|(on, line)| on.then_some(line))
     .collect();
     let mut prompt = format!("{instructions}\n\nFields:\n{}\n", lines.join("\n"));
-    if let Some(lessons) = brief.lessons.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        prompt
-            .push_str(&format!("\nThe photographer corrected earlier suggestions; follow these lessons:\n{lessons}\n"));
-    }
+    push_lessons(&mut prompt, brief);
     let language = match (f.caption, brief.language) {
         (true, Language::En) => Some("Captions: English only (caption_en)."),
         (true, Language::Pl) => Some("Captions: Polish only (caption_pl); the headline in Polish."),
@@ -148,12 +191,43 @@ pub fn system_prompt(brief: &Brief) -> String {
     prompt
 }
 
-/// The answer's JSON Schema for these fields: every field required and no others, as
-/// structured output wants it; "unknown" is an empty string, an empty list or 0.
-pub fn schema(fields: &Fields) -> Value {
-    let int = json!({"type": "integer"});
+fn push_lessons(prompt: &mut String, brief: &Brief) {
+    if let Some(lessons) = brief.lessons.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        prompt
+            .push_str(&format!("\nThe photographer corrected earlier suggestions; follow these lessons:\n{lessons}\n"));
+    }
+}
+
+/// The answer's JSON Schema for a run: every field required and no others, as
+/// structured output wants it; "unknown" is an empty string, an empty list or 0. A
+/// locating run's answer is the place, with its evidence, and the confidence.
+pub fn schema(brief: &Brief) -> Value {
+    match brief.task {
+        Task::Describe => fields_schema(&brief.fields),
+        Task::Locate => locate_schema(),
+    }
+}
+
+fn locate_schema() -> Value {
+    let mut place = place_schema();
     let text = json!({"type": "string"});
-    let words = json!({"type": "array", "items": {"type": "string"}});
+    let props = place["properties"].as_object_mut().expect("an object");
+    props.insert("basis".into(), json!({"type": "string", "enum": ["landmark", "scene", "context", "region", ""]}));
+    props.insert("landmark".into(), text.clone());
+    props.insert("clues".into(), json!({"type": "array", "items": text}));
+    let required: Vec<String> = props.keys().cloned().collect();
+    place["required"] = json!(required);
+    json!({
+        "type": "object",
+        "properties": {"location_guess": place, "confidence": {"type": "number"}},
+        "required": ["location_guess", "confidence"],
+        "additionalProperties": false
+    })
+}
+
+/// A place level by level, with a position.
+fn place_schema() -> Value {
+    let text = json!({"type": "string"});
     let number = json!({"type": "number"});
     let level = json!({
         "type": "object",
@@ -161,7 +235,7 @@ pub fn schema(fields: &Fields) -> Value {
         "required": ["name", "p"],
         "additionalProperties": false
     });
-    let place = json!({
+    json!({
         "type": "object",
         "properties": {
             "country": level,
@@ -177,7 +251,14 @@ pub fn schema(fields: &Fields) -> Value {
         },
         "required": ["country", "state", "city", "location", "coordinates"],
         "additionalProperties": false
-    });
+    })
+}
+
+fn fields_schema(fields: &Fields) -> Value {
+    let int = json!({"type": "integer"});
+    let text = json!({"type": "string"});
+    let words = json!({"type": "array", "items": {"type": "string"}});
+    let place = place_schema();
     let f = fields;
     let mut properties = Map::new();
     for (on, name, kind) in [
@@ -212,7 +293,7 @@ pub fn schema(fields: &Fields) -> Value {
 /// same; describing photos again is the user's choice ("again").
 pub fn prompt_hash(brief: &Brief) -> u64 {
     let general = Brief { vocabulary: Vec::new(), lessons: None, ..brief.clone() };
-    let text = format!("{}\n{}\n{}", crate::PROMPT_VERSION, system_prompt(&general), schema(&brief.fields));
+    let text = format!("{}\n{}\n{}", crate::PROMPT_VERSION, system_prompt(&general), schema(brief));
     xxhash_rust::xxh3::xxh3_64(text.as_bytes())
 }
 
@@ -222,7 +303,7 @@ mod tests {
 
     #[test]
     fn the_place_is_asked_level_by_level_with_a_position() {
-        let schema = schema(&Fields::default());
+        let schema = schema(&Brief::default());
         let place = &schema["properties"]["location_guess"];
         let required: Vec<&str> = place["required"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert_eq!(required, ["country", "state", "city", "location", "coordinates"]);
@@ -239,7 +320,7 @@ mod tests {
             !prompt.contains("caption_en") && !prompt.contains("vocabulary:") && !prompt.contains("location_guess")
         );
         assert!(prompt.contains("- headline") && prompt.contains("- confidence"));
-        let schema = schema(&fields);
+        let schema = schema(&brief);
         let names: Vec<&str> = schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(names.len(), schema["required"].as_array().unwrap().len());
         assert!(names.contains(&"rating") && !names.contains(&"caption_en") && !names.contains(&"location_guess"));
@@ -273,5 +354,33 @@ mod tests {
         assert_eq!(prompt_hash(&before), prompt_hash(&after));
         let fewer = Brief { fields: Fields { rating: false, ..Fields::default() }, ..before.clone() };
         assert_ne!(prompt_hash(&before), prompt_hash(&fewer));
+    }
+
+    #[test]
+    fn a_locating_run_asks_for_the_place_and_its_evidence_alone() {
+        let brief = Brief {
+            task: Task::Locate,
+            vocabulary: vec!["street".into()],
+            lessons: Some("- Kraków's districts by their Polish names.".into()),
+            ..Default::default()
+        };
+        let prompt = system_prompt(&brief);
+        assert!(prompt.starts_with(LOCATE_INSTRUCTIONS));
+        assert!(prompt.contains("clues") && prompt.contains("Polish names"));
+        assert!(!prompt.contains("caption_en") && !prompt.contains("vocabulary"));
+        let schema = schema(&brief);
+        let names: Vec<&str> = schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(names, ["confidence", "location_guess"]);
+        let place = &schema["properties"]["location_guess"];
+        for name in ["basis", "landmark", "clues", "coordinates"] {
+            assert!(place["required"].as_array().unwrap().iter().any(|v| v == name), "{name}");
+        }
+        assert_ne!(prompt_hash(&brief), prompt_hash(&Brief::default()));
+    }
+
+    #[test]
+    fn describing_asks_for_no_evidence() {
+        let place = &schema(&Brief::default())["properties"]["location_guess"];
+        assert!(place["properties"].get("clues").is_none());
     }
 }

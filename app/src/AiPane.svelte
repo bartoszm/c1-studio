@@ -3,13 +3,13 @@
   import * as api from "./lib/api";
   import { SvelteSet } from "svelte/reactivity";
   import {
-    LEVELS, chooseName, guessNames, levelOptions, percent, placeIndex, placeReplaces, placeTicks, takenPlace,
-    type Level, type Names, type PlaceIndex, type PlaceTicks,
+    BASIS, LEVELS, chooseName, guessNames, levelOptions, percent, placeIndex, placeReplaces, placeTicks, preciseOffered,
+    takenPlace, type Level, type Names, type PlaceIndex, type PlaceTicks,
   } from "./lib/aiPlace";
   import { catalogPlaces } from "./lib/placeHints";
   import { REFINE_LINES, changes, chipText, digest, shows, type Shown as ReviewShown } from "./lib/reviews";
   import { source } from "./lib/source.svelte";
-  import type { Accept, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
+  import type { Accept, AiTask, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
   let {
     picked, describe, version, settingsOpen, keywords, onsettings, onselect, onaccepted, onerror,
@@ -54,6 +54,28 @@
   const notReady = (v: AiView) =>
     v.settings.access === "plan" ? "Sign in to Claude Code first" : v.settings.access === "gemini" ? "Install agy first" : "Add an API key in Settings > AI first";
 
+  // ---- describing or locating ---------------------------------------------------------
+  /** What the tab runs and reviews: descriptions, or places found. Kept between visits. */
+  let task = $state<AiTask>(readTask());
+  function readTask(): AiTask {
+    try {
+      return localStorage.getItem("ai-task") === "locate" ? "locate" : "describe";
+    } catch {
+      return "describe";
+    }
+  }
+  $effect(() => {
+    const t = task;
+    try {
+      localStorage.setItem("ai-task", t);
+    } catch {
+      // Not kept: it opens on Describe next time.
+    }
+  });
+  let locating = $derived(task === "locate");
+  /** The run under way is a locating one. */
+  let runLocates = $derived(describe?.task === "locate");
+
   // ---- a run --------------------------------------------------------------------------
   /** The estimate shown, with the photos and choice it was made for: Describe runs those. */
   let estimate = $state<{ of: api.AiEstimate; rows: number[]; again: boolean } | null>(null);
@@ -67,7 +89,7 @@
     const twice = again;
     estimating = true;
     try {
-      const of = await api.aiEstimate(rows, twice);
+      const of = await api.aiEstimate(rows, twice, task);
       if (mine === estimates) estimate = { of, rows, again: twice };
     } catch (e) {
       onerror(String(e));
@@ -80,6 +102,7 @@
     void picked;
     void view?.settings.model;
     void again;
+    void task;
     estimates++;
     estimate = null;
     estimating = false;
@@ -87,7 +110,7 @@
   async function start() {
     if (!estimate) return;
     try {
-      await api.startDescribe(estimate.rows, estimate.again);
+      await api.startDescribe(estimate.rows, estimate.again, task);
       estimate = null;
     } catch (e) {
       onerror(String(e));
@@ -175,6 +198,8 @@
     names: Names | null;
     /** Keywords the user added to the card. */
     added: string[];
+    /** The position is taken as the photo's own, not ≈ (a locating run's landmark). */
+    precise: boolean;
   };
   let drafts = $state<Record<number, Draft>>({});
   const seenOf = (r: SuggestionRow): api.Seen => ({
@@ -192,7 +217,7 @@
     const mine = ++asked;
     if (show === "Reviewed") return loadReviews();
     try {
-      const list = await api.suggestions(show === "All" ? null : show);
+      const list = await api.suggestions(show === "All" ? null : show, task);
       if (mine !== asked) return;
       rows = list;
       // A card keeps its edits while it shows the same suggestion of the same photo: a
@@ -210,6 +235,7 @@
   $effect(() => {
     void version;
     void show;
+    void task;
     untrack(loadRows);
   });
   // While a run goes, new suggestions come in every few seconds at most, not once per
@@ -218,7 +244,7 @@
   let pending: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     void describe?.done;
-    if (pending || !describe?.running || show === "Reviewed") return;
+    if (pending || !describe?.running || show === "Reviewed" || describe.task !== task) return;
     pending = setTimeout(() => {
       pending = undefined;
       loadRows();
@@ -236,6 +262,9 @@
     for (const k of s.keywords) keywords[k] = true;
     for (const k of s.keywords_new) keywords[k] = false;
     const caption = s.caption_en ?? s.caption_pl ?? "";
+    // A locating run may move a position that is only the place's (≈).
+    const placed = !!now?.placed && !(locating && now?.approx);
+    const precise = locating && !!s.place && preciseOffered(s.place, (view?.settings.locate?.precise ?? 90) / 100);
     return {
       at: r.at,
       seen: seenOf(r),
@@ -246,9 +275,10 @@
       takeCaption: !!caption && !now?.caption,
       takeHeadline: !!s.headline && !now?.headline,
       takeRating: false,
-      place: s.place && placeTicks(s.place, now?.place ?? null, !!now?.placed, (view?.settings.place_tick ?? 80) / 100),
+      place: s.place && placeTicks(s.place, now?.place ?? null, placed, (view?.settings.place_tick ?? 80) / 100),
       names: s.place && guessNames(s.place),
       added: [],
+      precise,
     };
   }
 
@@ -416,9 +446,12 @@
       caption: d.takeCaption ? d.caption : undefined,
       headline: d.takeHeadline ? d.headline : undefined,
       rating: d.takeRating && d.rating ? d.rating : undefined,
+      precise: !!point && d.precise,
       seen: d.seen,
     };
   }
+  /** The photo has a position the card's may not replace. */
+  const pointLocked = (r: SuggestionRow) => !!r.current?.placed && !(locating && r.current?.approx);
 
   let working = $state(false);
   /** Said after accepting: photos changed since their card was shown. */
@@ -428,7 +461,7 @@
     working = true;
     notice = "";
     try {
-      const { undo, changed } = await api.acceptSuggestions(list.map(pickOf));
+      const { undo, changed } = await api.acceptSuggestions(list.map(pickOf), task);
       onaccepted(undo);
       if (changed.length) {
         notice = `${changed.length} photo${changed.length === 1 ? "" : "s"} changed since shown: the caption, headline, rating or place written since was kept. The card shows it now; accept again to replace it.`;
@@ -444,7 +477,7 @@
     if (!list.length) return;
     working = true;
     try {
-      await api.setSuggestionStatus(list, status);
+      await api.setSuggestionStatus(list, status, task);
       await loadRows();
     } catch (e) {
       onerror(String(e));
@@ -462,11 +495,15 @@
 <svelte:window onkeydowncapture={closeSheet} />
 
 <div class="ai">
+  <nav class="parts tasks" aria-label="What the AI does">
+    <button class:on={!locating} onclick={() => (task = "describe")} title="Captions, headlines, keywords, ratings and a place">Describe</button>
+    <button class:on={locating} onclick={() => (task = "locate")} title="Where photos with no position were taken: the place and a position, from what the photo shows and the photos taken around it">Locate</button>
+  </nav>
   <div class="bar">
     <div class="run">
       {#if describe?.running}
         <span>
-          Describing <b>{describe.done.toLocaleString()}</b> of {describe.total.toLocaleString()}
+          {runLocates ? "Locating" : "Describing"} <b>{describe.done.toLocaleString()}</b> of {describe.total.toLocaleString()}
           <span class="muted">
             {#if bySheet && lead}
               · sheet {lead.call} of {describe.calls_total.toLocaleString()} ({lead.rows.length} photos): {phase(lead)}, {duration(now - lead.since)}{describe.units.length > 1
@@ -495,10 +532,10 @@
         <span>
           {e.photos.toLocaleString()} photo{e.photos === 1 ? "" : "s"} with {e.model},
           {#if e.via === "Gemini"}{e.calls.toLocaleString()} call{e.calls === 1 ? "" : "s"} to Gemini: counts toward the account's quota{:else if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
-            ? ` · ${e.skipped.toLocaleString()} described already, left out`
-            : ""}
+            ? ` · ${e.skipped.toLocaleString()} ${locating ? "located" : "described"} already, left out`
+            : ""}{e.positioned ? ` · ${e.positioned.toLocaleString()} with a position of their own, left out` : ""}
         </span>
-        <button class="btn primary" disabled={!e.photos || !view?.ready} onclick={start}>Describe</button>
+        <button class="btn primary" disabled={!e.photos || !view?.ready} onclick={start}>{locating ? "Locate" : "Describe"}</button>
         <button class="btn" onclick={() => (estimate = null)}>Cancel</button>
       {:else}
         <button
@@ -508,8 +545,8 @@
             ? view ? notReady(view) : ""
             : picked.length ? "" : "Pick photos in the strip below"}
           onclick={ask}
-        >Describe {picked.length ? picked.length.toLocaleString() : ""} photo{picked.length === 1 ? "" : "s"}…</button>
-        <label class="muted" title="Describe photos again even when they were described with this model and prompt">
+        >{locating ? "Locate" : "Describe"} {picked.length ? picked.length.toLocaleString() : ""} photo{picked.length === 1 ? "" : "s"}…</button>
+        <label class="muted" title={locating ? "Locate photos again even when they were located with this model and prompt" : "Describe photos again even when they were described with this model and prompt"}>
           <input type="checkbox" bind:checked={again} /> again
         </label>
       {/if}
@@ -713,7 +750,11 @@
     </ul>
   {:else if !rows.length}
     <p class="muted empty">
-      {show === "Proposed" ? "Nothing to review. Pick photos in the strip below and describe them." : "None."}
+      {show === "Proposed"
+        ? locating
+          ? "Nothing to review. Pick photos in the strip below and locate them: those with no position of their own are sent, with what the photos taken around them say."
+          : "Nothing to review. Pick photos in the strip below and describe them."
+        : "None."}
     </p>
   {/if}
   <datalist id="ai-keyword-list">
@@ -768,6 +809,7 @@
                 </div>
               </div>
             {/if}
+            {#if !locating}
             <div class="keywords">
               {#each Object.keys(d.keywords) as k (k)}
                 {@const already = has(r, k)}
@@ -795,6 +837,7 @@
                 />
               {/if}
             </div>
+            {/if}
             {#if s.place && d.place && d.names}
               {@const g = s.place}
               {@const ticks = d.place}
@@ -825,15 +868,40 @@
                   </span>
                 {/each}
                 {#if g.point}
+                  {@const locked = pointLocked(r)}
                   <label
                     class="level"
-                    title={now?.placed ? "The photo has a position: a guessed one is never given" : `About here, within ${g.point.radius_km} km: shown as ≈`}
+                    title={locked
+                      ? "The photo has a position of its own: a guessed one is never given"
+                      : `About here, within ${g.point.radius_km} km${d.precise ? "" : ": shown as ≈"}${now?.placed ? "; replaces its place's position" : ""}`}
                   >
-                    <input type="checkbox" disabled={!!now?.placed} bind:checked={ticks.point} />≈ {g.point.lat.toFixed(3)}, {g.point.lon.toFixed(3)}
-                    <span class="muted">{percent(g.point.p)}</span>
+                    <input type="checkbox" disabled={locked} bind:checked={ticks.point} />{d.precise ? "" : "≈ "}{g.point.lat.toFixed(4)}, {g.point.lon.toFixed(4)}
+                    <span class="muted">±{g.point.radius_km < 1 ? `${Math.round(g.point.radius_km * 1000)} m` : `${g.point.radius_km} km`} · {percent(g.point.p)}</span>
                   </label>
+                  {#if locating}
+                    <label class="level" title="Take the position as the photo's own, not shown as ≈: for a landmark recognised for certain">
+                      <input type="checkbox" disabled={locked || !ticks.point} bind:checked={d.precise} />precise
+                    </label>
+                  {/if}
                 {/if}
               </div>
+              {#if locating && (g.basis || g.landmark || g.clues?.length)}
+                <div class="evidence">
+                  {#if g.basis}<span class="basis" title="What the position rests on most">{BASIS[g.basis]}</span>{/if}
+                  {#if g.landmark}<span class="landmark">{g.landmark}</span>{/if}
+                  {#if g.clues?.length}
+                    <ul class="clues">{#each g.clues as c, i (i)}<li>{c}</li>{/each}</ul>
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+            {#if locating && r.context?.length}
+              <details class="told">
+                <summary class="muted">What it was told of where the photo was taken</summary>
+                <ul class="clues">{#each r.context as c, i (i)}<li>{c}</li>{/each}</ul>
+              </details>
+            {:else if locating && !s.place}
+              <p class="muted">No place found.</p>
             {/if}
             <div class="facts muted">
               {#if s.rating}
@@ -915,6 +983,12 @@
   .place .name.edited { color: #8fb3ff; }
   .star { padding: 0; color: inherit; font-size: 13px; line-height: 1; }
   .parts.small button { padding: 3px 10px; font-size: 12px; }
+  .parts.tasks { margin-bottom: 10px; }
+  .evidence { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12px; }
+  .basis { padding: 0 6px; border: 1px solid #5b8def; border-radius: 10px; color: #8fb3ff; }
+  .landmark { font-weight: 600; }
+  .clues { margin: 2px 0 0; padding-left: 18px; width: 100%; font-size: 12px; color: var(--muted, #999); }
+  .told summary { cursor: pointer; }
   .reviews { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .reviews li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--line, #333); border-radius: 4px; }
   .mini { padding: 0; flex: none; }

@@ -9,9 +9,9 @@ use c1model::{GeoOrigin, GeoPoint, KeywordPath, Op, Place};
 use serde::{Deserialize, Serialize};
 
 use super::Library;
-use crate::ai::{Entry, Review, Status, Taken};
+use crate::ai::{Entry, Review, Status, Taken, Task};
 use crate::edits::Origin;
-use crate::places::Coarse;
+use crate::places::{Coarse, same_spot};
 use crate::schema;
 
 /// The key a refine call is recorded under: it is about no photo.
@@ -19,7 +19,7 @@ const REFINE_KEY: &str = "refine";
 
 /// How likely a place level the gazetteer does not know (or knows elsewhere) is left at
 /// most: a hint for the review, never a tick by default.
-const DOUBTED: f32 = 0.5;
+pub(super) const DOUBTED: f32 = 0.5;
 
 /// What the user takes from one photo's suggestion, as edited in the review: any field
 /// left out is not touched.
@@ -36,9 +36,13 @@ pub struct Accept {
     /// The place levels taken (country, its code, state, city, location); those left
     /// `None` are not touched.
     pub place: Place,
-    /// A position taken, `[lat, lon]`: given only to a photo with none, and marked as
-    /// approximate (≈), like a place's position.
+    /// A position taken, `[lat, lon]`: given only to a photo with none (or, from a
+    /// locating run, only an approximate one), and marked as approximate (≈), like a
+    /// place's position, unless `precise`.
     pub point: Option<[f64; 2]>,
+    /// The position is taken as one of the photo's own, not marked approximate: a
+    /// landmark recognised, or the point set by hand.
+    pub precise: bool,
     /// What the review showed the photo to have.
     pub seen: Seen,
 }
@@ -68,8 +72,17 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
 }
 
-fn review_of(key: String, entry: Entry, status: Status, taken: Option<Taken>) -> Review {
-    Review { at: now_ms(), key, model: entry.model, prompt: entry.prompt, status, suggestion: entry.suggestion, taken }
+fn review_of(task: Task, key: String, entry: Entry, status: Status, taken: Option<Taken>) -> Review {
+    Review {
+        at: now_ms(),
+        key,
+        model: entry.model,
+        prompt: entry.prompt,
+        task,
+        status,
+        suggestion: entry.suggestion,
+        taken,
+    }
 }
 
 impl From<&Accept> for Taken {
@@ -82,6 +95,7 @@ impl From<&Accept> for Taken {
             rating: pick.rating,
             place: pick.place.clone(),
             point: pick.point.is_some(),
+            precise: pick.point.is_some() && pick.precise,
         }
     }
 }
@@ -203,16 +217,17 @@ impl Library {
         Ok(out)
     }
 
-    pub fn suggestion(&self, row: u64) -> anyhow::Result<Option<Entry>> {
+    pub fn suggestion(&self, task: Task, row: u64) -> anyhow::Result<Option<Entry>> {
         match self.key_of(row) {
-            Some(key) => self.suggestions.get(&key),
+            Some(key) => self.suggestions.get(task, &key),
             None => Ok(None),
         }
     }
 
-    /// Of `rows`, those already described with this model and prompt: a run skips them.
-    pub fn described(&self, rows: &[u64], model: &str, prompt: u64) -> anyhow::Result<HashSet<u64>> {
-        let all = self.suggestions.all()?;
+    /// Of `rows`, those already described (or located) with this model and prompt: a run
+    /// skips them.
+    pub fn described(&self, task: Task, rows: &[u64], model: &str, prompt: u64) -> anyhow::Result<HashSet<u64>> {
+        let all = self.suggestions.all(task)?;
         Ok(rows
             .iter()
             .copied()
@@ -222,25 +237,31 @@ impl Library {
             .collect())
     }
 
-    /// Stores a photo's suggestion, its place checked against the gazetteer first.
-    pub fn put_suggestion(&self, row: u64, entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
+    /// Stores a photo's suggestion, its place checked against the gazetteer first and, a
+    /// place found by a locating run, against where the photos taken around it were.
+    pub fn put_suggestion(&self, task: Task, row: u64, entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
         let Some(key) = self.key_of(row) else { return Ok(()) };
-        let mut entry = entry.clone();
-        if let Some(place) = entry.suggestion.place.as_mut() {
-            entry.warnings.extend(check_place(place));
-        }
-        self.suggestions.put(&key, &entry, record)
+        let entry = self.checked(task, row, entry)?;
+        self.suggestions.put(task, &key, &entry, record)
     }
 
     /// [`Library::put_suggestion`] for a photo whose call is recorded with another (a
     /// contact sheet's).
-    pub fn put_suggestion_only(&self, row: u64, entry: &Entry) -> anyhow::Result<()> {
+    pub fn put_suggestion_only(&self, task: Task, row: u64, entry: &Entry) -> anyhow::Result<()> {
         let Some(key) = self.key_of(row) else { return Ok(()) };
+        let entry = self.checked(task, row, entry)?;
+        self.suggestions.put_entry(task, &key, &entry)
+    }
+
+    fn checked(&self, task: Task, row: u64, entry: &Entry) -> anyhow::Result<Entry> {
         let mut entry = entry.clone();
         if let Some(place) = entry.suggestion.place.as_mut() {
             entry.warnings.extend(check_place(place));
+            if task == Task::Locate {
+                entry.warnings.extend(self.check_reach(row, place)?);
+            }
         }
-        self.suggestions.put_entry(&key, &entry)
+        Ok(entry)
     }
 
     /// Records a call that gave no suggestion: it was paid for all the same.
@@ -255,8 +276,8 @@ impl Library {
     }
 
     /// Stored suggestions of photos in the library, with `status` or any, newest first.
-    pub fn suggestions(&self, status: Option<Status>) -> anyhow::Result<Vec<(u64, Entry)>> {
-        let all = self.suggestions.all()?;
+    pub fn suggestions(&self, task: Task, status: Option<Status>) -> anyhow::Result<Vec<(u64, Entry)>> {
+        let all = self.suggestions.all(task)?;
         let mut out: Vec<(u64, Entry)> = self
             .store
             .rows_of(all.keys().map(String::as_str))?
@@ -270,17 +291,17 @@ impl Library {
 
     /// Sets the status of the photos' suggestions. Rejecting one under review is kept as a
     /// review too, in place of the photo's review before (it was reviewed again).
-    pub fn set_suggestion_status(&self, rows: &[u64], status: Status) -> anyhow::Result<()> {
+    pub fn set_suggestion_status(&self, task: Task, rows: &[u64], status: Status) -> anyhow::Result<()> {
         let keys: Vec<String> = rows.iter().filter_map(|&r| self.key_of(r)).collect();
         let mut reviews = Vec::new();
         if status == Status::Rejected {
             for key in &keys {
-                if let Some(entry) = self.suggestions.get(key)?.filter(|e| e.status == Status::Proposed) {
-                    reviews.push(review_of(key.clone(), entry, Status::Rejected, None));
+                if let Some(entry) = self.suggestions.get(task, key)?.filter(|e| e.status == Status::Proposed) {
+                    reviews.push(review_of(task, key.clone(), entry, Status::Rejected, None));
                 }
             }
         }
-        self.suggestions.settle(&keys.iter().map(String::as_str).collect::<Vec<_>>(), status, &reviews)
+        self.suggestions.settle(task, &keys.iter().map(String::as_str).collect::<Vec<_>>(), status, &reviews)
     }
 
     /// The suggestions reviewed, newest first, until removed: what lessons are drawn from;
@@ -313,21 +334,41 @@ impl Library {
         self.suggestions.spent()
     }
 
+    /// Whether a photo may be given a position from a suggestion: one with none, or for
+    /// a locating run one with only an approximate position (its place's).
+    fn may_place(&self, task: Task, photo: &c1model::Photo) -> bool {
+        match photo.geo {
+            None => true,
+            Some(g) => {
+                task == Task::Locate
+                    && self.coarse.read().unwrap().get(&photo.id.key()).is_some_and(|c| c.holds(g.lat, g.lon))
+            }
+        }
+    }
+
     /// Queues what the user took from suggestions, logged as coming from the model, and
     /// marks those suggestions accepted. Each photo's ops are made from the photo as it is
     /// now, so nothing edited since is undone; a caption, headline or rating that is no
     /// longer what the review showed is left alone (see [`Seen`]).
-    pub fn accept_suggestions(&self, picks: &[Accept]) -> anyhow::Result<Accepted> {
+    pub fn accept_suggestions(&self, task: Task, picks: &[Accept]) -> anyhow::Result<Accepted> {
         let by_row: HashMap<u64, &Accept> = picks.iter().map(|p| (p.row, p)).collect();
         let rows: Vec<u64> = by_row.keys().copied().collect();
         // A position taken is marked approximate before it is set, as a place's position
         // is: a mark on a photo not at its point is ignored, a position without its mark
-        // would pass for one taken there.
+        // would pass for one taken there. One taken as precise has its old mark taken off.
         let mut marks = Vec::new();
+        let mut placeable = HashSet::new();
         for pick in picks {
             let Some([lat, lon]) = pick.point else { continue };
             let Some(photo) = self.photo(pick.row)? else { continue };
-            if photo.geo.is_some() {
+            if !self.may_place(task, &photo) {
+                continue;
+            }
+            placeable.insert(pick.row);
+            if pick.precise {
+                if photo.geo.is_some() {
+                    marks.push((photo.id.key(), None));
+                }
                 continue;
             }
             let (place, _) = taken_place(&photo.place, pick);
@@ -336,7 +377,15 @@ impl Library {
             marks.push((photo.id.key(), Some(Coarse { lat, lon, level, path })));
         }
         self.place_book.set_coarse(&marks)?;
-        self.coarse.write().unwrap().extend(marks.into_iter().filter_map(|(k, c)| Some((k, c?))));
+        {
+            let mut coarse = self.coarse.write().unwrap();
+            for (key, mark) in marks {
+                match mark {
+                    Some(mark) => coarse.insert(key, mark),
+                    None => coarse.remove(&key),
+                };
+            }
+        }
         let changed = std::sync::Mutex::new(HashSet::new());
         let undo = self.edit_photos_as(
             &rows,
@@ -385,12 +434,14 @@ impl Library {
                 if place != photo.place {
                     ops.push(Op::SetPlace { base: photo.place.clone(), value: place });
                 }
-                // Never over a position the photo has.
+                // Never over a position of the photo's own.
                 if let Some([lat, lon]) = pick.point
-                    && photo.geo.is_none()
+                    && placeable.contains(&row)
+                    && photo.geo.is_none_or(|g| !same_spot((g.lat, g.lon), (lat, lon)))
                 {
-                    let value = GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Geocoded };
-                    ops.push(Op::SetGeo { base: None, value: Some(value) });
+                    let origin = if pick.precise { GeoOrigin::Manual } else { GeoOrigin::Geocoded };
+                    let value = GeoPoint { lat, lon, alt: None, origin };
+                    ops.push(Op::SetGeo { base: photo.geo, value: Some(value) });
                 }
                 if stale {
                     changed.lock().unwrap().insert(row);
@@ -405,12 +456,13 @@ impl Library {
         let mut reviews = Vec::new();
         for &row in &done {
             let Some(key) = self.key_of(row) else { continue };
-            if let Some(entry) = self.suggestions.get(&key)? {
-                reviews.push(review_of(key.clone(), entry, Status::Accepted, Some(Taken::from(by_row[&row]))));
+            if let Some(entry) = self.suggestions.get(task, &key)? {
+                reviews.push(review_of(task, key.clone(), entry, Status::Accepted, Some(Taken::from(by_row[&row]))));
             }
             keys.push(key);
         }
-        self.suggestions.settle(&keys.iter().map(String::as_str).collect::<Vec<_>>(), Status::Accepted, &reviews)?;
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        self.suggestions.settle(task, &keys, Status::Accepted, &reviews)?;
         let mut changed: Vec<u64> = changed.into_iter().collect();
         changed.sort_unstable();
         Ok(Accepted { undo, changed })

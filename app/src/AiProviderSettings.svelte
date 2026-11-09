@@ -2,6 +2,7 @@
   import { onMount, untrack } from "svelte";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
+  import { PRECISE_KM } from "./lib/aiPlace";
   import type { AiImage, AiView } from "./lib/api";
   import type { LeftOut } from "./lib/keywordChoice";
   import KeywordChoice from "./KeywordChoice.svelte";
@@ -224,6 +225,18 @@
     <div>
       <input id="ai-place-tick" type="number" min="1" max="100" value={view.settings.place_tick} disabled={busy} onchange={(e) => save({ place_tick: Number(e.currentTarget.value) })} />
       <span class="muted">% likely or more: ticked in the review where the photo has none</span>
+    </div>
+
+    <label for="ai-locate-window">Locate</label>
+    <div>
+      <input id="ai-locate-window" type="number" min="1" max="2880" value={view.settings.locate.window_minutes} disabled={busy} onchange={(e) => save({ locate: { ...view!.settings.locate, window_minutes: Number(e.currentTarget.value) } })} />
+      <span class="muted">minutes either side: photos with a position taken that close are sent as clues</span>
+    </div>
+
+    <label for="ai-locate-precise">Precise</label>
+    <div>
+      <input id="ai-locate-precise" type="number" min="1" max="100" value={view.settings.locate.precise} disabled={busy} onchange={(e) => save({ locate: { ...view!.settings.locate, precise: Number(e.currentTarget.value) } })} />
+      <span class="muted">% likely or more, a landmark within {PRECISE_KM * 1000} m: its position starts ticked as the photo's own, not ≈</span>
     </div>
   </div>
   {#if error}<p class="warn">{error}</p>{/if}
