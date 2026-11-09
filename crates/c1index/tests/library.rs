@@ -3005,7 +3005,7 @@ fn a_scene_is_stored_together_with_one_call_recorded() {
         (lib.suggestion(Task::Locate, eight).unwrap().unwrap(), lib.suggestion(Task::Locate, seven).unwrap().unwrap());
     assert_eq!((first.group, other.group), (Some(eight), Some(eight)));
     assert_eq!((first.cost, other.cost), (0.01, 0.0));
-    assert_eq!((first.context.len(), other.context.len()), (1, 0), "told once, with the first");
+    assert_eq!((first.context.len(), other.context.len()), (1, 1), "either may stand for the scene's card");
     // Checked against the gazetteer for every photo, once.
     for e in [&first, &other] {
         assert_eq!(e.suggestion.place.as_ref().unwrap().country.as_ref().unwrap().p, 0.5);

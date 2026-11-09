@@ -264,8 +264,8 @@ impl Library {
 
     /// Stores what one call found for a scene's photos: the place checked against the
     /// gazetteer once, and against each photo's own neighbours in time; the call recorded
-    /// once and the entries written together. The first photo keeps the call's cost and what
-    /// the model was told; the others refer to it by `group`.
+    /// once and the entries written together. The first photo keeps the call's cost; every
+    /// photo keeps what the model was told, as any of them may stand for the scene's card.
     pub fn put_scene(&self, task: Task, rows: &[u64], entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
         let mut checked = entry.clone();
         if let Some(place) = checked.suggestion.place.as_mut() {
@@ -274,8 +274,7 @@ impl Library {
         let mut entries = Vec::with_capacity(rows.len());
         for (i, &row) in rows.iter().enumerate() {
             let Some(key) = self.key_of(row) else { continue };
-            let mut own =
-                if i == 0 { checked.clone() } else { Entry { cost: 0.0, context: Vec::new(), ..checked.clone() } };
+            let mut own = if i == 0 { checked.clone() } else { Entry { cost: 0.0, ..checked.clone() } };
             if task == Task::Locate
                 && let Some(place) = own.suggestion.place.as_mut()
             {
