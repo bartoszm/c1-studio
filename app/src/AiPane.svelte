@@ -3,12 +3,13 @@
   import * as api from "./lib/api";
   import { SvelteSet } from "svelte/reactivity";
   import {
-    BASIS, LEVELS, chooseName, guessNames, levelOptions, percent, placeIndex, placeReplaces, placeTicks,
+    BASIS, LEVELS, chooseName, guessNames, levelOptions, percent, radiusText, placeIndex, placeReplaces, placeTicks,
     preciseOffered, scenePicks, seenOf, takenPlace, type Level, type Names, type PlaceIndex, type PlaceTicks,
   } from "./lib/aiPlace";
   import { catalogPlaces } from "./lib/placeHints";
   import { REFINE_LINES, changes, chipText, digest, shows, type Shown as ReviewShown } from "./lib/reviews";
   import { source } from "./lib/source.svelte";
+  import { keepChoice, keepFlag, readChoice, readFlag } from "./lib/stored";
   import type { Accept, AiTask, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
   let {
@@ -56,22 +57,8 @@
 
   // ---- describing or locating ---------------------------------------------------------
   /** What the tab runs and reviews: descriptions, or places found. Kept between visits. */
-  let task = $state<AiTask>(readTask());
-  function readTask(): AiTask {
-    try {
-      return localStorage.getItem("ai-task") === "locate" ? "locate" : "describe";
-    } catch {
-      return "describe";
-    }
-  }
-  $effect(() => {
-    const t = task;
-    try {
-      localStorage.setItem("ai-task", t);
-    } catch {
-      // Not kept: it opens on Describe next time.
-    }
-  });
+  let task = $state<AiTask>(readChoice("ai-task", ["describe", "locate"], "describe"));
+  $effect(() => keepChoice("ai-task", task));
   let locating = $derived(task === "locate");
   /** The run under way is a locating one. */
   let runLocates = $derived(describe?.task === "locate");
@@ -147,21 +134,7 @@
 
   // ---- what the run is doing, shown on demand -----------------------------------------
   let details = $state(readFlag("ai-details"));
-  function readFlag(key: string): boolean {
-    try {
-      return localStorage.getItem(key) === "1";
-    } catch {
-      return false;
-    }
-  }
-  $effect(() => {
-    const open = details;
-    try {
-      localStorage.setItem("ai-details", open ? "1" : "0");
-    } catch {
-      // Not kept: it opens closed next time.
-    }
-  });
+  $effect(() => keepFlag("ai-details", details));
   /** The contact sheet shown large, by its call. */
   let sheetShown = $state<number | null>(null);
   let sheetGone = $state(false);
@@ -945,7 +918,7 @@
                       : `About here, within ${g.point.radius_km} km${d.precise ? "" : ": shown as ≈"}${now?.placed ? "; replaces its place's position" : ""}`}
                   >
                     <input type="checkbox" disabled={locked} bind:checked={ticks.point} />{d.precise ? "" : "≈ "}{g.point.lat.toFixed(4)}, {g.point.lon.toFixed(4)}
-                    <span class="muted">±{g.point.radius_km < 1 ? `${Math.round(g.point.radius_km * 1000)} m` : `${g.point.radius_km} km`} · {percent(g.point.p)}</span>
+                    <span class="muted">±{radiusText(g.point.radius_km)} · {percent(g.point.p)}</span>
                   </label>
                   {#if locating}
                     <label class="level" title="Take the position as the photo's own, not shown as ≈: for a landmark recognised for certain">

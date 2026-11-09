@@ -129,7 +129,9 @@ fn reach_km(population: u32) -> f64 {
     1.0 + (population as f64).sqrt() / 40.0
 }
 
-fn km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
+/// The distance between two points in km, the short way round the date line: flat across,
+/// good to a fraction of a percent at the few hundred km places and photos are compared at.
+pub fn km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let dlat = (lat2 - lat1).to_radians();
     let mut dlon = lon2 - lon1;
     if dlon > 180.0 {

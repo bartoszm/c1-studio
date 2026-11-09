@@ -281,9 +281,7 @@ fn valid(a: &Approx) -> bool {
 }
 
 pub(super) fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
-    let dlat = (b.0 - a.0).to_radians();
-    let dlon = wrapped(b.1 - a.1).to_radians() * ((a.0 + b.0) / 2.0).to_radians().cos();
-    6371.0 * dlat.hypot(dlon)
+    c1geo::km(a.0, a.1, b.0, b.1)
 }
 
 /// A longitude difference the short way round, -180 to 180.

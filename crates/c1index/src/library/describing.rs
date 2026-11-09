@@ -252,14 +252,37 @@ impl Library {
     /// Of `rows`, those already described (or located) with this model and prompt: a run
     /// skips them.
     pub fn described(&self, task: Task, rows: &[u64], model: &str, prompt: u64) -> anyhow::Result<HashSet<u64>> {
-        let all = self.suggestions.all(task)?;
-        Ok(rows
-            .iter()
-            .copied()
-            .filter(|&row| {
-                self.key_of(row).and_then(|k| all.get(&k)).is_some_and(|e| e.model == model && e.prompt == prompt)
-            })
+        let keyed: Vec<(u64, String)> = rows.iter().filter_map(|&r| Some((r, self.key_of(r)?))).collect();
+        // Only these photos' entries are read, not the whole table.
+        let found = self.suggestions.get_many(task, keyed.iter().map(|(_, k)| k.as_str()))?;
+        Ok(keyed
+            .into_iter()
+            .filter(|(_, k)| found.get(k).is_some_and(|e| e.model == model && e.prompt == prompt))
+            .map(|(r, _)| r)
             .collect())
+    }
+
+    /// Stores what one call found for a scene's photos: the place checked against the
+    /// gazetteer once, and against each photo's own neighbours in time; the call recorded
+    /// once and the entries written together. The first photo keeps the call's cost; every
+    /// photo keeps what the model was told, as any of them may stand for the scene's card.
+    pub fn put_scene(&self, task: Task, rows: &[u64], entry: &Entry, record: &RunRecord) -> anyhow::Result<()> {
+        let mut checked = entry.clone();
+        if let Some(place) = checked.suggestion.place.as_mut() {
+            checked.warnings.extend(check_place(place));
+        }
+        let mut entries = Vec::with_capacity(rows.len());
+        for (i, &row) in rows.iter().enumerate() {
+            let Some(key) = self.key_of(row) else { continue };
+            let mut own = if i == 0 { checked.clone() } else { Entry { cost: 0.0, ..checked.clone() } };
+            if task == Task::Locate
+                && let Some(place) = own.suggestion.place.as_mut()
+            {
+                own.warnings.extend(self.check_reach(row, place)?);
+            }
+            entries.push((key, own));
+        }
+        self.suggestions.put_many(task, &entries, record)
     }
 
     /// Stores a photo's suggestion, its place checked against the gazetteer first and, a
@@ -302,14 +325,17 @@ impl Library {
 
     /// Stored suggestions of photos in the library, with `status` or any, newest first.
     pub fn suggestions(&self, task: Task, status: Option<Status>) -> anyhow::Result<Vec<(u64, Entry)>> {
-        let all = self.suggestions.all(task)?;
-        let mut out: Vec<(u64, Entry)> = self
+        let mut all = self.suggestions.all(task)?;
+        all.retain(|_, e| status.is_none_or(|s| e.status == s));
+        let rows: Vec<(u64, String)> = self
             .store
             .rows_of(all.keys().map(String::as_str))?
             .into_iter()
-            .filter_map(|(row, key)| all.get(key).map(|e| (row, e.clone())))
-            .filter(|(_, e)| status.is_none_or(|s| e.status == s))
+            .map(|(row, key)| (row, key.to_owned()))
             .collect();
+        // Moved out, not cloned: the entries hold the model's whole answer.
+        let mut out: Vec<(u64, Entry)> =
+            rows.into_iter().filter_map(|(row, key)| Some((row, all.remove(&key)?))).collect();
         out.sort_by(|a, b| b.1.at.cmp(&a.1.at).then(a.0.cmp(&b.0)));
         Ok(out)
     }

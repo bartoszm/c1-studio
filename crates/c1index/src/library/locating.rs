@@ -232,9 +232,10 @@ impl Library {
                 .collect();
             (trips, home)
         };
+        let mut photos = Vec::with_capacity(rows.len());
+        self.photos(rows, |row, photo| photos.push((row, photo)))?;
         let mut out = HashMap::new();
-        for &row in rows {
-            let Some(photo) = self.photo(row)? else { continue };
+        for (row, photo) in photos {
             let mut lines = Vec::new();
             if let Some(place) = said(&photo.place) {
                 let code = photo.place.country_code.as_deref().map(|c| format!(" ({c})")).unwrap_or_default();
@@ -293,12 +294,7 @@ impl Library {
                 .collect()
         };
         let mut shots = Vec::with_capacity(rows.len());
-        for &row in rows {
-            // A photo that cannot be read goes alone: every row asked for is in a scene.
-            let Some(photo) = self.photo(row)? else {
-                shots.push(SceneShot { row, at: None, place: None, trip: None });
-                continue;
-            };
+        self.photos(rows, |row, photo| {
             let at = photo.captured_at;
             shots.push(SceneShot {
                 row,
@@ -306,6 +302,13 @@ impl Library {
                 place: crate::schema::place_tree(&photo.place).pop(),
                 trip: at.and_then(|at| trips.iter().position(|(s, e)| (*s..=*e).contains(&at))),
             });
+        })?;
+        // A photo that cannot be read goes alone: every row asked for is in a scene.
+        if shots.len() < rows.len() {
+            let read: std::collections::HashSet<u64> = shots.iter().map(|s| s.row).collect();
+            for &row in rows.iter().filter(|r| !read.contains(r)) {
+                shots.push(SceneShot { row, at: None, place: None, trip: None });
+            }
         }
         let minutes = |m: i64| m.clamp(1, 2880) * 60_000;
         Ok(scenes(shots, minutes(gap_minutes), minutes(span_minutes)))
@@ -334,16 +337,20 @@ impl Library {
     /// Of `rows`, those with no position of their own: none, or only their place's (≈).
     /// A locating run takes these.
     pub fn unpositioned(&self, rows: &[u64]) -> anyhow::Result<Vec<u64>> {
-        let coarse = self.coarse.read().unwrap();
         let mut out = Vec::new();
-        for &row in rows {
-            let Some(photo) = self.photo(row)? else { continue };
-            let approx = |g: &c1model::GeoPoint| coarse.get(&photo.id.key()).is_some_and(|c| c.holds(g.lat, g.lon));
-            if photo.geo.as_ref().is_none_or(approx) {
+        self.photos(rows, |row, photo| {
+            if !self.own_position(&photo) {
                 out.push(row);
             }
-        }
+        })?;
         Ok(out)
+    }
+
+    /// Whether a photo has a position of its own: one, and not only its place's (≈).
+    pub fn own_position(&self, photo: &c1model::Photo) -> bool {
+        photo
+            .geo
+            .is_some_and(|g| !self.coarse.read().unwrap().get(&photo.id.key()).is_some_and(|c| c.holds(g.lat, g.lon)))
     }
 }
 

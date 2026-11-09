@@ -13,7 +13,8 @@
   import { parsePlusCode } from "./lib/pluscode";
   import { settings } from "./lib/settings.svelte";
   import UnplacedTray from "./UnplacedTray.svelte";
-  import { BASIS, LEVELS, percent } from "./lib/aiPlace";
+  import { BASIS, LEVELS, percent, radiusText as km } from "./lib/aiPlace";
+  import { keepFlag, readFlag } from "./lib/stored";
   import { circle, guessPins, ownPosition, pinPicks, pointTicked, precisePin, type GuessPin } from "./lib/aiGuesses";
 
   let {
@@ -544,21 +545,7 @@
   // ---- AI Locate's guesses -------------------------------------------------------------
   /** The guesses not yet reviewed are shown: pins with the circle they may be off by. */
   let showAi = $state(readFlag("map-ai"));
-  function readFlag(key: string): boolean {
-    try {
-      return localStorage.getItem(key) === "1";
-    } catch {
-      return false;
-    }
-  }
-  $effect(() => {
-    const on = showAi;
-    try {
-      localStorage.setItem("map-ai", on ? "1" : "0");
-    } catch {
-      // Not kept: it starts off next time.
-    }
-  });
+  $effect(() => keepFlag("map-ai", showAi));
   let aiPins = $state.raw<GuessPin[]>([]);
   /** Settings > AI's ticks, as fractions: what a pin's Accept takes. */
   let aiTicks = { place: 0.8, precise: 0.9 };
@@ -604,28 +591,15 @@
     untrack(loadAi);
   });
   /** The circles' layers are there; like the route's, drawn again once the style takes them. */
-  let aiWaiting = false;
-  function ensureAiLayers(): boolean {
-    if (!map) return false;
-    if (map.getSource("ai-circles")) return true;
-    try {
-      map.addSource("ai-circles", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
-      map.addLayer({ id: "ai-fill", type: "fill", source: "ai-circles", paint: { "fill-color": AI_COLOR, "fill-opacity": ["*", 0.12, ["get", "p"]] } });
-      map.addLayer({ id: "ai-line", type: "line", source: "ai-circles", paint: { "line-color": AI_COLOR, "line-width": 1.5, "line-dasharray": [3, 2] } });
-      return true;
-    } catch {
-      for (const id of ["ai-line", "ai-fill"]) if (map.getLayer(id)) map.removeLayer(id);
-      if (map.getSource("ai-circles")) map.removeSource("ai-circles");
-      if (!aiWaiting) {
-        aiWaiting = true;
-        map.once("idle", () => {
-          aiWaiting = false;
-          drawAi();
-        });
-      }
-      return false;
-    }
-  }
+  const ensureAiLayers = () =>
+    layersReady(
+      [["ai-circles", { type: "geojson", data: { type: "FeatureCollection", features: [] } }]],
+      [
+        { id: "ai-fill", type: "fill", source: "ai-circles", paint: { "fill-color": AI_COLOR, "fill-opacity": ["*", 0.12, ["get", "p"]] } },
+        { id: "ai-line", type: "line", source: "ai-circles", paint: { "line-color": AI_COLOR, "line-width": 1.5, "line-dasharray": [3, 2] } },
+      ],
+      drawAi,
+    );
   function drawAi() {
     if (!map) return;
     // Not under a pin being dragged: once it is let go.
@@ -706,7 +680,6 @@
       }
     }
   }
-  const km = (v: number) => (v < 1 ? `${Math.round(v * 1000)} m` : `${v} km`);
   /** A guess's place, finest level first. */
   function guessLabel(pin: GuessPin): string {
     const g = pin.lead.suggestion.place;
@@ -877,32 +850,43 @@
     return { type: "Feature" as const, properties: {}, geometry: { type: "LineString" as const, coordinates: points } };
   }
 
-  /** Whether the route's layers are there; until the style can take them, it draws
-   *  again when the map next settles. (`isStyleLoaded` is false while tiles load too.) */
-  let waiting = false;
-  function ensureLayers(): boolean {
+  /** Whether layers drawn on the map's style (the route's, the guesses' circles) are there:
+   *  added with their sources if not. Until the style can take them (adding throws only
+   *  then; `isStyleLoaded` is false while tiles load too), what got added is taken off and
+   *  `again` draws once the map next settles. */
+  const settling = new Set<string>();
+  function layersReady(
+    sources: [string, maplibregl.SourceSpecification][], layers: maplibregl.LayerSpecification[], again: () => void,
+  ): boolean {
     if (!map) return false;
-    if (map.getSource("route")) return true;
+    const first = sources[0][0];
+    if (map.getSource(first)) return true;
     try {
-      map.addSource("route", { type: "geojson", data: line([]) });
-      map.addSource("route-done", { type: "geojson", data: line([]) });
-      map.addLayer({ id: "route", type: "line", source: "route", paint: { "line-color": ROUTE_ALL, "line-width": 2, "line-dasharray": [2, 2] } });
-      map.addLayer({ id: "route-done", type: "line", source: "route-done", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ROUTE_DONE, "line-width": 4 } });
+      for (const [id, spec] of sources) map.addSource(id, spec);
+      for (const layer of layers) map.addLayer(layer);
       return true;
     } catch {
-      // The style is not in yet (adding throws only then): undo what got added.
-      for (const id of ["route-done", "route"]) if (map.getLayer(id)) map.removeLayer(id);
-      for (const id of ["route-done", "route"]) if (map.getSource(id)) map.removeSource(id);
-      if (!waiting) {
-        waiting = true;
+      for (const layer of [...layers].reverse()) if (map.getLayer(layer.id)) map.removeLayer(layer.id);
+      for (const [id] of sources) if (map.getSource(id)) map.removeSource(id);
+      if (!settling.has(first)) {
+        settling.add(first);
         map.once("idle", () => {
-          waiting = false;
-          drawRoute();
+          settling.delete(first);
+          again();
         });
       }
       return false;
     }
   }
+  const ensureLayers = () =>
+    layersReady(
+      [["route", { type: "geojson", data: line([]) }], ["route-done", { type: "geojson", data: line([]) }]],
+      [
+        { id: "route", type: "line", source: "route", paint: { "line-color": ROUTE_ALL, "line-width": 2, "line-dasharray": [2, 2] } },
+        { id: "route-done", type: "line", source: "route-done", layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": ROUTE_DONE, "line-width": 4 } },
+      ],
+      drawRoute,
+    );
 
   function drawRoute() {
     if (!ensureLayers() || !map) return;

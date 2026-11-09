@@ -2977,3 +2977,39 @@ fn a_place_found_by_a_locating_run_can_move_an_approximate_position_and_be_taken
         reviews.iter().any(|r| r.review.task == Task::Locate && r.review.taken.as_ref().is_some_and(|t| t.precise))
     );
 }
+
+#[test]
+fn a_scene_is_stored_together_with_one_call_recorded() {
+    use c1ai::{Guess, PlaceGuess};
+    use c1index::ai::{Entry, Status, Task};
+    let (_d, lib, _s) = setup();
+    let (eight, seven) = (row_of(&lib, 8), row_of(&lib, 7));
+    let entry = Entry {
+        model: "m".into(),
+        prompt: 3,
+        cost: 0.01,
+        context: vec!["The image is a sheet of 2 photos of one scene".into()],
+        group: Some(eight),
+        suggestion: c1ai::Suggestion {
+            place: Some(PlaceGuess { country: Some(Guess { name: "Narnia".into(), p: 0.9 }), ..PlaceGuess::default() }),
+            ..c1ai::Suggestion::default()
+        },
+        status: Status::Proposed,
+        ..Entry::default()
+    };
+    let (calls, _) = lib.ai_spent().unwrap();
+    lib.put_scene(Task::Locate, &[eight, seven], &entry, &c1ai::RunRecord { cost: 0.01, ..Default::default() })
+        .unwrap();
+    assert_eq!(lib.ai_spent().unwrap().0, calls + 1, "one call");
+    let (first, other) =
+        (lib.suggestion(Task::Locate, eight).unwrap().unwrap(), lib.suggestion(Task::Locate, seven).unwrap().unwrap());
+    assert_eq!((first.group, other.group), (Some(eight), Some(eight)));
+    assert_eq!((first.cost, other.cost), (0.01, 0.0));
+    assert_eq!((first.context.len(), other.context.len()), (1, 1), "either may stand for the scene's card");
+    // Checked against the gazetteer for every photo, once.
+    for e in [&first, &other] {
+        assert_eq!(e.suggestion.place.as_ref().unwrap().country.as_ref().unwrap().p, 0.5);
+        assert_eq!(e.warnings.iter().filter(|w| w.contains("Narnia")).count(), 1, "{:?}", e.warnings);
+    }
+    assert_eq!(lib.described(Task::Locate, &[eight, seven, row_of(&lib, 6)], "m", 3).unwrap().len(), 2);
+}
