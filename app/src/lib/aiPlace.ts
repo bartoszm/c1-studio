@@ -161,6 +161,9 @@ export function memberPick(lead: Accept, row: number, now: PlaceNames | null, lo
   return { row, keywords: [], place, point, precise: !!point && !!lead.precise, seen };
 }
 
+/** How far off a guessed position may be, as said: "±800 m", "±2.5 km". */
+export const radiusText = (km: number) => (km < 1 ? `${Math.round(km * 1000)} m` : `${km} km`);
+
 /** A landmark's position within this many km may be taken as the photo's own. */
 export const PRECISE_KM = 0.5;
 

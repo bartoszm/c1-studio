@@ -170,6 +170,41 @@ impl SuggestionBook {
         Ok(table.get(key)?.and_then(|b| decode(b.value())))
     }
 
+    /// The entries of `keys` that are stored, read together.
+    pub fn get_many<'a>(
+        &self,
+        task: Task,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> anyhow::Result<HashMap<String, Entry>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(table(task))?;
+        let mut out = HashMap::new();
+        for key in keys {
+            if let Some(entry) = table.get(key)?.and_then(|b| decode(b.value())) {
+                out.insert(key.to_owned(), entry);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Stores several photos' suggestions from one call, recorded once (with the first),
+    /// in one write.
+    pub fn put_many(&self, task: Task, entries: &[(String, Entry)], record: &RunRecord) -> anyhow::Result<()> {
+        let Some((first, _)) = entries.first() else { return Ok(()) };
+        let tx = self.db.begin_write()?;
+        {
+            let mut table = tx.open_table(table(task))?;
+            for (key, entry) in entries {
+                table.insert(key.as_str(), serde_json::to_vec(entry)?.as_slice())?;
+            }
+            let mut records = tx.open_table(RECORDS)?;
+            let next = records.last()?.map(|(k, _)| k.value() + 1).unwrap_or(0);
+            records.insert(next, postcard::to_stdvec(&(first.as_str(), record))?.as_slice())?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Stores a photo's new suggestion without a call of its own: one of a contact sheet's
     /// photos, the call recorded with another.
     pub fn put_entry(&self, task: Task, key: &str, entry: &Entry) -> anyhow::Result<()> {

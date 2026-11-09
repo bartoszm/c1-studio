@@ -493,8 +493,13 @@ pub(crate) struct Estimate {
 /// The instructions for a run with these settings, and the vocabulary answers are
 /// checked against.
 fn brief(s: &Session, settings: &AiSettings, task: Task) -> Result<(Brief, Vocabulary), String> {
+    // A locating run asks for no keywords: the catalog's are not read for it.
+    let keywords = match task {
+        Task::Describe => s.library.vocabulary().map_err(text)?,
+        Task::Locate => Vec::new(),
+    };
     let (paths, withheld): (Vec<_>, Vec<_>) =
-        s.library.vocabulary().map_err(text)?.into_iter().partition(|(path, _)| !settings.left_out.covers(path));
+        keywords.into_iter().partition(|(path, _)| !settings.left_out.covers(path));
     let brief = Brief {
         task,
         language: settings.language,
@@ -993,29 +998,51 @@ fn describe_one(
     let Some(request) = request(s, image, row, clues, progress)? else { anyhow::bail!("no preview or thumbnail") };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
-        Err(failed) => {
-            if let Some(record) = &failed.record {
-                s.library.record_call(row, record)?;
-            }
-            return Err(failed.into());
-        }
+        Err(failed) => return Err(paid_for(s, row, failed)),
     };
     let entry = Entry {
-        at: chrono::Utc::now().timestamp_millis(),
-        provider: provider.id().to_string(),
-        // The model asked for, which is what "described already" compares; the record
-        // keeps the one that answered (a fallback, on a declined photo).
-        model: provider.model().to_string(),
-        prompt: provider.prompt_hash(),
-        suggestion: reply.suggestion,
-        warnings: reply.warnings,
         cost: reply.record.cost,
-        status: Status::Proposed,
         context: clues.to_vec(),
-        group: None,
+        ..proposed(provider, reply.suggestion, reply.warnings)
     };
     s.library.put_suggestion(task, row, &entry, &reply.record)?;
     Ok(reply.record.cost)
+}
+
+/// A suggestion just made, to review, as `provider` gave it: the model asked for is kept,
+/// which is what "described already" compares (the call's record keeps the one that
+/// answered: a fallback, on a declined photo). No cost, context or group yet.
+fn proposed(provider: &dyn VisionProvider, suggestion: c1ai::Suggestion, warnings: Vec<String>) -> Entry {
+    Entry {
+        at: chrono::Utc::now().timestamp_millis(),
+        provider: provider.id().to_string(),
+        model: provider.model().to_string(),
+        prompt: provider.prompt_hash(),
+        suggestion,
+        warnings,
+        status: Status::Proposed,
+        ..Entry::default()
+    }
+}
+
+/// A call that gave nothing usable, recorded (with `row`'s photo) when it was paid for: a
+/// refusal or a cut answer costs all the same. Returns its error.
+fn paid_for(s: &Session, row: u64, failed: Failed) -> anyhow::Error {
+    if let Some(record) = &failed.record
+        && let Err(e) = s.library.record_call(row, record)
+    {
+        return e.context(failed.error.to_string());
+    }
+    failed.into()
+}
+
+/// Keeps a sheet sent, to be looked at: the last [`SHEETS_KEPT`].
+fn keep_sheet(s: &Session, call: usize, jpeg: &[u8]) {
+    let mut kept = lock(&s.describe_sheets);
+    kept.push_back((call, jpeg.to_vec()));
+    while kept.len() > SHEETS_KEPT {
+        kept.pop_front();
+    }
 }
 
 /// What a call gave: photos that got no suggestion, for want of an image or of an answer,
@@ -1061,21 +1088,12 @@ fn describe_sheet(
             n => format!("; {n} photos have no image and are left off"),
         };
         lock(&s.describe).note(call, no_image == 0, format!("Sheet {call}: made, {} photos{left_off}", on_sheet.len()));
-        let mut kept = lock(&s.describe_sheets);
-        kept.push_back((call, jpeg.clone()));
-        while kept.len() > SHEETS_KEPT {
-            kept.pop_front();
-        }
+        keep_sheet(s, call, &jpeg);
     }
     let request = SheetRequest { jpeg, contexts, progress: Some(progress) };
     let reply = match provider.describe_sheet(&request) {
         Ok(reply) => reply,
-        Err(failed) => {
-            if let Some(record) = &failed.record {
-                s.library.record_call(on_sheet[0], record)?;
-            }
-            return Err(failed.into());
-        }
+        Err(failed) => return Err(paid_for(s, on_sheet[0], failed)),
     };
     if !reply.warnings.is_empty() {
         s.log.event(&format!("A sheet of {} photos: {}", on_sheet.len(), reply.warnings.join("; ")), &[]);
@@ -1087,18 +1105,8 @@ fn describe_sheet(
             unanswered += 1;
             continue;
         };
-        let entry = Entry {
-            at: chrono::Utc::now().timestamp_millis(),
-            provider: provider.id().to_string(),
-            model: provider.model().to_string(),
-            prompt: provider.prompt_hash(),
-            suggestion,
-            warnings,
-            cost: 0.0,
-            status: Status::Proposed,
-            context: clues.get(&row).cloned().unwrap_or_default(),
-            group: None,
-        };
+        let entry =
+            Entry { context: clues.get(&row).cloned().unwrap_or_default(), ..proposed(provider, suggestion, warnings) };
         // The call is recorded once, with the first photo it gave a suggestion for.
         match first.take() {
             Some(()) => s.library.put_suggestion(task, row, &entry, &reply.record)?,
@@ -1160,11 +1168,7 @@ fn locate_scene(
             format!("{} photos", rows.len())
         };
         lock(&s.describe).note(call, true, format!("Sheet {call}: a scene, {sent}"));
-        let mut kept = lock(&s.describe_sheets);
-        kept.push_back((call, jpeg.clone()));
-        while kept.len() > SHEETS_KEPT {
-            kept.pop_front();
-        }
+        keep_sheet(s, call, &jpeg);
     }
     // The scene's clues: each photo's, in the order taken, once; a line telling of the
     // same photo or place as one before ("11 min before it, …", "12 min before it, …") is
@@ -1194,32 +1198,18 @@ fn locate_scene(
     let request = PhotoRequest { jpeg, context, progress: Some(progress) };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
-        Err(failed) => {
-            if let Some(record) = &failed.record {
-                s.library.record_call(rows[0], record)?;
-            }
-            return Err(failed.into());
-        }
+        Err(failed) => return Err(paid_for(s, rows[0], failed)),
     };
     let mut told = vec![scene];
     told.extend(lines);
     let entry = Entry {
-        at: chrono::Utc::now().timestamp_millis(),
-        provider: provider.id().to_string(),
-        model: provider.model().to_string(),
-        prompt: provider.prompt_hash(),
-        suggestion: reply.suggestion,
-        warnings: reply.warnings,
         cost: reply.record.cost,
-        status: Status::Proposed,
         context: told,
         group: Some(rows[0]),
+        ..proposed(provider, reply.suggestion, reply.warnings)
     };
-    // The call is recorded once, with the scene's first photo.
-    s.library.put_suggestion(Task::Locate, rows[0], &entry, &reply.record)?;
-    for &row in &rows[1..] {
-        s.library.put_suggestion_only(Task::Locate, row, &Entry { cost: 0.0, ..entry.clone() })?;
-    }
+    // Checked once, written together, the call recorded with the scene's first photo.
+    s.library.put_scene(Task::Locate, rows, &entry, &reply.record)?;
     Ok(Described { no_image: 0, unanswered: 0, cost: reply.record.cost })
 }
 
@@ -1304,15 +1294,14 @@ pub(crate) async fn suggestions(
     tauri::async_runtime::spawn_blocking(move || {
         let list = s.library.suggestions(task.unwrap_or_default(), status).map_err(text)?;
         let rows: Vec<u64> = list.iter().map(|(row, _)| *row).collect();
-        let unpositioned: std::collections::HashSet<u64> =
-            s.library.unpositioned(&rows).map_err(text)?.into_iter().collect();
-        list.into_iter()
-            .map(|(row, entry)| {
-                let photo = s.library.photo(row).map_err(text)?;
-                let current = photo.as_ref().map(|p| Current::of(p, unpositioned.contains(&row)));
-                Ok(SuggestionRow { row, entry, current })
+        // The photos read together, once.
+        let mut current = HashMap::with_capacity(rows.len());
+        s.library
+            .photos(&rows, |row, photo| {
+                current.insert(row, Current::of(&photo, !s.library.own_position(&photo)));
             })
-            .collect()
+            .map_err(text)?;
+        Ok(list.into_iter().map(|(row, entry)| SuggestionRow { row, entry, current: current.remove(&row) }).collect())
     })
     .await
     .map_err(text)?
