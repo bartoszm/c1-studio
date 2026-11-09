@@ -337,16 +337,23 @@
       return el;
     }
     // Near: the photo on a stem, the dot at its foot being exactly where it is.
+    return stemPin(c.best, c.count > 1 ? short(c.count) : null, el);
+  }
+
+  /** A photo's thumbnail on a stem, `label` in its corner, the dot at its foot being the
+   *  point: a pin of photos with GPS, and of AI guesses. Built into `el` if given. */
+  function stemPin(row: number, label: string | null, el = document.createElement("div")): HTMLElement {
+    el.classList.add("pin");
     const card = document.createElement("div");
     card.className = "card";
     const img = document.createElement("img");
-    img.src = api.thumbUrl(c.best);
+    img.src = api.thumbUrl(row);
     img.draggable = false;
     img.alt = "";
     card.append(img);
-    if (c.count > 1) {
+    if (label) {
       const n = document.createElement("span");
-      n.textContent = c.count > 999 ? `${Math.round(c.count / 100) / 10}k` : String(c.count);
+      n.textContent = label;
       card.append(n);
     }
     const stem = document.createElement("div");
@@ -555,7 +562,8 @@
   let aiPins = $state.raw<GuessPin[]>([]);
   /** Settings > AI's ticks, as fractions: what a pin's Accept takes. */
   let aiTicks = { place: 0.8, precise: 0.9 };
-  const aiMarkers = new Map<number, maplibregl.Marker>();
+  /** The pins drawn, by their card's row, with what they were drawn from: one unchanged stays. */
+  const aiMarkers = new Map<number, { marker: maplibregl.Marker; key: string; pin: { current: GuessPin } }>();
   /** A pin is being dragged, or was just let go. */
   let dragging = false;
   /** The pins were to be drawn again while one was dragged: they are, once it is let go. */
@@ -577,9 +585,9 @@
       return;
     }
     try {
-      const [rows, view] = await Promise.all([api.suggestions("Proposed", "locate"), api.aiSettings()]);
+      const [rows, t] = await Promise.all([api.suggestions("Proposed", "locate"), api.aiThresholds()]);
       if (mine !== aiAsked) return;
-      aiTicks = { place: view.settings.place_tick / 100, precise: view.settings.locate.precise / 100 };
+      aiTicks = { place: t.place_tick / 100, precise: t.precise / 100 };
       aiPins = guessPins(rows);
       // A pin no longer shown is no longer moved.
       const shown = new Set(aiPins.map((p) => p.lead.row));
@@ -625,9 +633,11 @@
       redrawLater = true;
       return;
     }
-    for (const m of aiMarkers.values()) m.remove();
-    aiMarkers.clear();
-    if (!ensureAiLayers()) return;
+    if (!ensureAiLayers()) {
+      for (const m of aiMarkers.values()) m.marker.remove();
+      aiMarkers.clear();
+      return;
+    }
     (map.getSource("ai-circles") as maplibregl.GeoJSONSource).setData({
       type: "FeatureCollection",
       features: aiPins.map((pin) => ({
@@ -636,31 +646,30 @@
         geometry: { type: "Polygon" as const, coordinates: [circle(pin.lat, pin.lon, pin.radius_km)] },
       })),
     });
+    // A pin drawn from the same guess stays as it is (its thumbnail too); its handlers read
+    // the pin through `current`, kept up to date.
+    const shown = new Set<number>();
     for (const pin of aiPins) {
-      const el = document.createElement("div");
-      el.className = "pin ai";
-      const card = document.createElement("div");
-      card.className = "card";
-      const img = document.createElement("img");
-      img.src = api.thumbUrl(pin.lead.row);
-      img.draggable = false;
-      img.alt = "";
-      const n = document.createElement("span");
       const count = pin.members.length + 1;
-      n.textContent = count > 1 ? `AI ${count}` : `AI ${percent(pin.p)}`;
-      card.append(img, n);
-      const stem = document.createElement("div");
-      stem.className = "stem";
-      const dot = document.createElement("div");
-      dot.className = "dot";
-      el.append(card, stem, dot);
-      el.title = `AI: ${guessLabel(pin)} · ${percent(pin.p)}, within ${km(pin.radius_km)} · click to review, drag to move`;
       const locked = ownPosition(pin.lead);
+      const key = `${pin.lat}:${pin.lon}:${pin.p}:${pin.radius_km}:${count}:${locked}`;
+      shown.add(pin.lead.row);
+      const had = aiMarkers.get(pin.lead.row);
+      if (had?.key === key) {
+        had.pin.current = pin;
+        continue;
+      }
+      had?.marker.remove();
+      const el = stemPin(pin.lead.row, count > 1 ? `AI ${count}` : `AI ${percent(pin.p)}`);
+      el.classList.add("ai");
+      el.title = `AI: ${guessLabel(pin)} · ${percent(pin.p)}, within ${km(pin.radius_km)} · click to review, drag to move`;
       const at = movedPins.get(pin.lead.row) ?? null;
       const marker = new maplibregl.Marker({ element: el, anchor: "bottom", draggable: !locked })
         .setLngLat(at ? [at[1], at[0]] : [pin.lon, pin.lat])
         .addTo(map);
+      const ref = { current: pin };
       const open = () => {
+        const pin = ref.current;
         const at = movedPins.get(pin.lead.row) ?? null;
         const p = map!.project(at ? [at[1], at[0]] : [pin.lon, pin.lat]);
         const point = !!at || pointTicked(pin, aiTicks.place);
@@ -681,14 +690,20 @@
         // The click that follows the drop comes at once, if at all.
         setTimeout(() => (dragging = false), 300);
         const ll = marker.getLngLat().wrap();
-        movedPins.set(pin.lead.row, [ll.lat, ll.lng]);
+        movedPins.set(ref.current.lead.row, [ll.lat, ll.lng]);
         open();
         if (redrawLater) {
           redrawLater = false;
           setTimeout(drawAi, 350);
         }
       });
-      aiMarkers.set(pin.lead.row, marker);
+      aiMarkers.set(pin.lead.row, { marker, key, pin: ref });
+    }
+    for (const [row, m] of aiMarkers) {
+      if (!shown.has(row)) {
+        m.marker.remove();
+        aiMarkers.delete(row);
+      }
     }
   }
   const km = (v: number) => (v < 1 ? `${Math.round(v * 1000)} m` : `${v} km`);
@@ -701,7 +716,7 @@
   /** Back where the model put it. */
   function unmove(pin: GuessPin) {
     movedPins.delete(pin.lead.row);
-    aiMarkers.get(pin.lead.row)?.setLngLat([pin.lon, pin.lat]);
+    aiMarkers.get(pin.lead.row)?.marker.setLngLat([pin.lon, pin.lat]);
     if (aiPopup) {
       const point = pointTicked(pin, aiTicks.place);
       aiPopup = { ...aiPopup, at: null, point, precise: point && precisePin(pin, aiTicks.precise) };

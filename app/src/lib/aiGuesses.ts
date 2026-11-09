@@ -2,7 +2,7 @@
 // circle its position may be off by, and what accepting one from the map takes.
 
 import type { Accept, SuggestionRow } from "./api";
-import { guessNames, memberPick, placeTicks, preciseOffered, takenPlace } from "./aiPlace";
+import { guessNames, placeTicks, preciseOffered, scenePicks, seenOf, takenPlace } from "./aiPlace";
 
 /** A guess to show: the card's photo, its scene's others, and where it puts them. */
 export type GuessPin = {
@@ -20,7 +20,9 @@ export function guessPins(rows: SuggestionRow[]): GuessPin[] {
   for (const r of rows) {
     if (r.status !== "Proposed" || !r.suggestion.place?.point) continue;
     const key = r.group == null ? `row:${r.row}` : `group:${r.group}`;
-    by.set(key, [...(by.get(key) ?? []), r]);
+    const list = by.get(key);
+    if (list) list.push(r);
+    else by.set(key, [r]);
   }
   return [...by.values()].map(([lead, ...members]) => {
     const pt = lead.suggestion.place!.point!;
@@ -69,12 +71,6 @@ export function pinPicks(
   const g = r.suggestion.place!;
   const now = r.current?.place ?? null;
   const ticks = placeTicks(g, now, ownPosition(r), tick);
-  const seen = (row: SuggestionRow) => ({
-    caption: row.current?.caption ?? null,
-    headline: row.current?.headline ?? null,
-    rating: row.current?.rating ?? null,
-    place: row.current?.place ?? { country: null, country_code: null, state: null, city: null, location: null },
-  });
   const chosen: [number, number] | undefined = at ?? (takePoint ? [pin.lat, pin.lon] : undefined);
   const asOwn = !!chosen && (precise || !!at);
   const lead: Accept = {
@@ -83,9 +79,8 @@ export function pinPicks(
     place: takenPlace(g, ticks, guessNames(g)),
     point: ownPosition(r) ? undefined : chosen,
     precise: !ownPosition(r) && asOwn,
-    seen: seen(r),
+    seen: seenOf(r),
   };
   // The scene's others take the position even when the first photo keeps one of its own.
-  const forOthers: Accept = { ...lead, point: chosen, precise: asOwn };
-  return [lead, ...pin.members.map((m) => memberPick(forOthers, m.row, m.current?.place ?? null, ownPosition(m), seen(m)))];
+  return scenePicks(lead, r, pin.members, ownPosition, { ...lead, point: chosen, precise: asOwn });
 }

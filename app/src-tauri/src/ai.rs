@@ -389,6 +389,22 @@ fn view(s: &Session) -> Result<AiView, String> {
     })
 }
 
+/// What accepting a guess takes by default, from the settings alone: the map reads it on
+/// every edit, so it asks no tool and adds up no spending.
+#[derive(Serialize)]
+pub(crate) struct AiThresholds {
+    /// %: a place level, or position, ticked.
+    place_tick: u8,
+    /// %: a landmark's position taken as precise.
+    precise: u8,
+}
+
+#[tauri::command]
+pub(crate) async fn ai_thresholds(app: State<'_, App>) -> Result<AiThresholds, String> {
+    let settings = load_settings(&*app.session()?);
+    Ok(AiThresholds { place_tick: settings.place_tick, precise: settings.locate.precise })
+}
+
 #[tauri::command]
 pub(crate) async fn ai_settings(app: State<'_, App>) -> Result<AiView, String> {
     let s = app.session()?;

@@ -78,3 +78,11 @@ test("a position below the tick is left unless asked for; the scene's others get
   assert.deepEqual([first.point, first.precise], [undefined, false]);
   assert.deepEqual([other.point, other.precise], [[50.3233, 19.4725], true]);
 });
+
+test("on the map too, a scene's photo whose own check doubted the position does not get it", () => {
+  const doubted = { ...row(2, 1), suggestion: { ...row(2, 1).suggestion, place: { ...place, point: { ...place.point!, p: 0.5 } } } };
+  const [scene] = guessPins([row(1, 1), doubted, row(3, 1)]);
+  const [, two, three] = pinPicks(scene, null, 0.8, false);
+  assert.equal(two.point, undefined);
+  assert.deepEqual(three.point, [50.3233, 19.4725]);
+});
