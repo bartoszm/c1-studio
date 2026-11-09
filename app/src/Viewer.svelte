@@ -23,18 +23,26 @@
   // Capture One's thumbnail shows at once; the rendered preview replaces it when ready.
   let sharp = $state(false);
   /** What the large image is: the source's preview, the original standing in for one it
-   *  lacks, or none ("none" once it failed to load); undefined until known. */
+   *  lacks or cannot read, or none ("none" once it failed to load); undefined until known. */
   let kind = $state<"preview" | "original" | "none" | undefined>(undefined);
-  let kindOf = 0;
   $effect(() => {
-    const current = row;
-    const mine = ++kindOf;
+    void row;
     kind = undefined;
-    api.previewKind(current).then(
-      (k) => { if (mine === kindOf && kind !== "none") kind = k ?? "none"; },
-      () => {},
-    );
   });
+  /** The large image is in: asks what it was made from (what the app sent last for it, so
+   *  no look at the source), then shows it with its hint. */
+  function shown(e: Event) {
+    const size = loaded(e);
+    if (!size) return;
+    const current = row;
+    const show = (k: api.PreviewKind) => {
+      if (current !== row) return;
+      kind = k;
+      fullSize = size;
+      sharp = true;
+    };
+    api.previewKind(current).then(show, () => show("preview"));
+  }
   let hint = $derived(
     sharp
       ? kind === "original" ? `original — no ${source.word} preview, edits not shown` : "preview"
@@ -62,7 +70,7 @@
 
   // Warm the next preview while this one is being looked at.
   $effect(() => {
-    if (next !== undefined) new Image().src = api.previewUrl(next);
+    if (next !== undefined) new Image().src = api.largeUrl(next);
   });
 
   // The composition grid over the photo, remembered between photos and sessions.
@@ -121,7 +129,7 @@
   <div class="stage" style:--inset="{INSET}px" onclick={onclose} bind:clientWidth={stageW} bind:clientHeight={stageH}>
     {#key row}
       <img class="base" class:alone={kind === "none"} src={api.thumbUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) baseSize = size; }} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) baseSize = null; }} />
-      <img class="full" class:shown={sharp} src={api.previewUrl(row)} alt="" onload={(e) => { const size = loaded(e); if (size) { fullSize = size; sharp = true; } }} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) kind = "none"; }} />
+      <img class="full" class:shown={sharp} src={api.largeUrl(row)} alt="" onload={shown} onerror={(e) => { if ((e.currentTarget as HTMLImageElement).isConnected) kind = "none"; }} />
     {/key}
     {#if frame}
       <svg

@@ -1,7 +1,7 @@
 //! The desktop app: the library behind Tauri commands, and pixels behind the `c1img:`
-//! protocol (`c1img://localhost/thumb/<row>`, `c1img://localhost/preview/<row>`).
+//! protocol (`c1img://localhost/thumb/<row>`, `.../preview/<row>`, `.../large/<row>`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, TryLockError};
@@ -75,9 +75,20 @@ struct Session {
     /// when asked while a count was under way.
     counting: AtomicBool,
     count_again: AtomicBool,
-    /// Photos shown with no preview of the source's own (Capture One never built it),
-    /// counted with the thumbnails; `None` until counted, or for a source that cannot tell.
+    /// Counting the photos without a preview of the source's own, on a thread of its own:
+    /// Capture One's walk of 100,000 preview files must not hold up the thumbnail count.
+    /// `previews_again` when asked while a count was under way.
+    counting_previews: AtomicBool,
+    previews_again: AtomicBool,
+    /// Photos shown with no preview of the source's own (Capture One never built it);
+    /// `None` until counted, or for a source that cannot tell.
     no_preview: Mutex<Option<usize>>,
+    /// The source's latest list of photos without a preview (as keys), and when it was
+    /// made: a Select just after the count uses it rather than walk the previews again.
+    no_preview_listed: Mutex<Option<(Instant, Arc<HashSet<String>>)>>,
+    /// Rows `/large/` last sent the original for (the source's preview missing or not
+    /// readable), for the viewer's hint.
+    from_original: Mutex<HashSet<u64>>,
     /// `events.log` beside the library: what happened in the background, and what failed.
     log: Log,
 }
@@ -445,7 +456,11 @@ fn open(spec: &SourceSpec, ctl: &OpenControl) -> anyhow::Result<Session> {
         fill: Mutex::new(FillState::default()),
         counting: AtomicBool::new(false),
         count_again: AtomicBool::new(false),
+        counting_previews: AtomicBool::new(false),
+        previews_again: AtomicBool::new(false),
         no_preview: Mutex::new(None),
+        no_preview_listed: Mutex::new(None),
+        from_original: Mutex::default(),
         log: Log::new(dir.join("events.log")),
     };
     // What the slow parts took: a slow start says where its time went.
@@ -485,30 +500,47 @@ fn report_fill(app: &AppHandle, s: &Arc<Session>, change: impl FnOnce(FillState)
 /// counts once more after.
 fn count_missing(app: &AppHandle) {
     let Ok(s) = app.state::<App>().session() else { return };
-    s.count_again.store(true, Ordering::SeqCst);
-    if s.counting.swap(true, Ordering::SeqCst) {
+    in_turn(
+        app,
+        s,
+        |s| &s.counting,
+        |s| &s.count_again,
+        |app, s| {
+            let counted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                s.thumbs.missing(&s.library, s.source.as_ref())
+            }));
+            match counted {
+                Ok(Ok(missing)) => report_fill(app, s, |state| state.counted(missing.len())),
+                Ok(Err(e)) => s.log.event(&format!("Counting the photos without a thumbnail failed: {e:#}"), &[]),
+                Err(_) => s.log.event("Counting the photos without a thumbnail crashed", &[]),
+            }
+        },
+    );
+}
+
+/// Runs `work` on a thread of its own, one run at a time. Asked while a run is under way
+/// (`again`), it runs once more after, however often it was asked meanwhile.
+fn in_turn(
+    app: &AppHandle,
+    s: Arc<Session>,
+    running: fn(&Session) -> &AtomicBool,
+    again: fn(&Session) -> &AtomicBool,
+    work: fn(&AppHandle, &Arc<Session>),
+) {
+    again(&s).store(true, Ordering::SeqCst);
+    if running(&s).swap(true, Ordering::SeqCst) {
         return;
     }
     let handle = app.clone();
     std::thread::spawn(move || {
         loop {
-            while s.count_again.swap(false, Ordering::SeqCst) && is_current(&handle, &s) {
-                let counted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    s.thumbs.missing(&s.library, s.source.as_ref())
-                }));
-                match counted {
-                    Ok(Ok(missing)) => report_fill(&handle, &s, |state| state.counted(missing.len())),
-                    Ok(Err(e)) => s.log.event(&format!("Counting the photos without a thumbnail failed: {e:#}"), &[]),
-                    Err(_) => s.log.event("Counting the photos without a thumbnail crashed", &[]),
-                }
-                if s.source.capabilities().lists_missing_previews {
-                    count_no_preview(&handle, &s);
-                }
+            while again(&s).swap(false, Ordering::SeqCst) && is_current(&handle, &s) {
+                work(&handle, &s);
             }
-            s.counting.store(false, Ordering::SeqCst);
-            // Asked again just as this count ended: count once more, unless another
-            // count has started meanwhile.
-            if !s.count_again.load(Ordering::SeqCst) || s.counting.swap(true, Ordering::SeqCst) {
+            running(&s).store(false, Ordering::SeqCst);
+            // Asked again just as this run ended: run once more, unless another run has
+            // started meanwhile.
+            if !again(&s).load(Ordering::SeqCst) || running(&s).swap(true, Ordering::SeqCst) {
                 break;
             }
         }
@@ -516,37 +548,63 @@ fn count_missing(app: &AppHandle) {
 }
 
 /// Counts the photos (as the library shows them unfiltered) with no preview of the
-/// source's own, and tells the window.
-fn count_no_preview(app: &AppHandle, s: &Arc<Session>) {
-    let counted =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rows_without_preview_in(s, &Filter::default())));
-    let count = match counted {
-        Ok(Ok(rows)) => Some(rows.len()),
-        Ok(Err(e)) => {
-            s.log.event(&format!("Counting the photos without a preview failed: {e:#}"), &[]);
-            None
-        }
-        Err(_) => {
-            s.log.event("Counting the photos without a preview crashed", &[]);
-            None
-        }
-    };
-    *s.no_preview.lock().unwrap_or_else(|e| e.into_inner()) = count;
-    if is_current(app, s) {
-        let _ = app.emit("no-preview", count);
+/// source's own, in the background apart from the thumbnail count, and tells the window.
+fn count_no_preview(app: &AppHandle) {
+    let Ok(s) = app.state::<App>().session() else { return };
+    if !s.source.capabilities().lists_missing_previews {
+        return;
     }
+    in_turn(
+        app,
+        s,
+        |s| &s.counting_previews,
+        |s| &s.previews_again,
+        |app, s| {
+            let counted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                rows_without_preview_in(s, &Filter::default(), Duration::ZERO)
+            }));
+            let count = match counted {
+                Ok(Ok(rows)) => Some(rows.len()),
+                Ok(Err(e)) => {
+                    s.log.event(&format!("Counting the photos without a preview failed: {e:#}"), &[]);
+                    None
+                }
+                Err(_) => {
+                    s.log.event("Counting the photos without a preview crashed", &[]);
+                    None
+                }
+            };
+            *s.no_preview.lock().unwrap_or_else(|e| e.into_inner()) = count;
+            if is_current(app, s) {
+                let _ = app.emit("no-preview", count);
+            }
+        },
+    );
 }
 
+/// How long the source's list of photos without a preview is used again rather than
+/// asked afresh: long enough for a Select clicked just after the count came in.
+const NO_PREVIEW_KEPT: Duration = Duration::from_secs(30);
+
 /// Of the photos `filter` selects, in row order, those with no preview of the source's
-/// own: one listing from the source, so a few seconds for a whole catalog.
-fn rows_without_preview_in(s: &Session, filter: &Filter) -> anyhow::Result<Vec<u64>> {
-    let missing: std::collections::HashSet<String> = s.source.missing_previews()?.iter().map(PhotoId::key).collect();
+/// own: one listing from the source (a few seconds for a whole catalog), or the last one
+/// when it is younger than `reuse`.
+fn rows_without_preview_in(s: &Session, filter: &Filter, reuse: Duration) -> anyhow::Result<Vec<u64>> {
+    let kept = s.no_preview_listed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let missing = match kept {
+        Some((at, keys)) if at.elapsed() < reuse => keys,
+        _ => {
+            let keys: Arc<HashSet<String>> = Arc::new(s.source.missing_previews()?.iter().map(PhotoId::key).collect());
+            *s.no_preview_listed.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), keys.clone()));
+            keys
+        }
+    };
     if missing.is_empty() {
         return Ok(Vec::new());
     }
     let options = QueryOptions { sort: c1index::Sort::Row, ..QueryOptions::default() };
     let rows = s.library.query(filter, &options)?.rows;
-    Ok(rows.into_iter().filter(|&row| s.library.photo_id(row).is_some_and(|id| missing.contains(&id.key()))).collect())
+    Ok(s.library.rows_with_key(rows, |key| missing.contains(key)))
 }
 
 /// Photos counted without a preview of the source's own, for the footer; `None` until
@@ -557,28 +615,24 @@ async fn no_preview_count(app: State<'_, App>) -> Result<Option<usize>, String> 
 }
 
 /// Of the photos `filter` selects, those with no preview of the source's own (Capture
-/// One never built it), in row order. Asks the source afresh: previews built since the
-/// last count are left out.
+/// One never built it), in row order. Uses the count's listing while it is seconds old,
+/// else asks the source afresh: previews built since are left out.
 #[tauri::command]
 async fn rows_without_preview(app: State<'_, App>, filter: Filter) -> Result<Vec<u64>, String> {
     let s = app.session()?;
-    rows_without_preview_in(&s, &filter).map_err(|e| format!("{e:#}"))
+    tauri::async_runtime::spawn_blocking(move || rows_without_preview_in(&s, &filter, NO_PREVIEW_KEPT))
+        .await
+        .map_err(text)?
+        .map_err(text_of)
 }
 
-/// Which image `/preview/<row>` sends: the source's own preview, else the original (when
-/// it can be reached), else nothing (`None`), and the window shows the thumbnail.
+/// What `/large/<row>` last sent for the photo: `"original"` when it stood in for a
+/// preview the source lacks or could not read, else `"preview"`. Asked once the image
+/// has loaded, so it needs no look at the source.
 #[tauri::command]
-async fn preview_kind(app: State<'_, App>, row: u64) -> Result<Option<&'static str>, String> {
-    let s = app.session()?;
-    let Some(id) = s.library.photo_id(row) else { return Ok(None) };
-    let has = |tier| s.source.has_image(&id, tier).map_err(text);
-    Ok(if has(ImageTier::Preview)? || s.source.capabilities().makes_images {
-        Some("preview")
-    } else if has(ImageTier::Original)? {
-        Some("original")
-    } else {
-        None
-    })
+async fn preview_kind(app: State<'_, App>, row: u64) -> Result<&'static str, String> {
+    let from_original = app.session()?.from_original.lock().unwrap_or_else(|e| e.into_inner()).contains(&row);
+    Ok(if from_original { "original" } else { "preview" })
 }
 
 /// Makes a thumbnail for every photo without one, from its preview or else its original,
@@ -1311,6 +1365,7 @@ fn sync_held(app: &AppHandle, s: &Session, recheck: bool, origin: Origin) -> Res
     s.thumbs.forget();
     start_analysis(app);
     count_missing(app);
+    count_no_preview(app);
     if fill {
         let _ = start_fill(app);
     }
@@ -2263,31 +2318,44 @@ async fn set_history(app: State<'_, App>, on: bool) -> Result<(), String> {
 
 /// `/thumb/<row>` serves the source's own thumbnail (Capture One's): a JPEG with every edit, cut to the crop;
 /// for a photo without one, one made here (from its preview or original) the first time.
-/// `/preview/<row>` renders the large preview (~300 ms), framed alike, and sends it as JPEG.
-/// A photo the source has no preview for (Capture One never built it) gets its original
-/// instead when that can be reached (a camera raw's embedded JPEG: turned and cropped,
-/// without the edits), scaled to [`PREVIEW_EDGE`]; else nothing, and the window keeps the
-/// thumbnail.
+/// `/preview/<row>` renders the source's large preview (~300 ms), framed alike, and sends
+/// it as JPEG; a photo without one gets nothing, and a grid tile keeps its thumbnail.
+/// `/large/<row>` is the preview for the viewer and Compare: a photo the source has no
+/// preview for (Capture One never built it, or left one it cannot read) gets its
+/// original instead when that can be reached (a camera raw's embedded JPEG: turned and
+/// cropped, without the edits), scaled to [`PREVIEW_EDGE`]; else nothing, and the window
+/// keeps the thumbnail. Grid tiles stay off it: decoding originals for a screen of tiles
+/// costs too much.
 /// `/sheet/<run>/<call>` is the contact sheet an AI run sent in that call, while it is kept
 /// (the run's start in the path keeps a cached one from passing for another run's).
-fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
+fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Served>> {
     let mut parts = path.trim_start_matches('/').split('/');
-    let tier = match parts.next() {
-        Some("thumb") => ImageTier::Thumb,
-        Some("preview") => ImageTier::Preview,
+    let what = parts.next();
+    match what {
+        Some("thumb" | "preview" | "large") => {}
         Some("sheet") => {
             let Some(call) = parts.nth(1).and_then(|c| c.parse::<usize>().ok()) else { return Ok(None) };
             let s = app.state::<App>().session().map_err(anyhow::Error::msg)?;
             let sheets = s.describe_sheets.lock().unwrap_or_else(|e| e.into_inner());
-            return Ok(sheets.iter().find(|(n, _)| *n == call).map(|(_, jpeg)| jpeg.clone()));
+            return Ok(sheets.iter().find(|(n, _)| *n == call).map(|(_, jpeg)| Served::kept(jpeg.clone())));
         }
         _ => return Ok(None),
-    };
+    }
     let Some(row) = parts.next().and_then(|r| r.parse::<u64>().ok()) else { return Ok(None) };
     let s = app.state::<App>().session().map_err(anyhow::Error::msg)?;
     let Some(id) = s.library.photo_id(row) else { return Ok(None) };
-    if tier == ImageTier::Preview {
-        return large_image(s.source.as_ref(), &id);
+    match what {
+        Some("preview") => return Ok(large_image(s.source.as_ref(), &id, false)?.map(|(jpeg, _)| Served::kept(jpeg))),
+        Some("large") => {
+            s.from_original.lock().unwrap_or_else(|e| e.into_inner()).remove(&row);
+            let Some((jpeg, tier)) = large_image(s.source.as_ref(), &id, true)? else { return Ok(None) };
+            let from_original = tier == ImageTier::Original;
+            if from_original {
+                s.from_original.lock().unwrap_or_else(|e| e.into_inner()).insert(row);
+            }
+            return Ok(Some(Served { jpeg, from_original }));
+        }
+        _ => {}
     }
     let made = s.thumbs.get_or_make(s.source.as_ref(), &id)?;
     if made.as_ref().is_some_and(|made| made.new) {
@@ -2296,39 +2364,77 @@ fn serve(app: &AppHandle, path: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let Some(source) = made.map(|made| made.image) else { return Ok(None) };
     // A thumbnail without a crop is sent as stored; cutting one costs ~5 ms.
     if source.crop.is_none() {
-        return Ok(Some(std::fs::read(&source.path)?));
+        return Ok(Some(Served::kept(std::fs::read(&source.path)?)));
     }
-    Ok(Some(c1image::encode_jpeg(&c1image::load(&source)?, 90)))
+    Ok(Some(Served::kept(c1image::encode_jpeg(&c1image::load(&source)?, 90))))
+}
+
+/// A JPEG [`serve`] sends, and whether it is an original standing in for the source's
+/// preview: the window keeps that one only briefly, so a preview built later shows.
+#[derive(Debug, PartialEq)]
+struct Served {
+    jpeg: Vec<u8>,
+    from_original: bool,
+}
+
+impl Served {
+    fn kept(jpeg: Vec<u8>) -> Self {
+        Self { jpeg, from_original: false }
+    }
 }
 
 /// The longer edge of a preview made from an original: what Capture One's own mostly are.
 const PREVIEW_EDGE: u32 = 2560;
 
-/// `/preview/<row>`'s JPEG: the source's preview, else its original scaled to
-/// [`PREVIEW_EDGE`] when that can be reached, else none.
-fn large_image(source: &dyn PhotoSource, id: &PhotoId) -> anyhow::Result<Option<Vec<u8>>> {
-    let pixels = if let Some(preview) = source.image_or_make(id, ImageTier::Preview)? {
-        c1image::load(&preview)?
-    } else if let Some(original) = source.image(id, ImageTier::Original)? {
-        c1image::load_fitted(&original, PREVIEW_EDGE)?
-    } else {
-        return Ok(None);
+/// A large JPEG of the photo and the tier it was made from: the source's preview; else,
+/// with `or_original`, its original scaled to [`PREVIEW_EDGE`] when that can be reached,
+/// also when the preview is there but cannot be read (a `.cop` Capture One left empty or
+/// cut short); else none.
+fn large_image(
+    source: &dyn PhotoSource,
+    id: &PhotoId,
+    or_original: bool,
+) -> anyhow::Result<Option<(Vec<u8>, ImageTier)>> {
+    let unreadable = match source.image_or_make(id, ImageTier::Preview)? {
+        Some(preview) => match c1image::load(&preview) {
+            Ok(pixels) => return Ok(Some((c1image::encode_jpeg(&pixels, 90), ImageTier::Preview))),
+            Err(e) if or_original => Some(e),
+            Err(e) => return Err(e.into()),
+        },
+        None => None,
     };
-    Ok(Some(c1image::encode_jpeg(&pixels, 90)))
+    let original = if or_original { source.image(id, ImageTier::Original)? } else { None };
+    match (original, unreadable) {
+        (Some(original), _) => {
+            let pixels = c1image::load_fitted(&original, PREVIEW_EDGE)?;
+            Ok(Some((c1image::encode_jpeg(&pixels, 90), ImageTier::Original)))
+        }
+        (None, Some(e)) => Err(e.into()),
+        (None, None) => Ok(None),
+    }
 }
 
 fn image_response(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
-    let (status, mime, body) = match serve(app, path) {
-        Ok(Some(bytes)) => (StatusCode::OK, "image/jpeg", bytes),
-        Ok(None) => (StatusCode::NOT_FOUND, "text/plain", b"no such image".to_vec()),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, "text/plain", format!("{e:#}").into_bytes()),
+    response(serve(app, path))
+}
+
+/// The protocol's answer to what [`serve`] found.
+fn response(served: anyhow::Result<Option<Served>>) -> Response<Vec<u8>> {
+    // Rows are stable and pixels change only when Capture One re-renders. An original
+    // standing in for a preview is kept a minute: the viewer's warm-up of the next photo
+    // still finds it, and a preview Capture One builds later shows soon. A missing image
+    // is not kept: one may be made for it any moment.
+    let (status, mime, body, keep) = match served {
+        Ok(Some(Served { jpeg, from_original })) => {
+            (StatusCode::OK, "image/jpeg", jpeg, if from_original { "max-age=60" } else { "max-age=600" })
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, "text/plain", b"no such image".to_vec(), "no-store"),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, "text/plain", format!("{e:#}").into_bytes(), "no-store"),
     };
     Response::builder()
         .status(status)
         .header(header::CONTENT_TYPE, mime)
-        // Rows are stable and pixels change only when Capture One re-renders. A missing
-        // image is not kept: one may be made for it any moment.
-        .header(header::CACHE_CONTROL, if status == StatusCode::OK { "max-age=600" } else { "no-store" })
+        .header(header::CACHE_CONTROL, keep)
         .body(body)
         .expect("a static response always builds")
 }
@@ -2962,12 +3068,42 @@ mod tests {
         // The source's own preview comes first, as it is.
         let source =
             Pictures { preview: Some(jpeg(dir.path(), "preview.jpg", 1920, 1440)), original: Some(original.clone()) };
-        assert_eq!(size(&large_image(&source, &id).unwrap().unwrap()), (1920, 1440));
+        let (sent, tier) = large_image(&source, &id, true).unwrap().unwrap();
+        assert_eq!((size(&sent), tier), ((1920, 1440), ImageTier::Preview));
         // Without one, the original, scaled down to a preview's size.
         let source = Pictures { preview: None, original: Some(original) };
-        assert_eq!(size(&large_image(&source, &id).unwrap().unwrap()), (PREVIEW_EDGE, 1920));
+        let (sent, tier) = large_image(&source, &id, true).unwrap().unwrap();
+        assert_eq!((size(&sent), tier), ((PREVIEW_EDGE, 1920), ImageTier::Original));
+        // A grid tile's `/preview/` does not decode originals.
+        assert_eq!(large_image(&source, &id, false).unwrap(), None);
         // Neither: nothing, and the window keeps the thumbnail.
-        assert_eq!(large_image(&Pictures::default(), &id).unwrap(), None);
+        assert_eq!(large_image(&Pictures::default(), &id, true).unwrap(), None);
+    }
+
+    #[test]
+    fn a_preview_that_cannot_be_read_gives_way_to_the_original() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = PhotoId::new(&SourceId("t".into()), "1");
+        // A `.cop` Capture One left cut short.
+        let broken = ImageRef { path: dir.path().join("broken.jpg"), ..jpeg(dir.path(), "broken.jpg", 8, 8) };
+        std::fs::write(&broken.path, b"\xFF\xD8\xFF\xE0 cut short").unwrap();
+        let original = jpeg(dir.path(), "original.jpg", 4000, 3000);
+        let source = Pictures { preview: Some(broken.clone()), original: Some(original) };
+        let (sent, tier) = large_image(&source, &id, true).unwrap().unwrap();
+        assert_eq!((size(&sent), tier), ((PREVIEW_EDGE, 1920), ImageTier::Original));
+        // Without the original to fall back on, or for a grid tile, the failure shows.
+        assert!(large_image(&Pictures { preview: Some(broken.clone()), original: None }, &id, true).is_err());
+        assert!(large_image(&source, &id, false).is_err());
+    }
+
+    #[test]
+    fn an_original_standing_in_for_a_preview_is_kept_only_briefly() {
+        let keep = |served| response(served).headers()[header::CACHE_CONTROL].to_str().unwrap().to_owned();
+        assert_eq!(keep(Ok(Some(Served::kept(vec![1])))), "max-age=600");
+        assert_eq!(keep(Ok(Some(Served { jpeg: vec![1], from_original: true }))), "max-age=60");
+        assert_eq!(keep(Ok(None)), "no-store");
+        assert_eq!(keep(Err(anyhow::anyhow!("unreadable"))), "no-store");
+        assert_eq!(response(Ok(None)).status(), StatusCode::NOT_FOUND);
     }
     use c1index::group_places;
     use c1model::{AssetId, EditInfo, Exif, FileInfo, ImageRef, PhotoId, SourceId};

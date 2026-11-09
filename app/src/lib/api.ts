@@ -765,8 +765,9 @@ export const fillThumbnails = () => invoke<void>("fill_thumbnails");
 export const noPreviewCount = () => invoke<number | null>("no_preview_count");
 /** Of the photos `filter` selects, those without a preview of the source's own. */
 export const rowsWithoutPreview = (filter: Filter) => invoke<number[]>("rows_without_preview", { filter });
-/** What `/preview/<row>` sends: the source's preview, the original instead, or nothing. */
-export type PreviewKind = "preview" | "original" | null;
+/** What `largeUrl(row)` last sent: the source's preview, or the original standing in for
+ *  one it lacks or cannot read. Asked once the image has loaded. */
+export type PreviewKind = "preview" | "original";
 export const previewKind = (row: number) => invoke<PreviewKind>("preview_kind", { row });
 /** Opens the events log (background work and what failed) in the system's text viewer. */
 export const openLog = () => invoke<void>("open_log");
@@ -1029,7 +1030,12 @@ export const writeApply = () => invoke<WriteReport>("write_apply");
 // WebView2 on Windows reaches custom protocols as http://<scheme>.localhost.
 const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
+/** The source's own large preview, or a 404 without one: for grid tiles, which must not
+ *  decode originals. */
 export const previewUrl = (row: number) => `${base}/preview/${row}`;
+/** The preview, else the original standing in for it (scaled, without the edits): for the
+ *  viewer and Compare. `previewKind` says which was sent. */
+export const largeUrl = (row: number) => `${base}/large/${row}`;
 /** The contact sheet an AI run (started at `run`, Unix ms) sent in call `call`, while kept. */
 export const sheetUrl = (run: number, call: number) => `${base}/sheet/${run}/${call}`;
 
