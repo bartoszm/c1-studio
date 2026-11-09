@@ -217,6 +217,8 @@ export type Status = {
   provider: string;
   /** The source can be asked to look at its files again. */
   can_rescan: boolean;
+  /** The source can list the photos without a preview of its own (Capture One). */
+  can_list_missing_previews: boolean;
   /** Roots of a folder source that could not be reached at the last scan. */
   offline_roots: string[];
   /** How far a scan has got, while one runs. */
@@ -758,6 +760,14 @@ export const analysisState = () => invoke<AnalysisState>("analysis_state");
 export const thumbsState = () => invoke<ThumbsState>("thumbs_state");
 /** Makes a thumbnail for every photo without one, in the background ("thumbs" events). */
 export const fillThumbnails = () => invoke<void>("fill_thumbnails");
+/** Photos counted without a preview of the source's own ("no-preview" events); null until
+ *  counted, or for a source that cannot tell. */
+export const noPreviewCount = () => invoke<number | null>("no_preview_count");
+/** Of the photos `filter` selects, those without a preview of the source's own. */
+export const rowsWithoutPreview = (filter: Filter) => invoke<number[]>("rows_without_preview", { filter });
+/** What `/preview/<row>` sends: the source's preview, the original instead, or nothing. */
+export type PreviewKind = "preview" | "original" | null;
+export const previewKind = (row: number) => invoke<PreviewKind>("preview_kind", { row });
 /** Opens the events log (background work and what failed) in the system's text viewer. */
 export const openLog = () => invoke<void>("open_log");
 

@@ -25,7 +25,6 @@ anyhow.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-image.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 

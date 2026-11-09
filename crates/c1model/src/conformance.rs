@@ -254,7 +254,8 @@ pub fn check_backup(source: &dyn PhotoSource, probe: &PhotoId) -> Vec<String> {
 }
 
 /// Capabilities match what the source does: [`PhotoSource::rescan`] succeeds exactly when
-/// `capabilities().rescan` says it can, and [`PhotoSource::progress`] is `None` once a
+/// `capabilities().rescan` says it can, [`PhotoSource::missing_previews`] exactly when
+/// `capabilities().lists_missing_previews` does, and [`PhotoSource::progress`] is `None` once a
 /// snapshot has finished, and all along for a source whose `capabilities().progress` is
 /// false (it is not asked). A source that can rescan is asked to, so its next snapshot reads
 /// its files again (and is then taken).
@@ -266,6 +267,16 @@ pub fn check_capabilities(source: &dyn PhotoSource) -> Vec<String> {
         (false, Ok(())) => problems.push("rescan() succeeded, but capabilities().rescan is false".to_owned()),
         (false, Err(SourceError::Unsupported(_))) | (true, Ok(())) => {}
         (false, Err(e)) => problems.push(format!("rescan() without the capability is not Unsupported: {e}")),
+    }
+    match (source.capabilities().lists_missing_previews, source.missing_previews()) {
+        (true, Err(e)) => {
+            problems.push(format!("capabilities().lists_missing_previews is true, but missing_previews() failed: {e}"))
+        }
+        (false, Ok(_)) => {
+            problems.push("missing_previews() succeeded, but capabilities().lists_missing_previews is false".to_owned())
+        }
+        (false, Err(SourceError::Unsupported(_))) | (true, Ok(_)) => {}
+        (false, Err(e)) => problems.push(format!("missing_previews() without the capability is not Unsupported: {e}")),
     }
     let quiet = !source.capabilities().progress;
     let mut told = None;

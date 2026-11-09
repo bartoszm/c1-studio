@@ -484,7 +484,6 @@ dependencies = [
  "c1model",
  "c1sources",
  "chrono",
- "image",
  "serde",
  "serde_json",
  "source-folders",
