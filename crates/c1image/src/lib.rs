@@ -30,7 +30,7 @@ pub use image::RgbImage;
 pub use jxl::{Matching, decode_linear, jxl_size, render_preview};
 pub use look::Look;
 pub use lut::Lut;
-pub use sheet::{CELL as SHEET_CELL, PER_SHEET, contact_sheet};
+pub use sheet::{CELL as SHEET_CELL, PER_SHEET, SCENE_COLUMNS, contact_sheet, scene_sheet};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

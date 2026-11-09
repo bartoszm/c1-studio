@@ -3,8 +3,8 @@
   import * as api from "./lib/api";
   import { SvelteSet } from "svelte/reactivity";
   import {
-    BASIS, LEVELS, chooseName, guessNames, levelOptions, percent, placeIndex, placeReplaces, placeTicks, preciseOffered,
-    takenPlace, type Level, type Names, type PlaceIndex, type PlaceTicks,
+    BASIS, LEVELS, chooseName, guessNames, levelOptions, memberPick, percent, placeIndex, placeReplaces, placeTicks,
+    preciseOffered, takenPlace, type Level, type Names, type PlaceIndex, type PlaceTicks,
   } from "./lib/aiPlace";
   import { catalogPlaces } from "./lib/placeHints";
   import { REFINE_LINES, changes, chipText, digest, shows, type Shown as ReviewShown } from "./lib/reviews";
@@ -475,7 +475,7 @@
     working = true;
     notice = "";
     try {
-      const { undo, changed } = await api.acceptSuggestions(list.map(pickOf), task);
+      const { undo, changed } = await api.acceptSuggestions(picksOf(list), task);
       onaccepted(undo);
       if (changed.length) {
         notice = `${changed.length} photo${changed.length === 1 ? "" : "s"} changed since shown: the caption, headline, rating or place written since was kept. The card shows it now; accept again to replace it.`;
@@ -491,7 +491,7 @@
     if (!list.length) return;
     working = true;
     try {
-      await api.setSuggestionStatus(list, status, task);
+      await api.setSuggestionStatus(list.flatMap(membersOf), status, task);
       await loadRows();
     } catch (e) {
       onerror(String(e));
@@ -500,8 +500,50 @@
     }
   }
 
+  // ---- scenes: photos located together show as one card --------------------------------
+  /** A scene's photos listed, by the card that shows them (the first listed of it). */
+  let scenes = $derived.by(() => {
+    const by = new Map<string, SuggestionRow[]>();
+    for (const r of rows) {
+      if (r.group == null) continue;
+      const key = `${r.group}:${r.status}`;
+      by.set(key, [...(by.get(key) ?? []), r]);
+    }
+    const out = new Map<number, SuggestionRow[]>();
+    for (const list of by.values()) if (list.length > 1) out.set(list[0].row, list);
+    return out;
+  });
+  /** Rows shown as a card of their own: all but a scene's other photos. */
+  let cardRows = $derived.by(() => {
+    const others = new Set<number>();
+    for (const list of scenes.values()) for (const r of list.slice(1)) others.add(r.row);
+    return rows.filter((r) => !others.has(r.row));
+  });
+  /** A card's photos: its scene's, or itself. */
+  const membersOf = (row: number) => scenes.get(row)?.map((r) => r.row) ?? [row];
+  /** What accepting cards takes: each card's pick, and for a scene's other photos the same place. */
+  function picksOf(list: number[]): Accept[] {
+    return list.flatMap((row) => {
+      const lead = pickOf(row);
+      const leadPoint = rows.find((r) => r.row === row)?.suggestion.place?.point;
+      const rest = (scenes.get(row) ?? []).slice(1);
+      return [lead, ...rest.map((r) => {
+        // A photo whose own check doubted the point (taken too far from its neighbours in
+        // time) is not given it.
+        const own = r.suggestion.place?.point;
+        const doubted = !!leadPoint && !!own && own.p < leadPoint.p;
+        return memberPick(lead, r.row, r.current?.place ?? null, pointLocked(r) || doubted, seenOf(r));
+      })];
+    });
+  }
+  /** What the card's photos were warned of, each once: a scene's photos are checked each
+   *  against its own neighbours. */
+  const warningsOf = (r: SuggestionRow) => [...new Set((scenes.get(r.row) ?? [r]).flatMap((m) => m.warnings))];
+  /** Photos a list of cards stands for. */
+  const photoCount = (list: SuggestionRow[]) => list.reduce((n, r) => n + (scenes.get(r.row)?.length ?? 1), 0);
+
   let minConfidence = $state(0.7);
-  let proposed = $derived(rows.filter((r) => r.status === "Proposed"));
+  let proposed = $derived(cardRows.filter((r) => r.status === "Proposed"));
   let sure = $derived(proposed.filter((r) => r.suggestion.confidence >= minConfidence));
   const leaf = (path: string) => path.split("|").at(-1) ?? path;
 </script>
@@ -547,7 +589,9 @@
           {e.photos.toLocaleString()} photo{e.photos === 1 ? "" : "s"} with {e.model},
           {#if e.via === "Gemini"}{e.calls.toLocaleString()} call{e.calls === 1 ? "" : "s"} to Gemini: counts toward the account's quota{:else if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
             ? ` · ${e.skipped.toLocaleString()} ${locating ? "located" : "described"} already, left out`
-            : ""}{e.positioned ? ` · ${e.positioned.toLocaleString()} with a position of their own, left out` : ""}
+            : ""}{e.positioned ? ` · ${e.positioned.toLocaleString()} with a position of their own, left out` : ""}{e.scenes
+            ? ` · ${e.scenes.toLocaleString()} scene${e.scenes === 1 ? "" : "s"} of photos taken together, a call each`
+            : ""}
         </span>
         <button class="btn primary" disabled={!e.photos || !view?.ready} onclick={start}>{locating ? "Locate" : "Describe"}</button>
         <button class="btn" onclick={() => (estimate = null)}>Cancel</button>
@@ -563,6 +607,15 @@
         <label class="muted" title={locating ? "Locate photos again even when they were located with this model and prompt" : "Describe photos again even when they were described with this model and prompt"}>
           <input type="checkbox" bind:checked={again} /> again
         </label>
+        {#if locating && view}
+          <label class="muted" title="Photos taken one after another at one place are located together: one call per scene, its place given to all of them (Settings > AI)">
+            <input
+              type="checkbox"
+              checked={view.settings.locate.group}
+              onchange={(e) => api.setAiSettings({ ...view!.settings, locate: { ...view!.settings.locate, group: e.currentTarget.checked } }).then((v) => { view = v; estimate = null; }).catch((err) => onerror(String(err)))}
+            /> scenes together
+          </label>
+        {/if}
       {/if}
       {#if describe && !describe.running && describe.failed}
         <button class="warn" title="What happened, call by call" onclick={() => (details = true)}>
@@ -687,8 +740,8 @@
           disabled={working || !sure.length}
           title="Takes what each card has ticked: a caption, headline or rating a photo already has is kept unless ticked on its card"
           onclick={() => accept(sure.map((r) => r.row))}
-        >Accept {sure.length.toLocaleString()}</button>
-        <button class="btn" disabled={working} onclick={() => setStatus(proposed.map((r) => r.row), "Rejected")}>Reject all {proposed.length.toLocaleString()}</button>
+        >Accept {photoCount(sure).toLocaleString()}</button>
+        <button class="btn" disabled={working} onclick={() => setStatus(proposed.map((r) => r.row), "Rejected")}>Reject all {photoCount(proposed).toLocaleString()}</button>
       </div>
     {/if}
   </div>
@@ -782,16 +835,28 @@
     </datalist>
   {/each}
   <div class="cards" hidden={show === "Reviewed"}>
-    {#each rows as r (r.row)}
+    {#each cardRows as r (r.row)}
       {@const d = drafts[r.row]}
+      {@const scene = scenes.get(r.row)}
       {@const s = r.suggestion}
       {#if d}
         {@const now = r.current}
         {@const over = replaces(r)}
         <article class="card" class:done={r.status !== "Proposed"}>
-          <button class="thumb" onclick={() => onselect(r.row)} title="Show this photo">
-            <img src={api.thumbUrl(r.row)} alt="" loading="lazy" decoding="async" />
-          </button>
+          <div class="thumbs">
+            <button class="thumb" onclick={() => onselect(r.row)} title="Show this photo">
+              <img src={api.thumbUrl(r.row)} alt="" loading="lazy" decoding="async" />
+            </button>
+            {#if scene}
+              <p class="muted scene" title="Taken one after another at one place, located together: accepting gives all of them this place">Scene of {scene.length} photos</p>
+              <div class="scene-strip">
+                {#each scene.slice(1, 9) as m (m.row)}
+                  <button onclick={() => onselect(m.row)} title="Show this photo"><img src={api.thumbUrl(m.row)} alt="" loading="lazy" decoding="async" /></button>
+                {/each}
+                {#if scene.length > 9}<span class="muted">+{scene.length - 9}</span>{/if}
+              </div>
+            {/if}
+          </div>
           <div class="body">
             <div class="head">
               {#if s.headline}
@@ -936,12 +1001,12 @@
               {#if s.subject && s.headline}<span>subject: {s.subject}</span>{/if}
               <span title={r.model}>{money(r.cost)}</span>
             </div>
-            {#if r.warnings.length}
-              <p class="warn">{r.warnings.join(" · ")}</p>
+            {#if warningsOf(r).length}
+              <p class="warn">{warningsOf(r).join(" · ")}</p>
             {/if}
             <div class="actions">
               {#if r.status === "Proposed"}
-                <button class="btn primary" disabled={working} onclick={() => accept([r.row])}>Accept</button>
+                <button class="btn primary" disabled={working} onclick={() => accept([r.row])}>Accept{scene ? ` ${scene.length}` : ""}</button>
                 <button class="btn" disabled={working} onclick={() => setStatus([r.row], "Rejected")}>Reject</button>
                 {#if over.length}<span class="replace-note">replaces the {over.join(", ")} it has now</span>{/if}
               {:else}
@@ -1005,6 +1070,11 @@
   .landmark { font-weight: 600; }
   .clues { margin: 2px 0 0; padding-left: 18px; width: 100%; font-size: 12px; color: var(--muted, #999); }
   .told summary { cursor: pointer; }
+  .thumbs { display: flex; flex-direction: column; gap: 4px; align-self: start; }
+  .scene { margin: 0; }
+  .scene-strip { display: flex; flex-wrap: wrap; gap: 2px; width: 140px; align-items: center; }
+  .scene-strip button { padding: 0; }
+  .scene-strip img { width: 33px; height: 33px; object-fit: cover; display: block; }
   .reviews { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .reviews li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--line, #333); border-radius: 4px; }
   .mini { padding: 0; flex: none; }

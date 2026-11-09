@@ -74,6 +74,70 @@ fn at_point(lat: f64, lon: f64) -> String {
     }
 }
 
+/// What a photo is put into a scene by: when it was taken, the place written on it (its
+/// path), the trip it is on.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct SceneShot {
+    pub row: u64,
+    pub at: Option<i64>,
+    pub place: Option<String>,
+    pub trip: Option<usize>,
+}
+
+/// Photos taken one after another at one place, for a model to locate together: no two
+/// more than `gap` ms apart, the whole at most `span` ms, on one trip, with no two places
+/// written that differ (a photo with none goes with any, and one less specific with one
+/// saying the same and more: `Poland` with `Poland|—|Laski`). A photo with no capture
+/// time is a scene of its own. Scenes come in the order taken; rows within them too.
+pub(super) fn scenes(mut shots: Vec<SceneShot>, gap: i64, span: i64) -> Vec<Vec<u64>> {
+    shots.sort_by_key(|s| (s.at.is_none(), s.at, s.row));
+    let mut out: Vec<Vec<u64>> = Vec::new();
+    // The scene being made: its first and last time, its place, its trip.
+    let mut open: Option<(i64, i64, Option<String>, Option<usize>)> = None;
+    for s in shots {
+        let joins = match (&open, s.at) {
+            (Some((first, last, place, trip)), Some(at)) => {
+                at - last <= gap
+                    && at - first <= span
+                    && *trip == s.trip
+                    && match (place, &s.place) {
+                        (Some(a), Some(b)) => within(a, b) || within(b, a),
+                        _ => true,
+                    }
+            }
+            _ => false,
+        };
+        if joins {
+            let scene = open.as_mut().expect("joins an open scene");
+            scene.1 = s.at.expect("joins with a time");
+            // The scene's place is the most specific of its photos'.
+            if let Some(p) = &s.place
+                && scene.2.as_ref().is_none_or(|q| q.len() < p.len())
+            {
+                scene.2 = Some(p.clone());
+            }
+            out.last_mut().expect("an open scene is listed").push(s.row);
+        } else {
+            open = s.at.map(|at| (at, at, s.place.clone(), s.trip));
+            out.push(vec![s.row]);
+        }
+    }
+    out
+}
+
+/// Place path `a` is `b` or a place within it: `Poland|—|Laski` within `Poland`.
+fn within(a: &str, b: &str) -> bool {
+    a == b || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('|'))
+}
+
+/// Which of `n` photos a scene sends, at most `max`: spread evenly, first and last in.
+pub fn sample(n: usize, max: usize) -> Vec<usize> {
+    if n <= max || max < 2 {
+        return (0..n.min(max.max(1))).collect();
+    }
+    (0..max).map(|i| i * (n - 1) / (max - 1)).collect()
+}
+
 /// The photos with a position of their own nearest before (or at) and after `at`, each
 /// within `window` ms.
 fn around(fixes: &[Fix], at: i64, window: i64) -> (Option<&Fix>, Option<&Fix>) {
@@ -215,6 +279,38 @@ impl Library {
         }
     }
 
+    /// `rows` as scenes to locate together ([`scenes`]): no two more than `gap_minutes`
+    /// apart, each spanning at most `span_minutes`.
+    pub fn locate_scenes(&self, rows: &[u64], gap_minutes: i64, span_minutes: i64) -> anyhow::Result<Vec<Vec<u64>>> {
+        let trips: Vec<(i64, i64)> = {
+            let cache = self.trip_cache()?;
+            let cache = cache.as_ref().expect("trip_cache fills it");
+            cache
+                .trips
+                .iter()
+                .filter(|(t, _, _)| t.kind != crate::trips::Kind::Dismissed)
+                .map(|(t, _, _)| (t.start, t.end))
+                .collect()
+        };
+        let mut shots = Vec::with_capacity(rows.len());
+        for &row in rows {
+            // A photo that cannot be read goes alone: every row asked for is in a scene.
+            let Some(photo) = self.photo(row)? else {
+                shots.push(SceneShot { row, at: None, place: None, trip: None });
+                continue;
+            };
+            let at = photo.captured_at;
+            shots.push(SceneShot {
+                row,
+                at,
+                place: crate::schema::place_tree(&photo.place).pop(),
+                trip: at.and_then(|at| trips.iter().position(|(s, e)| (*s..=*e).contains(&at))),
+            });
+        }
+        let minutes = |m: i64| m.clamp(1, 2880) * 60_000;
+        Ok(scenes(shots, minutes(gap_minutes), minutes(span_minutes)))
+    }
+
     /// [`Library::fixes`], read once per index generation: a run checks every answer
     /// against them.
     fn fixes_cached(&self) -> anyhow::Result<Arc<Vec<Fix>>> {
@@ -287,6 +383,72 @@ mod tests {
         assert!(lines[0].starts_with("A photo taken at the same moment") && lines[0].contains("50.0600"), "{lines:?}");
         assert!(lines[1].starts_with("10 min after it"), "{lines:?}");
         assert_eq!(lines.len(), 2, "no point between: the moment is known, {lines:?}");
+    }
+
+    fn shot(row: u64, min: i64, place: Option<&str>, trip: Option<usize>) -> SceneShot {
+        SceneShot { row, at: Some(min * 60_000), place: place.map(str::to_owned), trip }
+    }
+
+    #[test]
+    fn photos_one_after_another_at_one_place_make_a_scene() {
+        let (gap, span) = (10 * 60_000, 60 * 60_000);
+        let shots = vec![
+            shot(3, 4, None, None),
+            shot(1, 0, Some("Poland|—|Laski"), None),
+            shot(2, 2, None, None),
+            // 20 minutes later: another scene.
+            shot(4, 24, None, None),
+            // Another place written.
+            shot(5, 26, Some("Poland|—|Bolesław"), None),
+            shot(6, 27, Some("Poland|—|Laski"), None),
+            // No time: alone.
+            SceneShot { row: 7, at: None, place: None, trip: None },
+            // Another trip.
+            shot(8, 28, Some("Poland|—|Laski"), Some(1)),
+        ];
+        assert_eq!(scenes(shots, gap, span), vec![vec![1, 2, 3], vec![4, 5], vec![6], vec![8], vec![7]]);
+        // A long walk, a shot every 5 minutes: cut every hour.
+        let walk: Vec<SceneShot> = (0..30).map(|i| shot(i, i as i64 * 5, None, None)).collect();
+        let cut = scenes(walk, gap, span);
+        assert_eq!(cut.iter().map(Vec::len).collect::<Vec<_>>(), [13, 13, 4]);
+    }
+
+    #[test]
+    fn scenes_at_their_edges() {
+        let (gap, span) = (10 * 60_000, 60 * 60_000);
+        assert!(scenes(Vec::new(), gap, span).is_empty());
+        // Exactly the gap and the span apart: still one scene.
+        let edge = vec![
+            shot(1, 0, None, None),
+            shot(2, 10, None, None),
+            shot(3, 20, None, None),
+            shot(4, 30, None, None),
+            shot(5, 40, None, None),
+            shot(6, 50, None, None),
+            shot(7, 60, None, None),
+            shot(8, 71, None, None),
+        ];
+        assert_eq!(scenes(edge, gap, span), vec![vec![1, 2, 3, 4, 5, 6, 7], vec![8]]);
+        // A country alone goes with a place in it; the scene then has the finer place.
+        let finer = vec![
+            shot(1, 0, Some("Poland"), None),
+            shot(2, 1, Some("Poland|—|Laski"), None),
+            shot(3, 2, Some("Poland|—|Bolesław"), None),
+        ];
+        assert_eq!(scenes(finer, gap, span), vec![vec![1, 2], vec![3]]);
+        assert!(within("Poland|—|Laski", "Poland") && !within("Polandia", "Poland"));
+    }
+
+    #[test]
+    fn a_big_scene_sends_photos_spread_evenly() {
+        assert_eq!(sample(0, 9), Vec::<usize>::new());
+        assert_eq!(sample(3, 0), [0]);
+        assert_eq!(sample(3, 1), [0]);
+        assert_eq!(sample(9, 9).len(), 9);
+        assert_eq!(sample(4, 9), [0, 1, 2, 3]);
+        assert_eq!(sample(20, 5), [0, 4, 9, 14, 19]);
+        assert_eq!(sample(10, 9).len(), 9);
+        assert_eq!(*sample(10, 9).last().unwrap(), 9);
     }
 
     #[test]

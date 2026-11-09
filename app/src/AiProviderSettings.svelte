@@ -238,6 +238,17 @@
       <input id="ai-locate-precise" type="number" min="1" max="100" value={view.settings.locate.precise} disabled={busy} onchange={(e) => save({ locate: { ...view!.settings.locate, precise: Number(e.currentTarget.value) } })} />
       <span class="muted">% likely or more, a landmark within {PRECISE_KM * 1000} m: its position starts ticked as the photo's own, not ≈</span>
     </div>
+
+    <label for="ai-locate-gap">Scenes</label>
+    <div>
+      <label class="muted"><input type="checkbox" checked={view.settings.locate.group} disabled={busy} onchange={(e) => save({ locate: { ...view!.settings.locate, group: e.currentTarget.checked } })} /> together:</label>
+      <input id="ai-locate-gap" type="number" min="1" max="240" value={view.settings.locate.group_gap_minutes} disabled={busy || !view.settings.locate.group} onchange={(e) => save({ locate: { ...view!.settings.locate, group_gap_minutes: Number(e.currentTarget.value) } })} />
+      <span class="muted">min apart at most, over</span>
+      <input type="number" min="1" max="1440" aria-label="A scene spans at most, minutes" value={view.settings.locate.group_span_minutes} disabled={busy || !view.settings.locate.group} onchange={(e) => save({ locate: { ...view!.settings.locate, group_span_minutes: Number(e.currentTarget.value) } })} />
+      <span class="muted">min at most; up to</span>
+      <input type="number" min="1" max="9" aria-label="Photos of a scene sent, at most" value={view.settings.locate.group_max} disabled={busy || !view.settings.locate.group} onchange={(e) => save({ locate: { ...view!.settings.locate, group_max: Number(e.currentTarget.value) } })} />
+      <span class="muted">of its photos sent, on one sheet</span>
+    </div>
   </div>
   {#if error}<p class="warn">{error}</p>{/if}
 
