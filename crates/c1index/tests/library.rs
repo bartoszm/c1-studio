@@ -3000,8 +3000,10 @@ fn an_ai_guess_taken_as_approximate_stays_on_the_map_at_every_zoom() {
         ..Entry::default()
     };
     lib.put_suggestion(Task::Locate, eight, &entry, &c1ai::RunRecord::default()).unwrap();
+    // Its place taken too: a photo placed by name is what the map hides when zoomed in.
     let pick = c1index::Accept {
         row: eight,
+        place: Place { country: Some("Poland".into()), city: Some("Kraków".into()), ..Place::default() },
         point: Some([50.054, 19.935]),
         precise: false,
         seen: c1index::Seen { place: lib.photo(eight).unwrap().unwrap().place, ..c1index::Seen::default() },
@@ -3018,6 +3020,9 @@ fn an_ai_guess_taken_as_approximate_stays_on_the_map_at_every_zoom() {
         map.clusters.iter().any(|c| c.best == eight) && map.approx.is_empty()
     };
     assert!(shown(&lib), "drawn where the guess put it");
+    // Counted with the positions, not with the photos placed only by their place's name.
+    let map = lib.map(&Filter::default(), &street).unwrap();
+    assert_eq!((map.in_view, map.approx_in_view, map.approx_hidden), (1, 0, 0));
 
     // Taken before guesses were told apart: found again from the accepted suggestion.
     drop(lib);
@@ -3035,7 +3040,16 @@ fn an_ai_guess_taken_as_approximate_stays_on_the_map_at_every_zoom() {
             .collect();
         assert_eq!(marks.len(), 1);
         book.set_coarse(&marks).unwrap();
+        // Looked for once: done already, an older mark stays as it is.
+        assert!(book.done(c1index::places::GUESS_MARKS_STEP).unwrap());
     }
+    let lib = Library::open(dir.path()).unwrap();
+    assert!(!shown(&lib), "not looked for again");
+    drop(lib);
+    PlaceBook::open(&dir.path().join("places.redb"), &Default::default())
+        .unwrap()
+        .set_done(c1index::places::GUESS_MARKS_STEP, false)
+        .unwrap();
     let lib = Library::open(dir.path()).unwrap();
     assert!(shown(&lib), "an older mark is the guess's too");
     assert_eq!(ids(&lib, &approx), [8]);

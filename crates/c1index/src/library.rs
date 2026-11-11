@@ -32,7 +32,7 @@ use crate::filter::{Bin, Distinct, Filter, Hidden, Presence, Range, TimeRange, T
 use crate::looks::{Look, Looks, Record};
 use crate::marks::MarkBook;
 use crate::matching::{self, MatchSpec, Measures};
-use crate::places::{Coarse, Guessed, PlaceBook};
+use crate::places::{Coarse, GUESS_MARKS_STEP, Guessed, PlaceBook};
 use crate::schema::{self, Dim, Fields, SCHEMA_VERSION};
 use crate::store::Store;
 use crate::trips::{self, Home, Shot, Trip, TripBook, TripEdit, TripSettings};
@@ -431,8 +431,12 @@ impl Library {
                 marks.remove(key);
             }
             // Marks made before an AI guess's own point was told from a place's position:
-            // one at the point of a guess the user accepted is that guess's.
-            let older: Vec<&str> = marks.iter().filter(|(_, c)| !c.guess).map(|(k, _)| k.as_str()).collect();
+            // one at the point of a guess the user accepted is that guess's. Looked for once.
+            let older: Vec<&str> = if place_book.done(GUESS_MARKS_STEP)? {
+                Vec::new()
+            } else {
+                marks.iter().filter(|(_, c)| !c.guess).map(|(k, _)| k.as_str()).collect()
+            };
             let mut guesses = Vec::new();
             for task in [Task::Locate, Task::Describe] {
                 if older.is_empty() {
@@ -458,6 +462,7 @@ impl Library {
                 }
             }
             place_book.set_coarse(&flagged)?;
+            place_book.set_done(GUESS_MARKS_STEP, true)?;
             Ok(RwLock::new(marks))
         })?;
         let guessed = RwLock::new(place_book.guessed()?);
