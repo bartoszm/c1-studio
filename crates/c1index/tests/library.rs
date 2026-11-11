@@ -2979,6 +2979,69 @@ fn a_place_found_by_a_locating_run_can_move_an_approximate_position_and_be_taken
 }
 
 #[test]
+fn an_ai_guess_taken_as_approximate_stays_on_the_map_at_every_zoom() {
+    use c1ai::{Guess, PlaceGuess, PointGuess};
+    use c1index::ai::{Entry, Status, Task};
+    use c1index::places::PlaceBook;
+    let (dir, lib, _s) = setup();
+    let eight = row_of(&lib, 8);
+    let entry = Entry {
+        model: "m".into(),
+        suggestion: c1ai::Suggestion {
+            place: Some(PlaceGuess {
+                country: Some(Guess { name: "Poland".into(), p: 0.9 }),
+                city: Some(Guess { name: "Kraków".into(), p: 0.9 }),
+                point: Some(PointGuess { lat: 50.054, lon: 19.935, p: 0.6, radius_km: 1.0 }),
+                ..PlaceGuess::default()
+            }),
+            ..c1ai::Suggestion::default()
+        },
+        status: Status::Proposed,
+        ..Entry::default()
+    };
+    lib.put_suggestion(Task::Locate, eight, &entry, &c1ai::RunRecord::default()).unwrap();
+    let pick = c1index::Accept {
+        row: eight,
+        point: Some([50.054, 19.935]),
+        precise: false,
+        seen: c1index::Seen { place: lib.photo(eight).unwrap().unwrap().place, ..c1index::Seen::default() },
+        ..c1index::Accept::default()
+    };
+    lib.accept_suggestions(Task::Locate, &[pick]).unwrap();
+    let approx = Filter { gps: Some(true), approx: Some(true), ..Filter::default() };
+    assert_eq!(ids(&lib, &approx), [8], "still ≈");
+
+    // Zoomed in on the street: a place's position would be hidden here, the guess's is not.
+    let street = c1index::MapView { bounds: c1index::BBox::around(50.054, 19.935, 0.5), zoom: 16.0 };
+    let shown = |lib: &Library| {
+        let map = lib.map(&Filter::default(), &street).unwrap();
+        map.clusters.iter().any(|c| c.best == eight) && map.approx.is_empty()
+    };
+    assert!(shown(&lib), "drawn where the guess put it");
+
+    // Taken before guesses were told apart: found again from the accepted suggestion.
+    drop(lib);
+    {
+        let book = PlaceBook::open(&dir.path().join("places.redb"), &Default::default()).unwrap();
+        let marks: Vec<_> = book
+            .coarse()
+            .unwrap()
+            .into_iter()
+            .map(|(k, mut c)| {
+                assert!(c.guess);
+                c.guess = false;
+                (k, Some(c))
+            })
+            .collect();
+        assert_eq!(marks.len(), 1);
+        book.set_coarse(&marks).unwrap();
+    }
+    let lib = Library::open(dir.path()).unwrap();
+    assert!(shown(&lib), "an older mark is the guess's too");
+    assert_eq!(ids(&lib, &approx), [8]);
+}
+
+#[test]
 fn a_scene_is_stored_together_with_one_call_recorded() {
     use c1ai::{Guess, PlaceGuess};
     use c1index::ai::{Entry, Status, Task};

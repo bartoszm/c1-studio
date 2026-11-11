@@ -43,6 +43,10 @@ pub struct Coarse {
     /// The place it was given from, as [`crate::schema::place_tree`] writes it.
     #[serde(default)]
     pub path: String,
+    /// An AI guess's own point taken as approximate, not its place's position: drawn
+    /// where it is at every zoom, like a position of the photo's own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guess: bool,
 }
 
 impl Coarse {

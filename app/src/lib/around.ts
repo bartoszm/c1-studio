@@ -67,3 +67,15 @@ export function sessionGap(v: unknown): number | null {
   if (typeof n !== "number" || !Number.isFinite(n)) return null;
   return Math.min(SESSION_GAP_MAX, Math.max(1, Math.round(n)));
 }
+
+/** The most minutes apart photos placed from their neighbours may be: further, they say
+ *  nothing of each other's place. */
+export const NEIGHBOUR_GAP_MAX = 2880;
+/** A neighbour gap typed or saved: whole minutes, 1 to two days; null when it is not one
+ *  (empty, not a number, out of range), so a half-typed one is never taken. */
+export function neighbourGap(v: unknown): number | null {
+  const n = typeof v === "string" ? (v.trim() ? +v : NaN) : v;
+  if (typeof n !== "number" || !Number.isFinite(n)) return null;
+  const m = Math.round(n);
+  return m > 0 && m <= NEIGHBOUR_GAP_MAX ? m : null;
+}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
 
@@ -79,6 +80,8 @@
   }
 
   const TITLES = { rename: "Rename keyword", join: "Join keywords", group: "Group keywords" };
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
@@ -87,7 +90,7 @@
   {#each keywords as k}<option value={k}></option>{/each}
 </datalist>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="kw-title">
     <h2 id="kw-title">{TITLES[mode]}</h2>
 

@@ -1,13 +1,16 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import { placeText } from "./lib/tree";
+  import { neighbourGap } from "./lib/around";
+  import { settings as prefs } from "./lib/settings.svelte";
 
   // Photos placed from the photos taken just before and after them. Positions: photos with
   // none, or only their place's (≈), go on the line between two with GPS (or by the nearest,
   // if close), when that lies in their place. Places: photos with none, or no location, get
   // a neighbour's that says the same and more. Counts update as the settings change;
-  // nothing is written until Apply.
+  // nothing is written until Apply. The choices are kept for next time as made.
   let { filter, onclose, ondone }: {
     /** The view's filter: only its photos are placed. */
     filter: api.Filter;
@@ -15,27 +18,35 @@
     ondone: (undo: [number, api.Op][]) => Promise<void>;
   } = $props();
 
-  let positions = $state(true);
-  let positionGap = $state("30");
-  let places = $state(true);
-  let placeGap = $state("15");
+  const last = prefs.neighbours;
+  let positions = $state(last.positions);
+  let positionGap = $state(String(last.positionGap));
+  let places = $state(last.places);
+  let placeGap = $state(String(last.placeGap));
   let plan = $state<api.NeighbourPlan | null>(null);
   let error = $state<string | null>(null);
   let busy = $state(false);
   let asked = 0;
 
-  /** Minutes typed, up to two days: further apart, photos say nothing about each other's place. */
-  const minutes = (text: string) => {
-    const g = text.trim() === "" || Number.isNaN(+text) ? null : Math.round(+text);
-    return g !== null && g > 0 && g <= 2880 ? g : null;
-  };
   // A gap not valid (emptied, say) only matters for the part it is for.
   let settings = $derived.by((): api.NeighbourSettings | null => {
-    const p = minutes(positionGap), q = minutes(placeGap);
+    const p = neighbourGap(positionGap), q = neighbourGap(placeGap);
     if ((positions && p === null) || (places && q === null) || !(positions || places)) return null;
     return { positions, position_gap_minutes: p ?? 30, places, place_gap_minutes: q ?? 15 };
   });
   const shown = () => ({ ...$state.snapshot(filter), within: undefined });
+
+  // Kept as chosen, once the choice makes sense: a gap half typed is not.
+  $effect(() => {
+    const s = settings;
+    if (!s) return;
+    prefs.neighbours = {
+      positions: s.positions,
+      positionGap: s.position_gap_minutes,
+      places: s.places,
+      placeGap: s.place_gap_minutes,
+    };
+  });
 
   $effect(() => {
     const s = settings;
@@ -59,11 +70,13 @@
       busy = false;
     }
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="neighbours-title">
     <h2 id="neighbours-title">Place photos from their neighbours</h2>
     <p class="muted small">
