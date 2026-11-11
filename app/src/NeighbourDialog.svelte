@@ -28,7 +28,8 @@
   let busy = $state(false);
   let asked = 0;
 
-  // A gap not valid (emptied, say) only matters for the part it is for.
+  // A gap not valid (emptied, say) only matters for the part it is for. Meanwhile the last
+  // counts stay, dimmed: the dialog keeps its size as a number is typed again.
   let settings = $derived.by((): api.NeighbourSettings | null => {
     const p = neighbourGap(positionGap), q = neighbourGap(placeGap);
     if ((positions && p === null) || (places && q === null) || !(positions || places)) return null;
@@ -90,8 +91,8 @@
     <p class="muted small indent">
       For photos with no position, or only their place's (≈): between two neighbours with GPS, or at the nearest within half that (not between two taken from a plane). Only if it lies in the photo's own place.
     </p>
-    {#if positions && plan && settings}
-      <p class="result indent">Of {plan.unpositioned.toLocaleString()} photos with no position of their own, <b>{plan.positions.toLocaleString()}</b> get one.</p>
+    {#if positions && plan}
+      <p class="result indent" class:stale={!settings}>Of {plan.unpositioned.toLocaleString()} photos with no position of their own, <b>{plan.positions.toLocaleString()}</b> get one.</p>
     {/if}
 
     <div class="row">
@@ -101,10 +102,10 @@
     <p class="muted small indent">
       For photos with no place, or no location: the nearest neighbour each side that says the same and more (Kraków → Kraków › Wawel), past those that say the same. Both sides must agree: a neighbour somewhere else gives nothing.
     </p>
-    {#if places && plan && settings}
-      <p class="result indent">Of {plan.unlocated.toLocaleString()} photos with no location, <b>{plan.places.toLocaleString()}</b> get a more specific place.</p>
+    {#if places && plan}
+      <p class="result indent" class:stale={!settings}>Of {plan.unlocated.toLocaleString()} photos with no location, <b>{plan.places.toLocaleString()}</b> get a more specific place.</p>
       {#if plan.place_counts.length}
-        <ul class="places indent">
+        <ul class="places indent" class:stale={!settings}>
           {#each plan.place_counts.slice(0, 8) as [from, to, n]}
             <li>{from ? placeText(from) : "(no place)"} → {placeText(to)} <span class="muted">{n.toLocaleString()}</span></li>
           {/each}
@@ -125,8 +126,10 @@
 </div>
 
 <style>
-  .backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 16px; background: rgb(0 0 0 / 55%); }
-  .dialog { width: min(480px, 100%); max-height: calc(100vh - 32px); overflow: auto; padding: 18px 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 12px 40px rgb(0 0 0 / 50%); }
+  /* Held at the top, not centred: as the counts and places below change, the boxes above
+     stay where they are, so a click meant for one never lands on the backdrop. */
+  .backdrop { position: fixed; inset: 0; z-index: 20; display: grid; place-items: start center; padding: max(16px, 10vh) 16px 16px; background: rgb(0 0 0 / 55%); }
+  .dialog { width: min(480px, 100%); max-height: calc(100vh - max(16px, 10vh) - 16px); overflow: auto; padding: 18px 20px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 12px 40px rgb(0 0 0 / 50%); }
   h2 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
   p { margin: 6px 0; }
   .muted { color: var(--muted); }
@@ -137,6 +140,8 @@
   .short:focus { outline: none; border-color: var(--queued); }
   input[type="checkbox"] { margin: 0; accent-color: var(--queued); }
   .result { margin-top: 6px; }
+  /* The last counts, while a gap is being typed. */
+  .stale { opacity: 0.45; }
   .indent { margin-left: 22px; }
   .places { margin: 4px 0; padding-left: 18px; font-size: 12px; }
   .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
