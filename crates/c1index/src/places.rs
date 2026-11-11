@@ -19,6 +19,11 @@ const ONLINE: TableDefinition<&str, &[u8]> = TableDefinition::new("online");
 const COARSE: TableDefinition<&str, &[u8]> = TableDefinition::new("coarse");
 /// A photo key → the [`Guessed`] position its neighbours in time gave it.
 const GUESSED: TableDefinition<&str, &[u8]> = TableDefinition::new("guessed");
+/// One-off steps done on this book (a name → nothing): each runs once.
+const DONE: TableDefinition<&str, &[u8]> = TableDefinition::new("done");
+
+/// The step that told AI guesses taken as ≈ from place positions in marks made before.
+pub const GUESS_MARKS_STEP: &str = "coarse-guess-flags";
 
 /// What an online lookup of a place found: a position, or nothing (not asked again).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,6 +48,10 @@ pub struct Coarse {
     /// The place it was given from, as [`crate::schema::place_tree`] writes it.
     #[serde(default)]
     pub path: String,
+    /// An AI guess's own point taken as approximate, not its place's position: drawn
+    /// where it is at every zoom, like a position of the photo's own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guess: bool,
 }
 
 impl Coarse {
@@ -76,6 +85,7 @@ impl PlaceBook {
         tx.open_table(ONLINE)?;
         tx.open_table(COARSE)?;
         tx.open_table(GUESSED)?;
+        tx.open_table(DONE)?;
         tx.commit()?;
         Ok(Self { db })
     }
@@ -144,5 +154,15 @@ impl PlaceBook {
 
     pub fn set_guessed(&self, items: &[(String, Option<Guessed>)]) -> anyhow::Result<()> {
         self.set(GUESSED, items)
+    }
+
+    /// Whether the one-off `step` was done.
+    pub fn done(&self, step: &str) -> anyhow::Result<bool> {
+        Ok(self.db.begin_read()?.open_table(DONE)?.get(step)?.is_some())
+    }
+
+    /// Records the one-off `step` as done (or not, so it runs again).
+    pub fn set_done(&self, step: &str, done: bool) -> anyhow::Result<()> {
+        self.set(DONE, &[(step.to_owned(), done.then_some(()))])
     }
 }

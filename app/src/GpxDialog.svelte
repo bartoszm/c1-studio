@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import { onMount } from "svelte";
   import * as api from "./lib/api";
 
@@ -62,12 +63,14 @@
       busy = false;
     }
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
 
 {#if path}
-  <div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+  <div class="backdrop" role="presentation" {...shade}>
     <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="gpx-title">
       <h2 id="gpx-title">Place photos from a GPX track</h2>
       <p class="muted file" title={path}>{path}</p>

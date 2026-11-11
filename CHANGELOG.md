@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **An AI guess accepted as ≈ vanished from the map:** it was drawn like a position taken from a place's name, so it was hidden when zoomed in past its place's level and when *places by name* was off. It is now drawn where the guess put it, at every zoom, and stays ≈. Guesses accepted before this fix are recognised when the library opens.
+- **Place photos from their neighbours** forgot its choices: what is ticked and the minutes are now kept for next time.
+- **A dialog closed while editing a field** when the mouse button was released outside it, for example after selecting a field's text by dragging. A dialog now closes only on a click that starts and ends outside it.
+- **The Neighbours dialog jumped while a minutes box was retyped:** emptying it hid the counts, the dialog shrank and moved, and the next click could land outside it and close it. The dialog now stays at the top, and the last counts stay, dimmed, until the number is valid again.
+
 ## 0.8.0 — 2026-11-06
 
 ### New

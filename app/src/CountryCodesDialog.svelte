@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
@@ -49,11 +50,13 @@
       busy = false;
     }
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="cc-title">
     <h2 id="cc-title">Fill in ISO country codes</h2>
     <p class="muted">

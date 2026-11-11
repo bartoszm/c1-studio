@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
 
@@ -79,11 +80,13 @@
     return `${Math.round(h / 24)} days ago`;
   }
   const mb = (n: number) => `${Math.round(n / 1e6).toLocaleString()} MB`;
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => !busy && onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && !busy && onclose()} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="backups-title">
     <h2 id="backups-title">Backups</h2>
     <p class="muted">

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { opText } from "./lib/format";
   import { source } from "./lib/source.svelte";
@@ -103,6 +104,8 @@
   function onkey(e: KeyboardEvent) {
     if (e.key === "Escape") onclose();
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={onkey} />
@@ -119,7 +122,7 @@
   </li>
 {/snippet}
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="write-title">
     <h2 id="write-title">Write to {source.word}</h2>
 

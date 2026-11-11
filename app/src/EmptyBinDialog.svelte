@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import { removalText } from "./lib/bin";
@@ -44,11 +45,13 @@
       busy = false;
     }
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => !busy && onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && !busy && onclose()} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && !busy && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="empty-title">
     <h2 id="empty-title">{rows ? "Delete for good" : "Empty trash"}</h2>
     {#if done}

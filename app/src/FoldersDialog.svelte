@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import {
@@ -130,11 +131,13 @@
     all[next].focus();
     e.preventDefault();
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={onkey} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="folders-title" bind:this={dialog}>
     <h2 id="folders-title">{at ? "Photo folders" : "New photo folders"}</h2>
 

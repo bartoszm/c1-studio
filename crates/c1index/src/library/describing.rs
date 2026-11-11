@@ -460,7 +460,7 @@ impl Library {
             let (place, _) = taken_place(&photo.place, pick);
             let level = Level::named(&place).unwrap_or(Level::Country);
             let path = schema::place_tree(&place).pop().unwrap_or_default();
-            coarse_marks.push((photo.id.key(), Some(Coarse { lat, lon, level, path })));
+            coarse_marks.push((photo.id.key(), Some(Coarse { lat, lon, level, path, guess: true })));
         }
         self.set_marks(&coarse_marks, &guess_marks)?;
         let changed = std::sync::Mutex::new(HashSet::new());

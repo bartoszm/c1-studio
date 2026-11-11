@@ -17,6 +17,7 @@
 </script>
 
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
 
@@ -155,6 +156,8 @@
     : `Delete ${NOUN[collection?.kind ?? "Other"]}`,
   );
   const ACTION = { create: "Create", rename: "Rename", rule: "Save rule", delete: "Delete", move: "Move" };
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={(e) => e.key === "Escape" && onclose()} />
@@ -163,7 +166,7 @@
   {#each keywords as k}<option value={k.slice(k.lastIndexOf("|") + 1)}></option>{/each}
 </datalist>
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="album-title">
     <h2 id="album-title">{title}</h2>
 

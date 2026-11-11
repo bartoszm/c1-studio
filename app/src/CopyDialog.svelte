@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { backdrop } from "./lib/backdrop";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import { geoText } from "./lib/format";
@@ -111,11 +112,13 @@
       onclose();
     }
   }
+  /** Closes on a click wholly on the backdrop, not one that ends a drag from inside. */
+  const shade = backdrop(() => onclose());
 </script>
 
 <svelte:window onkeydown={(e) => { if (e.key === "Escape") onclose(); else if (e.key === "Enter" && !(e.target instanceof HTMLButtonElement)) submit(e); }} />
 
-<div class="backdrop" role="presentation" onclick={(e) => e.target === e.currentTarget && onclose()}>
+<div class="backdrop" role="presentation" {...shade}>
   <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="copy-title">
     {#if onto !== undefined}
       <h2 id="copy-title">

@@ -466,6 +466,10 @@ impl Library {
                 let Some((lat, lon)) = s.geo else { continue };
                 let mark = keys.get(s.row as usize).and_then(Option::as_deref).and_then(|k| coarse.get(k));
                 match (&s.path, mark.filter(|c| c.holds(lat, lon))) {
+                    // An AI guess's own point: where it is, at every zoom.
+                    (_, Some(c)) if c.guess => {
+                        points.push(Located { row: s.row, lat, lon, rating: s.rating, sharpness: s.sharpness })
+                    }
                     (Some(path), Some(c)) => {
                         result.place_only += 1;
                         add(path, Approx { lat, lon, level: c.level }, &s);
@@ -593,7 +597,7 @@ impl Library {
             let Some(a) = self.approx_at(&path, row)? else { continue };
             let value = GeoPoint { lat: a.lat, lon: a.lon, alt: None, origin: GeoOrigin::Geocoded };
             changes.push((row, Op::SetGeo { base: None, value: Some(value) }));
-            marks.push((photo.id.key(), Some(Coarse { lat: a.lat, lon: a.lon, level: a.level, path })));
+            marks.push((photo.id.key(), Some(Coarse { lat: a.lat, lon: a.lon, level: a.level, path, guess: false })));
         }
         // Marks first: a mark on a photo not (yet) at its point is ignored, a position
         // without its mark would pass for one taken there. The index reads them too.
