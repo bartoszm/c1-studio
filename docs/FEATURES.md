@@ -312,6 +312,23 @@ them.
 
 [In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
 
+## Find where photos were taken
+
+*New in 0.9.0.* **Locate**, in the AI tab, asks the model only where a photo was taken:
+the place level by level with how likely each is, a position with how far off it may be,
+and the landmark or clues it rests on. The catalog helps: the photos with GPS taken before
+and after, the places written on photos around it, its trip and home. A guess the
+photographer could not have reached in time is held down. Photos taken one after another
+at one place go as one scene, on one sheet, and are placed together. Only photos with no
+position of their own are located; real GPS is never touched.
+
+**AI guesses** on the map shows each guess as a purple pin with a circle as wide as it may
+be off. Click one to accept or reject it, or drag it to where the photo really was. A
+landmark recognised for certain becomes the photo's own position; anything less is marked
+≈ and stays on the map where the guess put it.
+
+[In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
+
 ---
 
 The recordings are made by scripts that drive the app, so they can be made again when it

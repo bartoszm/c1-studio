@@ -4,6 +4,12 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.9.0:** [AI Locate](docs/FEATURES.md#find-where-photos-were-taken) finds where
+photos were taken, with clues from the catalog, a scene at a time; its guesses show
+[on the map](docs/FEATURES.md#find-where-photos-were-taken) as pins with how far off they
+may be, to accept, reject or drag into place. Photos Capture One has no preview for show
+their original.
+
 **New in 0.8.0:** [compare 2 to 4 photos](docs/FEATURES.md#compare-photos) side by side,
 split, overlaid, as a difference or blinking; a [composition grid](docs/FEATURES.md#a-composition-grid)
 in the viewer; and Capture One [variants](docs/FEATURES.md#variants) marked in the grid

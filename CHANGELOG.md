@@ -1,13 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-11-12
+
+### New
+
+- **AI Locate: where a photo was taken.** The AI tab's **Describe | Locate** switch runs a search for the place alone. The model gives it level by level with how likely each is, a position with how far off it may be, what it rests on (a landmark, the scene, the catalog, the region), the landmark recognised and its clues. Clues from the catalog go with each photo: its place as written, the nearest photos with GPS before and after and the line between them, places on photos around it, its trip and home. A point the photographer could not have reached in time is capped at 50%. Only photos with no position of their own, or only a ≈ one, are located, and real GPS is never overwritten. A landmark at least 90% likely and within 0.5 km starts ticked as the photo's own position; *Settings › AI* holds both thresholds. Places found are kept apart from descriptions (#93).
+- **Scenes located together:** photos taken one after another at one place (at most 10 minutes apart, an hour in all, same trip) go to the model on one numbered sheet and come back as one card. *Accept N* places them all, and each keeps any name and position of its own. *Settings › AI* holds the gap, the span and how many photos are sent (#95).
+- **AI guesses on the map:** *AI guesses* shows a purple pin per photo or scene, with a circle as wide as the guess may be off, shaded by how likely it is. Click a pin for its card (Accept, Reject, Show photo), or drag it to where the photo was taken: a dragged pin is taken as the photo's own position. Names come in the catalog's own script (#96, #97).
+- **Photos without a Capture One preview:** the viewer shows the original when its drive can be reached (a raw's embedded JPEG, without your edits) instead of a stretched thumbnail, and says which image it shows. The footer counts them, with **Select** to pick them so Capture One can make their previews (#94).
 
 ### Fixed
 
-- **An AI guess accepted as ≈ vanished from the map:** it was drawn like a position taken from a place's name, so it was hidden when zoomed in past its place's level and when *places by name* was off. It is now drawn where the guess put it, at every zoom, and stays ≈. Guesses accepted before this fix are recognised when the library opens.
-- **Place photos from their neighbours** forgot its choices: what is ticked and the minutes are now kept for next time.
-- **A dialog closed while editing a field** when the mouse button was released outside it, for example after selecting a field's text by dragging. A dialog now closes only on a click that starts and ends outside it.
-- **The Neighbours dialog jumped while a minutes box was retyped:** emptying it hid the counts, the dialog shrank and moved, and the next click could land outside it and close it. The dialog now stays at the top, and the last counts stay, dimmed, until the number is valid again.
+- **An AI guess accepted as ≈ vanished from the map:** it was drawn like a position taken from a place's name, so it was hidden when zoomed in past its place's level and when *places by name* was off. It is now drawn where the guess put it, at every zoom, and stays ≈. Guesses accepted before this fix are recognised when the library opens (#98).
+- **Place photos from their neighbours** forgot its choices: what is ticked and the minutes are now kept for next time (#98).
+- **A dialog closed while editing a field** when the mouse button was released outside it, for example after selecting a field's text by dragging. A dialog now closes only on a click that starts and ends outside it (#98).
+- **The Neighbours dialog jumped while a minutes box was retyped:** emptying it hid the counts, the dialog shrank and moved, and the next click could land outside it and close it. The dialog now stays at the top, and the last counts stay, dimmed, until the number is valid again (#98).
+
+### Install
+
+Run `C1.Studio_0.9.0_x64-setup.exe`. It installs over 0.8.x for the current user and keeps your settings and your library: the search index is not rebuilt and the catalog is not read again. AI suggestions are moved to a new format the first time the library opens, so a 0.8.x build opened afterwards does not see suggestions made before.
 
 ## 0.8.0 — 2026-11-06
 
