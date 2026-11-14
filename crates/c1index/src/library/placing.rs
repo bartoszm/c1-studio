@@ -15,7 +15,7 @@ use tantivy::{DocAddress, Searcher};
 use super::{Library, QueryOptions};
 use crate::edits::now_ms;
 use crate::filter::Filter;
-use crate::geo::{self, Located, MapResult, MapView, PlacePoint};
+use crate::geo::{self, Area, Located, MapResult, MapView, PlacePoint};
 use crate::gpx::Fix;
 use crate::places::{Coarse, Guessed, Looked, same_spot};
 use crate::schema::{self, Dim, NO_PLACE};
@@ -495,6 +495,44 @@ impl Library {
         let unplaced = self.compile(&Filter { gps: Some(false), placed: Some(false), ..base })?;
         result.unplaced = searcher.search(unplaced.as_ref(), &Count)?;
         Ok(result)
+    }
+
+    /// Where the photos at `rows` are, for the map to show them all: their own positions,
+    /// and their places' (where the map draws them) for those placed only by name.
+    pub fn area(&self, rows: &[u64]) -> anyhow::Result<Area> {
+        let mut photos = Vec::with_capacity(rows.len());
+        self.photos(rows, |row, p| photos.push((row, p.geo, schema::place_tree(&p.place).pop())))?;
+        let mut area = Area { unknown: rows.len() - photos.len(), ..Area::default() };
+        // Those placed only by name, looked up after the marks are let go of (a lookup
+        // may take a while).
+        let mut by_name = Vec::new();
+        {
+            let (coarse, keys) = (self.coarse.read().unwrap(), self.keys.read().unwrap());
+            for (row, geo, path) in photos {
+                match (geo, path) {
+                    (Some(g), path) => {
+                        // Given its place's position: as precise as that place, as on the
+                        // map (an AI guess's own point is shown at every zoom, like a
+                        // photo's own; one whose place was cleared since is a position
+                        // like any other).
+                        let level = path.and_then(|_| {
+                            let key = keys.get(row as usize).and_then(Option::as_deref)?;
+                            coarse.get(key).filter(|c| c.holds(g.lat, g.lon) && !c.guess).map(|c| c.level)
+                        });
+                        area.add(g.lat, g.lon, level);
+                    }
+                    (None, Some(path)) => by_name.push((row, path)),
+                    (None, None) => area.unknown += 1,
+                }
+            }
+        }
+        for (row, path) in by_name {
+            match self.approx_at(&path, row)? {
+                Some(a) => area.add(a.lat, a.lon, Some(a.level)),
+                None => area.unknown += 1,
+            }
+        }
+        Ok(area.wrapped())
     }
 
     /// The places the photos `filter` selects name more precisely than the gazetteer

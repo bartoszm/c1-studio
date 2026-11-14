@@ -28,7 +28,7 @@ pub use facets::Counts;
 pub use filter::{
     BBox, Bin, Filter, Hidden, HistoryPick, Presence, Range, TimeRange, Trashed, parse_color, parse_rating,
 };
-pub use geo::{Cluster, MapResult, MapView, PlaceCluster};
+pub use geo::{Area, Cluster, MapResult, MapView, PlaceCluster};
 pub use history::{Compare, EventView, LogGroup, LogKind, LogQuery, NetWhat};
 pub use library::{Accept, Accepted, ClassPreview, GroupSort, ReviewRow, Seen};
 pub use library::{

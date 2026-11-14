@@ -7,7 +7,7 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
-  import { hitView, mapPadding, parseHits, routeStep, viewBox, wrapLon, type Hit, type NominatimRow } from "./lib/mapview";
+  import { LEVEL_ZOOM, hitView, mapPadding, parseHits, routeStep, viewBox, wrapLon, type Camera, type Hit, type NominatimRow } from "./lib/mapview";
   import { movingOf } from "./lib/pins";
   import { pointFor, resolveGeo } from "./lib/placeHints";
   import { parsePlusCode } from "./lib/pluscode";
@@ -18,7 +18,7 @@
   import { circle, guessPins, ownPosition, pinPicks, pointTicked, precisePin, type GuessPin } from "./lib/aiGuesses";
 
   let {
-    filter, version, focus, dragRows, pickedRows, tile, trip, center, onbox, onview, ontile, onselect, onsetgeo, onerror,
+    filter, version, focus, dragRows, pickedRows, tile, trip, center, goTo = null, onbox, onview, ontile, onselect, onsetgeo, onerror,
     onplace, onpromote, ondragrows, onneighbours, onunplaced, onaccepted, geoPerAsset = false,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
@@ -37,6 +37,8 @@
     trip: { name: string } | null;
     /** The photo to centre on (picked in the grid), a new object each time. */
     center: { row: number; lat: number; lon: number } | null;
+    /** Where to go to show some photos (*Show on map*), a new object each time. */
+    goTo?: Camera | null;
     /** Shift+drag picked an area: the grid shows just its photos. */
     onbox: (bounds: BBox) => void;
     /** A tile clicked (its photos' bounds, and the photo when it is one), or let go (null). */
@@ -290,7 +292,7 @@
   let popup = $state<{ cluster: PlaceCluster; x: number; y: number; confirm: boolean } | null>(null);
   function zoomToPlace(c: PlaceCluster) {
     popup = null;
-    const next = { Country: 5, State: 8, City: 11, Location: 14 }[c.level];
+    const next = LEVEL_ZOOM[c.level];
     map?.easeTo({ center: [c.lon, c.lat], zoom: Math.max(map.getZoom(), next), padding });
   }
 
@@ -500,7 +502,7 @@
       const text = String((e as { error?: Error }).error?.message ?? e);
       if (/Failed to fetch|NetworkError|style/i.test(text)) failed = "The map's tiles could not be loaded (needs a network).";
     });
-    map.once("load", () => { failed = null; moved(); drawRoute(); drawAi(); });
+    map.once("load", () => { failed = null; moved(); drawRoute(); drawAi(); loaded = true; });
     return () => {
       // Answers still on the way are for a map that is gone: they draw nothing.
       asked++;
@@ -734,6 +736,18 @@
   $effect(() => {
     const c = center;
     if (c) untrack(() => map?.easeTo({ center: [c.lon, c.lat], padding }));
+  });
+  /** The map has drawn its first view: one asked for as it opened goes after it. */
+  let loaded = $state(false);
+  // Photos to show (*Show on map*): all of them in view, clear of what covers the map.
+  $effect(() => {
+    const a = goTo;
+    if (!a || !loaded) return;
+    untrack(() => {
+      if (!map) return;
+      if ("center" in a) map.easeTo({ center: a.center, zoom: a.zoom, padding });
+      else map.fitBounds(a.bounds, { maxZoom: a.maxZoom, padding, absolutePadding: true });
+    });
   });
   /** Where a short plus code is taken to be: the middle of the map, when it shows no more
    *  than a degree each way (the code repeats every degree, and is found within half of one
