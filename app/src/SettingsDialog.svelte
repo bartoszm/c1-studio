@@ -169,6 +169,19 @@
         </small>
       </span>
     </label>
+    <div class="option">
+      <span>
+        Positions from AI Locate, accepted as approximate
+        <select bind:value={settings.aiPositions} aria-label="Positions from AI Locate, accepted as approximate">
+          <option value="colour">shown in their own colour</option>
+          <option value="hide">not shown</option>
+        </select>
+        <small class="muted">
+          Photos given the position AI Locate guessed show like those with GPS, in violet, at every zoom. Not shown, they are
+          left off the map (the footer counts them); positions accepted as precise always show as the photo's own.
+        </small>
+      </span>
+    </div>
     <label class="option">
       <input type="checkbox" bind:checked={settings.fillPlaces} />
       <span>

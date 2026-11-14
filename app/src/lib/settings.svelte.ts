@@ -11,6 +11,8 @@ export type Settings = {
   onlineMap: boolean;
   /** The map also shows photos that have only a place (city, country), at that place. */
   approxPlaces: boolean;
+  /** Positions AI Locate gave, accepted as approximate: on the map in their own colour, or not at all. */
+  aiPositions: AiPositions;
   /** Photos given a position get their empty place fields filled from it, without asking. */
   fillPlaces: boolean;
   /** A gap longer than this (minutes) between two photos ends a shoot: "shoot" under Captured. */
@@ -19,6 +21,8 @@ export type Settings = {
   neighbours: Neighbours;
 };
 
+/** How the map shows positions AI Locate gave, accepted as approximate. */
+export type AiPositions = "colour" | "hide";
 /** Positions from neighbours with GPS taken at most `positionGap` minutes apart; places
  *  from a neighbour within `placeGap` minutes. */
 export type Neighbours = { positions: boolean; positionGap: number; places: boolean; placeGap: number };
@@ -43,6 +47,7 @@ function load(): Settings {
     sections: mergeSections(saved.sections),
     onlineMap: saved.onlineMap !== false,
     approxPlaces: saved.approxPlaces !== false,
+    aiPositions: saved.aiPositions === "hide" ? "hide" : "colour",
     fillPlaces: saved.fillPlaces === true,
     sessionGap: typeof saved.sessionGap === "number" ? (sessionGap(saved.sessionGap) ?? SESSION_GAP) : SESSION_GAP,
     neighbours: neighbours(saved.neighbours),
