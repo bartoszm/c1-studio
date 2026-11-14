@@ -30,9 +30,10 @@
     /** Suggestions were queued: the ops that undo it. */
     onaccepted: (undo: [number, api.Op][]) => void;
     onerror: (message: string) => void;
-    /** Opens the map on a locate card's guess (`place`), its photos (`rows`, the card's
-     *  first `row`) picked, to check or put right there. */
-    onmap?: (rows: number[], row: number, place: api.PlaceGuess | null) => void;
+    /** Opens the map on a locate card's guess (`place`, the card's `status`), its photos
+     *  (`rows`, the card's first `row`) picked in place of what was, to check or put right
+     *  there. */
+    onmap?: (rows: number[], row: number, place: api.PlaceGuess | null, status: api.SuggestionStatus) => void;
   } = $props();
 
   // ---- settings (edited in Settings > AI) ---------------------------------------------
@@ -834,8 +835,12 @@
             {#if locating && onmap}
               <button
                 class="link onmap"
-                title={s.place?.point ? "Open the map on the AI's position: accept it, or drag it where it belongs" : "Open the map with these photos picked, to place them by hand"}
-                onclick={() => onmap(membersOf(r.row), r.row, s.place)}
+                title={`${!s.place?.point
+                  ? "Open the map to place these photos by hand"
+                  : r.status === "Proposed"
+                    ? "Open the map on the AI's position: accept it, or drag it where it belongs"
+                    : "Open the map on the AI's position, to compare it with where the photos are now"}. The card's photos are picked in place of what was picked, for “Put them here” and dragging.`}
+                onclick={() => onmap(membersOf(r.row), r.row, s.place, r.status)}
               >Show on map</button>
             {/if}
           </div>

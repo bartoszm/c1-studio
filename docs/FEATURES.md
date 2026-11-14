@@ -327,6 +327,17 @@ be off. Click one to accept or reject it, or drag it to where the photo really w
 landmark recognised for certain becomes the photo's own position; anything less is marked
 ≈ and stays on the map where the guess put it.
 
+- **Why a photo wasn't placed:** the card says *No place found* with the model's reason, the
+  landmark and clues it saw; a photo placed in part says what kept the rest open. The run's
+  log gives one line per photo, sheet or scene, and `events.log` each photo's reason and
+  clues. An answer in prose is quoted rather than reported as unreadable.
+- **Whole scenes:** a scene's card opens to show all its photos, not just the first nine.
+- **Show on map** from a card opens the map on the guess with the card's photos picked: a
+  guess to review at its pin, its card open to accept, reject or drag; a reviewed one at
+  the area of its position; one with no position at the place it names.
+- **AI-placed positions** accepted as approximate show in their own violet, clustered apart
+  from GPS, or not at all (*Settings › Map*); the map's note counts them either way.
+
 [In the guide: Describing photos with AI](GUIDE.md#describing-photos-with-ai)
 
 ---

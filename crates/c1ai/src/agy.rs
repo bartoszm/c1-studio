@@ -19,16 +19,13 @@ use serde_json::Value;
 use crate::claude::Options;
 use crate::{
     AiError, Brief, Failed, PhotoRequest, Progress, RawAnswer, Reply, RunRecord, SheetReply, SheetRequest, Step,
-    VisionProvider, Vocabulary, said, tell, validate,
+    VisionProvider, Vocabulary, tell, validate, with_said,
 };
 
 /// An answer with no JSON in it: what the model said instead, so a prose reply ("I cannot
 /// tell where this was taken…") reaches the log rather than just that it was unreadable.
 fn no_json(response: &str) -> AiError {
-    match said(response) {
-        words if words.is_empty() => AiError::BadReply("no JSON answer".into()),
-        words => AiError::BadReply(format!("no JSON answer; {words}")),
-    }
+    AiError::BadReply(with_said("no JSON answer", response))
 }
 
 /// How long one call may take: a sheet of 36 photos takes a minute or two.

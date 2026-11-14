@@ -911,8 +911,9 @@ export type Suggestion = {
   composition: number | null;
   confidence: number;
   place: PlaceGuess | null;
-  /** A locating run placed it nowhere: what the model said of why (missing on older ones). */
-  unplaced?: Unplaced | null;
+  /** A locating run placed it nowhere: what the model said of why (null on older ones,
+   *  which stored none; the backend always writes the field). */
+  unplaced: Unplaced | null;
 };
 /** Why a locating run placed a photo nowhere: the model's reason (empty if it gave none)
  *  and the evidence it saw. */

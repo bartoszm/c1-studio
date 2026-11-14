@@ -298,15 +298,17 @@
     holdMap = null;
   }
   /** An AI Locate card's guess to check on the map (a new object each time). */
-  let mapGuess = $state.raw<{ row: number; place: api.PlaceGuess | null } | null>(null);
-  /** The map, on a locate card's guess, with the card's photos picked: its pin's card open
-   *  to accept or drag, or, with no position, *Put them here* and dragging to place them. */
-  async function aiOnMap(rows: number[], row: number, place: api.PlaceGuess | null) {
+  let mapGuess = $state.raw<{ row: number; place: api.PlaceGuess | null; status: api.SuggestionStatus; count: number } | null>(null);
+  /** The map, on a locate card's guess, with the card's photos picked (in place of what was
+   *  picked, which the map's note says): its pin's card open to accept or drag; reviewed,
+   *  the circle its position may be off by; with no position, *Put them here* and dragging
+   *  to place them. */
+  async function aiOnMap(rows: number[], row: number, place: api.PlaceGuess | null, status: api.SuggestionStatus) {
     picked.clear();
     for (const r of rows) picked.add(r);
     selected = null;
     mapRow = row;
-    mapGuess = { row, place };
+    mapGuess = { row, place, status, count: rows.length };
     if (mapOn) return;
     // The map opening goes to the photo focused: it goes to the guess instead.
     holdMap = focusRow ?? null;
@@ -2031,6 +2033,9 @@
     const handled = e.defaultPrevented;
     if (activatesCell(e)) e.preventDefault();
     if (dialogOpen || typingIn(e) || handled) return;
+    // A card's guess on its way to the map (*Show on map*) goes no further, the map not
+    // open yet included.
+    if (e.key === "Escape") mapGuess = null;
     // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
     if (comparing) {
       const action = e.key === "Delete" && !e.altKey && !e.shiftKey ? deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: !!shownAlbum, inBin, removes: status?.removes }) : "none";

@@ -7,7 +7,9 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import type { BBox, Cluster, Filter, PlaceCluster } from "./lib/api";
-  import { LEVEL_ZOOM, hitView, mapPadding, parseHits, routeStep, viewBox, wrapLon, type Camera, type Hit, type NominatimRow } from "./lib/mapview";
+  import {
+    LEVEL_ZOOM, hitView, mapPadding, parseHits, positionsText, routeStep, viewBox, wrapLon, type Camera, type Hit, type NominatimRow,
+  } from "./lib/mapview";
   import { movingOf } from "./lib/pins";
   import { pointFor, resolveGeo } from "./lib/placeHints";
   import { parsePlusCode } from "./lib/pluscode";
@@ -16,7 +18,7 @@
   import { BASIS, LEVELS, percent, radiusText as km } from "./lib/aiPlace";
   import { keepFlag, readFlag } from "./lib/stored";
   import {
-    circle, circleBounds, guessPins, ownPosition, pinOf, pinPicks, pointTicked, precisePin, type GuessPin,
+    circle, circleBounds, guessAim, guessNote as guessText, guessPins, ownPosition, pinPicks, pointTicked, precisePin, type GuessPin,
   } from "./lib/aiGuesses";
 
   let {
@@ -42,8 +44,10 @@
     /** Where to go to show some photos (*Show on map*), a new object each time. */
     goTo?: Camera | null;
     /** An AI Locate card's guess to check (*Show on map* on the card), a new object each
-     *  time: its pin in view with its card open, or, with no position, the place it names. */
-    guess?: { row: number; place: api.PlaceGuess | null } | null;
+     *  time: its pin in view with its card open (not reviewed yet), the circle its position
+     *  may be off by (reviewed), or, with no position, the place it names. `count`: the
+     *  card's photos, picked. */
+    guess?: { row: number; place: api.PlaceGuess | null; status: api.SuggestionStatus; count: number } | null;
     /** Shift+drag picked an area: the grid shows just its photos. */
     onbox: (bounds: BBox) => void;
     /** A tile clicked (its photos' bounds, and the photo when it is one), or let go (null). */
@@ -100,6 +104,8 @@
   let inView = $state(0);
   /** Photos given a position by AI Locate, accepted as approximate: drawn apart (Settings). */
   let aiPlaced = $state({ located: 0, inView: 0 });
+  /** The note's count of photos on the map, AI-placed ones told of even when hidden. */
+  let positions = $derived(positionsText({ located, inView }, aiPlaced, settings.aiPositions === "colour"));
   /** Photos placed only by their place's name: how many, in view, and hidden by the zoom. */
   let approx = $state({ located: 0, inView: 0, hidden: 0, placeOnly: 0, unresolved: 0, unplaced: 0 });
   const markers = new Map<string, { marker: maplibregl.Marker; el: HTMLElement }>();
@@ -496,11 +502,16 @@
     box.addEventListener("mousedown", startBox, true);
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
     map.on("moveend", moved);
-    map.on("movestart", () => {
+    map.on("movestart", (e) => {
       popup = null;
-      // The card stands where the pin was on screen: it goes, a pin moved stays moved.
-      aiPopup = null;
+      // Moved by the user: the pin's card goes (a pin moved stays moved), and a guess still
+      // on its way to the map (*Show on map*) goes too. Moved by itself, the card follows.
+      if (e.originalEvent) {
+        aiPopup = null;
+        guessAsked++;
+      }
     });
+    map.on("move", followPin);
     // The remembered centre is the canvas's: it stays where it is as the padding is set.
     pad();
     // A click on the map itself lets the picked tile go (Shift+drag draws an area instead).
@@ -572,32 +583,49 @@
   let redrawLater = false;
   /** Pins moved by the user, by their card's row: where to, until accepted, rejected or put back. */
   const movedPins = new Map<number, [number, number]>();
-  /** A pin clicked or dragged: its card, where it is (moved: by the user), the position
-   *  taken, and as precise. */
+  /** A pin clicked or dragged: its card, where the pin stands (`ll`, lon and lat) and so
+   *  the card on screen, where it is moved to by the user, the position taken, and as precise. */
   let aiPopup = $state<{
-    pin: GuessPin; x: number; y: number; at: [number, number] | null; point: boolean; precise: boolean;
+    pin: GuessPin; ll: [number, number]; x: number; y: number; at: [number, number] | null; point: boolean; precise: boolean;
   } | null>(null);
   let aiWorking = $state(false);
   let aiAsked = 0;
-  async function loadAi() {
-    const mine = ++aiAsked;
+  /** How a load of the pins ended: "set" (`aiPins` are what is stored now), "stale" (a
+   *  later load is the one kept) or "failed" (told through `onerror`). */
+  type AiLoad = "set" | "stale" | "failed";
+  /** The latest load: what to wait for when one waited for turned out stale. */
+  let aiLoad: Promise<AiLoad> = Promise.resolve("set");
+  function loadAi(): Promise<AiLoad> {
+    aiLoad = loadAiNow(++aiAsked);
+    return aiLoad;
+  }
+  async function loadAiNow(mine: number): Promise<AiLoad> {
     if (!showAi) {
       aiPins = [];
       drawAi();
-      return;
+      return "set";
     }
     try {
       const [rows, t] = await Promise.all([api.suggestions("Proposed", "locate"), api.aiThresholds()]);
-      if (mine !== aiAsked) return;
+      if (mine !== aiAsked) return "stale";
       aiTicks = { place: t.place_tick / 100, precise: t.precise / 100 };
       aiPins = guessPins(rows);
       // A pin no longer shown is no longer moved.
       const shown = new Set(aiPins.map((p) => p.lead.row));
       for (const row of [...movedPins.keys()]) if (!shown.has(row)) movedPins.delete(row);
       drawAi();
+      return "set";
     } catch (e) {
-      if (mine === aiAsked) onerror(String(e));
+      if (mine !== aiAsked) return "stale";
+      onerror(String(e));
+      return "failed";
     }
+  }
+  /** The pins as stored now: a load waited for that a later one overtook waits for that one. */
+  async function freshAi(): Promise<AiLoad> {
+    let r = await loadAi();
+    while (r === "stale") r = await aiLoad;
+    return r;
   }
   $effect(() => {
     void version;
@@ -689,40 +717,82 @@
       }
     }
   }
-  /** A pin's card, open where the pin is (moved: where the user put it). */
+  /** A pin's card, open where the pin is (moved: where the user put it), worked out from
+   *  where the pin stands now. */
   function openPin(pin: GuessPin) {
     if (!map) return;
     const at = movedPins.get(pin.lead.row) ?? null;
-    const p = map.project(at ? [at[1], at[0]] : [pin.lon, pin.lat]);
+    const ll: [number, number] = at ? [at[1], at[0]] : [pin.lon, pin.lat];
+    const p = map.project(ll);
     const point = !!at || pointTicked(pin, aiTicks.place);
-    aiPopup = { pin, x: p.x, y: p.y, at, point, precise: point && (!!at || precisePin(pin, aiTicks.precise)) };
+    aiPopup = { pin, ll, x: p.x, y: p.y, at, point, precise: point && (!!at || precisePin(pin, aiTicks.precise)) };
   }
-  /** What the map says of a guess shown from its card that has no position to pin. */
+  /** The open pin card follows its pin as the map moves by itself (the padding set again
+   *  as what covers the map changes, a flight to a photo). */
+  function followPin() {
+    if (!map || !aiPopup) return;
+    const p = map.project(aiPopup.ll);
+    if (Math.abs(p.x - aiPopup.x) > 0.5 || Math.abs(p.y - aiPopup.y) > 0.5) aiPopup = { ...aiPopup, x: p.x, y: p.y };
+  }
+  /** What the map says of a guess shown from its card. */
   let guessNote = $state<string | null>(null);
+  /** Bumped by every guess asked for, and by what makes one pending go: a newer one, Esc,
+   *  the user moving the map, the tab left or the map gone. */
+  let guessAsked = 0;
   $effect(() => {
     const g = guess;
     if (!g || !loaded) return;
-    untrack(() => void showGuess(g.row, g.place));
+    untrack(() => void showGuess(g));
+    // A newer guess, none (the tab left) or the map gone: this one, if pending, is done with.
+    return () => void guessAsked++;
   });
-  /** The guess for `row` (a scene's: any of its photos): its pin and the circle it may be
-   *  off by in view, its card open; with no position, the place it names, by the gazetteer. */
-  async function showGuess(row: number, place: api.PlaceGuess | null) {
+  /** How long the camera is waited for before its card opens all the same. */
+  const SETTLE_MS = 8000;
+  /** Calls `then` once the map stands still: a flight ended, or none made (already there,
+   *  or reduced motion: no `moveend` need come). Not when `live` says it is done with. */
+  function whenSettled(live: () => boolean, then: () => void) {
+    const until = Date.now() + SETTLE_MS;
+    const check = () => {
+      if (!live()) return;
+      if (map?.isMoving() && Date.now() < until) setTimeout(check, 100);
+      else then();
+    };
+    // A frame first: a flight asked for starts moving on the next one.
+    requestAnimationFrame(check);
+  }
+  /** The guess of a card (a scene's: any of its photos): its pin and the circle it may be
+   *  off by in view, its card open; reviewed, the circle from the card itself, no card; with
+   *  no position, the place it names, by the gazetteer. */
+  async function showGuess(g: NonNullable<typeof guess>) {
+    const mine = ++guessAsked;
+    const live = () => mine === guessAsked && !!map;
     guessNote = null;
-    if (!showAi) {
-      showAi = true;
-      // The toggle's own load starts first; this one, asked after, is the one kept.
-      await tick();
+    if (g.status === "Proposed") {
+      if (!showAi) {
+        showAi = true;
+        // The toggle's own load starts first; the one asked below is the one kept.
+        await tick();
+        if (!live()) return;
+      }
+      // Pins from a load overtaken or failed are no answer: no pin is not "no position".
+      if ((await freshAi()) === "failed") return;
     }
-    await loadAi();
-    if (!map) return;
-    const pin = pinOf(aiPins, row);
-    if (pin) {
-      map.fitBounds(circleBounds(pin), { maxZoom: 16, padding, absolutePadding: true });
-      // Its card opens where the pin stands once the map is there; already there, at once.
-      if (map.isMoving()) map.once("moveend", () => openPin(pin));
-      else openPin(pin);
+    if (!live()) return;
+    aiPopup = null;
+    const aim = guessAim(g.status === "Proposed" ? aiPins : [], g.row, g.place);
+    if (aim.kind === "pin") {
+      guessNote = guessText(aim, g.status, g.count);
+      map!.fitBounds(circleBounds(aim.pin), { maxZoom: 16, padding, absolutePadding: true });
+      whenSettled(live, () => openPin(aim.pin));
       return;
     }
+    if (aim.kind === "circle") {
+      // Accepted or rejected: Accept and Reject are not for it, so no card.
+      guessNote = guessText(aim, g.status, g.count);
+      map!.fitBounds(aim.bounds, { maxZoom: 16, padding, absolutePadding: true });
+      return;
+    }
+    const place = g.place;
     const names = place && {
       country: place.country?.name ?? null,
       state: place.state?.name ?? null,
@@ -730,11 +800,20 @@
       location: place.location?.name ?? null,
       country_code: place.country_code ?? null,
     };
-    const found = names && (names.country || names.city) ? await api.placePoint(names).catch(() => null) : null;
-    if (!map) return;
-    if (found) map.easeTo({ center: [found.lon, found.lat], zoom: LEVEL_ZOOM[found.level], padding });
-    const where = found ? "" : place ? " and its place is not in the gazetteer" : "";
-    guessNote = `No AI position${where}: drag the picked photos onto the map, or find a place and put them there`;
+    let looked: "found" | "unknown" | "failed" | "none" = "none";
+    let found: api.Approx | null = null;
+    if (names && (names.country || names.city)) {
+      try {
+        found = await api.placePoint(names);
+        looked = found ? "found" : "unknown";
+      } catch (e) {
+        if (live()) onerror(String(e));
+        looked = "failed";
+      }
+      if (!live()) return;
+    }
+    if (found) map!.easeTo({ center: [found.lon, found.lat], zoom: LEVEL_ZOOM[found.level], padding });
+    guessNote = guessText(aim, g.status, g.count, looked);
   }
   $effect(() => {
     void version;
@@ -752,7 +831,8 @@
     aiMarkers.get(pin.lead.row)?.marker.setLngLat([pin.lon, pin.lat]);
     if (aiPopup) {
       const point = pointTicked(pin, aiTicks.place);
-      aiPopup = { ...aiPopup, at: null, point, precise: point && precisePin(pin, aiTicks.precise) };
+      aiPopup = { ...aiPopup, ll: [pin.lon, pin.lat], at: null, point, precise: point && precisePin(pin, aiTicks.precise) };
+      followPin();
     }
   }
   async function acceptPin() {
@@ -1146,6 +1226,9 @@
   }
 </script>
 
+<!-- Esc: a guess still on its way to the map (*Show on map*) moves it no more. -->
+<svelte:window onkeydown={(e) => { if (e.key === "Escape") guessAsked++; }} />
+
 <div
   class="map"
   class:over
@@ -1279,13 +1362,11 @@
   <div class="note" bind:offsetHeight={noteHeight}>
     {#if failed}{failed}
     {:else if guessNote}{guessNote}
-    {:else if !settings.onlineMap && !aim && !tile && located > 0}Offline: no map tiles or place search (Settings) · {inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view
+    {:else if !settings.onlineMap && !aim && !tile && (located > 0 || aiPlaced.located > 0)}Offline: no map tiles or place search (Settings) · {positions}
     {:else if aim}They go where the cross is; zoom in to place them closer.
     {:else if tile}The grid shows the picked tile's photos · pick some and drag the pin (or them) to move just those · click it again, the map or Esc to show the area
-    {:else if located === 0 && !approx.located}No photos here have a position yet. Drag some from below onto the map.
-    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view{#if aiPlaced.located}{" "}· {settings.aiPositions === "colour"
-        ? `${aiPlaced.inView.toLocaleString()} placed by AI`
-        : `${aiPlaced.located.toLocaleString()} placed by AI, not shown (Settings)`}{/if}{#if settings.approxPlaces && approx.located}{" "}· ≈ {approx.inView.toLocaleString()} by place name{#if approx.hidden}{" "}({approx.hidden.toLocaleString()} hidden at this zoom){/if}{/if}{#if lookingUp}{" "}· looking up {lookingUp.toLocaleString()} places online…{/if} · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin · Shift+drag picks an area{/if}
+    {:else if located === 0 && !approx.located && !aiPlaced.located}No photos here have a position yet. Drag some from below onto the map.
+    {:else}{positions}{#if settings.approxPlaces && approx.located}{" "}· ≈ {approx.inView.toLocaleString()} by place name{#if approx.hidden}{" "}({approx.hidden.toLocaleString()} hidden at this zoom){/if}{/if}{#if lookingUp}{" "}· looking up {lookingUp.toLocaleString()} places online…{/if} · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin · Shift+drag picks an area{/if}
   </div>
 </div>
 

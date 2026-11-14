@@ -12,6 +12,7 @@ const suggestion: Suggestion = {
     country: { name: "Poland", p: 0.9 }, state: { name: "Lesser Poland", p: 0.7 }, city: { name: "Kraków", p: 0.8 },
     location: null, country_code: "PL", point: null,
   },
+  unplaced: null,
 };
 const review = (over: Partial<Review>): Review => ({
   seq: 1, row: 7, at: 0, key: "k", model: "m", prompt: 1, status: "Accepted", suggestion, taken: null, ...over,

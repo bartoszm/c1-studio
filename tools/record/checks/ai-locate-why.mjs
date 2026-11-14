@@ -4,11 +4,16 @@
 //   1. a card placed nowhere says why: the model's reason and clues;
 //   2. a card placed in part says what keeps the rest open;
 //   3. a scene of more photos than the card shows opens to show them all;
-//   4. *Show on map* on a card with a position opens the map on its pin, its card open;
+//   4. *Show on map* on a card with a position opens the map on its pin, its card open,
+//      and the note says the card's photos are picked; again with the map already there,
+//      the card still opens by its pin; Esc right after the click stops it;
 //   5. *Show on map* on a card with none picks its photos and says how to place them;
 //   6. leaving the map and coming back does not go to the guess again;
 //   7. a guess accepted as approximate is drawn in the AI's colour, and not at all when
-//      Settings says so (the footer counts it).
+//      Settings says so (the footer counts it);
+//   8. *Show on map* on that card, now accepted, shows the area of its position, no pin card;
+//   9. with only that photo searched for, the footer counts it as placed by AI, shown or
+//      hidden, rather than saying no photo has a position.
 // Steps whose kind of suggestion the store lacks are skipped, and say so.
 //
 // usage: node tools/record/drive.mjs tools/record/checks/ai-locate-why.mjs [shots dir] --port 9237
@@ -125,7 +130,36 @@ export default {
       })()`);
       await shot("4-pin");
       check("Show on map: the guess's pin, its card open by it", !!label && !!view && placed, { label, view: view || (await viewNow()), point: p, placed });
+      // The note under it says what is shown and that the card's photos are picked.
+      const said = await note(d);
+      check("Show on map: the note says the card's photos are picked", /the card's (photo is|\d+ photos are) picked/.test(said ?? ""), { said });
       await d.press(".popup.ai button", /^Close$/).catch(() => {});
+
+      // 4b. Again, with the map already there: no flight, so no `moveend` need come; the
+      // card opens all the same, and stays by its pin once the padding settles.
+      await aiTab(d);
+      await waitFor(d, "card", () => card(d, pinned.row));
+      await clickIn(d, pinned.row, ".onmap");
+      const again = await waitFor(d, "popup", () => popup(d), 15000);
+      await d.sleep(1500);
+      const stillBy = await d.evaluate(`(() => {
+        const box = document.querySelector(".popup.ai")?.getBoundingClientRect();
+        return !!box && [...document.querySelectorAll(".canvas .pin.ai .dot")].map((e) => e.getBoundingClientRect())
+          .some((r) => Math.abs(r.x + r.width / 2 - (box.x + box.width / 2)) < 40 && r.y > box.y && r.y - box.bottom < 120);
+      })()`);
+      await shot("4b-already-there");
+      check("Show on map with the map already there: the card opens by its pin", !!again && stillBy, { again, stillBy });
+      await d.press(".popup.ai button", /^Close$/).catch(() => {});
+
+      // 4c. Esc right after Show on map: the map does not go on to the guess.
+      await aiTab(d);
+      await waitFor(d, "card", () => card(d, pinned.row));
+      await clickIn(d, pinned.row, ".onmap");
+      await d.key("Escape");
+      await d.sleep(4000);
+      const stopped = await popup(d);
+      await shot("4c-escape");
+      check("Esc stops a Show on map on its way: no card opens", !stopped, { popup: stopped });
     } else skip("Show on map: the guess's pin, its card open", "no proposed guess with a position");
 
     // 5. Show on map, with no position: its photos picked, how to place them.
@@ -181,6 +215,50 @@ export default {
       const hiddenNote = await note(d);
       await shot("7-hidden");
       check("not shown when Settings says so, the footer counts them", !!gone && /not shown \(Settings\)/.test(hiddenNote ?? ""), { note: hiddenNote });
+      await d.press("button.toggle.settings");
+      await d.press("#tab-map");
+      await d.choose('select[aria-label="Positions from AI Locate, accepted as approximate"]', "colour");
+      await d.key("Escape");
+
+      // 8. Show on map on the card now accepted: no pin of its own (only guesses to review
+      // have one), so the area of its position, no pin card, and a note saying so.
+      await aiTab(d);
+      await d.press("button", /^Accepted$/);
+      await d.settle();
+      await waitFor(d, "card", () => card(d, pinned.row));
+      await clickIn(d, pinned.row, ".onmap");
+      const p = pinned.suggestion.place.point;
+      const said = await waitFor(d, "note", async () => { const n = await note(d); return /^Accepted: the area of the AI's position/.test(n ?? "") && n; }, 30000);
+      const view = await waitFor(d, "view", async () => {
+        const v = await d.evaluate(`JSON.parse(localStorage.getItem("map-view") ?? "null")`);
+        return !!v && Math.abs(v.center[1] - p.lat) < 0.05 && Math.abs(v.center[0] - p.lon) < 0.05 && v.zoom > 10 && v;
+      }, 20000);
+      await d.sleep(1500);
+      const card8 = await popup(d);
+      await shot("8-accepted");
+      check("Show on map on an accepted card: the area of its position, no pin card", !!said && !!view && !card8, { said, view, popup: card8 });
+      await aiTab(d);
+      await d.press("button", /^To review$/);
+
+      // 9. Photos whose only position is the AI's: the footer counts them, shown or hidden,
+      // instead of saying no photo here has a position.
+      const photo = await d.invoke("photo", { row: pinned.row });
+      await d.reset();
+      await d.click("input.search");
+      await d.type(`${photo.file.name}`, 0);
+      await d.key("Enter");
+      await d.key("Escape");
+      await d.settle();
+      await d.press(".tabs button", /^Map$/);
+      const only = await waitFor(d, "note", async () => { const n = await note(d); return /placed by AI/.test(n ?? "") && n; }, 20000);
+      await shot("9-ai-only");
+      check("only AI positions: the footer counts them", /^No photos here have a position of their own · \d+ placed by AI/.test(only ?? ""), { note: only ?? (await note(d)), file: photo.file.name });
+      await d.press("button.toggle.settings");
+      await d.press("#tab-map");
+      await d.choose('select[aria-label="Positions from AI Locate, accepted as approximate"]', "hide");
+      await d.key("Escape");
+      const hidden = await waitFor(d, "note", async () => { const n = await note(d); return /not shown \(Settings\)/.test(n ?? "") && n; }, 10000);
+      check("only AI positions, hidden: the footer says they are there", !!hidden && !/have a position yet/.test(hidden), { note: hidden ?? (await note(d)) });
       await d.press("button.toggle.settings");
       await d.press("#tab-map");
       await d.choose('select[aria-label="Positions from AI Locate, accepted as approximate"]', "colour");

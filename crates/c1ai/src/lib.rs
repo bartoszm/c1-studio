@@ -298,7 +298,7 @@ const SAID_CHARS: usize = 300;
 
 /// What a model said instead of the answer asked for, for a message: on one line, quoted,
 /// cut at [`SAID_CHARS`] characters. Empty when it said nothing.
-pub fn said(text: &str) -> String {
+fn said(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.is_empty() {
         return String::new();
@@ -306,6 +306,15 @@ pub fn said(text: &str) -> String {
     let cut: String = flat.chars().take(SAID_CHARS).collect();
     let more = if flat.chars().count() > SAID_CHARS { "…" } else { "" };
     format!("the model said: \"{cut}{more}\"")
+}
+
+/// A message (`base`) with what the model said instead of the answer asked for after it:
+/// `base; the model said: "…"`, or just `base` when it said nothing.
+pub fn with_said(base: &str, text: &str) -> String {
+    match said(text) {
+        words if words.is_empty() => base.to_string(),
+        words => format!("{base}; {words}"),
+    }
 }
 
 /// What one call cost and took, kept with the suggestion: the set to judge prompts and
@@ -795,5 +804,15 @@ mod tests {
         let long = said(&"é".repeat(SAID_CHARS + 5));
         assert!(long.ends_with("…\""));
         assert_eq!(long.chars().filter(|&c| c == 'é').count(), SAID_CHARS);
+    }
+
+    #[test]
+    fn a_message_takes_what_the_model_said_after_it_when_it_said_anything() {
+        assert_eq!(
+            with_said("no JSON answer", "I cannot\n tell."),
+            "no JSON answer; the model said: \"I cannot tell.\""
+        );
+        assert_eq!(with_said("no JSON answer", " \n "), "no JSON answer");
+        assert_eq!(with_said("no JSON answer", ""), "no JSON answer");
     }
 }
