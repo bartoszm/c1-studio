@@ -276,8 +276,11 @@
       const area = await api.area(rows);
       if (photoMenu === menu) photoMenu = { ...menu, area };
     } catch (err) {
-      if (photoMenu === menu) photoMenu = null;
-      editError = String(err);
+      // Only for the menu still open: one closed or replaced meanwhile says nothing.
+      if (photoMenu === menu) {
+        photoMenu = null;
+        editError = String(err);
+      }
     }
   }
   /** The map, showing all of an area's photos. */

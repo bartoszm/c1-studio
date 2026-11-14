@@ -160,6 +160,62 @@ fn photos_area_spans_their_positions_and_their_places() {
     lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
     let given = area(&[4]);
     assert_eq!((given.exact, given.approx, given.coarsest), (0, 1, Some(c1geo::Level::City)));
+    // Its place cleared since: its mark still there, but a position like any other.
+    lib.edit(&[(row(&lib, 4), Op::SetPlace { base: krakow(), value: Place::default() })]).unwrap();
+    let cleared = area(&[4]);
+    assert_eq!((cleared.exact, cleared.approx, cleared.coarsest), (1, 0, None));
+}
+
+#[test]
+fn an_ai_guess_taken_as_approximate_is_shown_as_close_as_a_position_of_its_own() {
+    use c1ai::{Guess, PlaceGuess, PointGuess};
+    use c1index::ai::{Entry, Status, Task};
+    let (_d, lib) = setup();
+    let eight = row(&lib, 8);
+    let entry = Entry {
+        model: "m".into(),
+        suggestion: c1ai::Suggestion {
+            place: Some(PlaceGuess {
+                country: Some(Guess { name: "Poland".into(), p: 0.9 }),
+                city: Some(Guess { name: "Kraków".into(), p: 0.9 }),
+                point: Some(PointGuess { lat: 50.054, lon: 19.935, p: 0.6, radius_km: 1.0 }),
+                ..PlaceGuess::default()
+            }),
+            ..c1ai::Suggestion::default()
+        },
+        status: Status::Proposed,
+        ..Entry::default()
+    };
+    lib.put_suggestion(Task::Locate, eight, &entry, &c1ai::RunRecord::default()).unwrap();
+    let pick = c1index::Accept {
+        row: eight,
+        place: Place { country: Some("Poland".into()), city: Some("Kraków".into()), ..Place::default() },
+        point: Some([50.054, 19.935]),
+        precise: false,
+        seen: c1index::Seen { place: lib.photo(eight).unwrap().unwrap().place, ..c1index::Seen::default() },
+        ..c1index::Accept::default()
+    };
+    lib.accept_suggestions(Task::Locate, &[pick]).unwrap();
+    assert_eq!(numbers(&lib, &Filter { gps: Some(true), approx: Some(true), ..Filter::default() }), [8], "still ≈");
+    // Its mark holds, and it has a place, yet the map draws it at every zoom: as close.
+    let area = lib.area(&[eight]).unwrap();
+    assert_eq!((area.exact, area.approx, area.coarsest), (1, 0, None));
+    assert_eq!(area.bounds, Some(BBox { min_lat: 50.054, max_lat: 50.054, min_lon: 19.935, max_lon: 19.935 }));
+}
+
+#[test]
+fn photos_area_takes_the_shorter_way_round_the_world() {
+    let (_d, lib) = setup();
+    let at =
+        |lat, lon| Op::SetGeo { base: None, value: Some(GeoPoint { lat, lon, alt: None, origin: GeoOrigin::Manual }) };
+    let (one, three) = (row(&lib, 1), row(&lib, 3));
+    // Fiji, either side of the 180th meridian: a box across it, west to east.
+    lib.edit(&[(one, at(-17.0, 178.0)), (three, at(-16.0, -178.0))]).unwrap();
+    let fiji = lib.area(&[one, three]).unwrap();
+    assert_eq!(fiji.bounds, Some(BBox { min_lat: -17.0, max_lat: -16.0, min_lon: 178.0, max_lon: -178.0 }));
+    // Kraków and Fiji: the shorter way is the other one, over Asia, not across 180.
+    let wide = lib.area(&[one, row(&lib, 9)]).unwrap();
+    assert_eq!(wide.bounds.map(|b| (b.min_lon, b.max_lon)), Some((19.9366, 178.0)));
 }
 
 #[test]

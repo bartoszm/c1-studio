@@ -120,14 +120,16 @@ export type Camera = { center: [number, number]; zoom: number } | { bounds: [[nu
 /**
  * The view that shows all of an area's photos: close for positions of their own, no
  * closer than the least precise place among them, so its marker stays on the map.
- * Null: none of them is anywhere known.
+ * Null: none of them is anywhere known. An area across the 180th meridian (`min_lon >
+ * max_lon`) gets its east edge past 180, as maplibre fits it the short way.
  */
 export function focusCamera(area: Area): Camera | null {
   const b = area.bounds;
   if (!b) return null;
   const zoom = area.coarsest ? LEVEL_ZOOM[area.coarsest] : OWN_ZOOM;
   if (b.min_lat === b.max_lat && b.min_lon === b.max_lon) return { center: [b.min_lon, b.min_lat], zoom };
-  return { bounds: [[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], maxZoom: zoom };
+  const east = b.min_lon > b.max_lon ? b.max_lon + 360 : b.max_lon;
+  return { bounds: [[b.min_lon, b.min_lat], [east, b.max_lat]], maxZoom: zoom };
 }
 
 /**

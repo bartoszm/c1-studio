@@ -58,7 +58,14 @@ async function show(d, there) {
   return view(d);
 }
 
-const inBox = (b, [lon, lat]) => lat >= b.min_lat - 1e-6 && lat <= b.max_lat + 1e-6 && lon >= b.min_lon - 1e-6 && lon <= b.max_lon + 1e-6;
+/** Whether the map's centre is in an area's box; one across the 180th meridian has
+ *  min_lon > max_lon, and the centre may be past ±180. */
+const inBox = (b, [lon, lat]) => {
+  const l = ((((lon + 180) % 360) + 360) % 360) - 180;
+  const west = l >= b.min_lon - 1e-6;
+  const east = l <= b.max_lon + 1e-6;
+  return lat >= b.min_lat - 1e-6 && lat <= b.max_lat + 1e-6 && (b.min_lon <= b.max_lon ? west && east : west || east);
+};
 const results = [];
 const check = (name, ok, detail) => {
   results.push({ name, ok });

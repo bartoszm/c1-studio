@@ -199,6 +199,14 @@ test("show on map: several photos are fitted, no closer than the least precise p
   });
 });
 
+test("show on map: photos either side of the 180th meridian are fitted the short way", () => {
+  // Fiji at 178 and -178: east of 180, not round the world.
+  assert.deepEqual(focusCamera(area({ bounds: box(-18, -16, 178, -178), exact: 2 })), {
+    bounds: [[178, -18], [182, -16]],
+    maxZoom: 16,
+  });
+});
+
 test("show on map: photos nowhere known have no view", () => {
   assert.equal(focusCamera(area({ unknown: 3 })), null);
 });
