@@ -137,6 +137,32 @@ fn a_place_given_its_position_still_shows_as_approximate() {
 }
 
 #[test]
+fn photos_area_spans_their_positions_and_their_places() {
+    let (_d, lib) = setup();
+    let area = |ns: &[u32]| lib.area(&ns.iter().map(|&n| row(&lib, n)).collect::<Vec<_>>()).unwrap();
+    // Positions of their own: a box around them, as close as the map goes.
+    let own = area(&[1, 3]);
+    assert_eq!((own.exact, own.approx, own.unknown, own.coarsest), (2, 0, 0, None));
+    assert_eq!(own.bounds, Some(BBox { min_lat: 50.06, max_lat: 50.08, min_lon: 19.93, max_lon: 19.95 }));
+    // Kraków by name: its point, no closer than a city.
+    let city = area(&[4]);
+    assert_eq!((city.exact, city.approx, city.coarsest), (0, 1, Some(c1geo::Level::City)));
+    let b = city.bounds.unwrap();
+    assert!((b.min_lat - 50.06).abs() < 0.1 && (b.min_lon - 19.94).abs() < 0.1, "{b:?}");
+    assert_eq!((b.min_lat, b.min_lon), (b.max_lat, b.max_lon));
+    // With Poland too: as far out as a country.
+    let both = area(&[1, 5]);
+    assert_eq!((both.exact, both.approx, both.coarsest), (1, 1, Some(c1geo::Level::Country)));
+    // Nothing known: no area, only a count.
+    let none = area(&[6, 7]);
+    assert_eq!((none.bounds, none.unknown), (None, 2));
+    // Given its place's position, it is still as precise as its place.
+    lib.promote(&Filter::default(), &["Poland|Malopolska|Kraków".to_owned()]).unwrap();
+    let given = area(&[4]);
+    assert_eq!((given.exact, given.approx, given.coarsest), (0, 1, Some(c1geo::Level::City)));
+}
+
+#[test]
 fn a_place_given_its_position_shows_under_its_place_as_edited() {
     let (_d, lib) = setup();
     let four = row(&lib, 4);

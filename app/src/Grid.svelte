@@ -43,7 +43,7 @@
   // rest of the result is a tall empty box that keeps the scrollbar honest.
   let {
     total, rowAt, need, selected, picked, queued, hidden = () => false, offline, variants = () => 1, collapsed = false,
-    onvariants, onselect, onopen, ondragcell, children, tiles, shape, ontiles, layout = $bindable(),
+    onvariants, onselect, onopen, ondragcell, oncontext, children, tiles, shape, ontiles, layout = $bindable(),
   }: {
     total: number;
     /** The photo at a position, once its page has loaded. */
@@ -71,6 +71,8 @@
     onopen: (i: number) => void;
     /** A photo is being dragged (onto an album). */
     ondragcell?: (i: number) => void;
+    /** A right-click on a photo: its menu, at the pointer. */
+    oncontext?: (i: number, e: MouseEvent) => void;
     children?: Snippet;
     tiles: Tiles;
     shape: Shape;
@@ -265,6 +267,7 @@
           // A double click on the variants mark: its first click already showed the variants.
           if (!(e.target as Element | null)?.closest?.(".variants-mark")) onopen(i);
         }}
+        oncontextmenu={oncontext && ((e) => { e.preventDefault(); oncontext(i, e); })}
         draggable={row !== undefined && !!ondragcell}
         ondragstart={(e) => {
           e.dataTransfer?.setData("text/plain", "photos");
