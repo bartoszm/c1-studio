@@ -717,16 +717,10 @@
     if (!map) return;
     const pin = pinOf(aiPins, row);
     if (pin) {
-      let opened = false;
-      const open = () => {
-        if (opened) return;
-        opened = true;
-        openPin(pin);
-      };
-      map.once("moveend", open);
-      // Already there, the map does not move: the card opens all the same.
-      setTimeout(open, 1500);
       map.fitBounds(circleBounds(pin), { maxZoom: 16, padding, absolutePadding: true });
+      // Its card opens where the pin stands once the map is there; already there, at once.
+      if (map.isMoving()) map.once("moveend", () => openPin(pin));
+      else openPin(pin);
       return;
     }
     const names = place && {
