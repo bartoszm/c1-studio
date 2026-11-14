@@ -179,6 +179,9 @@ aside section { padding: 4px 0; }
 .node.on .icon { color: var(--text); }
 .node.out .name, .facet.out .name, .none-row.out .name { color: var(--error); text-decoration: line-through; }
 .node.out, .facet.out, .none-row.out { background: color-mix(in srgb, var(--error) 14%, transparent); }
+/* In a picked place: what the pick holds, fainter than the pick itself. */
+.node.under-in { background: color-mix(in srgb, var(--on) 45%, transparent); }
+.node.under-out .name { color: color-mix(in srgb, var(--error) 70%, var(--muted)); text-decoration: line-through; }
 /* Changed here and not yet written to Capture One. */
 .node.queued .name { color: var(--queued); }
 

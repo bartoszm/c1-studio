@@ -1701,7 +1701,7 @@ async fn move_place(
         return Err("the new name cannot be empty".into());
     }
     let filter = Filter {
-        place_under: Some(from),
+        places_under: vec![from],
         trashed: c1index::Trashed::Include,
         hidden: c1index::Hidden::Include,
         bin: c1index::Bin::Include,

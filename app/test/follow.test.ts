@@ -19,8 +19,8 @@ function sel(over: Partial<Selection>): Selection {
 
 test("a place filter follows two photos moved to another city", () => {
   const s = sel({ places: [[place("Poland", "Mazowieckie", "Warszawa"), [1, 2]]] });
-  const f = { place_under: "Poland|Małopolskie|Kraków" };
-  assert.deepEqual(followFilter(f, s, 2), { place_under: "Poland|Mazowieckie|Warszawa" });
+  const f = { places_under: ["Poland|Małopolskie|Kraków"] };
+  assert.deepEqual(followFilter(f, s, 2), { places_under: ["Poland|Mazowieckie|Warszawa"] });
 });
 
 test("a place filter keeps its depth, and only the levels the photos share", () => {
@@ -30,17 +30,23 @@ test("a place filter keeps its depth, and only the levels the photos share", () 
       [place("Poland", "Mazowieckie", "Radom"), [2]],
     ],
   });
-  assert.deepEqual(followFilter({ place_under: "Poland|Małopolskie|Kraków" }, s, 2), { place_under: "Poland|Mazowieckie" });
+  assert.deepEqual(followFilter({ places_under: ["Poland|Małopolskie|Kraków"] }, s, 2), { places_under: ["Poland|Mazowieckie"] });
   // A country picked stays a country.
   const abroad = sel({ places: [[place("Italy", "Lazio", "Roma"), [1, 2]]] });
-  assert.deepEqual(followFilter({ place_under: "Poland" }, abroad, 2), { place_under: "Italy" });
+  assert.deepEqual(followFilter({ places_under: ["Poland"] }, abroad, 2), { places_under: ["Italy"] });
+});
+
+test("several places picked, or one left out, don't follow", () => {
+  const s = sel({ places: [[place("Italy", "Lazio", "Roma"), [1, 2]]] });
+  assert.equal(followFilter({ places_under: ["Poland", "Germany"] }, s, 2), null);
+  assert.equal(followFilter({ places_under: ["Poland"], places_under_not: ["Poland|—|Kraków"] }, s, 2), null);
 });
 
 test("a place cleared, or nothing in common, leaves the filter", () => {
   const cleared = sel({ places: [[place("", null, null) , [1, 2]]] });
-  assert.equal(followFilter({ place_under: "Poland|Małopolskie" }, cleared, 2), null);
+  assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, cleared, 2), null);
   const apart = sel({ places: [[place("Poland", null, null), [1]], [place("Italy", null, null), [2]]] });
-  assert.equal(followFilter({ place_under: "Poland|Małopolskie" }, apart, 2), null);
+  assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, apart, 2), null);
 });
 
 test("a rating filter follows the stars given, and only those", () => {
@@ -78,10 +84,10 @@ test("an album filter follows photos put into another album", () => {
 
 test("work lists, Match any and fields that still match never follow", () => {
   const s = sel({ places: [[place("Poland", "Mazowieckie", "Warszawa"), [1, 2]]], rating: one(5) });
-  assert.equal(followFilter({ place_under: "Poland|Małopolskie", unkeyworded: true }, s, 2), null);
-  assert.equal(followFilter({ place_under: "Poland|Małopolskie" }, s, 2, undefined, true), null);
+  assert.equal(followFilter({ places_under: ["Poland|Małopolskie"], unkeyworded: true }, s, 2), null);
+  assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, s, 2, undefined, true), null);
   assert.equal(followFilter({ rating: { Values: { min: 4 } } }, s, 2), null);
-  assert.equal(followFilter({ place_under: "Poland|Małopolskie" }, s, 0), null);
+  assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, s, 0), null);
   for (const f of [{ placed: false }, { located: false }, { gps: false }, { text: "x" }, { keywords_under_not: ["a"] }]) {
     assert.equal(isWorkList(f), true, JSON.stringify(f));
   }
@@ -129,18 +135,18 @@ test("some photos with a value and some with none: no filter holds both", () => 
 
 test("a place with a level left out (—) follows by its levels", () => {
   const s = sel({ places: [[place("Poland", null, "Warszawa"), [1, 2]]] });
-  const to = followFilter({ place_under: "Poland|—|Kraków" }, s, 2);
-  assert.deepEqual(to, { place_under: "Poland|—|Warszawa" });
+  const to = followFilter({ places_under: ["Poland|—|Kraków"] }, s, 2);
+  assert.deepEqual(to, { places_under: ["Poland|—|Warszawa"] });
   // Still under it: nothing to follow.
   const there = sel({ places: [[place("Poland", null, "Kraków"), [1, 2]]] });
-  assert.equal(followFilter({ place_under: "Poland|—|Kraków" }, there, 2), null);
+  assert.equal(followFilter({ places_under: ["Poland|—|Kraków"] }, there, 2), null);
 });
 
 test("a country and a place picked together both follow", () => {
   const s = sel({ places: [[place("Italy", "Lazio", "Roma"), [1, 2]]] });
   assert.deepEqual(
-    followFilter({ country: "Poland", place_under: "Poland|Małopolskie" }, s, 2),
-    { country: "Italy", place_under: "Italy|Lazio" },
+    followFilter({ country: "Poland", places_under: ["Poland|Małopolskie"] }, s, 2),
+    { country: "Italy", places_under: ["Italy|Lazio"] },
   );
 });
 

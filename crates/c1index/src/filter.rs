@@ -15,7 +15,7 @@ use tantivy::{Index, Term};
 
 use crate::edits::Origin;
 use crate::history::{LogKind, NetWhat};
-use crate::schema::{Dim, Fields, flag, normalise_folder};
+use crate::schema::{Dim, Fields, NO_PLACE, flag, normalise_folder};
 
 /// A numeric constraint: `>=4`, `<=2.8`, `2-4`, `3`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -199,9 +199,12 @@ pub struct Filter {
     /// name: [`flag::COARSE_GPS`]), or only those with one.
     pub approx: Option<bool>,
     pub within: Option<BBox>,
-    /// A place and everything in it: `Poland|Malopolska`, levels as [`Dim::PlaceTree`]
-    /// writes them.
-    pub place_under: Option<String>,
+    /// Any of these places, each with everything in it: `Poland|Malopolska`, levels as
+    /// [`Dim::PlaceTree`] writes them. A city with a last level of [`NO_PLACE`]
+    /// (`Japan|Kanto|Tokyo|—`) is the city's photos with no location.
+    pub places_under: Vec<String>,
+    /// None of these places (each as in `places_under`).
+    pub places_under_not: Vec<String>,
     /// Photos with a place (any of country, state, city, location), or without one.
     pub placed: Option<bool>,
     /// Photos with a location (the place's finest level), or without one.
@@ -275,6 +278,47 @@ fn term(field: Field, value: &str) -> Box<dyn Query> {
 
 fn any_of(field: Field, values: impl IntoIterator<Item = String>) -> Box<dyn Query> {
     Box::new(TermSetQuery::new(values.into_iter().map(|v| Term::from_field_text(field, &v))))
+}
+
+/// Photos with a location: the place tree goes down to the last level a photo has, and
+/// the fourth, the location, is there exactly when the location is.
+fn deepest(f: &Fields) -> anyhow::Result<Box<dyn Query>> {
+    Ok(Box::new(RegexQuery::from_pattern(r"[^|]*\|[^|]*\|[^|]*\|.+", f.dim(Dim::PlaceTree))?))
+}
+
+/// The city of a place path that stands for the city's photos with no location
+/// (`Japan|Kanto|Tokyo|—` → `Japan|Kanto|Tokyo`). The index never holds such a path:
+/// a place's tree stops at its last level that has a value.
+fn no_location_city(path: &str) -> Option<&str> {
+    let (city, last) = path.rsplit_once('|')?;
+    (last == NO_PLACE && city.matches('|').count() == 2).then_some(city)
+}
+
+/// The photos at or under one place of `places_under`.
+fn place_query(f: &Fields, path: &str) -> anyhow::Result<Box<dyn Query>> {
+    let field = f.dim(Dim::PlaceTree);
+    Ok(match no_location_city(path) {
+        Some(city) => Box::new(BooleanQuery::new(vec![(Occur::Must, term(field, city)), (Occur::MustNot, deepest(f)?)])),
+        None => term(field, path),
+    })
+}
+
+/// Whether `path` is `place` or somewhere in it.
+fn is_under(path: &str, place: &str) -> bool {
+    path.strip_prefix(place).is_some_and(|rest| rest.is_empty() || rest.starts_with('|'))
+}
+
+/// Places picked together, without the ones another of them holds: Kraków and Poland
+/// are Poland. Duplicates go too; the order of the rest is kept.
+pub fn normalise_places(places: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (i, p) in places.iter().enumerate() {
+        let held = places.iter().enumerate().any(|(j, q)| j != i && is_under(p, q) && (p != q || j < i));
+        if !held {
+            out.push(p.clone());
+        }
+    }
+    out
 }
 
 fn row_set(field: Field, rows: &[u64]) -> Box<dyn Query> {
@@ -387,7 +431,8 @@ impl Filter {
             // A city's "(no location)" is the city with `located` off: counted without it,
             // the city's locations stay listed beside it.
             Dim::PlaceTree => {
-                f.place_under = None;
+                f.places_under.clear();
+                f.places_under_not.clear();
                 f.located = None;
             }
             Dim::Shape => f.shape.clear(),
@@ -434,8 +479,18 @@ impl Filter {
         if !self.ext.is_empty() {
             must.push(any_of(f.dim(Dim::Ext), self.ext.iter().map(|e| e.trim_start_matches('.').to_lowercase())));
         }
-        if let Some(place) = &self.place_under {
-            must.push(term(f.dim(Dim::PlaceTree), place));
+        // A photo has one place: picked places are alternatives.
+        let places = normalise_places(&self.places_under);
+        if places.iter().all(|p| no_location_city(p).is_none()) {
+            if !places.is_empty() {
+                must.push(any_of(f.dim(Dim::PlaceTree), places));
+            }
+        } else {
+            let either = places.iter().map(|p| place_query(f, p).map(|q| (Occur::Should, q))).collect::<Result<_, _>>()?;
+            must.push(Box::new(BooleanQuery::new(either)));
+        }
+        for place in normalise_places(&self.places_under_not) {
+            must_not.push(place_query(f, &place)?);
         }
         match self.placed {
             // Every place has its top level in the place tree.
@@ -446,8 +501,7 @@ impl Filter {
         if let Some(located) = self.located {
             // The place tree goes down to the last level a photo has: the fourth, the
             // location, is there exactly when the location is.
-            let deepest = Box::new(RegexQuery::from_pattern(r"[^|]*\|[^|]*\|[^|]*\|.+", f.dim(Dim::PlaceTree))?);
-            if located { must.push(deepest) } else { must_not.push(deepest) }
+            if located { must.push(deepest(f)?) } else { must_not.push(deepest(f)?) }
         }
         if self.no_country_code {
             must.push(has(flag::NO_COUNTRY_CODE));
@@ -771,9 +825,32 @@ mod tests {
 
     #[test]
     fn the_place_tree_counts_as_if_no_location_were_picked() {
-        let f = Filter { place_under: Some("Japan|Kanto|Tokyo".into()), located: Some(false), ..Filter::default() };
+        let f = Filter {
+            places_under: vec!["Japan|Kanto|Tokyo|—".into()],
+            places_under_not: vec!["Japan|Kanto".into()],
+            located: Some(false),
+            ..Filter::default()
+        };
         assert_eq!(f.without(Dim::PlaceTree), Filter::default());
         assert_eq!(f.without(Dim::City).located, Some(false));
+    }
+
+    #[test]
+    fn places_in_a_picked_place_are_that_place() {
+        let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(normalise_places(&v(&["Poland|—|Kraków", "Poland"])), v(&["Poland"]));
+        assert_eq!(normalise_places(&v(&["Poland|Małopolskie|Kraków", "Poland|—|Kraków", "Poland"])), v(&["Poland"]));
+        assert_eq!(normalise_places(&v(&["Japan|Kanto|Tokyo|—", "Japan|Kanto|Tokyo"])), v(&["Japan|Kanto|Tokyo"]));
+        assert_eq!(normalise_places(&v(&["Poland", "Germany", "Poland"])), v(&["Poland", "Germany"]));
+        // A name that only starts like another is not in it.
+        assert_eq!(normalise_places(&v(&["Poland|—|Kra", "Poland|—|Kraków"])), v(&["Poland|—|Kra", "Poland|—|Kraków"]));
+    }
+
+    #[test]
+    fn a_city_without_location_is_four_levels_ending_in_none() {
+        assert_eq!(no_location_city("Japan|Kanto|Tokyo|—"), Some("Japan|Kanto|Tokyo"));
+        assert_eq!(no_location_city("Japan|—"), None);
+        assert_eq!(no_location_city("Japan|Kanto|Tokyo"), None);
     }
 
     #[test]

@@ -37,7 +37,7 @@
   let places = $state<[string, number][]>([]);
   onMount(async () => {
     const [here, all] = await Promise.all([
-      api.query({ place_under: path }, { limit: 0 }),
+      api.query({ places_under: [path] }, { limit: 0 }),
       api.query({}, { limit: 0, facets: ["place_tree"] }),
     ]);
     photos = here.total;

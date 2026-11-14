@@ -3,6 +3,7 @@
 // match all together (the default) or any one of them.
 
 import type { Filter, Presence, Range } from "./api";
+import { under } from "./places";
 
 export type Match = "all" | "any";
 export type RatingOp = "≥" | "=" | "≤";
@@ -31,6 +32,48 @@ export function cycle(
   if (was === null) return { inc: add(inc), exc: drop(exc) };
   if (was === "in") return { inc: drop(inc), exc: add(exc) };
   return { inc: drop(inc), exc: drop(exc) };
+}
+
+/** A place tree's node: picked in or out itself, or in a place that is ("under-…"). */
+export type PlacePick = Pick | "under-in" | "under-out";
+
+/** Where `path` stands among the picked places: its own pick, else the one of the
+ *  nearest picked place it is in. */
+export function placePick(inc: readonly string[] | undefined, exc: readonly string[] | undefined, path: string): PlacePick {
+  const own = pickOf(inc, exc, path);
+  if (own) return own;
+  const nearest = (l: readonly string[] | undefined) =>
+    Math.max(-1, ...(l ?? []).filter((p) => under(path, p)).map((p) => p.length));
+  const i = nearest(inc);
+  const o = nearest(exc);
+  if (i < 0 && o < 0) return null;
+  return i > o ? "under-in" : "under-out";
+}
+
+/**
+ * Click on a place: off → included → excluded → off. Places are alternatives, so one in
+ * a picked place is that place: picking Poland lets go of Kraków. In an included place,
+ * a click leaves it out (Poland except Kraków); in a left-out one it does nothing.
+ */
+export function cyclePlace(
+  inc: readonly string[] | undefined,
+  exc: readonly string[] | undefined,
+  path: string,
+): { inc: string[] | undefined; exc: string[] | undefined } {
+  const list = (l: string[]) => (l.length ? l : undefined);
+  const others = (l: readonly string[] | undefined) => (l ?? []).filter((p) => p !== path);
+  const outside = (l: string[]) => l.filter((p) => !under(p, path));
+  switch (placePick(inc, exc, path)) {
+    case null:
+      return { inc: list([...outside(others(inc)), path]), exc: list(others(exc)) };
+    case "in":
+    case "under-in":
+      return { inc: list(outside(others(inc))), exc: list([...outside(others(exc)), path]) };
+    case "out":
+      return { inc: list(others(inc)), exc: list(others(exc)) };
+    case "under-out":
+      return { inc: list([...(inc ?? [])]), exc: list([...(exc ?? [])]) };
+  }
 }
 
 /** The rating a click on `n` stars asks for under `op`. */

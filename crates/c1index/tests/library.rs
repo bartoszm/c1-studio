@@ -901,6 +901,8 @@ fn places_nest_country_state_city_location_with_gaps_kept() {
         place(None, None, Some("London"), None),
         place(Some("Japan"), None, None, None),
         Place::default(),
+        Place { location: Some("Wawel".into()), ..place(Some("Poland"), Some("Malopolska"), Some("Kraków"), Some("PL")) },
+        place(Some("Germany"), None, Some("Berlin"), Some("DE")),
     ]
     .into_iter()
     .enumerate()
@@ -910,16 +912,30 @@ fn places_nest_country_state_city_location_with_gaps_kept() {
     let options = QueryOptions { facets: vec![Dim::PlaceTree], limit: Some(0), ..QueryOptions::default() };
     let tree: std::collections::HashMap<String, u64> =
         lib.query(&Filter::default(), &options).unwrap().facets[&Dim::PlaceTree].iter().cloned().collect();
-    assert_eq!(tree["Poland"], 2);
-    assert_eq!(tree["Poland|Malopolska|Kraków"], 1);
+    assert_eq!(tree["Poland"], 3);
+    assert_eq!(tree["Poland|Malopolska|Kraków"], 2);
     // No state: its own level, so Kraków is not counted twice under one parent.
     assert_eq!(tree["Poland|—|Kraków"], 1);
     assert_eq!(tree["—|—|London"], 1);
     assert_eq!(tree["Japan"], 1);
     assert!(!tree.contains_key("Japan|—"), "no trailing empty levels");
-    let under = |p: &str| Filter { place_under: Some(p.into()), ..Filter::default() };
-    assert_eq!(ids(&lib, &under("Poland")), [1, 2]);
-    assert_eq!(ids(&lib, &under("Poland|—")), [2]);
+    let under = |p: &[&str]| Filter { places_under: p.iter().map(|s| (*s).to_owned()).collect(), ..Filter::default() };
+    assert_eq!(ids(&lib, &under(&["Poland"])), [1, 2, 6]);
+    assert_eq!(ids(&lib, &under(&["Poland|—"])), [2]);
+    // Places picked together are alternatives, and one in another is that other.
+    assert_eq!(ids(&lib, &under(&["Poland", "Germany"])), [1, 2, 6, 7]);
+    assert_eq!(ids(&lib, &under(&["Poland|Malopolska|Kraków", "Poland"])), [1, 2, 6]);
+    // A city's "(no location)": its photos without one, alone or beside another place.
+    assert_eq!(ids(&lib, &under(&["Poland|Malopolska|Kraków|—"])), [1]);
+    assert_eq!(ids(&lib, &under(&["Poland|Malopolska|Kraków|—", "Germany"])), [1, 7]);
+    // A place left out of another.
+    let except = |inc: &[&str], exc: &[&str]| Filter {
+        places_under_not: exc.iter().map(|s| (*s).to_owned()).collect(),
+        ..under(inc)
+    };
+    assert_eq!(ids(&lib, &except(&["Poland"], &["Poland|Malopolska|Kraków"])), [2]);
+    assert_eq!(ids(&lib, &except(&["Poland"], &["Poland|Malopolska|Kraków|—"])), [2, 6]);
+    assert_eq!(ids(&lib, &except(&[], &["Poland", "Japan"])), [3, 5, 7]);
     // A country without its ISO code.
     assert_eq!(ids(&lib, &Filter { no_country_code: true, ..Filter::default() }), [2, 4]);
 }

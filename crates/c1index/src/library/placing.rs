@@ -601,7 +601,7 @@ impl Library {
     /// not even their place's.
     pub fn place_rows(&self, filter: &Filter, path: &str) -> anyhow::Result<Vec<u64>> {
         let searcher = self.reader.searcher();
-        let base = Filter { within: None, gps: Some(false), place_under: Some(path.to_owned()), ..filter.clone() };
+        let base = Filter { within: None, gps: Some(false), places_under: vec![path.to_owned()], ..filter.clone() };
         Ok(self
             .seen(&searcher, &base, true)?
             .into_iter()

@@ -24,8 +24,11 @@ export type Filter = {
   month?: string;
   /** `YYYY-MM-Www`: the days of an ISO week inside a month. */
   week?: string;
-  /** A place and everything in it: `Poland|Malopolska`, a missing level as `—`. */
-  place_under?: string;
+  /** Any of these places, each with everything in it: `Poland|Malopolska`, a missing
+   *  level as `—`. A city with a last level of `—` is its photos with no location. */
+  places_under?: string[];
+  /** None of these places. */
+  places_under_not?: string[];
   /** Only photos with a country but no ISO country code. */
   no_country_code?: boolean;
   /** Photos with a position (GPS), or without one. */

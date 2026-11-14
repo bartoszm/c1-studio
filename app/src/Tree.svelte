@@ -10,8 +10,9 @@
   let { nodes, selected, mark, expanded, onpick, oncontext, drag, candrop, ondropnode, depth = 0 }: {
     nodes: Node[];
     selected: string | undefined;
-    /** Whether a node is picked in (✓) or out (excluded): several can be at once. */
-    mark?: (node: Node) => "in" | "out" | null;
+    /** Whether a node is picked in (✓) or out (excluded): several can be at once. "under-…":
+     *  not picked itself, but in a node that is. */
+    mark?: (node: Node) => "in" | "out" | "under-in" | "under-out" | null;
     expanded: SvelteSet<string>;
     onpick: (node: Node) => void;
     /** Right-click on a node (its menu). */
@@ -40,6 +41,8 @@
     class="node"
     class:on={selected === node.key || m === "in"}
     class:out={m === "out"}
+    class:under-in={m === "under-in"}
+    class:under-out={m === "under-out"}
     class:empty={node.count === 0}
     class:queued={node.queued}
     style:padding-left="{6 + depth * 14}px"
