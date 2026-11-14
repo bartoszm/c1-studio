@@ -297,7 +297,12 @@ fn structured(result: &Value) -> Result<&Value, AiError> {
     }
     let output = &result["structured_output"];
     if !output.is_object() {
-        return Err(AiError::BadReply(result["result"].as_str().unwrap_or("no structured answer").to_string()));
+        let words = crate::said(result["result"].as_str().unwrap_or(""));
+        return Err(AiError::BadReply(if words.is_empty() {
+            "no structured answer".to_string()
+        } else {
+            format!("no structured answer; {words}")
+        }));
     }
     Ok(output)
 }
