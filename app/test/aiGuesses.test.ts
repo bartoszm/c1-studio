@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { circle, guessPins, pinPicks, pointTicked } from "../src/lib/aiGuesses";
+import { circle, circleBounds, guessAim, guessNote, guessPins, pinOf, pinPicks, pointTicked } from "../src/lib/aiGuesses";
 import type { PlaceGuess, PlaceNames, SuggestionRow } from "../src/lib/api";
 
 const none: PlaceNames = { country: null, country_code: null, state: null, city: null, location: null };
@@ -17,7 +17,7 @@ const row = (n: number, group: number | null, current: Partial<NonNullable<Sugge
   row: n, at: 1, provider: "gemini", model: "m", warnings: [], cost: 0, status: "Proposed", group,
   suggestion: {
     caption_en: null, caption_pl: null, headline: null, subject: null, keywords: [], keywords_new: [],
-    rating: null, quality: null, composition: null, confidence: 0.9, place,
+    rating: null, quality: null, composition: null, confidence: 0.9, place, unplaced: null,
   },
   current: { caption: null, headline: null, rating: null, keywords: [], place: none, placed: false, approx: false, ...current },
 });
@@ -85,4 +85,50 @@ test("on the map too, a scene's photo whose own check doubted the position does 
   const [, two, three] = pinPicks(scene, null, 0.8, false);
   assert.equal(two.point, undefined);
   assert.deepEqual(three.point, [50.3233, 19.4725]);
+});
+
+test("a photo's guess is found by any photo of its scene, and fits the map to its circle", () => {
+  const pins = guessPins([row(1, 1), row(2, 1), row(3, null)]);
+  assert.equal(pinOf(pins, 2)?.lead.row, 1, "a scene's other photo finds the scene's pin");
+  assert.equal(pinOf(pins, 3)?.lead.row, 3);
+  assert.equal(pinOf(pins, 9), undefined);
+  const [[w, s], [e, n]] = circleBounds(pins[1]);
+  assert.ok(w < 19.4725 && e > 19.4725 && s < 50.3233 && n > 50.3233);
+  // 0.5 km each way: about 0.0045° of latitude.
+  assert.ok(Math.abs(n - 50.3233 - 0.0045) < 0.0002, `${n}`);
+});
+
+test("Show on map: a guess not reviewed goes to its pin, a reviewed one to its circle, one with no position to its place", () => {
+  const pins = guessPins([row(1, 1), row(2, 1)]);
+  const pin = guessAim(pins, 2, place);
+  assert.equal(pin.kind === "pin" && pin.pin.lead.row, 1, "a scene's photo: the scene's pin");
+  // Accepted or rejected: no pin is drawn for it, the card's own position is shown.
+  const reviewed = guessAim([], 3, place);
+  assert.equal(reviewed.kind, "circle");
+  if (reviewed.kind === "circle") {
+    assert.deepEqual(reviewed.bounds, circleBounds({ lat: 50.3233, lon: 19.4725, radius_km: 0.5 }));
+    assert.equal(reviewed.radius_km, 0.5);
+  }
+  const tiny = guessAim([], 3, { ...place, point: { ...place.point!, radius_km: 0 } });
+  assert.equal(tiny.kind === "circle" && tiny.radius_km, 0.05, "as small as a circle is drawn");
+  assert.equal(guessAim([], 3, { ...place, point: null }).kind, "place");
+  assert.equal(guessAim(pins, 9, null).kind, "place");
+});
+
+test("the map's note says what a guess shown from its card is, and that its photos are picked", () => {
+  const [pin] = guessPins([row(1, 1), row(2, 1)]);
+  assert.equal(
+    guessNote({ kind: "pin", pin }, "Proposed", 2),
+    "The AI's position, with the circle it may be off by and its card open · the card's 2 photos are picked",
+  );
+  const circle = guessAim([], 1, place);
+  assert.equal(
+    guessNote(circle, "Accepted", 1),
+    "Accepted: the area of the AI's position (within 500 m); the photo's own pin shows where it is now · the card's photo is picked",
+  );
+  assert.equal(guessNote(circle, "Rejected", 3), "Rejected: the area of the AI's position (within 500 m), not drawn · the card's 3 photos are picked");
+  const nowhere = { kind: "place" } as const;
+  assert.match(guessNote(nowhere, "Proposed", 1, "unknown"), /^No AI position and its place is not in the gazetteer: /);
+  assert.match(guessNote(nowhere, "Proposed", 1, "failed"), /^No AI position and its place could not be looked up: /);
+  assert.match(guessNote(nowhere, "Proposed", 1, "found"), /^No AI position, the map is at the place it names: /);
 });

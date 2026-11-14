@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Area } from "../src/lib/api";
-import { focusCamera, hitView, mapPadding, parseHits, placeZoom, routeStep, shouldFollow, viewBox, wrapLon, type NominatimRow } from "../src/lib/mapview";
+import {
+  focusCamera, hitView, mapPadding, parseHits, placeZoom, positionsText, routeStep, shouldFollow, viewBox, wrapLon, type NominatimRow,
+} from "../src/lib/mapview";
 
 // The map in #21: 892×543.
 const SIZE = { width: 892, height: 543 };
@@ -209,4 +211,13 @@ test("show on map: photos either side of the 180th meridian are fitted the short
 
 test("show on map: photos nowhere known have no view", () => {
   assert.equal(focusCamera(area({ unknown: 3 })), null);
+});
+
+test("the map's note counts photos placed by AI, shown or hidden, also when they are all it has", () => {
+  const none = { located: 0, inView: 0 };
+  assert.equal(positionsText({ located: 10, inView: 4 }, none, true), "4 of 10 photos with a position in view");
+  assert.equal(positionsText({ located: 10, inView: 4 }, { located: 3, inView: 2 }, true), "4 of 10 photos with a position in view · 2 placed by AI");
+  assert.equal(positionsText(none, { located: 3, inView: 2 }, true), "No photos here have a position of their own · 2 placed by AI");
+  assert.equal(positionsText(none, { located: 3, inView: 2 }, false), "No photos here have a position of their own · 3 placed by AI, not shown (Settings)");
+  assert.equal(positionsText(none, none, true), "0 of 0 photos with a position in view");
 });

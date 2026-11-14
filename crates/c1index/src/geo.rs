@@ -64,6 +64,13 @@ pub struct MapResult {
     pub unresolved: usize,
     /// Photos with neither a position nor a place.
     pub unplaced: usize,
+    /// Photos given a position by AI Locate, accepted as approximate: clustered apart from
+    /// positions of their own, so the map can show them in their own colour, or not at all.
+    pub ai: Vec<Cluster>,
+    /// Photos with such a position among those selected, seen or not.
+    pub ai_located: usize,
+    /// Of them, the ones inside the view.
+    pub ai_in_view: usize,
 }
 
 /// Where some photos are, for the map to show them all: the box their positions span,

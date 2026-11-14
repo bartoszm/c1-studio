@@ -203,6 +203,58 @@ fn an_ai_guess_taken_as_approximate_is_shown_as_close_as_a_position_of_its_own()
     assert_eq!(area.bounds, Some(BBox { min_lat: 50.054, max_lat: 50.054, min_lon: 19.935, max_lon: 19.935 }));
 }
 
+/// Photo `n` given AI Locate's guess at `at`, accepted as approximate or as precise.
+fn accept_guess(lib: &Library, n: u32, at: [f64; 2], precise: bool) -> u64 {
+    use c1ai::{Guess, PlaceGuess, PointGuess};
+    use c1index::ai::{Entry, Status, Task};
+    let r = row(lib, n);
+    let entry = Entry {
+        model: "m".into(),
+        suggestion: c1ai::Suggestion {
+            place: Some(PlaceGuess {
+                country: Some(Guess { name: "Poland".into(), p: 0.9 }),
+                point: Some(PointGuess { lat: at[0], lon: at[1], p: 0.6, radius_km: 1.0 }),
+                ..PlaceGuess::default()
+            }),
+            ..c1ai::Suggestion::default()
+        },
+        status: Status::Proposed,
+        ..Entry::default()
+    };
+    lib.put_suggestion(Task::Locate, r, &entry, &c1ai::RunRecord::default()).unwrap();
+    let pick = c1index::Accept {
+        row: r,
+        place: Place { country: Some("Poland".into()), ..Place::default() },
+        point: Some(at),
+        precise,
+        seen: c1index::Seen { place: lib.photo(r).unwrap().unwrap().place, ..c1index::Seen::default() },
+        ..c1index::Accept::default()
+    };
+    lib.accept_suggestions(Task::Locate, &[pick]).unwrap();
+    r
+}
+
+#[test]
+fn positions_from_ai_accepted_as_approximate_are_drawn_apart() {
+    let (_d, lib) = setup();
+    let seven = accept_guess(&lib, 7, [50.03, 19.90], false);
+    let eight = accept_guess(&lib, 8, [50.04, 19.91], true);
+    let map = lib.map(&Filter::default(), &view(16.0)).unwrap();
+    // The approximate one apart, the precise one with positions of their own.
+    assert_eq!(map.ai.iter().map(|c| c.best).collect::<Vec<_>>(), [seven]);
+    assert_eq!((map.ai_located, map.ai_in_view), (1, 1));
+    assert!(map.clusters.iter().any(|c| c.best == eight));
+    assert!(map.clusters.iter().all(|c| c.best != seven));
+    assert_eq!(map.located, 4, "1, 3, 9 and the precise guess");
+    // Moved by hand: a position of its own, no longer the AI's.
+    let moved = GeoPoint { lat: 50.2, lon: 19.8, alt: None, origin: GeoOrigin::Manual };
+    let base = lib.photo(seven).unwrap().unwrap().geo;
+    lib.edit(&[(seven, Op::SetGeo { base, value: Some(moved) })]).unwrap();
+    let map = lib.map(&Filter::default(), &view(16.0)).unwrap();
+    assert!(map.ai.is_empty());
+    assert!(map.clusters.iter().any(|c| c.best == seven));
+}
+
 #[test]
 fn photos_area_takes_the_shorter_way_round_the_world() {
     let (_d, lib) = setup();

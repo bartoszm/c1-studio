@@ -1086,6 +1086,13 @@ async fn area(app: State<'_, App>, rows: Vec<u64>) -> Result<c1index::Area, Stri
     app.session()?.library.area(&rows).map_err(|e| format!("{e:#}"))
 }
 
+/// Where a place is by the offline gazetteer, at the finest level it knows it: where the
+/// map goes for an AI guess that names a place but gives no position.
+#[tauri::command]
+async fn place_point(place: Place) -> Option<c1geo::Approx> {
+    c1geo::gazetteer().locate(&place)
+}
+
 /// The places `filter`'s photos name that the gazetteer does not know at that level and
 /// that were not looked up online yet.
 #[tauri::command]
@@ -2909,6 +2916,7 @@ pub fn run() {
             edit_trips,
             map,
             area,
+            place_point,
             pick_gpx,
             gpx_plan,
             gpx_apply,

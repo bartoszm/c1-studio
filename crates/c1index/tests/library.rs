@@ -3017,12 +3017,14 @@ fn an_ai_guess_taken_as_approximate_stays_on_the_map_at_every_zoom() {
     let street = c1index::MapView { bounds: c1index::BBox::around(50.054, 19.935, 0.5), zoom: 16.0 };
     let shown = |lib: &Library| {
         let map = lib.map(&Filter::default(), &street).unwrap();
-        map.clusters.iter().any(|c| c.best == eight) && map.approx.is_empty()
+        map.ai.iter().any(|c| c.best == eight) && map.approx.is_empty()
     };
     assert!(shown(&lib), "drawn where the guess put it");
-    // Counted with the positions, not with the photos placed only by their place's name.
+    // Counted apart: neither with positions of their own nor with the photos placed only
+    // by their place's name.
     let map = lib.map(&Filter::default(), &street).unwrap();
-    assert_eq!((map.in_view, map.approx_in_view, map.approx_hidden), (1, 0, 0));
+    assert_eq!((map.in_view, map.ai_in_view, map.approx_in_view, map.approx_hidden), (0, 1, 0, 0));
+    assert!(map.clusters.iter().all(|c| c.best != eight));
 
     // Taken before guesses were told apart: found again from the accepted suggestion.
     drop(lib);

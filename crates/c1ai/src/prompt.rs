@@ -143,7 +143,10 @@ photo: signs, streets, terrain), \"context\" (the catalog data: photos around it
 place: country, landscape, climate); empty when there is no position.
   landmark: the name of the landmark or view recognised, empty if none.
   clues: up to five short lines, the evidence the guess rests on, most telling first (\"Polish shop sign\", \
-\"tram in Kraków's livery\", \"taken 4 min after a photo in Kazimierz\").";
+\"tram in Kraków's livery\", \"taken 4 min after a photo in Kazimierz\").
+  reason: one sentence on what keeps a level or the position empty or unsure (no landmark in sight, a generic interior, \
+the clues disagree, too dark to read the signs); empty when every level you give is sure. Fill it in even when you can \
+place nothing at all: the photographer reads it to know why.";
 
 pub fn system_prompt(brief: &Brief) -> String {
     if brief.task == Task::Locate {
@@ -217,6 +220,7 @@ fn locate_schema() -> Value {
     props.insert("basis".into(), json!({"type": "string", "enum": ["landmark", "scene", "context", "region", ""]}));
     props.insert("landmark".into(), text.clone());
     props.insert("clues".into(), json!({"type": "array", "items": text}));
+    props.insert("reason".into(), text.clone());
     let required: Vec<String> = props.keys().cloned().collect();
     place["required"] = json!(required);
     json!({
@@ -374,7 +378,8 @@ mod tests {
         let names: Vec<&str> = schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(names, ["confidence", "location_guess"]);
         let place = &schema["properties"]["location_guess"];
-        for name in ["basis", "landmark", "clues", "coordinates"] {
+        assert!(prompt.contains("reason:"));
+        for name in ["basis", "landmark", "clues", "reason", "coordinates"] {
             assert!(place["required"].as_array().unwrap().iter().any(|v| v == name), "{name}");
         }
         assert_ne!(prompt_hash(&brief), prompt_hash(&Brief::default()));
@@ -384,5 +389,6 @@ mod tests {
     fn describing_asks_for_no_evidence() {
         let place = &schema(&Brief::default())["properties"]["location_guess"];
         assert!(place["properties"].get("clues").is_none());
+        assert!(place["properties"].get("reason").is_none());
     }
 }

@@ -478,6 +478,17 @@ network; everything else works without one).
   (one or several picked) from the grid onto the map. This is a Location edit like any
   other: queued, undoable, written with *Write to Capture One*. A position belongs to
   the image, so every variant of the photo moves.
+- **AI guesses** (top right) shows AI Locate's guesses not reviewed yet: a pin with a
+  dashed violet card and the circle it may be off by. Click one to accept or reject it, or
+  drag it where the photo was. *Show on map* on a locate card in the AI tab comes here on
+  its guess (see [Locate](#describing-photos-with-ai)).
+- **Positions placed by AI:** a photo given an AI guess's position, accepted as
+  approximate, shows with a solid violet card, in clusters of its own, apart from photos
+  with GPS. *Settings › Map › Positions from AI Locate, accepted as approximate*
+  shows them in this colour (the default) or not at all. The note at the bottom counts
+  them either way: *2 placed by AI*, or *5 placed by AI, not shown (Settings)*, also when
+  they are the only photos with a position. Dragging one gives it a position of its own.
+  Positions accepted as precise show as the photo's own.
 
 ## Trips and the timeline
 
@@ -696,6 +707,29 @@ history; Ctrl+Z undoes them), **Reject** sets the card aside; *Accept N* above a
 and *Reject all* do every card. The tabs *To review*, *Accepted*, *Rejected* and *All* keep
 them.
 
+**Locate.** *Locate* in the AI tab asks only where photos were taken, told what the photos
+taken around them say (positions before and after, places written nearby, the trip). Photos
+taken one after another at one place go as a **scene** and get one card: it shows the first
+nine of its photos, and *+N more* opens it to all of them (*Fewer* closes it). On a locate
+card:
+
+- **Why it wasn't placed.** A photo the model could not place says *No place found* with
+  the model's reason (a generic interior, clues that disagree…), the landmark it saw and its
+  clues. A photo placed only in part (a city, no location) has the reason under its levels.
+  The run's log in *Details* has a line per photo, or one per sheet or scene (*Sheet 3:
+  answered in 41 s, 12 located, 2 with no place found: …*). Each photo's reason, clues and
+  file names are in `events.log` (in the catalog's folder, see
+  [Where things are kept](#where-things-are-kept)), as `Locating photo 812: no place found:
+  …`. An answer in prose instead of the form asked for is quoted in the error (*the model
+  said: "…"*).
+- **Show on map** opens the Map tab with the card's photos picked, in place of what was
+  picked (the map's note says so), so *Put N picked photos here* and dragging work on
+  them. A card to review goes to its pin with the circle it may be off by, and the pin's
+  card opens: accept, reject or drag it there. An accepted or rejected card goes to the
+  area of its position with no pin card (an accepted photo's own pin shows where it is
+  now). A guess with no position goes to the place it names, if the built-in gazetteer
+  knows it. Esc, or moving the map yourself, stops a *Show on map* still on its way.
+
 **Correcting a card.** Each place level is a box holding the model's name: write another,
 or pick one of the catalog's names from its list (those under the levels above come first).
 A name picked fills the levels above from the catalog, and the country code follows the
@@ -912,7 +946,9 @@ Keys do not act while you type in a field.
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
   hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
-  and calls are in `library\ai.redb` there, the AI settings in `ai.json`.
+  and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
+  the background and what failed (AI runs, and why a photo was placed nowhere, included) is
+  in `events.log` there.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The kinds of source offered: `%APPDATA%\c1studio\providers.json`.
 - Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is

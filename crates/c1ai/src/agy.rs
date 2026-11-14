@@ -19,8 +19,14 @@ use serde_json::Value;
 use crate::claude::Options;
 use crate::{
     AiError, Brief, Failed, PhotoRequest, Progress, RawAnswer, Reply, RunRecord, SheetReply, SheetRequest, Step,
-    VisionProvider, Vocabulary, tell, validate,
+    VisionProvider, Vocabulary, tell, validate, with_said,
 };
+
+/// An answer with no JSON in it: what the model said instead, so a prose reply ("I cannot
+/// tell where this was taken…") reaches the log rather than just that it was unreadable.
+fn no_json(response: &str) -> AiError {
+    AiError::BadReply(with_said("no JSON answer", response))
+}
 
 /// How long one call may take: a sheet of 36 photos takes a minute or two.
 const CALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -432,7 +438,7 @@ impl VisionProvider for Agy {
         let answer = extract_json(&envelope.response)
             .and_then(|v| serde_json::from_value::<RawAnswer>(v).ok())
             .ok_or_else(|| Failed {
-                error: AiError::BadReply("no JSON answer".into()),
+                error: no_json(&envelope.response),
                 record: Some(Box::new(self.record(&envelope.usage, millis, stdout))),
             })?;
         let (suggestion, warnings) = validate(&answer, &self.vocabulary);
@@ -458,7 +464,7 @@ impl VisionProvider for Agy {
         let record = self.record(&envelope.usage, millis, envelope.response.clone());
         let Some(value) = extract_json(&envelope.response) else {
             return Err(Failed {
-                error: AiError::BadReply("no JSON answer".into()),
+                error: no_json(&envelope.response),
                 record: Some(Box::new(self.record(&envelope.usage, millis, stdout))),
             });
         };
@@ -509,6 +515,19 @@ mod tests {
         .unwrap();
         assert_eq!(reply.usage.input_tokens, 15029);
         assert_eq!(extract_json(&reply.response).unwrap()["headline"], "Tram");
+    }
+
+    #[test]
+    fn a_prose_answer_is_quoted_in_the_error() {
+        let error = no_json("I'm sorry,\n  it is not possible to determine\nwhere this was taken.").to_string();
+        assert_eq!(
+            error,
+            "the answer could not be read: no JSON answer; the model said: \
+             \"I'm sorry, it is not possible to determine where this was taken.\""
+        );
+        assert_eq!(no_json("  \n").to_string(), "the answer could not be read: no JSON answer");
+        let long = no_json(&"word ".repeat(200)).to_string();
+        assert!(long.ends_with("…\"") && long.len() < 400, "{long}");
     }
 
     #[test]
