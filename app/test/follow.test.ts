@@ -42,6 +42,13 @@ test("several places picked, or one left out, don't follow", () => {
   assert.equal(followFilter({ places_under: ["Poland"], places_under_not: ["Poland|—|Kraków"] }, s, 2), null);
 });
 
+test("a city's photos without a location are a work list: located, they leave it", () => {
+  const f = { places_under: ["Poland|Małopolskie|Kraków|—"] };
+  assert.ok(isWorkList(f));
+  const located = sel({ places: [[place("Poland", "Małopolskie", "Kraków", "Wawel"), [1, 2]]] });
+  assert.equal(followFilter(f, located, 2), null);
+});
+
 test("a place cleared, or nothing in common, leaves the filter", () => {
   const cleared = sel({ places: [[place("", null, null) , [1, 2]]] });
   assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, cleared, 2), null);

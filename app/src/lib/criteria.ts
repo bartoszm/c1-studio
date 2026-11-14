@@ -50,30 +50,34 @@ export function placePick(inc: readonly string[] | undefined, exc: readonly stri
   return i > o ? "under-in" : "under-out";
 }
 
+/** Picks of one kind (`own`: places in, or out) without those another of them already
+ *  says: Kraków when Poland is, unless a pick of the `other` kind lies between (Poland,
+ *  except Małopolskie, but Kraków). As `normalise_places` in the index. */
+export function tidyPlaces(own: readonly string[], other: readonly string[]): string[] {
+  const between = (p: string, q: string) => other.some((o) => o !== q && o !== p && under(p, o) && under(o, q));
+  return own.filter((p, i) => !own.some((q, j) => (p === q ? j < i : under(p, q) && !between(p, q))));
+}
+
 /**
- * Click on a place: off → included → excluded → off. Places are alternatives, so one in
- * a picked place is that place: picking Poland lets go of Kraków. In an included place,
- * a click leaves it out (Poland except Kraków); in a left-out one it does nothing.
+ * Click on a place: off → included → excluded → off. Places are alternatives, and the
+ * deepest pick over a place decides: picking Poland lets go of Kraków; in an included
+ * place a click leaves the place out (Poland except Kraków), in a left-out one it takes
+ * it in (not Poland, but Kraków).
  */
 export function cyclePlace(
   inc: readonly string[] | undefined,
   exc: readonly string[] | undefined,
   path: string,
 ): { inc: string[] | undefined; exc: string[] | undefined } {
+  const was = placePick(inc, exc, path);
+  const i = (inc ?? []).filter((p) => p !== path);
+  const o = (exc ?? []).filter((p) => p !== path);
+  if (was === null || was === "under-out") i.push(path);
+  else if (was === "under-in") o.push(path);
+  // In → out, unless out is what it is without its own pick.
+  else if (was === "in" && placePick(i, o, path) !== "under-out") o.push(path);
   const list = (l: string[]) => (l.length ? l : undefined);
-  const others = (l: readonly string[] | undefined) => (l ?? []).filter((p) => p !== path);
-  const outside = (l: string[]) => l.filter((p) => !under(p, path));
-  switch (placePick(inc, exc, path)) {
-    case null:
-      return { inc: list([...outside(others(inc)), path]), exc: list(others(exc)) };
-    case "in":
-    case "under-in":
-      return { inc: list(outside(others(inc))), exc: list([...outside(others(exc)), path]) };
-    case "out":
-      return { inc: list(others(inc)), exc: list(others(exc)) };
-    case "under-out":
-      return { inc: list([...(inc ?? [])]), exc: list([...(exc ?? [])]) };
-  }
+  return { inc: list(tidyPlaces(i, o)), exc: list(tidyPlaces(o, i)) };
 }
 
 /** The rating a click on `n` stars asks for under `op`. */

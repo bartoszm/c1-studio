@@ -6,6 +6,7 @@
 import type { Color, Edit, Filter, Merged, Range, Selection } from "./api";
 import { ratingFor } from "./criteria";
 import { keyOf, under } from "./places";
+import { cityWithoutLocation } from "./tree";
 
 /** Fields whose emptying is the goal, not something to undo by looking elsewhere. */
 export function isWorkList(f: Filter): boolean {
@@ -25,6 +26,8 @@ export function isWorkList(f: Filter): boolean {
     some(f.cameras_not) ||
     some(f.keywords_under_not) ||
     some(f.places_under_not) ||
+    // A city's "(no location)": photos still to locate.
+    !!f.places_under?.some((p) => cityWithoutLocation(p)) ||
     some(f.not_in_collections)
   );
 }
@@ -101,7 +104,8 @@ export function followFilter(f: Filter, sel: Selection, n: number, edit?: Edit, 
   const picked = f.places_under ?? [];
   if (picked.length && !placeKeys.every((k) => picked.some((p) => under(k, p)))) {
     // One place follows its photos; of several, there is no telling which they left.
-    if (picked.length > 1) return null;
+    // A "(no location)" is no place to follow to (and a work list besides).
+    if (picked.length > 1 || cityWithoutLocation(picked[0])) return null;
     const to = commonPlace(placeKeys, picked[0].split("|").length);
     if (!to) return null;
     next.places_under = [to];

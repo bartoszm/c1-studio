@@ -936,6 +936,13 @@ fn places_nest_country_state_city_location_with_gaps_kept() {
     assert_eq!(ids(&lib, &except(&["Poland"], &["Poland|Malopolska|Kraków"])), [2]);
     assert_eq!(ids(&lib, &except(&["Poland"], &["Poland|Malopolska|Kraków|—"])), [2, 6]);
     assert_eq!(ids(&lib, &except(&[], &["Poland", "Japan"])), [3, 5, 7]);
+    assert_eq!(ids(&lib, &except(&["Poland", "Germany"], &["Poland|Malopolska|Kraków"])), [2, 7]);
+    // The deepest pick decides: not Poland, but Kraków; Poland, except Malopolska, but Wawel.
+    assert_eq!(ids(&lib, &except(&["Poland|Malopolska|Kraków"], &["Poland"])), [1, 6]);
+    let wawel = except(&["Poland", "Poland|Malopolska|Kraków|Wawel"], &["Poland|Malopolska"]);
+    assert_eq!(ids(&lib, &wawel), [2, 6]);
+    // A place both in and out is out.
+    assert_eq!(ids(&lib, &except(&["Poland", "Germany"], &["Poland"])), [7]);
     // A country without its ISO code.
     assert_eq!(ids(&lib, &Filter { no_country_code: true, ..Filter::default() }), [2, 4]);
 }

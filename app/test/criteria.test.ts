@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allOfPicks, compile, criteriaCount, cycle, cyclePlace, placePick, ratingFor, ratingParts, ratingText } from "../src/lib/criteria.ts";
+import { allOfPicks, compile, criteriaCount, cycle, cyclePlace, placePick, ratingFor, tidyPlaces, ratingParts, ratingText } from "../src/lib/criteria.ts";
 
 test("cards set to all ask for every pick; any is left as it is", () => {
   const f = { hues: ["red", "blue"], light: ["dark", "clipped highlights", "low contrast"] };
@@ -81,17 +81,25 @@ test("places are alternatives: one in a picked place is that place", () => {
   assert.deepEqual(cyclePlace(undefined, [PL], PL), { inc: undefined, exc: undefined });
 });
 
-test("a place in an included one is left out; in an excluded one nothing happens", () => {
+test("the deepest pick decides: a place in an included one is left out, in an excluded one taken in", () => {
   const PL = "Poland";
   const KR = "Poland|Małopolskie|Kraków";
+  const WA = `${KR}|Wawel`;
   assert.equal(placePick([PL], undefined, KR), "under-in");
   assert.deepEqual(cyclePlace([PL], undefined, KR), { inc: [PL], exc: [KR] });
   // Poland except Kraków keeps the exception when Poland is picked again.
   assert.deepEqual(cyclePlace(undefined, [KR], PL), { inc: [PL], exc: [KR] });
   // Out → off: back to being in Poland.
   assert.deepEqual(cyclePlace([PL], [KR], KR), { inc: [PL], exc: undefined });
-  assert.equal(placePick([PL], [KR], `${KR}|Wawel`), "under-out");
-  assert.deepEqual(cyclePlace([PL], [KR], `${KR}|Wawel`), { inc: [PL], exc: [KR] });
+  // Poland, except Kraków, but Wawel; a click on Wawel again lets it go with Kraków.
+  assert.equal(placePick([PL], [KR], WA), "under-out");
+  assert.deepEqual(cyclePlace([PL], [KR], WA), { inc: [PL, WA], exc: [KR] });
+  assert.deepEqual(cyclePlace([PL, WA], [KR], WA), { inc: [PL], exc: [KR] });
+  // Not Poland, but Kraków.
+  assert.deepEqual(cyclePlace(undefined, [PL], KR), { inc: [KR], exc: [PL] });
+  // Picks only drop what a pick of their kind says with none of the other between.
+  assert.deepEqual(tidyPlaces([PL, WA], [KR]), [PL, WA]);
+  assert.deepEqual(tidyPlaces([PL, WA, PL], []), [PL]);
   // The nearest picked place decides; a name that only starts like another is not in it.
   assert.equal(placePick([PL, KR], ["Poland|Małopolskie"], `${KR}|Wawel`), "under-in");
   assert.equal(placePick([PL, KR], ["Poland|Małopolskie"], "Poland|Małopolskie|Tarnów"), "under-out");

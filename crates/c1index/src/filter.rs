@@ -294,12 +294,28 @@ fn no_location_city(path: &str) -> Option<&str> {
     (last == NO_PLACE && city.matches('|').count() == 2).then_some(city)
 }
 
-/// The photos at or under one place of `places_under`.
-fn place_query(f: &Fields, path: &str) -> anyhow::Result<Box<dyn Query>> {
+/// The photos at or under any of `places` (paths of `places_under`): one set of terms for
+/// the places, and one location test for all the cities' "(no location)".
+fn places_query(f: &Fields, places: &[&String]) -> anyhow::Result<Option<Box<dyn Query>>> {
     let field = f.dim(Dim::PlaceTree);
-    Ok(match no_location_city(path) {
-        Some(city) => Box::new(BooleanQuery::new(vec![(Occur::Must, term(field, city)), (Occur::MustNot, deepest(f)?)])),
-        None => term(field, path),
+    let (mut cities, mut plain) = (Vec::new(), Vec::new());
+    for p in places {
+        match no_location_city(p) {
+            Some(city) => cities.push(city.to_owned()),
+            None => plain.push((*p).clone()),
+        }
+    }
+    let mut either: Vec<Box<dyn Query>> = Vec::new();
+    if !plain.is_empty() {
+        either.push(any_of(field, plain));
+    }
+    if !cities.is_empty() {
+        either.push(Box::new(BooleanQuery::new(vec![(Occur::Must, any_of(field, cities)), (Occur::MustNot, deepest(f)?)])));
+    }
+    Ok(match either.len() {
+        0 => None,
+        1 => either.pop(),
+        _ => Some(Box::new(BooleanQuery::new(either.into_iter().map(|q| (Occur::Should, q)).collect()))),
     })
 }
 
@@ -308,17 +324,16 @@ fn is_under(path: &str, place: &str) -> bool {
     path.strip_prefix(place).is_some_and(|rest| rest.is_empty() || rest.starts_with('|'))
 }
 
-/// Places picked together, without the ones another of them holds: Kraków and Poland
-/// are Poland. Duplicates go too; the order of the rest is kept.
-pub fn normalise_places(places: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for (i, p) in places.iter().enumerate() {
-        let held = places.iter().enumerate().any(|(j, q)| j != i && is_under(p, q) && (p != q || j < i));
-        if !held {
-            out.push(p.clone());
-        }
-    }
-    out
+/// Picks of one kind (`own`: places in, or out) without those another of them already
+/// says: Kraków when Poland is, unless a pick of the `other` kind lies between (Poland,
+/// except Małopolskie, but Kraków). Duplicates go too; the order of the rest is kept.
+pub fn normalise_places(own: &[String], other: &[String]) -> Vec<String> {
+    let between = |p: &str, q: &str| other.iter().any(|o| o != q && o != p && is_under(p, o) && is_under(o, q));
+    own.iter()
+        .enumerate()
+        .filter(|&(i, p)| !own.iter().enumerate().any(|(j, q)| if p == q { j < i } else { is_under(p, q) && !between(p, q) }))
+        .map(|(_, p)| p.clone())
+        .collect()
 }
 
 fn row_set(field: Field, rows: &[u64]) -> Box<dyn Query> {
@@ -428,12 +443,9 @@ impl Filter {
             Dim::Ext => f.ext.clear(),
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
-            // A city's "(no location)" is the city with `located` off: counted without it,
-            // the city's locations stay listed beside it.
             Dim::PlaceTree => {
                 f.places_under.clear();
                 f.places_under_not.clear();
-                f.located = None;
             }
             Dim::Shape => f.shape.clear(),
             Dim::Hue => f.hues.clear(),
@@ -450,6 +462,35 @@ impl Filter {
             f.any_of.clear();
         }
         f
+    }
+
+    /// The place picks. A photo has one place, so places in are alternatives; the deepest
+    /// pick over a photo's place decides whether it is in: Poland except Kraków, or not
+    /// Poland but Kraków. A place both in and out is out. With no place in, every photo
+    /// is, but those of the places out.
+    fn place_clauses(&self, f: &Fields, must: &mut Vec<Box<dyn Query>>, must_not: &mut Vec<Box<dyn Query>>) -> anyhow::Result<()> {
+        let out = normalise_places(&self.places_under_not, &self.places_under);
+        let picked_in: Vec<String> = self.places_under.iter().filter(|p| !out.contains(p)).cloned().collect();
+        let inn = normalise_places(&picked_in, &out);
+        if inn.is_empty() {
+            must_not.extend(places_query(f, &out.iter().collect::<Vec<_>>())?);
+            return Ok(());
+        }
+        // Each place in, less the places out inside it; those with none in one set.
+        let below = |p: &String| out.iter().filter(|o| *o != p && is_under(o, p)).collect::<Vec<_>>();
+        let (whole, cut): (Vec<&String>, Vec<&String>) = inn.iter().partition(|p| below(p).is_empty());
+        let mut either: Vec<Box<dyn Query>> = places_query(f, &whole)?.into_iter().collect();
+        for p in cut {
+            let mut part = vec![(Occur::Must, places_query(f, &[p])?.expect("one place"))];
+            part.extend(places_query(f, &below(p))?.map(|q| (Occur::MustNot, q)));
+            either.push(Box::new(BooleanQuery::new(part)));
+        }
+        must.push(if either.len() == 1 {
+            either.remove(0)
+        } else {
+            Box::new(BooleanQuery::new(either.into_iter().map(|q| (Occur::Should, q)).collect()))
+        });
+        Ok(())
     }
 
     pub fn to_query(&self, index: &Index, f: &Fields, distinct: &Distinct) -> anyhow::Result<Box<dyn Query>> {
@@ -479,19 +520,7 @@ impl Filter {
         if !self.ext.is_empty() {
             must.push(any_of(f.dim(Dim::Ext), self.ext.iter().map(|e| e.trim_start_matches('.').to_lowercase())));
         }
-        // A photo has one place: picked places are alternatives.
-        let places = normalise_places(&self.places_under);
-        if places.iter().all(|p| no_location_city(p).is_none()) {
-            if !places.is_empty() {
-                must.push(any_of(f.dim(Dim::PlaceTree), places));
-            }
-        } else {
-            let either = places.iter().map(|p| place_query(f, p).map(|q| (Occur::Should, q))).collect::<Result<_, _>>()?;
-            must.push(Box::new(BooleanQuery::new(either)));
-        }
-        for place in normalise_places(&self.places_under_not) {
-            must_not.push(place_query(f, &place)?);
-        }
+        self.place_clauses(f, &mut must, &mut must_not)?;
         match self.placed {
             // Every place has its top level in the place tree.
             Some(true) => must.push(Box::new(ExistsQuery::new(Dim::PlaceTree.field_name().to_owned(), false))),
@@ -824,26 +853,30 @@ mod tests {
     }
 
     #[test]
-    fn the_place_tree_counts_as_if_no_location_were_picked() {
+    fn the_place_tree_counts_without_its_picks_but_with_no_location() {
         let f = Filter {
             places_under: vec!["Japan|Kanto|Tokyo|—".into()],
             places_under_not: vec!["Japan|Kanto".into()],
             located: Some(false),
             ..Filter::default()
         };
-        assert_eq!(f.without(Dim::PlaceTree), Filter::default());
-        assert_eq!(f.without(Dim::City).located, Some(false));
+        // "No location" is a row of its own: the tree counts the photos it leaves.
+        assert_eq!(f.without(Dim::PlaceTree), Filter { located: Some(false), ..Filter::default() });
     }
 
     #[test]
     fn places_in_a_picked_place_are_that_place() {
         let v = |s: &[&str]| s.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(normalise_places(&v(&["Poland|—|Kraków", "Poland"])), v(&["Poland"]));
-        assert_eq!(normalise_places(&v(&["Poland|Małopolskie|Kraków", "Poland|—|Kraków", "Poland"])), v(&["Poland"]));
-        assert_eq!(normalise_places(&v(&["Japan|Kanto|Tokyo|—", "Japan|Kanto|Tokyo"])), v(&["Japan|Kanto|Tokyo"]));
-        assert_eq!(normalise_places(&v(&["Poland", "Germany", "Poland"])), v(&["Poland", "Germany"]));
+        let tidy = |own: &[&str]| normalise_places(&v(own), &[]);
+        assert_eq!(tidy(&["Poland|—|Kraków", "Poland"]), v(&["Poland"]));
+        assert_eq!(tidy(&["Poland|Małopolskie|Kraków", "Poland|—|Kraków", "Poland"]), v(&["Poland"]));
+        assert_eq!(tidy(&["Japan|Kanto|Tokyo|—", "Japan|Kanto|Tokyo"]), v(&["Japan|Kanto|Tokyo"]));
+        assert_eq!(tidy(&["Poland", "Germany", "Poland"]), v(&["Poland", "Germany"]));
         // A name that only starts like another is not in it.
-        assert_eq!(normalise_places(&v(&["Poland|—|Kra", "Poland|—|Kraków"])), v(&["Poland|—|Kra", "Poland|—|Kraków"]));
+        assert_eq!(tidy(&["Poland|—|Kra", "Poland|—|Kraków"]), v(&["Poland|—|Kra", "Poland|—|Kraków"]));
+        // A pick of the other kind between keeps both: Poland, except Małopolskie, but Kraków.
+        let between = normalise_places(&v(&["Poland", "Poland|Małopolskie|Kraków"]), &v(&["Poland|Małopolskie"]));
+        assert_eq!(between, v(&["Poland", "Poland|Małopolskie|Kraków"]));
     }
 
     #[test]
