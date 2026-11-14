@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { circle, guessPins, pinPicks, pointTicked } from "../src/lib/aiGuesses";
+import { circle, circleBounds, guessPins, pinOf, pinPicks, pointTicked } from "../src/lib/aiGuesses";
 import type { PlaceGuess, PlaceNames, SuggestionRow } from "../src/lib/api";
 
 const none: PlaceNames = { country: null, country_code: null, state: null, city: null, location: null };
@@ -85,4 +85,15 @@ test("on the map too, a scene's photo whose own check doubted the position does 
   const [, two, three] = pinPicks(scene, null, 0.8, false);
   assert.equal(two.point, undefined);
   assert.deepEqual(three.point, [50.3233, 19.4725]);
+});
+
+test("a photo's guess is found by any photo of its scene, and fits the map to its circle", () => {
+  const pins = guessPins([row(1, 1), row(2, 1), row(3, null)]);
+  assert.equal(pinOf(pins, 2)?.lead.row, 1, "a scene's other photo finds the scene's pin");
+  assert.equal(pinOf(pins, 3)?.lead.row, 3);
+  assert.equal(pinOf(pins, 9), undefined);
+  const [[w, s], [e, n]] = circleBounds(pins[1]);
+  assert.ok(w < 19.4725 && e > 19.4725 && s < 50.3233 && n > 50.3233);
+  // 0.5 km each way: about 0.0045° of latitude.
+  assert.ok(Math.abs(n - 50.3233 - 0.0045) < 0.0002, `${n}`);
 });

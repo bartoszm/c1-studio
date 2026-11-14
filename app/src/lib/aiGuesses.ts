@@ -30,6 +30,19 @@ export function guessPins(rows: SuggestionRow[]): GuessPin[] {
   });
 }
 
+/** The pin a photo's guess is drawn as: its own, or its scene's (any of the scene's photos). */
+export function pinOf(pins: GuessPin[], row: number): GuessPin | undefined {
+  return pins.find((p) => p.lead.row === row || p.members.some((m) => m.row === row));
+}
+
+/** The box a pin's circle fills, `[[west, south], [east, north]]`, to fit the map to. */
+export function circleBounds(pin: GuessPin): [[number, number], [number, number]] {
+  const ring = circle(pin.lat, pin.lon, pin.radius_km);
+  const lons = ring.map(([lon]) => lon);
+  const lats = ring.map(([, lat]) => lat);
+  return [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]];
+}
+
 /** The smallest circle drawn and told of: closer than this a guess is not. */
 export const MIN_RADIUS_KM = 0.05;
 

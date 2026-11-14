@@ -198,6 +198,7 @@
     if (next !== "map") {
       mapView = null;
       mapAim = null;
+      mapGuess = null;
     }
     tab = next;
     mapRow = null;
@@ -291,6 +292,23 @@
     mapAim = camera;
     if (mapOn) return;
     // The map opening goes to the photo focused: it goes where all of them are instead.
+    holdMap = focusRow ?? null;
+    showTab("map");
+    await tick();
+    holdMap = null;
+  }
+  /** An AI Locate card's guess to check on the map (a new object each time). */
+  let mapGuess = $state.raw<{ row: number; place: api.PlaceGuess | null } | null>(null);
+  /** The map, on a locate card's guess, with the card's photos picked: its pin's card open
+   *  to accept or drag, or, with no position, *Put them here* and dragging to place them. */
+  async function aiOnMap(rows: number[], row: number, place: api.PlaceGuess | null) {
+    picked.clear();
+    for (const r of rows) picked.add(r);
+    selected = null;
+    mapRow = row;
+    mapGuess = { row, place };
+    if (mapOn) return;
+    // The map opening goes to the photo focused: it goes to the guess instead.
     holdMap = focusRow ?? null;
     showTab("map");
     await tick();
@@ -2798,6 +2816,7 @@
       onview={mapMoved}
       center={mapCenter}
       goTo={mapAim}
+      guess={mapGuess}
       ontile={mapTilePick}
       onselect={mapSelect}
       onsetgeo={mapSetGeo}
@@ -2857,6 +2876,7 @@
       onselect={(row) => { picked.clear(); selected = null; mapRow = row; }}
       onaccepted={aiAccepted}
       onerror={(m) => (editError = m)}
+      onmap={aiOnMap}
     />
   {/if}
   {#if stripped}

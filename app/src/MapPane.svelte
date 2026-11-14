@@ -15,10 +15,12 @@
   import UnplacedTray from "./UnplacedTray.svelte";
   import { BASIS, LEVELS, percent, radiusText as km } from "./lib/aiPlace";
   import { keepFlag, readFlag } from "./lib/stored";
-  import { circle, guessPins, ownPosition, pinPicks, pointTicked, precisePin, type GuessPin } from "./lib/aiGuesses";
+  import {
+    circle, circleBounds, guessPins, ownPosition, pinOf, pinPicks, pointTicked, precisePin, type GuessPin,
+  } from "./lib/aiGuesses";
 
   let {
-    filter, version, focus, dragRows, pickedRows, tile, trip, center, goTo = null, onbox, onview, ontile, onselect, onsetgeo, onerror,
+    filter, version, focus, dragRows, pickedRows, tile, trip, center, goTo = null, guess = null, onbox, onview, ontile, onselect, onsetgeo, onerror,
     onplace, onpromote, ondragrows, onneighbours, onunplaced, onaccepted, geoPerAsset = false,
   }: {
     /** What the grid is filtered by; the map shows those of its photos that have a position. */
@@ -39,6 +41,9 @@
     center: { row: number; lat: number; lon: number } | null;
     /** Where to go to show some photos (*Show on map*), a new object each time. */
     goTo?: Camera | null;
+    /** An AI Locate card's guess to check (*Show on map* on the card), a new object each
+     *  time: its pin in view with its card open, or, with no position, the place it names. */
+    guess?: { row: number; place: api.PlaceGuess | null } | null;
     /** Shift+drag picked an area: the grid shows just its photos. */
     onbox: (bounds: BBox) => void;
     /** A tile clicked (its photos' bounds, and the photo when it is one), or let go (null). */
@@ -93,6 +98,8 @@
   let failed = $state<string | null>(null);
   let located = $state(0);
   let inView = $state(0);
+  /** Photos given a position by AI Locate, accepted as approximate: drawn apart (Settings). */
+  let aiPlaced = $state({ located: 0, inView: 0 });
   /** Photos placed only by their place's name: how many, in view, and hidden by the zoom. */
   let approx = $state({ located: 0, inView: 0, hidden: 0, placeOnly: 0, unresolved: 0, unplaced: 0 });
   const markers = new Map<string, { marker: maplibregl.Marker; el: HTMLElement }>();
@@ -157,7 +164,8 @@
         unresolved: r.unresolved,
         unplaced: r.unplaced,
       };
-      draw(r.clusters, v.zoom);
+      aiPlaced = { located: r.ai_located, inView: r.ai_in_view };
+      draw(r.clusters, v.zoom, settings.aiPositions === "colour" ? r.ai : []);
       drawApprox(settings.approxPlaces ? r.approx : [], v.zoom);
       // Places known only coarsely (a city, for a street in it) are worth asking too.
       if (r.place_only > 0) lookUp();
@@ -367,25 +375,29 @@
     return el;
   }
 
-  function draw(clusters: Cluster[], zoom: number) {
+  /** The photos with a position, and those AI Locate gave one (`ai`, accepted as
+   *  approximate): drawn the same way, the AI's in their own colour. */
+  function draw(clusters: Cluster[], zoom: number, ai: Cluster[] = []) {
     const bucket = zoom < 5 ? "far" : "near";
     const seen = new Set<string>();
-    for (const c of clusters) {
-      const id = `${bucket}:${c.best}:${c.count}:${c.lat.toFixed(6)}:${c.lon.toFixed(6)}`;
+    const all = [...clusters.map((c) => [c, false] as const), ...ai.map((c) => [c, true] as const)];
+    for (const [c, byAi] of all) {
+      const id = `${byAi ? "ai:" : ""}${bucket}:${c.best}:${c.count}:${c.lat.toFixed(6)}:${c.lon.toFixed(6)}`;
       seen.add(id);
       if (markers.has(id)) continue;
       const el = pinFor(c, zoom);
+      if (byAi) el.classList.add("ai-placed");
       const single = c.count === 1;
       // A disc sits on its place; a photo stands on it, its dot (DOT px) on the spot.
       const pinned = !el.classList.contains("disc");
       // One photo, or a stack of them all at one spot, moves by its pin; photos spread
       // over a tile do not, as dropping them would heap them on one spot.
       const moves = single ? [c.best] : pinned ? (c.rows ?? []) : [];
-      el.title = single
+      el.title = (single
         ? "Drag to move; the dot is where it goes"
         : moves.length
           ? `${c.count.toLocaleString()} photos at one spot · drag to move them together, or pick some of them below to move just those`
-          : `${c.count.toLocaleString()} photos`;
+          : `${c.count.toLocaleString()} photos`) + (byAi ? " · placed by AI Locate, about here (≈)" : "");
       el.dataset.row = String(c.best);
       el.dataset.count = String(c.count);
       el.dataset.bounds = JSON.stringify(c.bounds);
@@ -540,6 +552,7 @@
     void key;
     void version;
     void settings.approxPlaces;
+    void settings.aiPositions;
     popup = null;
     untrack(refresh);
   });
@@ -644,13 +657,7 @@
         .setLngLat(at ? [at[1], at[0]] : [pin.lon, pin.lat])
         .addTo(map);
       const ref = { current: pin };
-      const open = () => {
-        const pin = ref.current;
-        const at = movedPins.get(pin.lead.row) ?? null;
-        const p = map!.project(at ? [at[1], at[0]] : [pin.lon, pin.lat]);
-        const point = !!at || pointTicked(pin, aiTicks.place);
-        aiPopup = { pin, x: p.x, y: p.y, at, point, precise: point && (!!at || precisePin(pin, aiTicks.precise)) };
-      };
+      const open = () => openPin(ref.current);
       el.addEventListener("click", (e) => {
         e.stopPropagation();
         // The click that ends a drag is not one: the card the drag opened stays.
@@ -682,6 +689,63 @@
       }
     }
   }
+  /** A pin's card, open where the pin is (moved: where the user put it). */
+  function openPin(pin: GuessPin) {
+    if (!map) return;
+    const at = movedPins.get(pin.lead.row) ?? null;
+    const p = map.project(at ? [at[1], at[0]] : [pin.lon, pin.lat]);
+    const point = !!at || pointTicked(pin, aiTicks.place);
+    aiPopup = { pin, x: p.x, y: p.y, at, point, precise: point && (!!at || precisePin(pin, aiTicks.precise)) };
+  }
+  /** What the map says of a guess shown from its card that has no position to pin. */
+  let guessNote = $state<string | null>(null);
+  $effect(() => {
+    const g = guess;
+    if (!g || !loaded) return;
+    untrack(() => void showGuess(g.row, g.place));
+  });
+  /** The guess for `row` (a scene's: any of its photos): its pin and the circle it may be
+   *  off by in view, its card open; with no position, the place it names, by the gazetteer. */
+  async function showGuess(row: number, place: api.PlaceGuess | null) {
+    guessNote = null;
+    if (!showAi) {
+      showAi = true;
+      // The toggle's own load starts first; this one, asked after, is the one kept.
+      await tick();
+    }
+    await loadAi();
+    if (!map) return;
+    const pin = pinOf(aiPins, row);
+    if (pin) {
+      let opened = false;
+      const open = () => {
+        if (opened) return;
+        opened = true;
+        openPin(pin);
+      };
+      map.once("moveend", open);
+      // Already there, the map does not move: the card opens all the same.
+      setTimeout(open, 1500);
+      map.fitBounds(circleBounds(pin), { maxZoom: 16, padding, absolutePadding: true });
+      return;
+    }
+    const names = place && {
+      country: place.country?.name ?? null,
+      state: place.state?.name ?? null,
+      city: place.city?.name ?? null,
+      location: place.location?.name ?? null,
+      country_code: place.country_code ?? null,
+    };
+    const found = names && (names.country || names.city) ? await api.placePoint(names).catch(() => null) : null;
+    if (!map) return;
+    if (found) map.easeTo({ center: [found.lon, found.lat], zoom: LEVEL_ZOOM[found.level], padding });
+    const where = found ? "" : place ? " and its place is not in the gazetteer" : "";
+    guessNote = `No AI position${where}: drag the picked photos onto the map, or find a place and put them there`;
+  }
+  $effect(() => {
+    void version;
+    guessNote = null;
+  });
   /** A guess's place, finest level first. */
   function guessLabel(pin: GuessPin): string {
     const g = pin.lead.suggestion.place;
@@ -1220,11 +1284,14 @@
   {/if}
   <div class="note" bind:offsetHeight={noteHeight}>
     {#if failed}{failed}
+    {:else if guessNote}{guessNote}
     {:else if !settings.onlineMap && !aim && !tile && located > 0}Offline: no map tiles or place search (Settings) · {inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view
     {:else if aim}They go where the cross is; zoom in to place them closer.
     {:else if tile}The grid shows the picked tile's photos · pick some and drag the pin (or them) to move just those · click it again, the map or Esc to show the area
     {:else if located === 0 && !approx.located}No photos here have a position yet. Drag some from below onto the map.
-    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view{#if settings.approxPlaces && approx.located}{" "}· ≈ {approx.inView.toLocaleString()} by place name{#if approx.hidden}{" "}({approx.hidden.toLocaleString()} hidden at this zoom){/if}{/if}{#if lookingUp}{" "}· looking up {lookingUp.toLocaleString()} places online…{/if} · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin · Shift+drag picks an area{/if}
+    {:else}{inView.toLocaleString()} of {located.toLocaleString()} photos with a position in view{#if aiPlaced.located}{" "}· {settings.aiPositions === "colour"
+        ? `${aiPlaced.inView.toLocaleString()} placed by AI`
+        : `${aiPlaced.located.toLocaleString()} placed by AI, not shown (Settings)`}{/if}{#if settings.approxPlaces && approx.located}{" "}· ≈ {approx.inView.toLocaleString()} by place name{#if approx.hidden}{" "}({approx.hidden.toLocaleString()} hidden at this zoom){/if}{/if}{#if lookingUp}{" "}· looking up {lookingUp.toLocaleString()} places online…{/if} · Click a tile for its photos, double-click to zoom in · Drag a photo by its pin · Shift+drag picks an area{/if}
   </div>
 </div>
 
@@ -1270,6 +1337,12 @@
   .canvas :global(.pin.ai span) { background: #7e22ce; right: auto; left: -6px; }
   .canvas :global(.pin.ai .dot) { background: #c084fc; }
   .canvas :global(.pin.ai .stem) { background: #c084fc; }
+  /* Placed by AI Locate and accepted as about there: violet, solid (a guess to review is dashed). */
+  .canvas :global(.pin.ai-placed .card) { border-color: #a78bfa; }
+  .canvas :global(.pin.ai-placed .stem) { background: #a78bfa; }
+  .canvas :global(.pin.ai-placed .dot) { background: #8b5cf6; }
+  .canvas :global(.pin.ai-placed span) { background: #6d28d9; }
+  .canvas :global(.pin.ai-placed.disc) { background: rgba(139, 92, 246, 0.85); border-color: #ddd6fe; }
   /* Photos placed by their place's name: dashed, see-through, never mistaken for a GPS pin. */
   .canvas :global(.pin.approx .card) { border: 2px dashed #fbbf24; opacity: 0.85; }
   .canvas :global(.pin.approx span) { background: #b7791f; }

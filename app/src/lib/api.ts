@@ -127,6 +127,10 @@ export type MapResult = {
   unresolved: number;
   /** Photos with neither a position nor a place. */
   unplaced: number;
+  /** Photos given a position by AI Locate, accepted as approximate: apart from `clusters`. */
+  ai: Cluster[];
+  ai_located: number;
+  ai_in_view: number;
 };
 
 /** What the analysis found for a photo, with its classes and groups (id, size). */
@@ -564,6 +568,8 @@ export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => inv
  *  least precise place among them (null: all their own), and how many are where. */
 export type Area = { bounds: BBox | null; coarsest: Level | null; exact: number; approx: number; unknown: number };
 export const area = (rows: number[]) => invoke<Area>("area", { rows });
+/** Where a place is by the offline gazetteer, at the finest level it knows it; null: it does not. */
+export const placePoint = (place: Photo["place"]) => invoke<Approx | null>("place_point", { place });
 export type Approx = { lat: number; lon: number; level: Level };
 /** A place no position is known for at the level it names. */
 export type Unresolved = { path: string; place: Photo["place"]; photos: number; have: Level | null; want: Level };
@@ -860,6 +866,8 @@ export type AiEstimate = {
 export type DescribeState = {
   task: AiTask;
   running: boolean; done: number; total: number; failed: number;
+  /** Of those done, the photos a locating run placed nowhere. */
+  unplaced: number;
   /** Rows being described now. */
   working: number[];
   /** Unix ms. */
@@ -903,7 +911,12 @@ export type Suggestion = {
   composition: number | null;
   confidence: number;
   place: PlaceGuess | null;
+  /** A locating run placed it nowhere: what the model said of why (missing on older ones). */
+  unplaced?: Unplaced | null;
 };
+/** Why a locating run placed a photo nowhere: the model's reason (empty if it gave none)
+ *  and the evidence it saw. */
+export type Unplaced = { reason: string; clues: string[]; landmark: string | null };
 /** A photo's place names. */
 export type PlaceNames = Photo["place"];
 /** A place level guessed, with the probability (0..1) that it is right. */
@@ -921,6 +934,8 @@ export type PlaceGuess = {
   basis?: "landmark" | "scene" | "context" | "region" | null;
   landmark?: string | null;
   clues?: string[];
+  /** What keeps a level or the position empty or unsure, as the model said. */
+  reason?: string | null;
 };
 export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
 export type SuggestionRow = {
