@@ -66,6 +66,45 @@ pub struct MapResult {
     pub unplaced: usize,
 }
 
+/// Where some photos are, for the map to show them all: the box their positions span,
+/// those of their own and those from their places' names.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Area {
+    /// None: none of them has a position, or a place a position is known for.
+    pub bounds: Option<BBox>,
+    /// The least precise place a position came from (None: all are their own), so the
+    /// map stays zoomed out enough to show it.
+    pub coarsest: Option<Level>,
+    /// Photos with a position of their own.
+    pub exact: usize,
+    /// Photos placed by their place's name, or given that place's position.
+    pub approx: usize,
+    /// Photos with neither, or with a place no position is known for.
+    pub unknown: usize,
+}
+
+impl Area {
+    /// A photo at a position: its own (no level), or its place's.
+    pub(crate) fn add(&mut self, lat: f64, lon: f64, level: Option<Level>) {
+        self.bounds = Some(match self.bounds {
+            None => BBox { min_lat: lat, max_lat: lat, min_lon: lon, max_lon: lon },
+            Some(b) => BBox {
+                min_lat: b.min_lat.min(lat),
+                max_lat: b.max_lat.max(lat),
+                min_lon: b.min_lon.min(lon),
+                max_lon: b.max_lon.max(lon),
+            },
+        });
+        match level {
+            Some(l) => {
+                self.approx += 1;
+                self.coarsest = Some(self.coarsest.map_or(l, |c| c.min(l)));
+            }
+            None => self.exact += 1,
+        }
+    }
+}
+
 /// The closest zoom a position from a place's name is shown at: further in, the map
 /// shows streets the photo may not be in.
 pub fn max_zoom(level: Level) -> f64 {

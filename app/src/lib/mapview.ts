@@ -1,6 +1,6 @@
 // What the map shows: where a place found by name goes, the area the grid follows, when
 // a trip's route is fitted again, and the room zooms and flights leave around the photos.
-import type { BBox, Filter } from "./api";
+import type { Area, BBox, Filter, Level } from "./api";
 
 /** A place found by name: its point, and Nominatim's box (west, south, east, north),
  *  rank and kind of place. */
@@ -106,6 +106,28 @@ export function viewBox(west: number, south: number, east: number, north: number
   const e = w + (east - west);
   if (east - west >= 360 || e > 180) return { ...lat, min_lon: -180, max_lon: 180 };
   return { ...lat, min_lon: w, max_lon: e };
+}
+
+/** The closest zoom a place's position is shown at (as `geo::max_zoom`): further in, its
+ *  marker gives way to the streets the photo may not be in. */
+export const LEVEL_ZOOM: Record<Level, number> = { Country: 5, State: 8, City: 11, Location: 14 };
+/** How close *Show on map* goes to photos with positions of their own. */
+export const OWN_ZOOM = 16;
+
+/** Where the map goes to show some photos: a spot, or a box to fit. */
+export type Camera = { center: [number, number]; zoom: number } | { bounds: [[number, number], [number, number]]; maxZoom: number };
+
+/**
+ * The view that shows all of an area's photos: close for positions of their own, no
+ * closer than the least precise place among them, so its marker stays on the map.
+ * Null: none of them is anywhere known.
+ */
+export function focusCamera(area: Area): Camera | null {
+  const b = area.bounds;
+  if (!b) return null;
+  const zoom = area.coarsest ? LEVEL_ZOOM[area.coarsest] : OWN_ZOOM;
+  if (b.min_lat === b.max_lat && b.min_lon === b.max_lon) return { center: [b.min_lon, b.min_lat], zoom };
+  return { bounds: [[b.min_lon, b.min_lat], [b.max_lon, b.max_lat]], maxZoom: zoom };
 }
 
 /**

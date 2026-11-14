@@ -560,6 +560,10 @@ export const positions = (filter: Filter, options: { sort: Sort }, rows: number[
   invoke<[number, number][]>("positions", { filter, options, rows });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
+/** Where some photos are: the box their positions span (their own, or their places'), the
+ *  least precise place among them (null: all their own), and how many are where. */
+export type Area = { bounds: BBox | null; coarsest: Level | null; exact: number; approx: number; unknown: number };
+export const area = (rows: number[]) => invoke<Area>("area", { rows });
 export type Approx = { lat: number; lon: number; level: Level };
 /** A place no position is known for at the level it names. */
 export type Unresolved = { path: string; place: Photo["place"]; photos: number; have: Level | null; want: Level };

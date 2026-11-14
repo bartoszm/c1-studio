@@ -38,7 +38,7 @@
   import Timeline from "./Timeline.svelte";
   import TripsSection from "./TripsSection.svelte";
   import { tripDates, tripName } from "./lib/trips";
-  import { shouldFollow } from "./lib/mapview";
+  import { focusCamera, shouldFollow, type Camera } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
   import { editingNote, followStep, keptPicks, sameRows, wantedRows, type Picks } from "./lib/batch";
   import { followFilter } from "./lib/follow";
@@ -194,7 +194,11 @@
   }
   function showTab(next: Tab) {
     // The map reports its view again when it opens: one kept from before would be followed first.
-    if (next !== "map") mapView = null;
+    // Where it was sent last is done with: opened again, it starts where it was left.
+    if (next !== "map") {
+      mapView = null;
+      mapAim = null;
+    }
     tab = next;
     mapRow = null;
     viewing = false;
@@ -255,6 +259,40 @@
       if (focusRow === row && p?.geo) mapCenter = { row, lat: p.geo.lat, lon: p.geo.lon };
     }).catch(() => {});
   });
+  /** Where the map goes to show some photos (*Show on map*): a new object each time. */
+  let mapAim = $state.raw<Camera | null>(null);
+  /** A photo's right-click menu: the photos it is for (the picked ones, when it is among
+   *  them, as dragging takes them), and where they are, once known. */
+  let photoMenu = $state.raw<{ x: number; y: number; rows: number[]; area: api.Area | null } | null>(null);
+  async function photoContext(i: number, e: MouseEvent) {
+    const row = rowAt(i);
+    if (row === undefined) return;
+    // A photo not among those picked is picked instead, as a click would.
+    if (!picked.has(row)) await pick(i);
+    const rows = picked.size > 1 ? [...picked] : [row];
+    const menu = { x: e.clientX, y: e.clientY, rows, area: null };
+    photoMenu = menu;
+    try {
+      const area = await api.area(rows);
+      if (photoMenu === menu) photoMenu = { ...menu, area };
+    } catch (err) {
+      if (photoMenu === menu) photoMenu = null;
+      editError = String(err);
+    }
+  }
+  /** The map, showing all of an area's photos. */
+  async function showOnMap(area: api.Area) {
+    photoMenu = null;
+    const camera = focusCamera(area);
+    if (!camera) return;
+    mapAim = camera;
+    if (mapOn) return;
+    // The map opening goes to the photo focused: it goes where all of them are instead.
+    holdMap = focusRow ?? null;
+    showTab("map");
+    await tick();
+    holdMap = null;
+  }
   async function mapSetGeo(rows: number[], lat: number, lon: number, from?: api.BBox) {
     dragging = null;
     const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
@@ -1951,7 +1989,7 @@
     }
   }
 
-  let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu));
+  let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu));
   /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
   let dialogOpen = $derived(
     !!(writing || showBackups || emptying || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
@@ -1963,6 +2001,7 @@
       placeMenu = null;
       albumMenu = null;
       sectionMenu = null;
+      photoMenu = null;
       // Handled: the viewer, listening after us, must not close too.
       e.preventDefault();
       return;
@@ -2755,6 +2794,7 @@
       onbox={mapBox}
       onview={mapMoved}
       center={mapCenter}
+      goTo={mapAim}
       ontile={mapTilePick}
       onselect={mapSelect}
       onsetgeo={mapSetGeo}
@@ -2848,6 +2888,7 @@
     onvariants={showVariants}
     onselect={pick}
     ondragcell={dragCell}
+    oncontext={photoContext}
     onopen={(i) => { pick(i); viewing = true; }}
     {tiles}
     {shape}
@@ -3107,6 +3148,30 @@ Pick those among the photos shown, then have ${source.word} build their previews
       {node.value.endsWith("—") ? "Set a name…" : "Rename…"}
     </button>
     <button role="menuitem" onclick={() => { placeDialog = { mode: "join", path: node.value }; placeMenu = null; }}>Join into…</button>
+  </div>
+{/if}
+
+{#if photoMenu}
+  {@const a = photoMenu.area}
+  {@const n = photoMenu.rows.length}
+  <div class="menu-shield" role="presentation" onclick={() => (photoMenu = null)} oncontextmenu={(e) => { e.preventDefault(); photoMenu = null; }}></div>
+  <div class="menu" role="menu" style:left="{photoMenu.x}px" style:top="{photoMenu.y}px">
+    <div class="menu-title">{n === 1 ? "This photo" : `${n.toLocaleString()} photos`}</div>
+    <button role="menuitem" disabled={!a?.bounds} onclick={() => a && showOnMap(a)}>Show on map</button>
+    {#if a && !a.bounds}
+      <div class="menu-note">{n === 1 ? "No position or known place" : "None has a position or a known place"}</div>
+    {:else if a}
+      {#if a.approx}
+        <div class="menu-note">
+          ≈ {a.approx === n
+            ? n === 1 ? "Placed only by its place's name" : "All placed only by their places' names"
+            : `${a.approx.toLocaleString()} of ${n.toLocaleString()} placed only by their places' names`}
+        </div>
+      {/if}
+      {#if a.unknown}
+        <div class="menu-note">{a.unknown.toLocaleString()} of {n.toLocaleString()} with no position or known place: left out</div>
+      {/if}
+    {/if}
   </div>
 {/if}
 

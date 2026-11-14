@@ -441,6 +441,14 @@ network; everything else works without one).
   by name) is dropped. Removing the chip *Map: area* turns it off. Off, the grid keeps
   its own filter. A view across the 180° meridian (the middle of the Pacific) takes in
   every photo in its latitudes.
+- **Show on map:** right-click a photo in the grid or the strip (or one of several
+  picked, for all of them) and choose *Show on map*. The Map tab opens on where they
+  are: close in for positions of their own, and no closer than the least precise place
+  for those placed only by name (a city's photos at a city's zoom, a country's at a
+  country's), so their ≈ marker stays in view. Places come from the built-in gazetteer
+  or a lookup made before, nothing is asked online. Photos with no position and no
+  known place are left out, and the menu says how many; with none known, the item is
+  greyed out. With *Grid follows map* on, the grid then follows the new view as usual.
 - **Pick an area:** Shift+drag a box on the map. The grid then shows just its photos
   (and stops following the map); the chip *Map: area* drops it.
 - **Find a place:** the box at the map's top left searches OpenStreetMap's Nominatim by
