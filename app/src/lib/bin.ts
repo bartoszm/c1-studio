@@ -2,6 +2,7 @@
 // restored, or until the trash is emptied and their source deletes them for good.
 import type { Filter, Removal, Wording } from "./api";
 import { GENERAL } from "./format";
+import { isWindows } from "./platform";
 
 /** The filter as the views ask it: only the trash's photos while it is shown, hidden ones
  *  too (a photo hidden, then deleted, is emptied with the rest: it must show to be restored). */
@@ -17,8 +18,7 @@ export function deleteAction(o: { ctrl: boolean; album: boolean; inBin: boolean;
 }
 
 /** Where deleted files go: Windows' Recycle Bin, else the desktop's trash (Linux). */
-const systemBin =
-  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows") ? "the Windows Recycle Bin" : "the system trash";
+const systemBin = isWindows ? "the Windows Recycle Bin" : "the system trash";
 
 const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`;
 

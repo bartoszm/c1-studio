@@ -291,7 +291,7 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
             asset: AssetId(asset.to_string()),
             variant_index,
             file: FileInfo {
-                path: Some(format!(r"H:\fotos\{}\{}\{name}", date.year(), date.format("%Y-%m-%d"))),
+                path: Some(synthetic_path(date.year(), &date.format("%Y-%m-%d").to_string(), &name)),
                 name,
                 ext: ext.into(),
                 size: Some(rng.random_range(20_000_000..60_000_000)),
@@ -530,9 +530,17 @@ fn disk_size(path: &Path) -> u64 {
         .sum()
 }
 
+/// A made-up photo's path, as this system spells one.
+fn synthetic_path(year: i32, day: &str, name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"H:\fotos\{year}\{day}\{name}")
+    } else {
+        format!("/home/me/Photos/{year}/{day}/{name}")
+    }
+}
+
 fn default_dir(c: &Config) -> PathBuf {
-    let base = std::env::var_os("LOCALAPPDATA").map_or_else(std::env::temp_dir, PathBuf::from);
-    base.join("c1studio").join("bench").join(format!("{}-{}-{}", c.photos, c.keywords, c.seed))
+    c1model::provider::data_root().join("bench").join(format!("{}-{}-{}", c.photos, c.keywords, c.seed))
 }
 
 pub fn bench(c: &Config) -> anyhow::Result<()> {

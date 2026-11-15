@@ -3,6 +3,7 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import { PRECISE_KM } from "./lib/aiPlace";
+  import { isWindows } from "./lib/platform";
   import type { AiImage, AiView } from "./lib/api";
   import type { LeftOut } from "./lib/keywordChoice";
   import KeywordChoice from "./KeywordChoice.svelte";
@@ -157,12 +158,12 @@
       <div>
         {#if view.key}
           <code>{view.key[0]}</code>
-          <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : "in the system keyring"}</span>
+          <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : isWindows ? "in the Windows Credential Manager" : "in the system keyring"}</span>
           {#if view.key[1] === "stored"}<button class="small-btn" disabled={busy} onclick={() => saveKey("")}>Remove</button>{/if}
         {:else}
           <input id="ai-key" type="password" placeholder="sk-ant-…" bind:value={keyInput} autocomplete="off" />
           <button class="small-btn" disabled={busy || !keyInput.trim()} onclick={() => saveKey(keyInput)}>Save</button>
-          <small class="muted">Kept in the system keyring (Windows' Credential Manager), never in a file.</small>
+          <small class="muted">Kept in {isWindows ? "the Windows Credential Manager" : "the system keyring"}, never in a file.</small>
         {/if}
       </div>
     {/if}

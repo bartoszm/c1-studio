@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { ImageStore } from "../src/lib/api";
 import {
+  EXAMPLE,
   addRoot,
   excludesToText,
   gbToMb,
@@ -51,11 +52,11 @@ test("tokens are replaced for an example photo", () => {
   );
   assert.equal(
     renderPattern("{root}/.c1studio/{tier}/{relpath}.jpg", "preview"),
-    "D:/Photos/Family/.c1studio/preview/2024/Trip/DSCF0001.RAF.jpg",
+    `${EXAMPLE.root}/.c1studio/preview/2024/Trip/DSCF0001.RAF.jpg`,
   );
   assert.equal(
     renderPattern("{dir}/.previews/{stem}.{tier}.jpg", "thumb"),
-    "D:/Photos/Family/2024/Trip/.previews/DSCF0001.thumb.jpg",
+    `${EXAMPLE.root}/2024/Trip/.previews/DSCF0001.thumb.jpg`,
   );
   assert.equal(renderPattern("{name} {ext} {size}", "preview"), "DSCF0001.RAF RAF 2000");
 });
