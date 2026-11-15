@@ -43,6 +43,60 @@ fn automount_root(conf: &str) -> Option<String> {
     None
 }
 
+/// Is `path` on a Windows drive mounted into WSL (drvfs: case-insensitive names, no
+/// Linux trash Windows would see)? Decided by the mount that holds it, as listed in
+/// `/proc/mounts`, so `/mnt/data` or a Linux disk under the automount root is not one.
+/// Always false outside WSL.
+pub fn on_windows_drive(path: &Path) -> bool {
+    if !is_wsl() {
+        return false;
+    }
+    let mounts = std::fs::read_to_string("/proc/mounts").unwrap_or_default();
+    // A symlink into a drive (`~/photos -> /mnt/h/photos`) is on that drive.
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    drvfs_holds(&mounts, &path)
+}
+
+/// Whether the innermost mount holding `path` in a `/proc/mounts` listing is a Windows
+/// drive: type `drvfs`, `9p` or `virtiofs` serving drvfs, or a device spelled `C:\`.
+fn drvfs_holds(mounts: &str, path: &Path) -> bool {
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (device, point, kind, options) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            let point = PathBuf::from(unescape_mount(point));
+            let drvfs = kind == "drvfs"
+                || options.split([',', ';']).any(|o| o == "aname=drvfs")
+                || is_windows_path(&unescape_mount(device));
+            path.starts_with(&point).then_some((point.as_os_str().len(), drvfs))
+        })
+        .max_by_key(|(len, _)| *len)
+        .is_some_and(|(_, drvfs)| drvfs)
+}
+
+/// `/proc/mounts` writes space, tab, newline and backslash as octal escapes (`\040`).
+fn unescape_mount(field: &str) -> String {
+    let mut out = String::with_capacity(field.len());
+    let mut rest = field;
+    while let Some(i) = rest.find('\\') {
+        out.push_str(&rest[..i]);
+        let code = rest.get(i + 1..i + 4).and_then(|o| u8::from_str_radix(o, 8).ok());
+        match code {
+            Some(byte) => {
+                out.push(byte as char);
+                rest = &rest[i + 4..];
+            }
+            None => {
+                out.push('\\');
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The user's volume map: `<config root>/volumes.json`.
 pub fn volumes_file() -> PathBuf {
     crate::provider::config_root().join("volumes.json")
@@ -95,13 +149,11 @@ pub fn local_path(path: &str) -> Option<PathBuf> {
 fn map_path(path: &str, volumes: &[(String, PathBuf)], wsl_root: Option<&Path>) -> Option<PathBuf> {
     let key = path.replace('/', "\\");
     for (root, local) in volumes {
-        let n = root.len();
         // A whole component: `H:` matches `H:\x` and `H:` but not `HX:`.
-        if key.is_char_boundary(n)
-            && key[..n].to_lowercase() == *root
-            && key[n..].chars().next().is_none_or(|c| c == '\\')
+        if let Some(rest) = strip_lowercase_prefix(&key, root)
+            && rest.chars().next().is_none_or(|c| c == '\\')
         {
-            return Some(join_windows(local, &key[n..]));
+            return Some(join_windows(local, rest));
         }
     }
     let b = key.as_bytes();
@@ -112,6 +164,25 @@ fn map_path(path: &str, volumes: &[(String, PathBuf)], wsl_root: Option<&Path>) 
     {
         let drive = (b[0] as char).to_ascii_lowercase().to_string();
         return Some(join_windows(&root.join(drive), &key[2..]));
+    }
+    None
+}
+
+/// What follows `prefix` (lower case) in `text` compared without case. Char by char, as a
+/// lower-cased letter can take more bytes than the letter (`Ⱥ` → `ⱥ`).
+fn strip_lowercase_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
+    if prefix.is_empty() {
+        return Some(text);
+    }
+    let mut lowered = String::new();
+    for (i, c) in text.char_indices() {
+        lowered.extend(c.to_lowercase());
+        if lowered == prefix {
+            return Some(&text[i + c.len_utf8()..]);
+        }
+        if !prefix.starts_with(&lowered) {
+            return None;
+        }
     }
     None
 }
@@ -132,6 +203,28 @@ mod tests {
         assert_eq!(automount_root("[automount]\nroot = /windows/ # here\n"), Some("/windows/".into()));
         assert_eq!(automount_root("[network]\nroot=/no\n[automount]\nenabled=true\n"), None);
         assert_eq!(automount_root("[Automount]\nroot=\"/w/\"\n"), Some("/w/".into()));
+    }
+
+    #[test]
+    fn windows_drives_are_told_by_their_mount() {
+        let mounts = concat!(
+            "/dev/sdc / ext4 rw,relatime 0 0\n",
+            "none /mnt/wsl tmpfs rw,relatime 0 0\n",
+            "C:\\134 /mnt/c 9p rw,noatime,aname=drvfs;path=C:\\;uid=1000,cache=0x5 0 0\n",
+            "D:\\134 /mnt/d virtiofs rw,relatime 0 0\n",
+            "drvfs /mnt/e drvfs rw,noatime 0 0\n",
+            "/dev/sdd /mnt/c/linux\\040disk ext4 rw 0 0\n",
+            "/dev/sde /mnt/data ext4 rw 0 0\n",
+        );
+        for on in ["/mnt/c/c1_catalogs/x", "/mnt/c", "/mnt/d/Photos", "/mnt/e/a"] {
+            assert!(drvfs_holds(mounts, Path::new(on)), "{on}");
+        }
+        // A Linux disk, even under the automount root or inside a drive's mount.
+        for off in ["/mnt/data/Photos", "/mnt/wsl/x", "/home/me/Photos", "/mnt/c/linux disk/a", "/mnt/cx"] {
+            assert!(!drvfs_holds(mounts, Path::new(off)), "{off}");
+        }
+        assert_eq!(unescape_mount(r"C:\134"), r"C:\");
+        assert_eq!(unescape_mount(r"a\040b\x"), r"a b\x");
     }
 
     #[test]
@@ -168,6 +261,9 @@ mod tests {
         // Drives not in the map still go through WSL.
         assert_eq!(map_path(r"D:\A.RAF", &volumes, root), Some(PathBuf::from("/mnt/d/A.RAF")));
         assert!(parse_volumes("not json").is_empty());
+        // Lower case that is longer than the letter still matches.
+        let volumes = parse_volumes(r#"{"\\\\nas\\Ⱥrchiv": "/srv/a"}"#);
+        assert_eq!(map_path(r"\\NAS\Ⱥrchiv\A.RAF", &volumes, None), Some(PathBuf::from("/srv/a/A.RAF")));
     }
 
     #[test]

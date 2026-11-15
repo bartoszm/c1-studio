@@ -19,18 +19,33 @@ fn entry(slot: &KeySlot) -> Result<keyring::Entry, AiError> {
     keyring::Entry::new(SERVICE, slot.account).map_err(|e| AiError::Keys(e.to_string()))
 }
 
-/// The key to use, if any: the environment's, else the stored one.
+/// The key to use, if any: the environment's, else the stored one. A machine without a
+/// keyring (WSL often has no Secret Service) has no stored key, rather than an error that
+/// would keep the AI settings from opening; saving one says what to do instead.
 pub fn get(slot: &KeySlot) -> Result<Option<String>, AiError> {
     if let Ok(key) = std::env::var(slot.env)
         && !key.trim().is_empty()
     {
         return Ok(Some(key.trim().to_string()));
     }
-    match entry(slot)?.get_password() {
+    let entry = match keyring::Entry::new(SERVICE, slot.account) {
+        Ok(entry) => entry,
+        Err(e) if no_keyring(&e) => return Ok(None),
+        Err(e) => return Err(AiError::Keys(e.to_string())),
+    };
+    match entry.get_password() {
         Ok(key) => Ok(Some(key)),
         Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) if no_keyring(&e) => Ok(None),
         Err(e) => Err(AiError::Keys(e.to_string())),
     }
+}
+
+/// The keyring itself is missing or unreachable (no Secret Service on D-Bus, no session
+/// bus), as opposed to a key that could not be read from one that is there.
+/// Windows always has its Credential Manager: an error there is reported as it was.
+fn no_keyring(e: &keyring::Error) -> bool {
+    !cfg!(windows) && matches!(e, keyring::Error::PlatformFailure(_) | keyring::Error::NoStorageAccess(_))
 }
 
 /// Stores a key; an empty one removes it.

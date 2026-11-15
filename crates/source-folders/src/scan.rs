@@ -125,14 +125,22 @@ struct Walked {
     /// under them stays as it is. An empty relpath is the whole root.
     unreadable: Vec<(String, String)>,
     problems: Vec<String>,
-    /// The definition's excludes, to tell a file now excluded from one that is gone.
-    excludes: GlobSet,
+    /// The definition's excludes, to tell a file now excluded from one that is gone:
+    /// matched with case, then without.
+    excludes: [GlobSet; 2],
+    /// Roots (ids) on a filesystem that ignores case in names.
+    ignore_case: HashSet<String>,
 }
 
 impl Walked {
     /// The record's file lies under an exclude: not listed, but not gone either.
     fn excluded(&self, rec: &FileRec) -> bool {
-        self.excludes.is_match(&rec.relpath)
+        self.excludes_for(&rec.root).is_match(&rec.relpath)
+    }
+
+    /// The excludes as the root's filesystem compares names.
+    fn excludes_for(&self, root: &str) -> &GlobSet {
+        &self.excludes[usize::from(self.ignore_case.contains(root))]
     }
 
     fn kept(&self, rec: &FileRec) -> bool {
@@ -384,8 +392,10 @@ fn settle(
 /// Lists the photo files under every reachable root.
 fn walk(src: &FolderSource, def: &Definition) -> Walked {
     let mut walked = Walked::default();
-    let excludes = excludes(def, &mut walked.problems);
-    walked.excludes = excludes.clone();
+    // A broken pattern is reported once, though both sets meet it.
+    walked.excludes = [excludes(def, false, &mut walked.problems), excludes(def, true, &mut Vec::new())];
+    walked.ignore_case =
+        def.roots.iter().filter(|r| case_insensitive_names(Path::new(&r.path))).map(|r| r.id.clone()).collect();
     // Folder → its XMP files, by lower-case name.
     let mut xmps: HashMap<PathBuf, HashMap<String, Sidecar>> = HashMap::new();
     let mut listed: Vec<(String, String, PathBuf, FileKind, Option<Stat>)> = Vec::new();
@@ -397,6 +407,7 @@ fn walk(src: &FolderSource, def: &Definition) -> Walked {
             continue;
         }
         let before = listed.len();
+        let excludes = walked.excludes_for(&root.id).clone();
         let note = Some(root.display_name());
         let progress =
             SourceProgress { phase: SCANNING.into(), done: listed.len() as u64, total: None, note: note.clone() };
@@ -485,21 +496,21 @@ fn known_under(src: &FolderSource, id: &str) -> bool {
     src.store().read().files.values().any(|r| r.root == id)
 }
 
-/// The excludes as one set. A pattern for everything in a folder (`**/tmp/**`) also
-/// matches the folder itself, so it is not entered.
-/// Does the filesystem ignore case in names? On Windows, and under WSL, whose photo
-/// folders are on the Windows drives.
-fn case_insensitive_names() -> bool {
-    cfg!(windows) || c1model::platform::is_wsl()
+/// Does the filesystem under `root` ignore case in names? On Windows, and for a Windows
+/// drive mounted into WSL; a Linux folder under WSL keeps its case.
+fn case_insensitive_names(root: &Path) -> bool {
+    cfg!(windows) || c1model::platform::on_windows_drive(root)
 }
 
-fn excludes(def: &Definition, problems: &mut Vec<String>) -> GlobSet {
+/// The excludes as one set, matched without case when `ignore_case`. A pattern for
+/// everything in a folder (`**/tmp/**`) also matches the folder itself, so it is not entered.
+fn excludes(def: &Definition, ignore_case: bool, problems: &mut Vec<String>) -> GlobSet {
     let mut builder = GlobSetBuilder::new();
     for pattern in def.all_excludes() {
         let pattern = pattern.trim_end_matches('/');
         let folder = pattern.strip_suffix("/**").filter(|f| !f.is_empty());
         for p in std::iter::once(pattern).chain(folder) {
-            match GlobBuilder::new(p).case_insensitive(case_insensitive_names()).build() {
+            match GlobBuilder::new(p).case_insensitive(ignore_case).build() {
                 Ok(glob) => {
                     builder.add(glob);
                 }
@@ -940,7 +951,7 @@ mod tests {
         let mut def = Definition::new("t", &[]);
         def.excludes = vec!["**/tmp/**".into(), "*.bak.jpg".into(), "old/".into(), "[".into()];
         let mut problems = Vec::new();
-        let set = excludes(&def, &mut problems);
+        let set = excludes(&def, false, &mut problems);
         assert_eq!(problems.len(), 1, "the broken pattern is reported: {problems:?}");
         for hit in ["tmp", "a/tmp", "a/tmp/x.jpg", "x.bak.jpg", "a/b/x.bak.jpg", "old", ".c1studio", "r/.previews"] {
             assert!(set.is_match(hit), "{hit}");
@@ -948,6 +959,9 @@ mod tests {
         for miss in ["tmpx", "a/tmp.jpg", "x.jpg", "older", ".hidden", "a/.c1studiox"] {
             assert!(!set.is_match(miss), "{miss}");
         }
+        // Case counts only where the filesystem has it.
+        assert!(!set.is_match("a/TMP/x.jpg"));
+        assert!(excludes(&def, true, &mut Vec::new()).is_match("a/TMP/x.jpg"));
     }
 
     #[test]

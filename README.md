@@ -184,8 +184,10 @@ the Store).
   The file is read when the app starts.
 - **Writes to a catalog** wait while Capture One runs on Windows; under WSL the app asks
   Windows' process list through `tasklist.exe`, and holds writes back when it cannot.
-  Close Capture One first, as on Windows. On a Linux machine with a copied catalog there
-  is no Capture One to check for.
+  Close Capture One first, as on Windows. On a Linux machine nothing is checked: the app
+  cannot see programs on other computers, so **do not write to a catalog on a network
+  share while Capture One has it open on another machine**: Capture One would overwrite
+  the changes when it saves. A catalog copied onto the Linux machine is safe.
 - **API keys** go to the desktop keyring (GNOME Keyring or KWallet). WSL usually has none:
   set `ANTHROPIC_API_KEY` instead.
 - **Deleting files** in photo folders moves them to the desktop trash. Under WSL, files on
