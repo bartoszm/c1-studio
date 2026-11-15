@@ -87,9 +87,9 @@ up at the next of these, or on the next start.
 - **Settings** (⚙): *Sidebar* (which sections show, in what order), *Map & places*
   (online map services, places by name), *Analysis* (the lines between classes; see
   [Look](#look)) and *History* (the History tab on or off; see [History](#history)).
-- **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera and
-  Country. Click a section's title to fold it. Which sections are folded and which
-  branches are open is remembered.
+- **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera,
+  Lens, Format, Orientation and Country. Click a section's title to fold it. Which
+  sections are folded and which branches are open is remembered.
 - **Filter bar:** above the grid while anything is filtered, a chip per filter value.
   × on a chip drops that value; *Clear filters* drops them all.
 - **Grid:** the matching photos, newest first unless the sort box says otherwise.
@@ -106,6 +106,17 @@ Every filter narrows the result; the grid and every count update as you go.
 **Search.** Type in the header box to search keywords, captions, places and
 filenames. Words must all match; `"a phrase"` matches the words together and `a OR b`
 either.
+
+Tokens search the camera's and the file's fields: `camera:` `make:` `lens:` (any part of
+the name), `iso:` `f:` `focal:` `shutter:` `size:` `mp:` `width:` `height:` (a number or a
+range: `iso:>1600`, `f:<=2.8`, `focal:35-50`, `shutter:>1/30`, `size:>30mb`), `format:`
+(`raw`, `jpeg`, `tiff`, `heif` or extensions such as `raf,dng`) and `orient:` (`landscape`,
+`portrait`, `square`, `panorama`, or enough of one to tell it apart). `-format:` and
+`-orient:` leave those out. Megapixels, width, height and orientation are of the picture
+as shown, turned and cropped. The photos follow the tokens as you type; **Enter** (or
+leaving the box) turns them into chips, and the words stay in the box. A token that
+cannot be read gets a red outline, says why on hover, and is not searched for. `?`
+beside the box lists every token; clicking one adds it.
 
 **Sidebar.** Click a value to filter by it, click it again to let go. Each group counts
 as if its own pick were not made, so the alternatives stay visible: with *2025* picked,
@@ -139,9 +150,14 @@ the Date tree still shows every year.
   keyword* box above it shows only matching keywords, with their branches open. Esc
   clears it. Right-click a keyword to change the tree (see [Keyword tree](#keyword-tree)).
 - **Rating, Colour, Camera:** one value each. Camera lists the ten most common.
+- **Lens, Format, Orientation:** the lens, the file type and the shape as shown
+  (landscape, portrait, square, panorama). A click includes a value, a second click
+  excludes it, a third lets go.
 
-**From the details panel.** The camera, each keyword (or any level of it), each album
-and the folder are links: clicking one filters by it.
+**From the details panel.** The camera, the lens, the format, each keyword (or any level
+of it), each album and the folder are links: clicking one filters by it. *As shown* gives
+the picture's size after turning and cropping, when it differs from the sensor's: that
+is the size `mp:`, `width:`, `height:` and `orient:` search.
 
 **Photos around a photo.** *Around*, under *Captured*, sets the filter's dates to the
 photos taken near the focused one: its **shoot** (the photos taken one after another
@@ -162,12 +178,13 @@ example photos filtered by Kraków given Warszawa as their city, the filter take
 values they have now (the place, the rating, the colour, the country, a keyword the edit
 added, the album they were put into), keeps them picked and says so, with Back. Work
 lists are never followed, since emptying them is the point: no keywords, no place, no
-location, no GPS, not in an album, any "not" pick, the search, a History pick, the trash,
-and *Match any*. Neither are hiding and the trash.
+location, no GPS, not in an album, any "not" pick (a camera, lens, format or orientation
+left out included), the search words, a History pick, the trash, and *Match any*. Neither are hiding and the trash.
 
 **Back and Forward.** ‹ and › in the header, or Alt+← and Alt+→, go through the filters
 shown, each with the photos that were picked in it (up to 50 steps). A search typed or
-map tiles clicked one after another are one step.
+map tiles clicked one after another are one step. Tokens still in the search box count
+as the filter they make: going back or forward to them brings them back as chips.
 
 ## Browsing
 

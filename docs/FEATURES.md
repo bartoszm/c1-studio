@@ -38,9 +38,11 @@ and [variants](#variants). New in 0.7.0: [the selection through filters, Back an
 ## Find anything, instantly
 
 Type to search keywords, captions, places and file names, and narrow down with albums,
-dates, folders, keywords, rating, colour tag, camera, lens and place. Every count in the
-sidebar follows as you go, and each filter shows as a chip above the grid. Queries take
-milliseconds, however big the catalog.
+dates, folders, keywords, rating, colour tag, camera, lens, format, orientation and
+place. Tokens in the search box reach the exposure and the file: `iso:>3200 f:<2
+orient:portrait format:raw size:>30mb` (`?` beside the box lists them all), and Enter
+turns them into chips. Every count in the sidebar follows as you go, and each filter
+shows as a chip above the grid. Queries take milliseconds, however big the catalog.
 
 ![Searching "hong kong street", then picking 2025 and four stars](media/features/search.gif)
 
