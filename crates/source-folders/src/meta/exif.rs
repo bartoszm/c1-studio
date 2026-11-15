@@ -19,8 +19,19 @@ const RAW_HEAD: u64 = 2 << 20;
 pub fn read(path: &Path, kind: FileKind) -> FileMeta {
     match kind {
         FileKind::Raw => read_raw(path),
+        FileKind::Tiff => file_exif(path).map(|e| with_stored_size(from_exif(&e), &e)).unwrap_or_default(),
         _ => file_exif(path).map(|e| from_exif(&e)).unwrap_or_default(),
     }
+}
+
+/// A TIFF's size from its first image (IFD0), which is the picture: PixelXDimension may
+/// still say the camera's size after a resize. Not for a TIFF-based raw, whose IFD0 is
+/// often a preview.
+fn with_stored_size(mut meta: FileMeta, exif: &ExifData) -> FileMeta {
+    if let (Some(w), Some(h)) = (uint(exif, Tag::ImageWidth), uint(exif, Tag::ImageLength)) {
+        (meta.exif.width, meta.exif.height) = (Some(w), Some(h));
+    }
+    meta
 }
 
 /// The EXIF of an image file the `exif` crate can open as a container.
