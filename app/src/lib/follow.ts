@@ -24,6 +24,10 @@ export function isWorkList(f: Filter): boolean {
     f.bin === "Only" ||
     some(f.colors_not) ||
     some(f.cameras_not) ||
+    some(f.makes_not) ||
+    some(f.lenses_not) ||
+    some(f.ext_not) ||
+    some(f.orientation_not) ||
     some(f.keywords_under_not) ||
     some(f.places_under_not) ||
     // A city's "(no location)": photos still to locate.

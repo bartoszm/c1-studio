@@ -4,7 +4,9 @@
 import type { Dim } from "./api";
 
 /** Every section, in the order a fresh install shows them. */
-export const SECTION_KEYS = ["albums", "date", "trips", "places", "folders", "keywords", "rating", "color", "hue", "camera"] as const;
+export const SECTION_KEYS = [
+  "albums", "date", "trips", "places", "folders", "keywords", "rating", "color", "hue", "camera", "lens", "ext", "orientation",
+] as const;
 export type SectionKey = (typeof SECTION_KEYS)[number];
 
 export type SectionPref = { key: SectionKey; hidden: boolean };
@@ -21,6 +23,9 @@ export const SECTION_DIMS: Record<SectionKey, Dim[]> = {
   color: ["color"],
   hue: ["hue"],
   camera: ["camera"],
+  lens: ["lens"],
+  ext: ["ext"],
+  orientation: ["orientation"],
 };
 
 export const defaultSections = (): SectionPref[] => SECTION_KEYS.map((key) => ({ key, hidden: false }));

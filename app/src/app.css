@@ -58,6 +58,13 @@ header > * { flex-shrink: 0; }
   outline: none;
 }
 .search:focus { border-color: #555; }
+.search.bad { border-color: var(--error); }
+.search-help { width: 22px; height: 22px; margin-left: -8px; color: var(--muted); border: 1px solid var(--line); border-radius: 50%; }
+.search-help:hover { color: var(--text); background: var(--hover); }
+.search-tokens { top: 44px; left: 50%; transform: translateX(-50%); max-width: min(560px, calc(100vw - 32px)); }
+.search-tokens button { display: grid; grid-template-columns: 150px 1fr; gap: 12px; }
+.search-tokens code { color: var(--queued); white-space: nowrap; }
+.search-tokens span { color: var(--muted); }
 .clear { padding: 2px 10px; border: 1px solid var(--line); border-radius: 4px; white-space: nowrap; }
 .clear:hover { background: var(--hover); }
 

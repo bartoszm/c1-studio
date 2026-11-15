@@ -87,9 +87,9 @@ up at the next of these, or on the next start.
 - **Settings** (⚙): *Sidebar* (which sections show, in what order), *Map & places*
   (online map services, places by name), *Analysis* (the lines between classes; see
   [Look](#look)) and *History* (the History tab on or off; see [History](#history)).
-- **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera and
-  Country. Click a section's title to fold it. Which sections are folded and which
-  branches are open is remembered.
+- **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera,
+  Lens, Format, Orientation and Country. Click a section's title to fold it. Which
+  sections are folded and which branches are open is remembered.
 - **Filter bar:** above the grid while anything is filtered, a chip per filter value.
   × on a chip drops that value; *Clear filters* drops them all.
 - **Grid:** the matching photos, newest first unless the sort box says otherwise.
@@ -106,6 +106,17 @@ Every filter narrows the result; the grid and every count update as you go.
 **Search.** Type in the header box to search keywords, captions, places and
 filenames. Words must all match; `"a phrase"` matches the words together and `a OR b`
 either.
+
+Tokens search the camera's and the file's fields: `camera:` `make:` `lens:` (any part of
+the name), `iso:` `f:` `focal:` `shutter:` `size:` `mp:` `width:` `height:` (a number or a
+range: `iso:>1600`, `f:<=2.8`, `focal:35-50`, `shutter:>1/30`, `size:>30mb`), `format:`
+(`raw`, `jpeg`, `tiff`, `heif` or extensions such as `raf,dng`) and `orient:` (`landscape`,
+`portrait`, `square`, `panorama`, or enough of one to tell it apart). `-format:` and
+`-orient:` leave those out. Megapixels, width, height and orientation are of the picture
+as shown, turned and cropped. The photos follow the tokens as you type; **Enter** (or
+leaving the box) turns them into chips, and the words stay in the box. A token that
+cannot be read gets a red outline, says why on hover, and is not searched for. `?`
+beside the box lists every token; clicking one adds it.
 
 **Sidebar.** Click a value to filter by it, click it again to let go. Each group counts
 as if its own pick were not made, so the alternatives stay visible: with *2025* picked,
@@ -145,9 +156,14 @@ the Date tree still shows every year.
   keyword* box above it shows only matching keywords, with their branches open. Esc
   clears it. Right-click a keyword to change the tree (see [Keyword tree](#keyword-tree)).
 - **Rating, Colour, Camera:** one value each. Camera lists the ten most common.
+- **Lens, Format, Orientation:** the lens, the file type and the shape as shown
+  (landscape, portrait, square, panorama). A click includes a value, a second click
+  excludes it, a third lets go.
 
-**From the details panel.** The camera, each keyword (or any level of it), each album
-and the folder are links: clicking one filters by it.
+**From the details panel.** The camera, the lens, the format, each keyword (or any level
+of it), each album and the folder are links: clicking one filters by it. *As shown* gives
+the picture's size after turning and cropping, when it differs from the sensor's: that
+is the size `mp:`, `width:`, `height:` and `orient:` search.
 
 **Photos around a photo.** *Around*, under *Captured*, sets the filter's dates to the
 photos taken near the focused one: its **shoot** (the photos taken one after another
@@ -168,13 +184,15 @@ example photos filtered by Kraków given Warszawa as their city, the filter take
 values they have now (the place, the rating, the colour, the country, a keyword the edit
 added, the album they were put into), keeps them picked and says so, with Back. Work
 lists are never followed, since emptying them is the point: no keywords, no place, no
-location (or a city's *(no location)*), no GPS, not in an album, any "not" pick, the
-search, a History pick, the trash, and *Match any*. Of several places picked, none is
-followed. Neither are hiding and the trash.
+location (or a city's *(no location)*), no GPS, not in an album, any "not" pick (a
+camera, lens, format, orientation or place left out included), the search words, a
+History pick, the trash, and *Match any*. Of several places picked, none is followed.
+Neither are hiding and the trash.
 
 **Back and Forward.** ‹ and › in the header, or Alt+← and Alt+→, go through the filters
 shown, each with the photos that were picked in it (up to 50 steps). A search typed or
-map tiles clicked one after another are one step.
+map tiles clicked one after another are one step. Tokens still in the search box count
+as the filter they make: going back or forward to them brings them back as chips.
 
 ## Browsing
 
@@ -485,6 +503,17 @@ network; everything else works without one).
   (one or several picked) from the grid onto the map. This is a Location edit like any
   other: queued, undoable, written with *Write to Capture One*. A position belongs to
   the image, so every variant of the photo moves.
+- **AI guesses** (top right) shows AI Locate's guesses not reviewed yet: a pin with a
+  dashed violet card and the circle it may be off by. Click one to accept or reject it, or
+  drag it where the photo was. *Show on map* on a locate card in the AI tab comes here on
+  its guess (see [Locate](#describing-photos-with-ai)).
+- **Positions placed by AI:** a photo given an AI guess's position, accepted as
+  approximate, shows with a solid violet card, in clusters of its own, apart from photos
+  with GPS. *Settings › Map › Positions from AI Locate, accepted as approximate*
+  shows them in this colour (the default) or not at all. The note at the bottom counts
+  them either way: *2 placed by AI*, or *5 placed by AI, not shown (Settings)*, also when
+  they are the only photos with a position. Dragging one gives it a position of its own.
+  Positions accepted as precise show as the photo's own.
 
 ## Trips and the timeline
 
@@ -703,6 +732,29 @@ history; Ctrl+Z undoes them), **Reject** sets the card aside; *Accept N* above a
 and *Reject all* do every card. The tabs *To review*, *Accepted*, *Rejected* and *All* keep
 them.
 
+**Locate.** *Locate* in the AI tab asks only where photos were taken, told what the photos
+taken around them say (positions before and after, places written nearby, the trip). Photos
+taken one after another at one place go as a **scene** and get one card: it shows the first
+nine of its photos, and *+N more* opens it to all of them (*Fewer* closes it). On a locate
+card:
+
+- **Why it wasn't placed.** A photo the model could not place says *No place found* with
+  the model's reason (a generic interior, clues that disagree…), the landmark it saw and its
+  clues. A photo placed only in part (a city, no location) has the reason under its levels.
+  The run's log in *Details* has a line per photo, or one per sheet or scene (*Sheet 3:
+  answered in 41 s, 12 located, 2 with no place found: …*). Each photo's reason, clues and
+  file names are in `events.log` (in the catalog's folder, see
+  [Where things are kept](#where-things-are-kept)), as `Locating photo 812: no place found:
+  …`. An answer in prose instead of the form asked for is quoted in the error (*the model
+  said: "…"*).
+- **Show on map** opens the Map tab with the card's photos picked, in place of what was
+  picked (the map's note says so), so *Put N picked photos here* and dragging work on
+  them. A card to review goes to its pin with the circle it may be off by, and the pin's
+  card opens: accept, reject or drag it there. An accepted or rejected card goes to the
+  area of its position with no pin card (an accepted photo's own pin shows where it is
+  now). A guess with no position goes to the place it names, if the built-in gazetteer
+  knows it. Esc, or moving the map yourself, stops a *Show on map* still on its way.
+
 **Correcting a card.** Each place level is a box holding the model's name: write another,
 or pick one of the catalog's names from its list (those under the levels above come first).
 A name picked fills the levels above from the catalog, and the country code follows the
@@ -919,7 +971,9 @@ Keys do not act while you type in a field.
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
   hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
-  and calls are in `library\ai.redb` there, the AI settings in `ai.json`.
+  and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
+  the background and what failed (AI runs, and why a photo was placed nowhere, included) is
+  in `events.log` there.
 - Recent catalogs: `%APPDATA%\c1studio\sources.json`.
 - The kinds of source offered: `%APPDATA%\c1studio\providers.json`.
 - Photo folders: the same, under `%LOCALAPPDATA%\c1studio\folders-<id>\`, where `<id>` is

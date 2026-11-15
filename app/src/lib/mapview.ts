@@ -183,3 +183,20 @@ export function mapPadding(c: Covers): Padding {
   const h = scale(2 * side, c.width);
   return { top: Math.floor(top * v), bottom: Math.floor(bottom * v), left: Math.floor(side * h), right: Math.floor(side * h) };
 }
+
+/** How many photos are where: all of them, and those in view. */
+export type Counted = { located: number; inView: number };
+
+/**
+ * The map's note on the photos it shows: those with a position of their own, and those AI
+ * Locate placed, accepted as approximate (`aiShown`: drawn in their own colour; else hidden
+ * by Settings, but still told of).
+ */
+export function positionsText(own: Counted, ai: Counted, aiShown: boolean): string {
+  const mine = own.located || !ai.located
+    ? `${own.inView.toLocaleString()} of ${own.located.toLocaleString()} photos with a position in view`
+    : "No photos here have a position of their own";
+  if (!ai.located) return mine;
+  const placed = aiShown ? `${ai.inView.toLocaleString()} placed by AI` : `${ai.located.toLocaleString()} placed by AI, not shown (Settings)`;
+  return `${mine} · ${placed}`;
+}

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Merged, Selection } from "../src/lib/api";
+import type { Filter, Merged, Selection } from "../src/lib/api";
 import { followFilter, isWorkList } from "../src/lib/follow";
 import { KEPT, KEPT_PICKS, Trail, type Shown } from "../src/lib/navigation";
 import { keptPicks, wantedRows } from "../src/lib/batch";
@@ -95,10 +95,14 @@ test("work lists, Match any and fields that still match never follow", () => {
   assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, s, 2, undefined, true), null);
   assert.equal(followFilter({ rating: { Values: { min: 4 } } }, s, 2), null);
   assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, s, 0), null);
-  for (const f of [{ placed: false }, { located: false }, { gps: false }, { text: "x" }, { keywords_under_not: ["a"] }]) {
-    assert.equal(isWorkList(f), true, JSON.stringify(f));
-  }
+  const lists: Filter[] = [
+    { placed: false }, { located: false }, { gps: false }, { text: "x" }, { keywords_under_not: ["a"] },
+    { cameras_not: ["X100VI"] }, { makes_not: ["FUJIFILM"] }, { lenses_not: ["XF23mmF2"] },
+    { ext_not: ["jpg"] }, { orientation_not: ["portrait"] },
+  ];
+  for (const f of lists) assert.equal(isWorkList(f), true, JSON.stringify(f));
   assert.equal(isWorkList({ placed: true, rating: "None" }), false);
+  assert.equal(isWorkList({ lenses: ["XF23mmF2"], ext: ["raf"], orientation: ["portrait"] }), false);
 });
 
 const shown = (text: string, picks: number[] = []): Shown => ({

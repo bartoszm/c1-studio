@@ -290,6 +290,83 @@ fn numeric_collection_and_edit_filters() {
     assert_eq!(ids(&lib, &red), [3]);
 }
 
+/// Photos 1..=10 (9 in the trash) with makes, shutter speeds, sizes and shown sizes.
+fn camera_and_file_setup() -> (tempfile::TempDir, Library) {
+    let photos = (1..=10)
+        .map(|n| {
+            let mut p = photo(n);
+            p.exif.camera_make = Some(if n.is_multiple_of(2) { "FUJIFILM" } else { "SONY" }.into());
+            p.exif.shutter = Some(if n == 8 { 2.0 } else { 1.0 / (100.0 * f64::from(n)) });
+            p.file.size = Some(u64::from(n) * 10_000_000);
+            if n == 4 {
+                p.file.ext = "jpg".into();
+            }
+            p.edit.shown = match n {
+                // Unknown: from the original's size, or nothing.
+                2 => None,
+                10 => {
+                    (p.exif.width, p.exif.height) = (Some(3000), Some(2000));
+                    None
+                }
+                5 => Some((6000, 6000)),
+                7 => Some((12000, 4000)),
+                n if n.is_multiple_of(3) => Some((4000, 6000)),
+                _ => Some((6000, 4000)),
+            };
+            p
+        })
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let library = Library::open(dir.path()).unwrap();
+    library.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+    (dir, library)
+}
+
+#[test]
+fn camera_and_file_filters() {
+    let (_d, lib) = camera_and_file_setup();
+    let range = |s: &str| Some(Range::parse(s).unwrap());
+    assert_eq!(ids(&lib, &Filter { make: Some("fuji".into()), ..Filter::default() }), [2, 4, 6, 8, 10]);
+    assert_eq!(ids(&lib, &Filter { makes_not: vec!["SONY".into()], ..Filter::default() }), [2, 4, 6, 8, 10]);
+    assert_eq!(ids(&lib, &Filter { shutter: range(">=1"), ..Filter::default() }), [8]);
+    assert_eq!(ids(&lib, &Filter { shutter: range("<0.004"), ..Filter::default() }), [3, 4, 5, 6, 7, 10]);
+    assert_eq!(ids(&lib, &Filter { file_size: range(">50000000"), ..Filter::default() }), [6, 7, 8, 10]);
+    assert_eq!(ids(&lib, &Filter { megapixels: range(">30"), ..Filter::default() }), [5, 7]);
+    assert_eq!(ids(&lib, &Filter { megapixels: range("<10"), ..Filter::default() }), [10]);
+    assert_eq!(ids(&lib, &Filter { width: range(">=10000"), ..Filter::default() }), [7]);
+    assert_eq!(ids(&lib, &Filter { height: range(">=6000"), ..Filter::default() }), [3, 5, 6]);
+    assert_eq!(ids(&lib, &Filter { ext: vec![".JPG".into()], ..Filter::default() }), [4]);
+    assert_eq!(ids(&lib, &Filter { ext_not: vec!["JPG".into()], ..Filter::default() }), [1, 2, 3, 5, 6, 7, 8, 10]);
+    let orient = |v: &str| Filter { orientation: vec![v.into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &orient("portrait")), [3, 6]);
+    assert_eq!(ids(&lib, &orient("square")), [5]);
+    assert_eq!(ids(&lib, &orient("panorama")), [7]);
+    assert_eq!(ids(&lib, &orient("landscape")), [1, 4, 8, 10]);
+    let not_portrait = Filter { orientation_not: vec!["portrait".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &not_portrait), [1, 2, 4, 5, 7, 8, 10]);
+}
+
+#[test]
+fn orientation_and_make_facets_keep_their_alternatives() {
+    let (_d, lib) = camera_and_file_setup();
+    let filter = Filter { orientation: vec!["portrait".into()], makes: vec!["FUJIFILM".into()], ..Filter::default() };
+    let options = QueryOptions {
+        facets: vec![Dim::Orientation, Dim::Make],
+        limit: Some(0),
+        facets_ignore_own: true,
+        ..QueryOptions::default()
+    };
+    let result = lib.query(&filter, &options).unwrap();
+    assert_eq!(result.total, 1);
+    // Orientation counts over the make alone (2, 4, 6, 8, 10), and the make over portraits (3, 6).
+    let mut orientation = result.facets[&Dim::Orientation].clone();
+    orientation.sort();
+    assert_eq!(orientation, [("landscape".to_owned(), 3), ("portrait".to_owned(), 1)]);
+    let mut make = result.facets[&Dim::Make].clone();
+    make.sort();
+    assert_eq!(make, [("FUJIFILM".to_owned(), 1), ("SONY".to_owned(), 1)]);
+}
+
 #[test]
 fn facets_count_the_matches() {
     let (_d, lib, _s) = setup();
@@ -3040,12 +3117,14 @@ fn an_ai_guess_taken_as_approximate_stays_on_the_map_at_every_zoom() {
     let street = c1index::MapView { bounds: c1index::BBox::around(50.054, 19.935, 0.5), zoom: 16.0 };
     let shown = |lib: &Library| {
         let map = lib.map(&Filter::default(), &street).unwrap();
-        map.clusters.iter().any(|c| c.best == eight) && map.approx.is_empty()
+        map.ai.iter().any(|c| c.best == eight) && map.approx.is_empty()
     };
     assert!(shown(&lib), "drawn where the guess put it");
-    // Counted with the positions, not with the photos placed only by their place's name.
+    // Counted apart: neither with positions of their own nor with the photos placed only
+    // by their place's name.
     let map = lib.map(&Filter::default(), &street).unwrap();
-    assert_eq!((map.in_view, map.approx_in_view, map.approx_hidden), (1, 0, 0));
+    assert_eq!((map.in_view, map.ai_in_view, map.approx_in_view, map.approx_hidden), (0, 1, 0, 0));
+    assert!(map.clusters.iter().all(|c| c.best != eight));
 
     // Taken before guesses were told apart: found again from the accepted suggestion.
     drop(lib);

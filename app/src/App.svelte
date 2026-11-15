@@ -9,6 +9,7 @@
   import { albumTree, cityWithoutLocation, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
+  import { HELP, ORIENTATIONS, RANGES, parseSearch, rangeChip, withSearch, type Parsed } from "./lib/search";
   import {
     LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, cyclePlace, pickOf, placePick, ratingFor, ratingParts, ratingText, sameRating,
     type AllOf, type Match, type Pick, type RatingOp,
@@ -79,6 +80,13 @@
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
+  /** The search box's tokens as last searched for, not yet made chips. Only ever replaced
+   *  whole, so not deep: no proxies reach the filter sent to the index. */
+  let typed = $state.raw<Parsed>(parseSearch(""));
+  /** The filter the grid shows: the chips with the tokens still in the box over them.
+   *  What is on screen (the Clear button, the sidebar's picks, Back and Forward) reads
+   *  this, so tokens act the same before Enter as after. */
+  let current = $derived(withSearch(filter, typed));
   let result = $state<QueryResult | null>(null);
   let collections = $state<api.Collection[]>([]);
   /** Keyword paths for completion, most used first. */
@@ -198,6 +206,7 @@
     if (next !== "map") {
       mapView = null;
       mapAim = null;
+      mapGuess = null;
     }
     tab = next;
     mapRow = null;
@@ -291,6 +300,25 @@
     mapAim = camera;
     if (mapOn) return;
     // The map opening goes to the photo focused: it goes where all of them are instead.
+    holdMap = focusRow ?? null;
+    showTab("map");
+    await tick();
+    holdMap = null;
+  }
+  /** An AI Locate card's guess to check on the map (a new object each time). */
+  let mapGuess = $state.raw<{ row: number; place: api.PlaceGuess | null; status: api.SuggestionStatus; count: number } | null>(null);
+  /** The map, on a locate card's guess, with the card's photos picked (in place of what was
+   *  picked, which the map's note says): its pin's card open to accept or drag; reviewed,
+   *  the circle its position may be off by; with no position, *Put them here* and dragging
+   *  to place them. */
+  async function aiOnMap(rows: number[], row: number, place: api.PlaceGuess | null, status: api.SuggestionStatus) {
+    picked.clear();
+    for (const r of rows) picked.add(r);
+    selected = null;
+    mapRow = row;
+    mapGuess = { row, place, status, count: rows.length };
+    if (mapOn) return;
+    // The map opening goes to the photo focused: it goes to the guess instead.
     holdMap = focusRow ?? null;
     showTab("map");
     await tick();
@@ -761,8 +789,10 @@
    *  run overtaken); steps of one `kind` in a row
    *  (typing a search, clicking tiles) are one step back. */
   type Step = { restore?: Picks; travelling?: boolean; kind?: "search" | "tile" };
+  // The filter kept is the one searched for, tokens still in the box included: a token typed
+  // is a step, and going back or forward to it brings its tokens back as chips.
   const shownNow = (): Shown => ({
-    filter: $state.snapshot(filter), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
+    filter: $state.snapshot(current), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
     tile: mapTile, follow, picks: [],
   });
   function leaving(was: Picks, how: Step) {
@@ -786,8 +816,10 @@
     if (!to.follow && to.filter.within && !to.tile) follow = false;
     inBin = to.bin;
     showHidden = to.hidden;
+    // Tokens that were still in the box come back as chips: the same photos, the box
+    // keeping only the free text.
     filter = to.filter;
-    search = to.filter.text ?? "";
+    setSearch(to.filter.text ?? "");
     sortField = to.sortField;
     sortReversed = to.sortReversed;
     match = to.match;
@@ -1473,14 +1505,36 @@
   // Capture One's keys: 0-5 rate, - + * tag red, green, yellow.
   const COLOR_KEYS: Record<string, api.Color> = { "-": "Red", "+": "Green", "*": "Yellow" };
 
-  // Typing searches after a short pause.
+  // Typing searches after a short pause. Tokens typed (`iso:>1600`) narrow the photos as
+  // they are typed; Enter, or leaving the box, takes them out of it into chips.
   let typing: ReturnType<typeof setTimeout>;
+  let showSearchHelp = $state(false);
   function onSearch() {
     clearTimeout(typing);
     typing = setTimeout(() => {
-      filter.text = search.trim() || undefined;
+      typed = parseSearch(search);
+      filter.text = typed.rest.trim() || undefined;
       run(false, false, { kind: "search" });
     }, 150);
+  }
+  function setSearch(text: string) {
+    clearTimeout(typing);
+    search = text;
+    typed = parseSearch(text);
+  }
+  function commitSearch() {
+    clearTimeout(typing);
+    const p = parseSearch(search);
+    if (p.keys.length) {
+      filter = withSearch(filter, p);
+      setSearch(p.left);
+    } else {
+      typed = p;
+    }
+    const text = typed.rest.trim() || undefined;
+    if (!p.keys.length && text === filter.text) return;
+    filter.text = text;
+    run(false, false, { kind: "search" });
   }
 
   // Flat sidebar values ↔ filter fields. A value is off → in → out → off.
@@ -1499,7 +1553,11 @@
         if (value === "none") return c === "None" ? "in" : c === "Any" ? "out" : null;
         return pickOf(colorsIn(), filter.colors_not, cap(value));
       }
-      case "camera": return pickOf(filter.cameras, filter.cameras_not, value);
+      // As searched for: a format: or orient: token in the box replaces these picks.
+      case "camera": return pickOf(current.cameras, current.cameras_not, value);
+      case "lens": return pickOf(current.lenses, current.lenses_not, value);
+      case "ext": return pickOf(current.ext, current.ext_not, value);
+      case "orientation": return pickOf(current.orientation, current.orientation_not, value);
       case "hue": return filter.hues?.includes(value) ? "in" : null;
       case "year": return filter.year === +value ? "in" : null;
       case "country": return filter.country === value ? "in" : null;
@@ -1533,6 +1591,21 @@
         filter = { ...filter, camera: undefined, cameras: inc, cameras_not: exc };
         break;
       }
+      case "lens": {
+        const { inc, exc } = cycle(filter.lenses, filter.lenses_not, value);
+        filter = { ...filter, lens: undefined, lenses: inc, lenses_not: exc };
+        break;
+      }
+      case "ext": {
+        const { inc, exc } = cycle(filter.ext, filter.ext_not, value);
+        filter = { ...filter, ext: inc, ext_not: exc };
+        break;
+      }
+      case "orientation": {
+        const { inc, exc } = cycle(filter.orientation, filter.orientation_not, value);
+        filter = { ...filter, orientation: inc, orientation_not: exc };
+        break;
+      }
       case "year": filter = { ...filter, year: pickState(dim, value) ? undefined : +value }; break;
       case "country": filter = { ...filter, country: pickState(dim, value) ? undefined : value }; break;
       default: return;
@@ -1546,7 +1619,7 @@
   let allOf = $state<AllOf>({});
   /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
   function compiled(f: Filter): Filter {
-    return withBin(withHidden(allOfPicks(compile(f, match), allOf), showHidden), inBin);
+    return withBin(withHidden(allOfPicks(compile(withSearch(f, typed), match), allOf), showHidden), inBin);
   }
   function toggleAllOf(card: keyof AllOf) {
     allOf = { ...allOf, [card]: !allOf[card] };
@@ -1860,7 +1933,7 @@
   function clearAll() {
     mapTile = null;
     filter = {};
-    search = "";
+    setSearch("");
     run();
   }
 
@@ -1868,17 +1941,20 @@
   function values(dim: Dim): [string, number][] {
     const all = result?.facets[dim] ?? [];
     if (dim === "year" || dim === "rating") return [...all].sort((a, b) => b[0].localeCompare(a[0]));
-    if (dim === "hue") return all;
+    if (dim === "hue" || dim === "ext") return all;
+    if (dim === "orientation") return [...all].sort((a, b) => ORIENTATIONS.indexOf(a[0]) - ORIENTATIONS.indexOf(b[0]));
     return all.slice(0, 10);
   }
 
   function label(dim: Dim, value: string) {
     if (dim === "rating") return value === "none" ? "unrated" : "★".repeat(+value);
+    if (dim === "ext") return value.toUpperCase();
     return value;
   }
 
   const TITLES: Record<string, string> = {
     rating: "Rating", color: "Colour", hue: "Main colour", year: "Year", date: "Date", camera: "Camera", country: "Country",
+    lens: "Lens", ext: "Format", orientation: "Orientation",
     albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look", trips: "Trips",
   };
 
@@ -1894,7 +1970,7 @@
     for (const key of keywordView.open) searchOpen.add(key);
   });
 
-  let active = $derived(Object.values(filter).some((v) => v !== undefined));
+  let active = $derived(Object.values(current).some((v) => v !== undefined));
 
   // Not state: where a step still waiting for its page goes. Quick presses count from
   // it, so none is lost; only the newest step moves the viewer.
@@ -1980,7 +2056,7 @@
     }
   }
 
-  let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu));
+  let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu || showSearchHelp));
   /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
   let dialogOpen = $derived(
     !!(writing || showBackups || emptying || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
@@ -1993,6 +2069,7 @@
       albumMenu = null;
       sectionMenu = null;
       photoMenu = null;
+      showSearchHelp = false;
       // Handled: the viewer, listening after us, must not close too.
       e.preventDefault();
       return;
@@ -2001,6 +2078,9 @@
     const handled = e.defaultPrevented;
     if (activatesCell(e)) e.preventDefault();
     if (dialogOpen || typingIn(e) || handled) return;
+    // A card's guess on its way to the map (*Show on map*) goes no further, the map not
+    // open yet included.
+    if (e.key === "Escape") mapGuess = null;
     // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
     if (comparing) {
       const action = e.key === "Delete" && !e.altKey && !e.shiftKey ? deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: !!shownAlbum, inBin, removes: status?.removes }) : "none";
@@ -2219,6 +2299,10 @@
     const left = list.filter((x) => x !== v);
     return left.length ? left : undefined;
   };
+  /** The search box's number tokens: ISO, aperture, shutter, size… */
+  const rangeChips = Object.fromEntries(
+    RANGES.map(({ key, field, what }) => [field, (v: api.Range) => [{ what, text: rangeChip(key, v) }]]),
+  ) as { [K in "iso" | "aperture" | "focal" | "shutter" | "file_size" | "megapixels" | "width" | "height"]: (v: api.Range) => Chip[] };
   /** Every filter field, in the order its chips show. A new field needs a line here. */
   const CHIPS: { [K in keyof Filter]-?: (v: NonNullable<Filter[K]>) => Chip[] } = {
     text: (v) => [{ what: "Search", text: `“${v}”` }],
@@ -2239,6 +2323,17 @@
     camera: (v) => [{ what: "Camera", text: v }],
     cameras: (v) => v.map((c) => ({ what: "Camera", text: c, rest: without(v, c) })),
     cameras_not: (v) => v.map((c) => ({ what: "Camera", text: `not ${c}`, out: true, rest: without(v, c) })),
+    make: (v) => [{ what: "Make", text: v }],
+    makes: (v) => v.map((c) => ({ what: "Make", text: c, rest: without(v, c) })),
+    makes_not: (v) => v.map((c) => ({ what: "Make", text: `not ${c}`, out: true, rest: without(v, c) })),
+    lens: (v) => [{ what: "Lens", text: v }],
+    lenses: (v) => v.map((c) => ({ what: "Lens", text: c, rest: without(v, c) })),
+    lenses_not: (v) => v.map((c) => ({ what: "Lens", text: `not ${c}`, out: true, rest: without(v, c) })),
+    ...rangeChips,
+    ext: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), rest: without(v, x) })),
+    ext_not: (v) => v.map((x) => ({ what: "Format", text: `not ${x.toUpperCase()}`, out: true, rest: without(v, x) })),
+    orientation: (v) => v.map((x) => ({ what: "Orientation", text: x, rest: without(v, x) })),
+    orientation_not: (v) => v.map((x) => ({ what: "Orientation", text: `not ${x}`, out: true, rest: without(v, x) })),
     colors_not: (v) =>
       v.map((c) => ({ what: "Colour", text: `not ${c.toLowerCase()}`, out: true, dot: COLORS[c.toLowerCase()], rest: without(v, c) })),
     country: (v) => [{ what: "Country", text: v }],
@@ -2316,7 +2411,7 @@
       else follow = false;
     }
     filter = { ...filter, [key]: rest };
-    if (key === "text") search = "";
+    if (key === "text") setSearch("");
     run();
   }
 
@@ -2401,6 +2496,7 @@
     ongroup={showGroup}
     onfolder={showFolder}
     oncamera={(camera) => only({ cameras: [camera] })}
+    onpick={only}
     onaround={showAround}
     summary={selection?.data ?? null}
     stale={!selectionNow}
@@ -2436,7 +2532,17 @@
       <button aria-label="Back" title="Back to the filter before, with its photos picked (Alt+←)" disabled={!canBack} onclick={() => travel(true)}>‹</button>
       <button aria-label="Forward" title="Forward again (Alt+→)" disabled={!canForward} onclick={() => travel(false)}>›</button>
     </span>
-    <input class="search" placeholder="Search keywords, captions, places, filenames" bind:value={search} oninput={onSearch} />
+    <input
+      class="search"
+      class:bad={typed.errors.length > 0}
+      placeholder="Search words, or iso:>1600 lens:23 format:raw orient:portrait…"
+      title={typed.errors.length ? typed.errors.map((e) => `${e.token}: ${e.message}`).join("\n") : "Enter makes the field tokens (iso:, lens:, size:…) filters; ? lists them"}
+      bind:value={search}
+      oninput={onSearch}
+      onkeydown={(e) => { if (e.key === "Enter") commitSearch(); }}
+      onblur={commitSearch}
+    />
+    <button class="search-help" aria-label="Search tokens" title="What the search box understands" onclick={() => (showSearchHelp = !showSearchHelp)}>?</button>
     <nav class="tabs" aria-label="View">
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
@@ -2742,7 +2848,7 @@
           >×</button>
         </span>
       {/each}
-      {#if criteriaCount(filter) >= 2}
+      {#if criteriaCount(current) >= 2}
         <span class="match">
           Match
           <span class="seg" role="group" aria-label="Match all or any">
@@ -2789,6 +2895,7 @@
       onview={mapMoved}
       center={mapCenter}
       goTo={mapAim}
+      guess={mapGuess}
       ontile={mapTilePick}
       onselect={mapSelect}
       onsetgeo={mapSetGeo}
@@ -2848,6 +2955,7 @@
       onselect={(row) => { picked.clear(); selected = null; mapRow = row; }}
       onaccepted={aiAccepted}
       onerror={(m) => (editError = m)}
+      onmap={aiOnMap}
     />
   {/if}
   {#if stripped}
@@ -3042,6 +3150,22 @@ Pick those among the photos shown, then have ${source.word} build their previews
     {/if}
   </footer>
 </div>
+
+{#if showSearchHelp}
+  <div class="menu-shield" role="presentation" onclick={() => (showSearchHelp = false)}></div>
+  <div class="menu search-tokens" role="dialog" aria-label="Search tokens">
+    <div class="menu-title">Type these in the search box; Enter makes them filters. Click one to add it.</div>
+    {#each HELP as h}
+      <button
+        onclick={() => {
+          showSearchHelp = false;
+          search = `${search.trim()} ${h.token}`.trim();
+          onSearch();
+        }}
+      ><code>{h.token}</code><span>{h.means}</span></button>
+    {/each}
+  </div>
+{/if}
 
 {#if sectionMenu}
   {@const key = sectionMenu.key}

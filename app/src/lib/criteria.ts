@@ -112,7 +112,7 @@ export function ratingText(r: NonNullable<Filter["rating"]>): string {
 
 /**
  * What to ask the index. All together is the filter as it is: every field narrows. Any
- * one of them turns the includes (rating, colour, cameras, keywords, albums and the
+ * one of them turns the includes (rating, colour, cameras, lenses, formats, orientations, keywords, albums and the
  * "none" picks) into alternatives; everything else, the excludes among it, still holds.
  */
 export function compile(f: Filter, mode: Match): Filter {
@@ -127,9 +127,11 @@ export function compile(f: Filter, mode: Match): Filter {
     groups.push({ color: base.color });
     delete base.color;
   }
-  if (base.cameras?.length) {
-    groups.push({ cameras: base.cameras });
-    delete base.cameras;
+  for (const key of ["cameras", "lenses", "ext", "orientation"] as const) {
+    if (base[key]?.length) {
+      groups.push({ [key]: base[key] });
+      delete base[key];
+    }
   }
   for (const path of base.keywords_under ?? []) groups.push({ keywords_under: [path] });
   delete base.keywords_under;
@@ -162,6 +164,9 @@ export function criteriaCount(f: Filter): number {
     (f.rating !== undefined ? 1 : 0) +
     (f.color !== undefined ? 1 : 0) +
     (f.cameras?.length ? 1 : 0) +
+    (f.lenses?.length ? 1 : 0) +
+    (f.ext?.length ? 1 : 0) +
+    (f.orientation?.length ? 1 : 0) +
     (f.keywords_under?.length ?? 0) +
     (f.collections?.length ?? 0) +
     (f.unkeyworded ? 1 : 0) +
