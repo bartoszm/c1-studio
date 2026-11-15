@@ -8,7 +8,7 @@ pub mod iptc;
 pub mod xmp;
 
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use c1model::{ColorLabel, Exif, GeoPoint, ImageFormat, Iptc, KeywordPath, Place};
@@ -85,33 +85,62 @@ pub struct FileMeta {
 /// IPTC, then EXIF.
 pub fn read(path: &Path, kind: FileKind, sidecar: Option<&Path>) -> FileMeta {
     let mut meta = exif::read(path, kind);
-    let (iptc, embedded) = embedded(path, kind);
+    let Embedded { iptc, xmp, size } = embedded(path, kind);
     apply(&mut meta, iptc);
-    apply(&mut meta, embedded);
+    apply(&mut meta, xmp);
+    if let Some((w, h)) = size {
+        (meta.exif.width, meta.exif.height) = (Some(w), Some(h));
+    }
     if let Some(xml) = sidecar.and_then(|p| std::fs::read(p).ok()) {
         apply(&mut meta, xmp::parse(&String::from_utf8_lossy(&xml)));
     }
     meta
 }
 
-/// The IPTC and the embedded XMP of a file.
-fn embedded(path: &Path, kind: FileKind) -> (XmpFields, XmpFields) {
+/// What a file holds besides its EXIF.
+#[derive(Default)]
+struct Embedded {
+    iptc: XmpFields,
+    xmp: XmpFields,
+    /// The pixels stored, from the image's own header where it is at hand (JPEG, PNG):
+    /// truer than EXIF, which a PNG seldom has and a resized JPEG may not have updated.
+    size: Option<(u32, u32)>,
+}
+
+/// The IPTC, the embedded XMP and the stored size of a file.
+fn embedded(path: &Path, kind: FileKind) -> Embedded {
     match kind {
         FileKind::Jpeg => jpeg_embedded(path).unwrap_or_default(),
         FileKind::Tiff | FileKind::Raw => {
             let packet = File::open(path).ok().and_then(|f| xmp::packet_from_tiff_reader(&mut BufReader::new(f)));
-            (XmpFields::default(), packet.map(|p| xmp::parse(&p)).unwrap_or_default())
+            Embedded { xmp: packet.map(|p| xmp::parse(&p)).unwrap_or_default(), ..Embedded::default() }
         }
-        FileKind::Png => Default::default(),
+        FileKind::Png => Embedded { size: png_size(path), ..Embedded::default() },
     }
 }
 
-fn jpeg_embedded(path: &Path) -> Option<(XmpFields, XmpFields)> {
+fn jpeg_embedded(path: &Path) -> Option<Embedded> {
     let head = embed::read_jpeg_head(path)?;
     let (segments, _) = embed::jpeg_header(&head)?;
     let iptc = segments.iter().filter(|s| s.marker == 0xED).find_map(|s| iptc::parse_app13(&head[s.payload.clone()]));
     let xmp = xmp::packet_from_jpeg(&head).map(|p| xmp::parse(&p));
-    Some((iptc.unwrap_or_default(), xmp.unwrap_or_default()))
+    Some(Embedded {
+        iptc: iptc.unwrap_or_default(),
+        xmp: xmp.unwrap_or_default(),
+        size: embed::jpeg_size(&head, &segments),
+    })
+}
+
+/// The pixel size in a PNG's header (IHDR, always its first chunk).
+fn png_size(path: &Path) -> Option<(u32, u32)> {
+    let mut head = [0u8; 24];
+    File::open(path).ok()?.read_exact(&mut head).ok()?;
+    if &head[..8] != b"\x89PNG\r\n\x1a\n" || &head[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes([head[16], head[17], head[18], head[19]]);
+    let h = u32::from_be_bytes([head[20], head[21], head[22], head[23]]);
+    (w > 0 && h > 0).then_some((w, h))
 }
 
 /// Lays `over` on `meta`: what it says replaces what `meta` has.
@@ -230,6 +259,28 @@ mod tests {
                 FileMeta::default()
             );
         }
+    }
+
+    #[test]
+    fn sizes_come_from_the_image_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        // The EXIF says 6240 × 4160 (the camera's); the JPEG holds 24 × 16 pixels.
+        let jpeg = dir.path().join("a.jpg");
+        std::fs::write(&jpeg, rich_jpeg(None)).unwrap();
+        let meta = read(&jpeg, FileKind::Jpeg, None);
+        assert_eq!((meta.exif.width, meta.exif.height), (Some(24), Some(16)));
+        assert_eq!(meta.exif.camera_model.as_deref(), Some("X-T5"));
+
+        let tiff = dir.path().join("a.tif");
+        std::fs::write(&tiff, plain_tiff()).unwrap();
+        let meta = read(&tiff, FileKind::Tiff, None);
+        assert_eq!((meta.exif.width, meta.exif.height), (Some(24), Some(16)));
+
+        // A PNG without EXIF has its size all the same.
+        let png = dir.path().join("a.png");
+        image::RgbImage::new(30, 50).save(&png).unwrap();
+        let meta = read(&png, FileKind::Png, None);
+        assert_eq!((meta.exif.width, meta.exif.height), (Some(30), Some(50)));
     }
 
     #[test]

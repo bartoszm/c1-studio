@@ -13,7 +13,7 @@
   import type { Accept, AiTask, AiView, DescribeState, SuggestionRow, SuggestionStatus } from "./lib/api";
 
   let {
-    picked, describe, version, settingsOpen, keywords, onsettings, onselect, onaccepted, onerror,
+    picked, describe, version, settingsOpen, keywords, onsettings, onselect, onaccepted, onerror, onmap,
   }: {
     /** The photos an edit would reach now: what a run describes. */
     picked: number[];
@@ -30,6 +30,10 @@
     /** Suggestions were queued: the ops that undo it. */
     onaccepted: (undo: [number, api.Op][]) => void;
     onerror: (message: string) => void;
+    /** Opens the map on a locate card's guess (`place`, the card's `status`), its photos
+     *  (`rows`, the card's first `row`) picked in place of what was, to check or put right
+     *  there. */
+    onmap?: (rows: number[], row: number, place: api.PlaceGuess | null, status: api.SuggestionStatus) => void;
   } = $props();
 
   // ---- settings (edited in Settings > AI) ---------------------------------------------
@@ -488,6 +492,10 @@
     for (const list of scenes.values()) for (const r of list.slice(1)) others.add(r.row);
     return rows.filter((r) => !others.has(r.row));
   });
+  /** A scene card shows this many of its photos until opened to show them all. */
+  const SCENE_SHOWN = 9;
+  /** Scene cards opened to show all their photos, by the card's row. */
+  const expanded = new SvelteSet<number>();
   /** A card's photos: its scene's, or itself. */
   const membersOf = (row: number) => scenes.get(row)?.map((r) => r.row) ?? [row];
   /** What accepting cards takes: each card's pick, and for a scene's other photos the same place. */
@@ -810,12 +818,30 @@
             </button>
             {#if scene}
               <p class="muted scene" title="Taken one after another at one place, located together: accepting gives all of them this place">Scene of {scene.length} photos</p>
-              <div class="scene-strip">
-                {#each scene.slice(1, 9) as m (m.row)}
+              {@const open = expanded.has(r.row)}
+              <div class="scene-strip" class:open>
+                {#each open ? scene.slice(1) : scene.slice(1, SCENE_SHOWN) as m (m.row)}
                   <button onclick={() => onselect(m.row)} title="Show this photo"><img src={api.thumbUrl(m.row)} alt="" loading="lazy" decoding="async" /></button>
                 {/each}
-                {#if scene.length > 9}<span class="muted">+{scene.length - 9}</span>{/if}
               </div>
+              {#if scene.length > SCENE_SHOWN}
+                <button
+                  class="link more"
+                  aria-expanded={open}
+                  onclick={() => (open ? expanded.delete(r.row) : expanded.add(r.row))}
+                >{open ? "Fewer" : `+${scene.length - SCENE_SHOWN} more`}</button>
+              {/if}
+            {/if}
+            {#if locating && onmap}
+              <button
+                class="link onmap"
+                title={`${!s.place?.point
+                  ? "Open the map to place these photos by hand"
+                  : r.status === "Proposed"
+                    ? "Open the map on the AI's position: accept it, or drag it where it belongs"
+                    : "Open the map on the AI's position, to compare it with where the photos are now"}. The card's photos are picked in place of what was picked, for “Put them here” and dragging.`}
+                onclick={() => onmap(membersOf(r.row), r.row, s.place, r.status)}
+              >Show on map</button>
             {/if}
           </div>
           <div class="body">
@@ -936,14 +962,25 @@
                   {/if}
                 </div>
               {/if}
+              {#if locating && g.reason}
+                <p class="muted reason" title="What the model said keeps the rest open or unsure">{g.reason}</p>
+              {/if}
+            {/if}
+            {#if locating && !s.place}
+              {@const why = s.unplaced}
+              <div class="unplaced">
+                <p><b>No place found</b>{why?.reason ? `: ${why.reason}` : ""}</p>
+                {#if why?.landmark}<span class="landmark">{why.landmark}</span>{/if}
+                {#if why?.clues.length}
+                  <ul class="clues" title="What the model saw">{#each why.clues as c, i (i)}<li>{c}</li>{/each}</ul>
+                {/if}
+              </div>
             {/if}
             {#if locating && r.context?.length}
               <details class="told">
                 <summary class="muted">What it was told of where the photo was taken</summary>
                 <ul class="clues">{#each r.context as c, i (i)}<li>{c}</li>{/each}</ul>
               </details>
-            {:else if locating && !s.place}
-              <p class="muted">No place found.</p>
             {/if}
             <div class="facts muted">
               {#if s.rating}
@@ -1029,6 +1066,10 @@
   .evidence { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12px; }
   .basis { padding: 0 6px; border: 1px solid #5b8def; border-radius: 10px; color: #8fb3ff; }
   .landmark { font-weight: 600; }
+  .reason { margin: 2px 0 0; font-size: 12px; font-style: italic; }
+  .unplaced { font-size: 12px; }
+  .unplaced p { margin: 0; }
+  .more, .onmap { align-self: start; font-size: 12px; padding: 0; }
   .clues { margin: 2px 0 0; padding-left: 18px; width: 100%; font-size: 12px; color: var(--muted, #999); }
   .told summary { cursor: pointer; }
   .thumbs { display: flex; flex-direction: column; gap: 4px; align-self: start; }
@@ -1036,6 +1077,8 @@
   .scene-strip { display: flex; flex-wrap: wrap; gap: 2px; width: 140px; align-items: center; }
   .scene-strip button { padding: 0; }
   .scene-strip img { width: 33px; height: 33px; object-fit: cover; display: block; }
+  /* Opened: every photo of the scene, scrolling past six rows. */
+  .scene-strip.open { max-height: 212px; overflow-y: auto; }
   .reviews { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .reviews li { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border: 1px solid var(--line, #333); border-radius: 4px; }
   .mini { padding: 0; flex: none; }

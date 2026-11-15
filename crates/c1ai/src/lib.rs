@@ -26,7 +26,7 @@ pub use prompt::{
 
 /// Bumped when the prompt or the schema changes: photos described by another version are
 /// described again when asked.
-pub const PROMPT_VERSION: u32 = 2;
+pub const PROMPT_VERSION: u32 = 3;
 
 /// One photo to describe: a JPEG of it and one line of what the catalog already knows
 /// (file name, date, camera, place), which helps the model and costs a few tokens.
@@ -86,6 +86,8 @@ pub struct RawPlace {
     pub basis: String,
     pub landmark: String,
     pub clues: Vec<String>,
+    /// What keeps a level or the position empty or unsure (a locating run's).
+    pub reason: String,
 }
 
 /// One level of a place: its name and the probability it is right.
@@ -126,6 +128,19 @@ pub struct Suggestion {
     /// 0..1.
     pub confidence: f32,
     pub place: Option<PlaceGuess>,
+    /// No place found, and what the model said of why: kept so the photographer can tell
+    /// a photo that could not be placed from one that was not looked at.
+    pub unplaced: Option<Unplaced>,
+}
+
+/// Why a locating run placed a photo nowhere: the model's reason and the evidence it saw.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Unplaced {
+    /// Empty when the model gave none.
+    pub reason: String,
+    pub clues: Vec<String>,
+    pub landmark: Option<String>,
 }
 
 /// Where the model thinks the photo was taken: each level it named, from the country
@@ -147,6 +162,8 @@ pub struct PlaceGuess {
     pub landmark: Option<String>,
     /// The evidence the guess rests on, most telling first.
     pub clues: Vec<String>,
+    /// What keeps a level or the position empty or unsure, as the model said.
+    pub reason: Option<String>,
 }
 
 /// What a guessed position rests on most.
@@ -251,7 +268,8 @@ fn place_guess(raw: &RawPlace, warnings: &mut Vec<String>) -> Option<PlaceGuess>
         country_code: None,
         basis: point.as_ref().and_then(|_| Basis::parse(&raw.basis)),
         landmark: text(&raw.landmark),
-        clues: raw.clues.iter().filter_map(|c| text(c)).take(MAX_CLUES).collect(),
+        clues: clues(raw),
+        reason: text(&raw.reason),
         point,
     };
     for (name, was, now) in guess.coherent() {
@@ -262,6 +280,41 @@ fn place_guess(raw: &RawPlace, warnings: &mut Vec<String>) -> Option<PlaceGuess>
         ));
     }
     (!guess.is_empty()).then_some(guess)
+}
+
+fn clues(raw: &RawPlace) -> Vec<String> {
+    raw.clues.iter().filter_map(|c| text(c)).take(MAX_CLUES).collect()
+}
+
+/// What the model said of a place it could not give: its reason, clues and landmark;
+/// `None` when it said nothing of them.
+fn unplaced(raw: &RawPlace) -> Option<Unplaced> {
+    let u = Unplaced { reason: raw.reason.trim().to_string(), clues: clues(raw), landmark: text(&raw.landmark) };
+    (!u.reason.is_empty() || !u.clues.is_empty() || u.landmark.is_some()).then_some(u)
+}
+
+/// The longest stretch of a model's own words a message quotes.
+const SAID_CHARS: usize = 300;
+
+/// What a model said instead of the answer asked for, for a message: on one line, quoted,
+/// cut at [`SAID_CHARS`] characters. Empty when it said nothing.
+fn said(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return String::new();
+    }
+    let cut: String = flat.chars().take(SAID_CHARS).collect();
+    let more = if flat.chars().count() > SAID_CHARS { "…" } else { "" };
+    format!("the model said: \"{cut}{more}\"")
+}
+
+/// A message (`base`) with what the model said instead of the answer asked for after it:
+/// `base; the model said: "…"`, or just `base` when it said nothing.
+pub fn with_said(base: &str, text: &str) -> String {
+    match said(text) {
+        words if words.is_empty() => base.to_string(),
+        words => format!("{base}; {words}"),
+    }
 }
 
 /// What one call cost and took, kept with the suggestion: the set to judge prompts and
@@ -527,6 +580,7 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
         new.truncate(MAX_NEW_KEYWORDS);
     }
     let place = place_guess(&raw.location_guess, &mut warnings);
+    let unplaced = if place.is_none() { unplaced(&raw.location_guess) } else { None };
     let suggestion = Suggestion {
         caption_en: text(&raw.caption_en),
         caption_pl: text(&raw.caption_pl),
@@ -539,6 +593,7 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
         composition: score(raw.composition),
         confidence: raw.confidence.clamp(0.0, 1.0) as f32,
         place,
+        unplaced,
     };
     (suggestion, warnings)
 }
@@ -696,5 +751,68 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(validate(&raw, &vocabulary()).0.place.unwrap().basis, None);
+    }
+
+    #[test]
+    fn a_place_not_found_keeps_why() {
+        let raw = RawAnswer {
+            location_guess: RawPlace {
+                basis: "region".into(),
+                landmark: " ".into(),
+                clues: vec!["a plain white wall".into(), "".into(), "no signs".into()],
+                reason: " A generic interior with nothing local in sight. ".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = validate(&raw, &vocabulary()).0;
+        assert_eq!(s.place, None);
+        let why = s.unplaced.unwrap();
+        assert_eq!(why.reason, "A generic interior with nothing local in sight.");
+        assert_eq!(why.clues, ["a plain white wall", "no signs"]);
+        assert_eq!(why.landmark, None);
+
+        // Clues alone are kept too; nothing said at all leaves nothing.
+        let clues = RawAnswer {
+            location_guess: RawPlace { clues: vec!["sand".into()], ..Default::default() },
+            ..Default::default()
+        };
+        assert_eq!(validate(&clues, &vocabulary()).0.unplaced.unwrap().reason, "");
+        assert_eq!(validate(&RawAnswer::default(), &vocabulary()).0.unplaced, None);
+    }
+
+    #[test]
+    fn a_place_found_in_part_says_what_is_missing() {
+        let raw = RawAnswer {
+            location_guess: RawPlace {
+                country: RawLevel { name: "Poland".into(), p: 0.9 },
+                city: RawLevel { name: "Kraków".into(), p: 0.6 },
+                reason: "No street signs to tell the district.".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = validate(&raw, &vocabulary()).0;
+        assert_eq!(s.place.unwrap().reason.as_deref(), Some("No street signs to tell the district."));
+        assert_eq!(s.unplaced, None, "placed: the reason goes with the place");
+    }
+
+    #[test]
+    fn what_a_model_said_is_quoted_on_one_line_and_cut() {
+        assert_eq!(said(" one\n two "), "the model said: \"one two\"");
+        assert_eq!(said(""), "");
+        let long = said(&"é".repeat(SAID_CHARS + 5));
+        assert!(long.ends_with("…\""));
+        assert_eq!(long.chars().filter(|&c| c == 'é').count(), SAID_CHARS);
+    }
+
+    #[test]
+    fn a_message_takes_what_the_model_said_after_it_when_it_said_anything() {
+        assert_eq!(
+            with_said("no JSON answer", "I cannot\n tell."),
+            "no JSON answer; the model said: \"I cannot tell.\""
+        );
+        assert_eq!(with_said("no JSON answer", " \n "), "no JSON answer");
+        assert_eq!(with_said("no JSON answer", ""), "no JSON answer");
     }
 }

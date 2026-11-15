@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hitView, mapPadding, parseHits, placeZoom, routeStep, shouldFollow, viewBox, wrapLon, type NominatimRow } from "../src/lib/mapview";
+import type { Area } from "../src/lib/api";
+import {
+  focusCamera, hitView, mapPadding, parseHits, placeZoom, positionsText, routeStep, shouldFollow, viewBox, wrapLon, type NominatimRow,
+} from "../src/lib/mapview";
 
 // The map in #21: 892×543.
 const SIZE = { width: 892, height: 543 };
@@ -172,4 +175,49 @@ test("padding: whole pixels, never below 0", () => {
   const p = mapPadding({ width: 641.5, height: 333.3, findBottom: 36.4, coverBottom: 185.7 });
   for (const v of Object.values(p)) assert.ok(Number.isInteger(v) && v >= 0, `${v}`);
   assert.deepEqual(mapPadding({ ...MAP, findBottom: -5, coverBottom: -5 }), { top: 88, bottom: 68, left: 42, right: 42 });
+});
+
+// Show on map: the photos right-clicked in the grid, as `area` answers for them.
+const box = (min_lat: number, max_lat: number, min_lon: number, max_lon: number) => ({ min_lat, max_lat, min_lon, max_lon });
+const area = (a: Partial<Area>): Area => ({ bounds: null, coarsest: null, exact: 0, approx: 0, unknown: 0, ...a });
+
+test("show on map: a photo's own position goes close, a place no closer than it reaches", () => {
+  assert.deepEqual(focusCamera(area({ bounds: box(50.06, 50.06, 19.93, 19.93), exact: 1 })), { center: [19.93, 50.06], zoom: 16 });
+  assert.deepEqual(focusCamera(area({ bounds: box(50.06, 50.06, 19.94, 19.94), approx: 1, coarsest: "City" })), {
+    center: [19.94, 50.06],
+    zoom: 11,
+  });
+});
+
+test("show on map: several photos are fitted, no closer than the least precise place", () => {
+  assert.deepEqual(focusCamera(area({ bounds: box(50.06, 50.08, 19.93, 19.95), exact: 2 })), {
+    bounds: [[19.93, 50.06], [19.95, 50.08]],
+    maxZoom: 16,
+  });
+  // A photo in Kraków and one in Poland only: as far out as a country.
+  assert.deepEqual(focusCamera(area({ bounds: box(50.06, 52.0, 19.0, 19.93), exact: 1, approx: 1, coarsest: "Country" })), {
+    bounds: [[19.0, 50.06], [19.93, 52.0]],
+    maxZoom: 5,
+  });
+});
+
+test("show on map: photos either side of the 180th meridian are fitted the short way", () => {
+  // Fiji at 178 and -178: east of 180, not round the world.
+  assert.deepEqual(focusCamera(area({ bounds: box(-18, -16, 178, -178), exact: 2 })), {
+    bounds: [[178, -18], [182, -16]],
+    maxZoom: 16,
+  });
+});
+
+test("show on map: photos nowhere known have no view", () => {
+  assert.equal(focusCamera(area({ unknown: 3 })), null);
+});
+
+test("the map's note counts photos placed by AI, shown or hidden, also when they are all it has", () => {
+  const none = { located: 0, inView: 0 };
+  assert.equal(positionsText({ located: 10, inView: 4 }, none, true), "4 of 10 photos with a position in view");
+  assert.equal(positionsText({ located: 10, inView: 4 }, { located: 3, inView: 2 }, true), "4 of 10 photos with a position in view · 2 placed by AI");
+  assert.equal(positionsText(none, { located: 3, inView: 2 }, true), "No photos here have a position of their own · 2 placed by AI");
+  assert.equal(positionsText(none, { located: 3, inView: 2 }, false), "No photos here have a position of their own · 3 placed by AI, not shown (Settings)");
+  assert.equal(positionsText(none, none, true), "0 of 0 photos with a position in view");
 });

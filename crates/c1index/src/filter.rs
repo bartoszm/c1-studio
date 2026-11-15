@@ -147,6 +147,7 @@ pub struct Filter {
     /// Shell glob over the lower-cased filename, `dscf*.raf`.
     pub filename: Option<String>,
     pub ext: Vec<String>,
+    pub ext_not: Vec<String>,
     /// Folder subtree, either slash form.
     pub folder: Option<String>,
     pub rating: Option<Presence<Range>>,
@@ -167,9 +168,22 @@ pub struct Filter {
     /// Substring of the camera model, case-insensitive.
     pub camera: Option<String>,
     pub lens: Option<String>,
+    /// Substring of the camera's maker, case-insensitive.
+    pub make: Option<String>,
     pub iso: Option<Range>,
     pub aperture: Option<Range>,
     pub focal: Option<Range>,
+    /// Exposure time in seconds.
+    pub shutter: Option<Range>,
+    /// The original's size in bytes.
+    pub file_size: Option<Range>,
+    /// The picture as shown (turned and cropped).
+    pub megapixels: Option<Range>,
+    pub width: Option<Range>,
+    pub height: Option<Range>,
+    /// `landscape`, `portrait`, `square`, `panorama` as shown: any of these / none of these.
+    pub orientation: Vec<String>,
+    pub orientation_not: Vec<String>,
     pub captured: Option<TimeRange>,
     /// The span of a trip (see [`crate::trips`]): set apart from `captured`, so a trip and
     /// a range of days picked inside it narrow together.
@@ -192,6 +206,8 @@ pub struct Filter {
     pub cameras_not: Vec<String>,
     pub lenses: Vec<String>,
     pub lenses_not: Vec<String>,
+    pub makes: Vec<String>,
+    pub makes_not: Vec<String>,
     /// None of these colour labels.
     pub colors_not: Vec<ColorLabel>,
     pub gps: Option<bool>,
@@ -381,7 +397,19 @@ impl Filter {
                 f.color = None;
                 f.colors_not.clear();
             }
-            Dim::Ext => f.ext.clear(),
+            Dim::Ext => {
+                f.ext.clear();
+                f.ext_not.clear();
+            }
+            Dim::Make => {
+                f.make = None;
+                f.makes.clear();
+                f.makes_not.clear();
+            }
+            Dim::Orientation => {
+                f.orientation.clear();
+                f.orientation_not.clear();
+            }
             Dim::Style => f.style = None,
             Dim::Folder => f.folder = None,
             // A city's "(no location)" is the city with `located` off: counted without it,
@@ -431,8 +459,14 @@ impl Filter {
         if let Some(glob) = &self.filename {
             must.push(Box::new(RegexQuery::from_pattern(&glob_to_regex(&glob.to_lowercase()), f.filename)?));
         }
+        let ext = |list: &[String]| -> Box<dyn Query> {
+            any_of(f.dim(Dim::Ext), list.iter().map(|e| e.trim_start_matches('.').to_lowercase()))
+        };
         if !self.ext.is_empty() {
-            must.push(any_of(f.dim(Dim::Ext), self.ext.iter().map(|e| e.trim_start_matches('.').to_lowercase())));
+            must.push(ext(&self.ext));
+        }
+        if !self.ext_not.is_empty() {
+            must_not.push(ext(&self.ext_not));
         }
         if let Some(place) = &self.place_under {
             must.push(term(f.dim(Dim::PlaceTree), place));
@@ -508,6 +542,7 @@ impl Filter {
         for (dim, needle) in [
             (Dim::Camera, &self.camera),
             (Dim::Lens, &self.lens),
+            (Dim::Make, &self.make),
             (Dim::City, &self.city),
             (Dim::State, &self.state),
             (Dim::Country, &self.country),
@@ -533,8 +568,15 @@ impl Filter {
         if let Some(r) = &self.aperture {
             must.push(range_f64(f.aperture, r));
         }
-        if let Some(r) = &self.focal {
-            must.push(range_f64(f.focal, r));
+        for (field, range) in [(f.focal, &self.focal), (f.shutter, &self.shutter), (f.megapixels, &self.megapixels)] {
+            if let Some(r) = range {
+                must.push(range_f64(field, r));
+            }
+        }
+        for (field, range) in [(f.size, &self.file_size), (f.width, &self.width), (f.height, &self.height)] {
+            if let Some(r) = range {
+                must.push(range_u64(field, r));
+            }
         }
         if let Some(t) = &self.captured {
             must.push(range_i64(f.captured, t.from, t.to));
@@ -570,9 +612,12 @@ impl Filter {
             Some(false) => must.push(Box::new(ExistsQuery::new(Dim::Collection.field_name().to_owned(), false))),
             None => {}
         }
-        for (dim, include, exclude) in
-            [(Dim::Camera, &self.cameras, &self.cameras_not), (Dim::Lens, &self.lenses, &self.lenses_not)]
-        {
+        for (dim, include, exclude) in [
+            (Dim::Camera, &self.cameras, &self.cameras_not),
+            (Dim::Lens, &self.lenses, &self.lenses_not),
+            (Dim::Make, &self.makes, &self.makes_not),
+            (Dim::Orientation, &self.orientation, &self.orientation_not),
+        ] {
             if !include.is_empty() {
                 must.push(any_of(f.dim(dim), include.iter().cloned()));
             }

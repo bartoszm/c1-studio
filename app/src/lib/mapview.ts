@@ -1,6 +1,6 @@
 // What the map shows: where a place found by name goes, the area the grid follows, when
 // a trip's route is fitted again, and the room zooms and flights leave around the photos.
-import type { BBox, Filter } from "./api";
+import type { Area, BBox, Filter, Level } from "./api";
 
 /** A place found by name: its point, and Nominatim's box (west, south, east, north),
  *  rank and kind of place. */
@@ -108,6 +108,30 @@ export function viewBox(west: number, south: number, east: number, north: number
   return { ...lat, min_lon: w, max_lon: e };
 }
 
+/** The closest zoom a place's position is shown at (as `geo::max_zoom`): further in, its
+ *  marker gives way to the streets the photo may not be in. */
+export const LEVEL_ZOOM: Record<Level, number> = { Country: 5, State: 8, City: 11, Location: 14 };
+/** How close *Show on map* goes to photos with positions of their own. */
+export const OWN_ZOOM = 16;
+
+/** Where the map goes to show some photos: a spot, or a box to fit. */
+export type Camera = { center: [number, number]; zoom: number } | { bounds: [[number, number], [number, number]]; maxZoom: number };
+
+/**
+ * The view that shows all of an area's photos: close for positions of their own, no
+ * closer than the least precise place among them, so its marker stays on the map.
+ * Null: none of them is anywhere known. An area across the 180th meridian (`min_lon >
+ * max_lon`) gets its east edge past 180, as maplibre fits it the short way.
+ */
+export function focusCamera(area: Area): Camera | null {
+  const b = area.bounds;
+  if (!b) return null;
+  const zoom = area.coarsest ? LEVEL_ZOOM[area.coarsest] : OWN_ZOOM;
+  if (b.min_lat === b.max_lat && b.min_lon === b.max_lon) return { center: [b.min_lon, b.min_lat], zoom };
+  const east = b.min_lon > b.max_lon ? b.max_lon + 360 : b.max_lon;
+  return { bounds: [[b.min_lon, b.min_lat], [east, b.max_lat]], maxZoom: zoom };
+}
+
 /**
  * A trip's route read again: only another trip is fitted, played from its end, and stops
  * the playback; the same one (after an edit) keeps the view and the playhead, within its
@@ -158,4 +182,21 @@ export function mapPadding(c: Covers): Padding {
   const v = scale(top + bottom, c.height);
   const h = scale(2 * side, c.width);
   return { top: Math.floor(top * v), bottom: Math.floor(bottom * v), left: Math.floor(side * h), right: Math.floor(side * h) };
+}
+
+/** How many photos are where: all of them, and those in view. */
+export type Counted = { located: number; inView: number };
+
+/**
+ * The map's note on the photos it shows: those with a position of their own, and those AI
+ * Locate placed, accepted as approximate (`aiShown`: drawn in their own colour; else hidden
+ * by Settings, but still told of).
+ */
+export function positionsText(own: Counted, ai: Counted, aiShown: boolean): string {
+  const mine = own.located || !ai.located
+    ? `${own.inView.toLocaleString()} of ${own.located.toLocaleString()} photos with a position in view`
+    : "No photos here have a position of their own";
+  if (!ai.located) return mine;
+  const placed = aiShown ? `${ai.inView.toLocaleString()} placed by AI` : `${ai.located.toLocaleString()} placed by AI, not shown (Settings)`;
+  return `${mine} · ${placed}`;
 }

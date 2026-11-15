@@ -7,7 +7,7 @@ import { isWindows } from "./platform";
 
 export type Dim =
   | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
-  | "place_tree" | "flag" | "shape" | "hue" | "light" | "focus" | "group";
+  | "place_tree" | "flag" | "shape" | "hue" | "light" | "focus" | "group" | "make" | "ext" | "orientation";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -45,6 +45,33 @@ export type Filter = {
   /** Exact camera models: any of them / none of them. */
   cameras?: string[];
   cameras_not?: string[];
+  /** Substring of the lens / the camera's maker, ignoring case. */
+  lens?: string;
+  make?: string;
+  /** Exact lenses / makers: any of them / none of them. */
+  lenses?: string[];
+  lenses_not?: string[];
+  makes?: string[];
+  makes_not?: string[];
+  iso?: Range;
+  /** The f-number. */
+  aperture?: Range;
+  /** Millimetres. */
+  focal?: Range;
+  /** Exposure time in seconds. */
+  shutter?: Range;
+  /** The original's size in bytes. */
+  file_size?: Range;
+  /** The picture as shown (turned and cropped). */
+  megapixels?: Range;
+  width?: Range;
+  height?: Range;
+  /** Lower-case file extensions without the dot: any of them / none of them. */
+  ext?: string[];
+  ext_not?: string[];
+  /** `landscape`, `portrait`, `square`, `panorama` as shown: any of them / none of them. */
+  orientation?: string[];
+  orientation_not?: string[];
   /** None of these colour labels. */
   colors_not?: Color[];
   country?: string;
@@ -128,6 +155,10 @@ export type MapResult = {
   unresolved: number;
   /** Photos with neither a position nor a place. */
   unplaced: number;
+  /** Photos given a position by AI Locate, accepted as approximate: apart from `clusters`. */
+  ai: Cluster[];
+  ai_located: number;
+  ai_in_view: number;
 };
 
 /** What the analysis found for a photo, with its classes and groups (id, size). */
@@ -310,7 +341,8 @@ export type Photo = {
   };
   geo: { lat: number; lon: number; alt: number | null; origin: GeoOrigin } | null;
   collections: string[];
-  edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number };
+  /** `shown`: width and height as displayed (turned and cropped), when known. */
+  edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number; shown: [number, number] | null };
   trashed: boolean;
   /** Hidden by the user in C1 Studio (not a Capture One field). */
   hidden?: boolean;
@@ -561,6 +593,12 @@ export const positions = (filter: Filter, options: { sort: Sort }, rows: number[
   invoke<[number, number][]>("positions", { filter, options, rows });
 /** The photos the filter selects that have a position, clustered for the map's view. */
 export const map = (filter: Filter, view: { bounds: BBox; zoom: number }) => invoke<MapResult>("map", { filter, view });
+/** Where some photos are: the box their positions span (their own, or their places'), the
+ *  least precise place among them (null: all their own), and how many are where. */
+export type Area = { bounds: BBox | null; coarsest: Level | null; exact: number; approx: number; unknown: number };
+export const area = (rows: number[]) => invoke<Area>("area", { rows });
+/** Where a place is by the offline gazetteer, at the finest level it knows it; null: it does not. */
+export const placePoint = (place: Photo["place"]) => invoke<Approx | null>("place_point", { place });
 export type Approx = { lat: number; lon: number; level: Level };
 /** A place no position is known for at the level it names. */
 export type Unresolved = { path: string; place: Photo["place"]; photos: number; have: Level | null; want: Level };
@@ -857,6 +895,8 @@ export type AiEstimate = {
 export type DescribeState = {
   task: AiTask;
   running: boolean; done: number; total: number; failed: number;
+  /** Of those done, the photos a locating run placed nowhere. */
+  unplaced: number;
   /** Rows being described now. */
   working: number[];
   /** Unix ms. */
@@ -900,7 +940,13 @@ export type Suggestion = {
   composition: number | null;
   confidence: number;
   place: PlaceGuess | null;
+  /** A locating run placed it nowhere: what the model said of why (null on older ones,
+   *  which stored none; the backend always writes the field). */
+  unplaced: Unplaced | null;
 };
+/** Why a locating run placed a photo nowhere: the model's reason (empty if it gave none)
+ *  and the evidence it saw. */
+export type Unplaced = { reason: string; clues: string[]; landmark: string | null };
 /** A photo's place names. */
 export type PlaceNames = Photo["place"];
 /** A place level guessed, with the probability (0..1) that it is right. */
@@ -918,6 +964,8 @@ export type PlaceGuess = {
   basis?: "landmark" | "scene" | "context" | "region" | null;
   landmark?: string | null;
   clues?: string[];
+  /** What keeps a level or the position empty or unsure, as the model said. */
+  reason?: string | null;
 };
 export type SuggestionStatus = "Proposed" | "Accepted" | "Rejected";
 export type SuggestionRow = {

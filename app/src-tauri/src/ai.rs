@@ -157,6 +157,8 @@ pub(crate) struct DescribeState {
     done: usize,
     total: usize,
     failed: usize,
+    /// Of those done, the photos a locating run's answers placed nowhere.
+    unplaced: usize,
     /// The photos being described now.
     working: Vec<u64>,
     /// When the run started, Unix ms: with `done`, how long the rest will take.
@@ -874,7 +876,6 @@ pub(crate) async fn start_describe(
                         let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| match unit.as_slice() {
                             [row] if !sheets => {
                                 describe_one(&s, provider.as_ref(), task, image, *row, &clues, progress)
-                                    .map(|cost| Described { no_image: 0, unanswered: 0, cost })
                             }
                             rows if grouped => {
                                 let scene = Scene { rows, max: scene_max, call };
@@ -885,29 +886,38 @@ pub(crate) async fn start_describe(
                         .unwrap_or_else(|_| Err(anyhow::anyhow!("describing it crashed")));
                         let name = call_name(call, sheets);
                         let took = (now() - began) / 1000;
+                        // The events log's lines, written once the lock is let go: they read
+                        // the photos' names and append to a file.
+                        let mut events: Vec<(String, Vec<String>, Vec<u64>)> = Vec::new();
                         let mut st = lock(&s.describe);
                         let tried_again = st.unit(call).is_some_and(|u| u.attempt > 1);
                         st.working.retain(|r| !unit.contains(r));
                         st.units.retain(|u| u.call != call);
                         match outcome {
-                            Ok(Described { no_image, unanswered, cost }) => {
+                            Ok(Described { no_image, unanswered, cost, findings }) => {
                                 st.done += unit.len();
                                 st.failed += no_image + unanswered;
                                 st.cost += cost;
                                 st.calls_done += 1;
                                 failing.store(0, Ordering::SeqCst);
+                                let nowhere: usize =
+                                    findings.iter().filter(|f| f.nothing_found()).map(|f| f.rows.len()).sum();
+                                st.unplaced += nowhere;
+                                // A photo or scene placed nowhere, or only in part, says why:
+                                // a sheet or scene in one line of the run's log, a photo in
+                                // its own; each in the events log.
                                 if sheets {
-                                    let left_out = if unanswered > 0 {
-                                        format!(", {unanswered} missing from the answer")
-                                    } else {
-                                        String::new()
-                                    };
-                                    let described = unit.len() - no_image - unanswered;
-                                    st.note(
-                                        call,
-                                        unanswered == 0,
-                                        format!("{name}: answered in {took} s, {described} described{left_out}"),
-                                    );
+                                    let answered = unit.len() - no_image - unanswered;
+                                    let text = sheet_note(&name, took, task, answered, unanswered, &findings);
+                                    st.note(call, unanswered == 0 && nowhere == 0, text);
+                                } else {
+                                    for f in &findings {
+                                        st.note(call, !f.nothing_found(), format!("{name}: {}", f.text()));
+                                    }
+                                }
+                                for f in findings {
+                                    let what = unit_name(&f.rows, grouped);
+                                    events.push((format!("{} {what}: {}", doing(task), f.text()), f.details(), f.rows));
                                 }
                             }
                             // Stopped mid-call: neither done nor failed.
@@ -924,11 +934,12 @@ pub(crate) async fn start_describe(
                                     message.push_str(" (tried again, to no avail)");
                                 }
                                 st.note(call, false, format!("{name}: failed after {took} s: {message}"));
-                                let what = match unit.as_slice() {
-                                    [row] => format!("photo {row}"),
-                                    rows => format!("a sheet of {} photos", rows.len()),
-                                };
-                                s.log.event(&format!("Describing {what} failed: {message}"), &[]);
+                                let what = unit_name(unit, grouped);
+                                events.push((
+                                    format!("{} {what} failed: {message}", doing(task)),
+                                    Vec::new(),
+                                    unit.clone(),
+                                ));
                                 let in_a_row = failing.fetch_add(1, Ordering::SeqCst) + 1;
                                 // Without a working key, Claude Code, credit or what is left
                                 // of the plan no photo will do: the run stops.
@@ -946,6 +957,10 @@ pub(crate) async fn start_describe(
                         }
                         drop(st);
                         publish(&app, &s);
+                        for (text, mut details, rows) in events {
+                            details.push(photo_names(&s, &rows));
+                            s.log.event(&text, &details);
+                        }
                     }
                 });
             }
@@ -955,8 +970,7 @@ pub(crate) async fn start_describe(
             st.running = false;
             st.working.clear();
             st.units.clear();
-            let verb = if task == Task::Locate { "Located" } else { "Described" };
-            let summary = format!("{verb} {} photos, {} failed", st.done - st.failed, st.failed);
+            let summary = run_summary(task, st.done, st.unplaced, st.failed);
             let ok = st.failed == 0;
             st.note(0, ok, summary.clone());
             format!("{summary}, ${:.4}", st.cost)
@@ -973,6 +987,17 @@ pub(crate) async fn start_describe(
 /// Photos failing one after another before a run stops.
 const FAILING: usize = 5;
 
+/// A run's last line: "Located 40 photos, 3 with no place found, 1 failed".
+fn run_summary(task: Task, done: usize, unplaced: usize, failed: usize) -> String {
+    match task {
+        Task::Locate => format!(
+            "Located {} photos, {unplaced} with no place found, {failed} failed",
+            done.saturating_sub(failed + unplaced)
+        ),
+        Task::Describe => format!("Described {} photos, {failed} failed", done.saturating_sub(failed)),
+    }
+}
+
 /// A lock that outlives a panic elsewhere: the run's state is plain counters.
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
@@ -983,8 +1008,9 @@ fn failed_with(e: &anyhow::Error) -> Option<&AiError> {
     e.downcast_ref::<Failed>().map(|f| &f.error)
 }
 
-/// Describes one photo and stores the suggestion. Returns what the call cost. A call
-/// that was paid for but gave nothing is recorded all the same.
+/// Describes one photo and stores the suggestion. Returns what the call cost and, when
+/// locating, what it left open. A call that was paid for but gave nothing is recorded all
+/// the same.
 fn describe_one(
     s: &Session,
     provider: &dyn VisionProvider,
@@ -993,12 +1019,16 @@ fn describe_one(
     row: u64,
     clues: &Clues,
     progress: Progress,
-) -> anyhow::Result<f64> {
+) -> anyhow::Result<Described> {
     let clues = clues.get(&row).map(Vec::as_slice).unwrap_or_default();
     let Some(request) = request(s, image, row, clues, progress)? else { anyhow::bail!("no preview or thumbnail") };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
         Err(failed) => return Err(paid_for(s, row, failed)),
+    };
+    let findings = match task {
+        Task::Locate => Finding::of(vec![row], &reply.suggestion).into_iter().collect(),
+        Task::Describe => Vec::new(),
     };
     let entry = Entry {
         cost: reply.record.cost,
@@ -1006,7 +1036,7 @@ fn describe_one(
         ..proposed(provider, reply.suggestion, reply.warnings)
     };
     s.library.put_suggestion(task, row, &entry, &reply.record)?;
-    Ok(reply.record.cost)
+    Ok(Described { cost: reply.record.cost, findings, ..Described::default() })
 }
 
 /// A suggestion just made, to review, as `provider` gave it: the model asked for is kept,
@@ -1046,11 +1076,141 @@ fn keep_sheet(s: &Session, call: usize, jpeg: &[u8]) {
 }
 
 /// What a call gave: photos that got no suggestion, for want of an image or of an answer,
-/// and what it cost.
+/// what it cost, and what a locating call left open.
+#[derive(Default)]
 struct Described {
     no_image: usize,
     unanswered: usize,
     cost: f64,
+    findings: Vec<Finding>,
+}
+
+/// What a locating call left open of a photo, or of a scene: no place at all, or only part
+/// of one, with why, as the model told it. Logged, so a photo placed nowhere says why.
+#[derive(Debug, PartialEq)]
+struct Finding {
+    rows: Vec<u64>,
+    /// The levels given ("Poland › Kraków"); empty when no place was found.
+    placed: String,
+    reason: String,
+    clues: Vec<String>,
+    landmark: Option<String>,
+}
+
+impl Finding {
+    /// What `suggestion` leaves open, if anything: a place given with nothing said against
+    /// it leaves nothing.
+    fn of(rows: Vec<u64>, suggestion: &c1ai::Suggestion) -> Option<Finding> {
+        match &suggestion.place {
+            Some(place) => {
+                let reason = place.reason.clone()?;
+                let names: Vec<&str> =
+                    place.levels().iter().filter_map(|l| l.as_ref()).map(|g| g.name.as_str()).collect();
+                let placed = if names.is_empty() { "a position only".to_string() } else { names.join(" › ") };
+                Some(Finding { rows, placed, reason, clues: Vec::new(), landmark: None })
+            }
+            None => {
+                let why = suggestion.unplaced.clone().unwrap_or_default();
+                Some(Finding {
+                    rows,
+                    placed: String::new(),
+                    reason: why.reason,
+                    clues: why.clues,
+                    landmark: why.landmark,
+                })
+            }
+        }
+    }
+
+    fn nothing_found(&self) -> bool {
+        self.placed.is_empty()
+    }
+
+    /// "no place found: …", or the levels found and what kept the rest open.
+    fn text(&self) -> String {
+        let reason = if self.reason.is_empty() { "the model gave no reason" } else { &self.reason };
+        if self.nothing_found() { format!("no place found: {reason}") } else { format!("{}; {reason}", self.placed) }
+    }
+
+    /// The lines the events log gives under it: the evidence the model saw.
+    fn details(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.clues.is_empty() {
+            lines.push(format!("clues: {}", self.clues.join("; ")));
+        }
+        if let Some(landmark) = &self.landmark {
+            lines.push(format!("landmark: {landmark}"));
+        }
+        lines
+    }
+}
+
+/// How the events log names what a call was about: "photo 7", "a scene of 5 photos", "a
+/// sheet of 36 photos".
+fn unit_name(rows: &[u64], scene: bool) -> String {
+    match rows {
+        [row] => format!("photo {row}"),
+        rows if scene => format!("a scene of {} photos", rows.len()),
+        rows => format!("a sheet of {} photos", rows.len()),
+    }
+}
+
+/// What a run does, for the events log: "Locating", "Describing".
+fn doing(task: Task) -> &'static str {
+    match task {
+        Task::Locate => "Locating",
+        Task::Describe => "Describing",
+    }
+}
+
+/// File names an events log line gives at most; the rest are counted.
+const NAMES_SHOWN: usize = 20;
+
+/// The photos' file names, for the events log: the first [`NAMES_SHOWN`] and how many more.
+fn photo_names(s: &Session, rows: &[u64]) -> String {
+    let names: Vec<String> = rows
+        .iter()
+        .take(NAMES_SHOWN)
+        .map(|&row| match s.library.photo(row) {
+            Ok(Some(photo)) => format!("{} (row {row})", photo.file.name),
+            _ => format!("row {row}"),
+        })
+        .collect();
+    photos_line(&names, rows.len())
+}
+
+/// "photos: a, b and 3 more": the names given, of `total` photos.
+fn photos_line(names: &[String], total: usize) -> String {
+    let more = total.saturating_sub(names.len());
+    let more = if more > 0 { format!(" and {more} more") } else { String::new() };
+    format!("photos: {}{more}", names.join(", "))
+}
+
+/// A sheet's (or a scene's) one line in the run's log, however many of its photos were
+/// placed nowhere or in part: how many, with the first one's reason; each photo's own is in
+/// the events log. A big sheet's lines would push the rest of the run out of the AI tab.
+fn sheet_note(name: &str, took: i64, task: Task, answered: usize, unanswered: usize, findings: &[Finding]) -> String {
+    let left_out = if unanswered > 0 { format!(", {unanswered} missing from the answer") } else { String::new() };
+    if task == Task::Describe {
+        return format!("{name}: answered in {took} s, {answered} described{left_out}");
+    }
+    let nowhere: usize = findings.iter().filter(|f| f.nothing_found()).map(|f| f.rows.len()).sum();
+    let in_part: usize = findings.iter().filter(|f| !f.nothing_found()).map(|f| f.rows.len()).sum();
+    let located = answered.saturating_sub(nowhere);
+    let in_part = if in_part > 0 { format!(" ({in_part} of them in part)") } else { String::new() };
+    let nowhere = if nowhere > 0 { format!(", {nowhere} with no place found") } else { String::new() };
+    // The first placed nowhere says why; else the first placed in part.
+    let first = findings.iter().find(|f| f.nothing_found()).or(findings.first());
+    let why = match first {
+        Some(f) => {
+            let reason = if f.reason.is_empty() { "the model gave no reason" } else { &f.reason };
+            let more = if findings.len() > 1 { "…" } else { "" };
+            format!(": {reason}{more}")
+        }
+        None => String::new(),
+    };
+    // The reason last, after the count it belongs to.
+    format!("{name}: answered in {took} s{left_out}, {located} located{in_part}{nowhere}{why}")
 }
 
 /// Describes a contact sheet of `rows` in one call (number `call`) and stores each photo's
@@ -1099,12 +1259,16 @@ fn describe_sheet(
         s.log.event(&format!("A sheet of {} photos: {}", on_sheet.len(), reply.warnings.join("; ")), &[]);
     }
     let mut unanswered = 0;
+    let mut findings = Vec::new();
     let mut first = Some(());
     for (&row, answer) in on_sheet.iter().zip(reply.replies) {
         let Some((suggestion, warnings)) = answer else {
             unanswered += 1;
             continue;
         };
+        if task == Task::Locate {
+            findings.extend(Finding::of(vec![row], &suggestion));
+        }
         let entry =
             Entry { context: clues.get(&row).cloned().unwrap_or_default(), ..proposed(provider, suggestion, warnings) };
         // The call is recorded once, with the first photo it gave a suggestion for.
@@ -1116,7 +1280,7 @@ fn describe_sheet(
     if first.is_some() {
         s.library.record_call(on_sheet[0], &reply.record)?;
     }
-    Ok(Described { no_image, unanswered, cost: reply.record.cost })
+    Ok(Described { no_image, unanswered, cost: reply.record.cost, findings })
 }
 
 /// A scene to locate: photos taken one after another at one place (in that order), the
@@ -1200,6 +1364,7 @@ fn locate_scene(
         Ok(reply) => reply,
         Err(failed) => return Err(paid_for(s, rows[0], failed)),
     };
+    let findings = Finding::of(rows.to_vec(), &reply.suggestion).into_iter().collect();
     let mut told = vec![scene];
     told.extend(lines);
     let entry = Entry {
@@ -1210,7 +1375,7 @@ fn locate_scene(
     };
     // Checked once, written together, the call recorded with the scene's first photo.
     s.library.put_scene(Task::Locate, rows, &entry, &reply.record)?;
-    Ok(Described { no_image: 0, unanswered: 0, cost: reply.record.cost })
+    Ok(Described { cost: reply.record.cost, findings, ..Described::default() })
 }
 
 /// What a clue line tells of, its time aside: "12 min before it, the photographer was at
@@ -1441,5 +1606,90 @@ mod tests {
             clue_key("On a straight line between the two, by time: about 50.3200, 19.4600"),
             clue_key("On a straight line between the two, by time: about 50.3210, 19.4630")
         );
+    }
+
+    #[test]
+    fn a_photo_placed_nowhere_says_why() {
+        let nowhere = c1ai::Suggestion {
+            unplaced: Some(c1ai::Unplaced {
+                reason: "A generic hotel room.".into(),
+                clues: vec!["white walls".into(), "no window".into()],
+                landmark: None,
+            }),
+            ..Default::default()
+        };
+        let f = Finding::of(vec![3, 4], &nowhere).unwrap();
+        assert!(f.nothing_found());
+        assert_eq!(f.text(), "no place found: A generic hotel room.");
+        assert_eq!(f.details(), ["clues: white walls; no window"]);
+        // An answer with nothing at all: still told, as nothing found.
+        let silent = Finding::of(vec![5], &c1ai::Suggestion::default()).unwrap();
+        assert_eq!(silent.text(), "no place found: the model gave no reason");
+        assert!(silent.details().is_empty());
+
+        let guess = |name: &str| Some(c1ai::Guess { name: name.into(), p: 0.9 });
+        let mut place =
+            c1ai::PlaceGuess { country: guess("Poland"), city: guess("Kraków"), ..c1ai::PlaceGuess::default() };
+        let placed = c1ai::Suggestion { place: Some(place.clone()), ..Default::default() };
+        assert_eq!(Finding::of(vec![1], &placed), None, "placed, nothing said against it");
+        place.reason = Some("No sign of the district.".into());
+        let part = Finding::of(vec![1], &c1ai::Suggestion { place: Some(place), ..Default::default() }).unwrap();
+        assert!(!part.nothing_found());
+        assert_eq!(part.text(), "Poland › Kraków; No sign of the district.");
+    }
+
+    #[test]
+    fn the_log_names_what_a_call_was_about() {
+        assert_eq!(unit_name(&[7], false), "photo 7");
+        assert_eq!(unit_name(&[7], true), "photo 7");
+        assert_eq!(unit_name(&[1, 2, 3], true), "a scene of 3 photos");
+        assert_eq!(unit_name(&[1, 2], false), "a sheet of 2 photos");
+        assert_eq!(doing(Task::Locate), "Locating");
+        assert_eq!(run_summary(Task::Locate, 10, 3, 1), "Located 6 photos, 3 with no place found, 1 failed");
+        assert_eq!(run_summary(Task::Describe, 10, 0, 1), "Described 9 photos, 1 failed");
+    }
+
+    #[test]
+    fn a_sheet_says_in_one_line_how_many_it_placed_nowhere_and_the_first_reason() {
+        let finding = |rows: Vec<u64>, placed: &str, reason: &str| Finding {
+            rows,
+            placed: placed.into(),
+            reason: reason.into(),
+            clues: Vec::new(),
+            landmark: None,
+        };
+        let findings = [
+            finding(vec![4], "Poland", "No sign of the city."),
+            finding(vec![5], "", "A generic hotel room."),
+            finding(vec![6], "", ""),
+        ];
+        assert_eq!(
+            sheet_note("Sheet 3", 41, Task::Locate, 14, 0, &findings),
+            "Sheet 3: answered in 41 s, 12 located (1 of them in part), 2 with no place found: A generic hotel room.…"
+        );
+        // Only in part: the reason goes with that.
+        assert_eq!(
+            sheet_note("Sheet 1", 9, Task::Locate, 3, 1, &findings[..1]),
+            "Sheet 1: answered in 9 s, 1 missing from the answer, 3 located (1 of them in part): No sign of the city."
+        );
+        // A scene placed nowhere: one finding for all its photos.
+        assert_eq!(
+            sheet_note("Sheet 2", 20, Task::Locate, 7, 0, &[finding(vec![1, 2, 3, 4, 5, 6, 7], "", "")]),
+            "Sheet 2: answered in 20 s, 0 located, 7 with no place found: the model gave no reason"
+        );
+        assert_eq!(sheet_note("Sheet 4", 30, Task::Locate, 36, 0, &[]), "Sheet 4: answered in 30 s, 36 located");
+        assert_eq!(
+            sheet_note("Sheet 5", 30, Task::Describe, 35, 1, &[]),
+            "Sheet 5: answered in 30 s, 35 described, 1 missing from the answer"
+        );
+    }
+
+    #[test]
+    fn the_events_log_names_the_first_photos_and_counts_the_rest() {
+        let names: Vec<String> = (1..=NAMES_SHOWN).map(|n| format!("DSCF{n}.RAF")).collect();
+        let line = photos_line(&names, 45);
+        assert!(line.starts_with("photos: DSCF1.RAF, DSCF2.RAF,"), "{line}");
+        assert!(line.ends_with("DSCF20.RAF and 25 more"), "{line}");
+        assert_eq!(photos_line(&names[..2], 2), "photos: DSCF1.RAF, DSCF2.RAF");
     }
 }

@@ -19,7 +19,7 @@
   // camera are links: following one filters the grid by it. Stars and colours edit.
   let {
     row, version, analysed, picked, queued, queuedPicked, collections, keywords, clip, summary, stale, summaryError,
-    onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera,
+    onrate, oncolor, onaddkeyword, onaddkeywords, onremovekeyword, onkeyword, onalbum, onfolder, oncamera, onpick,
     onaddalbum, onremovealbum, ongroup, onaround,
     onplace, ongeo, onfillplace, ongeofromplace, oniptc, oncopy, onpaste, onpastechoose, onsync,
     allHidden = false, onhide, inBin = false, ondelete, variants = 1, onvariants,
@@ -63,6 +63,8 @@
     ongroup: (id: string) => void;
     onfolder: (path: string) => void;
     oncamera: (model: string) => void;
+    /** Narrows the photos to those sharing this one's lens or format. */
+    onpick: (f: api.Filter) => void;
     /** The photos taken around this one (`at`): shown, or with `select` picked among those shown. */
     onaround?: (row: number, at: number, what: Around, select: boolean) => void;
     /** Location fields typed in, "" clearing one: on `rows`, or on every photo edited. */
@@ -455,11 +457,20 @@
       <dt>Camera</dt>
       <dd><button class="link" onclick={() => p.exif.camera_model && oncamera(p.exif.camera_model)}>{camera(p)}</button></dd>
     {/if}
-    {#if p.exif.lens}<dt>Lens</dt><dd>{p.exif.lens}</dd>{/if}
+    {#if p.exif.lens}
+      {@const lens = p.exif.lens}
+      <dt>Lens</dt>
+      <dd><button class="link" title="Photos taken with this lens" onclick={() => onpick({ lenses: [lens] })}>{lens}</button></dd>
+    {/if}
     {#if exposure(p)}<dt>Exposure</dt><dd>{exposure(p)}</dd>{/if}
     {#if p.exif.width && p.exif.height}
       <dt>Size</dt>
       <dd>{p.exif.width} × {p.exif.height} · {((p.exif.width * p.exif.height) / 1e6).toFixed(1)} MP</dd>
+    {/if}
+    {#if p.edit.shown && (p.edit.shown[0] !== p.exif.width || p.edit.shown[1] !== p.exif.height)}
+      {@const [w, h] = p.edit.shown}
+      <dt>As shown</dt>
+      <dd title="Turned and cropped: what mp:, width:, height: and orient: search">{w} × {h} · {((w * h) / 1e6).toFixed(1)} MP</dd>
     {/if}
   </dl>
 {/snippet}
@@ -772,6 +783,11 @@
     {#if p.file.path}
       <dt>Folder</dt>
       <dd><button class="link path" onclick={() => p.file.path && onfolder(folderOf(p.file.path))}>{folderOf(p.file.path)}</button></dd>
+    {/if}
+    {#if p.file.ext}
+      {@const ext = p.file.ext}
+      <dt>Format</dt>
+      <dd><button class="link" title="Photos in this format" onclick={() => onpick({ ext: [ext] })}>{ext.toUpperCase()}</button></dd>
     {/if}
     {#if p.file.size !== null}<dt>File size</dt><dd>{bytes(p.file.size)}</dd>{/if}
     {#if variants > 1}

@@ -64,6 +64,79 @@ pub struct MapResult {
     pub unresolved: usize,
     /// Photos with neither a position nor a place.
     pub unplaced: usize,
+    /// Photos given a position by AI Locate, accepted as approximate: clustered apart from
+    /// positions of their own, so the map can show them in their own colour, or not at all.
+    pub ai: Vec<Cluster>,
+    /// Photos with such a position among those selected, seen or not.
+    pub ai_located: usize,
+    /// Of them, the ones inside the view.
+    pub ai_in_view: usize,
+}
+
+/// Where some photos are, for the map to show them all: the box their positions span,
+/// those of their own and those from their places' names.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Area {
+    /// None: none of them has a position, or a place a position is known for. The shorter
+    /// way round the world: across the 180th meridian it runs west to east from
+    /// `min_lon` to `max_lon`, so `min_lon > max_lon` (Fiji at 179.9 and -179.9).
+    pub bounds: Option<BBox>,
+    /// The least precise place a position came from (None: all are their own), so the
+    /// map stays zoomed out enough to show it.
+    pub coarsest: Option<Level>,
+    /// Photos with a position of their own.
+    pub exact: usize,
+    /// Photos placed by their place's name, or given that place's position.
+    pub approx: usize,
+    /// Photos with neither, or with a place no position is known for.
+    pub unknown: usize,
+    /// The longitudes added, for [`Area::wrapped`] to find the shorter way round.
+    #[serde(skip)]
+    pub(crate) lons: Vec<f64>,
+}
+
+impl Area {
+    /// A photo at a position: its own (no level), or its place's. The box grows as on a
+    /// flat map; [`Area::wrapped`] then takes the shorter way round.
+    pub(crate) fn add(&mut self, lat: f64, lon: f64, level: Option<Level>) {
+        self.lons.push(lon);
+        self.bounds = Some(match self.bounds {
+            None => BBox { min_lat: lat, max_lat: lat, min_lon: lon, max_lon: lon },
+            Some(b) => BBox {
+                min_lat: b.min_lat.min(lat),
+                max_lat: b.max_lat.max(lat),
+                min_lon: b.min_lon.min(lon),
+                max_lon: b.max_lon.max(lon),
+            },
+        });
+        match level {
+            Some(l) => {
+                self.approx += 1;
+                self.coarsest = Some(self.coarsest.map_or(l, |c| c.min(l)));
+            }
+            None => self.exact += 1,
+        }
+    }
+
+    /// The area with its longitudes the shorter way round: the widest gap between them is
+    /// what is left out, and when that gap is not the one across the 180th meridian the
+    /// box crosses it (`min_lon > max_lon`).
+    pub(crate) fn wrapped(mut self) -> Self {
+        let mut lons = std::mem::take(&mut self.lons);
+        let Some(b) = self.bounds.as_mut() else { return self };
+        lons.sort_by(f64::total_cmp);
+        let (Some(&first), Some(&last)) = (lons.first(), lons.last()) else { return self };
+        // The gap across the meridian, from the most easterly round to the most westerly.
+        let mut widest = first + 360.0 - last;
+        for pair in lons.windows(2) {
+            let gap = pair[1] - pair[0];
+            if gap > widest {
+                widest = gap;
+                (b.min_lon, b.max_lon) = (pair[1], pair[0]);
+            }
+        }
+        self
+    }
 }
 
 /// The closest zoom a position from a place's name is shown at: further in, the map
@@ -341,6 +414,32 @@ mod tests {
         let view = MapView { bounds: BBox { min_lat: 40.0, max_lat: 60.0, min_lon: 10.0, max_lon: 30.0 }, zoom: 5.0 };
         let r = cluster(&points, &view);
         assert_eq!((r.located, r.in_view, r.clusters.len()), (2, 1, 1));
+    }
+
+    fn area_of(lons: &[f64]) -> BBox {
+        let mut area = Area::default();
+        for &lon in lons {
+            area.add(10.0, lon, None);
+        }
+        area.wrapped().bounds.unwrap()
+    }
+
+    #[test]
+    fn an_area_takes_the_shorter_way_round() {
+        // Either side of the 180th meridian: a box across it, west to east.
+        let fiji = area_of(&[178.0, -178.0, 179.5]);
+        assert_eq!((fiji.min_lon, fiji.max_lon), (178.0, -178.0));
+        // Elsewhere, as on a flat map.
+        let europe = area_of(&[19.0, -9.0, 2.0]);
+        assert_eq!((europe.min_lon, europe.max_lon), (-9.0, 19.0));
+        // Spread round the world: the widest gap is left out, wherever it is.
+        let round = area_of(&[-170.0, -10.0, 10.0, 170.0, 100.0]);
+        assert_eq!((round.min_lon, round.max_lon), (-10.0, -170.0));
+        let pacific = area_of(&[-120.0, 120.0]);
+        assert_eq!((pacific.min_lon, pacific.max_lon), (120.0, -120.0));
+        assert_eq!(area_of(&[-90.0, 90.0]).min_lon, -90.0, "a tie stays on the flat map");
+        let one = area_of(&[179.0]);
+        assert_eq!((one.min_lon, one.max_lon), (179.0, 179.0));
     }
 
     #[test]

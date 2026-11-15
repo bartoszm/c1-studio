@@ -122,7 +122,7 @@ enum Command {
         #[command(flatten)]
         select: Selector,
         /// Comma-separated: keyword, keyword_tree, collection, camera, lens, country, state,
-        /// city, year, month, rating, color, ext, style, flag, source.
+        /// city, year, month, rating, color, ext, style, flag, source, make, orientation.
         #[arg(long, default_value = "rating,color,year,camera,keyword_tree")]
         dims: String,
         /// Values shown per dimension.
@@ -285,7 +285,7 @@ enum Command {
         #[arg(long)]
         rebuild: bool,
         /// Dimensions counted with every query, as the sidebar would.
-        #[arg(long, default_value = "rating,color,year,camera,lens,keyword_tree,collection,country")]
+        #[arg(long, default_value = "rating,color,year,camera,lens,ext,orientation,keyword_tree,collection,country")]
         dims: String,
     },
 }

@@ -393,6 +393,7 @@ impl From<v2::Entry> for Entry {
                 composition: s.composition,
                 confidence: s.confidence,
                 place,
+                unplaced: None,
             },
             warnings: e.warnings,
             cost: e.cost,
@@ -466,6 +467,7 @@ impl From<v1::Entry> for Entry {
                 composition: s.composition,
                 confidence: s.confidence,
                 place,
+                unplaced: None,
             },
             warnings: e.warnings,
             cost: e.cost,
@@ -523,6 +525,21 @@ mod tests {
         let found = book.get(Task::Locate, "c1:1").unwrap().unwrap();
         assert_eq!((found.status, found.context.len()), (Status::Accepted, 1));
         assert_eq!(book.spent().unwrap().0, 2);
+    }
+
+    #[test]
+    fn why_a_photo_was_not_placed_is_kept_and_older_entries_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = SuggestionBook::open(&dir.path().join("ai.redb"), &Default::default()).unwrap();
+        let unplaced =
+            c1ai::Unplaced { reason: "A plain wall.".into(), clues: vec!["no signs".into()], landmark: None };
+        let mut located = entry(Status::Proposed);
+        located.suggestion.unplaced = Some(unplaced.clone());
+        book.put(Task::Locate, "c1:1", &located, &RunRecord::default()).unwrap();
+        assert_eq!(book.get(Task::Locate, "c1:1").unwrap().unwrap().suggestion.unplaced, Some(unplaced));
+        // Written before the field was: read with none.
+        let older = decode(br#"{"suggestion": {"place": null, "confidence": 0.4}, "status": "Proposed"}"#).unwrap();
+        assert_eq!((older.suggestion.unplaced, older.suggestion.confidence), (None, 0.4));
     }
 
     #[test]
