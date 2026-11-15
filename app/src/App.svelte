@@ -80,8 +80,13 @@
   let error = $state<string | null>(null);
   let filter = $state<Filter>({});
   let search = $state("");
-  /** The search box's tokens as last searched for, not yet made chips. */
-  let typed = $state<Parsed>(parseSearch(""));
+  /** The search box's tokens as last searched for, not yet made chips. Only ever replaced
+   *  whole, so not deep: no proxies reach the filter sent to the index. */
+  let typed = $state.raw<Parsed>(parseSearch(""));
+  /** The filter the grid shows: the chips with the tokens still in the box over them.
+   *  What is on screen (the Clear button, the sidebar's picks, Back and Forward) reads
+   *  this, so tokens act the same before Enter as after. */
+  let current = $derived(withSearch(filter, typed));
   let result = $state<QueryResult | null>(null);
   let collections = $state<api.Collection[]>([]);
   /** Keyword paths for completion, most used first. */
@@ -784,8 +789,10 @@
    *  run overtaken); steps of one `kind` in a row
    *  (typing a search, clicking tiles) are one step back. */
   type Step = { restore?: Picks; travelling?: boolean; kind?: "search" | "tile" };
+  // The filter kept is the one searched for, tokens still in the box included: a token typed
+  // is a step, and going back or forward to it brings its tokens back as chips.
   const shownNow = (): Shown => ({
-    filter: $state.snapshot(filter), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
+    filter: $state.snapshot(current), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
     tile: mapTile, follow, picks: [],
   });
   function leaving(was: Picks, how: Step) {
@@ -809,6 +816,8 @@
     if (!to.follow && to.filter.within && !to.tile) follow = false;
     inBin = to.bin;
     showHidden = to.hidden;
+    // Tokens that were still in the box come back as chips: the same photos, the box
+    // keeping only the free text.
     filter = to.filter;
     setSearch(to.filter.text ?? "");
     sortField = to.sortField;
@@ -1544,10 +1553,11 @@
         if (value === "none") return c === "None" ? "in" : c === "Any" ? "out" : null;
         return pickOf(colorsIn(), filter.colors_not, cap(value));
       }
-      case "camera": return pickOf(filter.cameras, filter.cameras_not, value);
-      case "lens": return pickOf(filter.lenses, filter.lenses_not, value);
-      case "ext": return pickOf(filter.ext, filter.ext_not, value);
-      case "orientation": return pickOf(filter.orientation, filter.orientation_not, value);
+      // As searched for: a format: or orient: token in the box replaces these picks.
+      case "camera": return pickOf(current.cameras, current.cameras_not, value);
+      case "lens": return pickOf(current.lenses, current.lenses_not, value);
+      case "ext": return pickOf(current.ext, current.ext_not, value);
+      case "orientation": return pickOf(current.orientation, current.orientation_not, value);
       case "hue": return filter.hues?.includes(value) ? "in" : null;
       case "year": return filter.year === +value ? "in" : null;
       case "country": return filter.country === value ? "in" : null;
@@ -1972,7 +1982,7 @@
     for (const key of keywordView.open) searchOpen.add(key);
   });
 
-  let active = $derived(Object.values(filter).some((v) => v !== undefined));
+  let active = $derived(Object.values(current).some((v) => v !== undefined));
 
   // Not state: where a step still waiting for its page goes. Quick presses count from
   // it, so none is lost; only the newest step moves the viewer.
@@ -2847,7 +2857,7 @@
           >×</button>
         </span>
       {/each}
-      {#if criteriaCount(filter) >= 2}
+      {#if criteriaCount(current) >= 2}
         <span class="match">
           Match
           <span class="seg" role="group" aria-label="Match all or any">

@@ -49,9 +49,33 @@ test("bad values are errors, kept in the box but not searched for", () => {
   assert.match(p.errors[0].message, /iso:>1600/);
 });
 
+test("the free text keeps what was typed around the tokens", () => {
+  // A quoted phrase with + or - in front stays one requirement or exclusion.
+  const p = parseSearch('-"x y" iso:>1600 +"old  town" street');
+  assert.equal(p.rest, '-"x y" +"old  town" street');
+  assert.equal(p.left, '-"x y" +"old  town" street');
+  assert.deepEqual(p.filter.iso, { min: 1600, min_exclusive: true });
+  assert.equal(parseSearch('iso:>1600 -"a phrase"').rest, '-"a phrase"');
+  assert.equal(parseSearch('title:"a b"  foo').rest, 'title:"a b"  foo');
+  // A token not understood stays in the box where it was, but is not searched for.
+  const bad = parseSearch('a iso:lots -"b c" lens:23');
+  assert.equal(bad.rest, 'a -"b c"');
+  assert.equal(bad.left, 'a iso:lots -"b c"');
+});
+
+test("orientations: whole names or a start only one has", () => {
+  assert.deepEqual(parseSearch("orient:po").filter.orientation, ["portrait"]);
+  assert.deepEqual(parseSearch("orient:pa,l").filter.orientation, ["panorama", "landscape"]);
+  const p = parseSearch("orient:p");
+  assert.equal(p.filter.orientation, undefined);
+  assert.equal(p.left, "orient:p");
+  assert.match(p.errors[0].message, /portrait or panorama/);
+});
+
 test("formats: lists, aliases and excludes", () => {
   assert.deepEqual(parseSearch("ext:.jpg,tiff").filter.ext, ["jpg", "jpeg", "tif", "tiff"]);
-  assert.ok(parseSearch("format:raw").filter.ext?.includes("raf"));
+  const raw = parseSearch("format:raw").filter.ext ?? [];
+  for (const e of ["raf", "nef", "raw", "fff", "mrw", "dcr", "gpr"]) assert.ok(raw.includes(e), e);
   const p = parseSearch("-format:jpg ext:raf -orient:pano,sq");
   assert.deepEqual(p.filter.ext_not, ["jpg", "jpeg"]);
   assert.deepEqual(p.filter.ext, ["raf"]);

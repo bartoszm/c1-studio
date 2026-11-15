@@ -33,7 +33,11 @@ export const KEYS: Record<string, Key> = {
 
 /** Names standing for several extensions. */
 export const FORMATS: Record<string, string[]> = {
-  raw: ["raf", "arw", "nef", "cr2", "cr3", "crw", "dng", "orf", "rw2", "pef", "srw", "iiq", "3fr", "rwl", "x3f", "erf", "kdc", "mos", "nrw", "sr2", "srf"],
+  raw: [
+    "raf", "arw", "nef", "cr2", "cr3", "crw", "dng", "orf", "rw2", "raw", "rwl", "pef", "srw", "iiq", "3fr", "fff",
+    "x3f", "erf", "kdc", "dcr", "dcs", "k25", "mos", "mef", "mrw", "nrw", "sr2", "srf", "gpr", "ari", "cap", "eip",
+    "rwz", "bay", "mdc",
+  ],
   jpeg: ["jpg", "jpeg"],
   jpg: ["jpg", "jpeg"],
   tiff: ["tif", "tiff"],
@@ -263,6 +267,28 @@ export type Parsed = {
 // A token (`-key:value`, the value maybe quoted), a quoted phrase, or a word.
 const PIECE = /(-?)([A-Za-z]+):("[^"]*"?|[^\s"]*)|"[^"]*"?|[^\s"]+/g;
 
+type Span = [number, number];
+
+/** `text` without the spans (in order): what lies between them kept as typed, and each
+ *  cut closed up to one space. */
+function cut(text: string, spans: Span[]): string {
+  const kept: string[] = [];
+  let at = 0;
+  for (const [from, to] of spans) {
+    kept.push(text.slice(at, from));
+    at = to;
+  }
+  kept.push(text.slice(at));
+  return kept.map((s) => s.trim()).filter(Boolean).join(" ");
+}
+
+/** The orientation a word names: the whole name, or the start of only one name. */
+function orientationOf(word: string): string | undefined {
+  if (ORIENTATIONS.includes(word)) return word;
+  const starting = ORIENTATIONS.filter((o) => o.startsWith(word));
+  return starting.length === 1 ? starting[0] : undefined;
+}
+
 const unquote = (v: string) => v.replace(/^"/, "").replace(/"$/, "").trim();
 const unique = <T,>(list: T[]) => [...new Set(list)];
 
@@ -270,27 +296,22 @@ const unique = <T,>(list: T[]) => [...new Set(list)];
 export function parseSearch(text: string): Parsed {
   const filter: Filter = {};
   const keys: Key[] = [];
-  const rest: string[] = [];
-  const left: string[] = [];
+  // Where the tokens are: the free text is the box without any of them, what stays in the
+  // box is the box without those understood. Both are cut out of the text, so the words
+  // around them stay exactly as typed (`-"a phrase"` stays one exclusion).
+  const notText: Span[] = [];
+  const taken: Span[] = [];
   const errors: SearchError[] = [];
-  const fail = (token: string, message: string) => {
-    errors.push({ token, message });
-    left.push(token);
-  };
+  const fail = (token: string, message: string) => errors.push({ token, message });
   for (const m of text.matchAll(PIECE)) {
     const [token, minus, name, raw] = m;
     const key = name ? KEYS[name.toLowerCase()] : undefined;
-    if (!key) {
-      rest.push(token);
-      left.push(token);
-      continue;
-    }
+    if (!key) continue;
+    const span: Span = [m.index, m.index + token.length];
+    notText.push(span);
     const value = unquote(raw ?? "");
     // Still being typed: nothing yet, and no complaint.
-    if (!value) {
-      left.push(token);
-      continue;
-    }
+    if (!value) continue;
     if (minus && key !== "ext" && key !== "orient") {
       fail(token, `${name}: cannot be excluded; only format: and orient: can`);
       continue;
@@ -315,7 +336,13 @@ export function parseSearch(text: string): Parsed {
       }
       case "orient": {
         const words = value.toLowerCase().split(",").map((w) => w.trim()).filter(Boolean);
-        const found = words.map((w) => ORIENTATIONS.find((o) => o.startsWith(w)));
+        const found = words.map(orientationOf);
+        const unclear = words.find((w) => !orientationOf(w) && ORIENTATIONS.filter((o) => o.startsWith(w)).length > 1);
+        if (unclear !== undefined) {
+          const could = ORIENTATIONS.filter((o) => o.startsWith(unclear)).join(" or ");
+          fail(token, `${name}: ${unclear} could be ${could}; type more of it`);
+          continue;
+        }
         if (!words.length || found.some((o) => o === undefined)) {
           fail(token, `${name}: takes ${ORIENTATIONS.join(", ")}`);
           continue;
@@ -333,9 +360,10 @@ export function parseSearch(text: string): Parsed {
         (filter as Record<string, unknown>)[RANGE_FIELD[key]] = range;
       }
     }
+    taken.push(span);
     if (!keys.includes(key)) keys.push(key);
   }
-  return { filter, keys, rest: rest.join(" "), left: left.join(" "), errors };
+  return { filter, keys, rest: cut(text, notText), left: cut(text, taken), errors };
 }
 
 /** `base` with what the tokens set: each key's fields replaced by the tokens'. */
