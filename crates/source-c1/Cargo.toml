@@ -15,7 +15,7 @@ xxhash-rust.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Which programs hold the catalog open, the app's own reads left out.
-windows-sys = { version = "0.61", features = ["Win32_System_RestartManager"] }
+windows-sys = { version = "0.61", features = ["Win32_System_RestartManager", "Win32_System_Diagnostics_ToolHelp", "Win32_Foundation"] }
 
 [dev-dependencies]
 tempfile.workspace = true
