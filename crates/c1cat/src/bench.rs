@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, bail};
-use c1index::{Dim, Filter, Library, Presence, QueryOptions, Range, Sort, TimeRange};
+use c1index::{Dim, Filter, Library, Presence, QueryOptions, Range, Sort, TimeRange, schema};
 use c1model::memory::MemorySource;
 use c1model::*;
 use chrono::{Datelike, TimeZone};
@@ -59,6 +59,24 @@ const CAMERAS: [(&str, &str); 12] = [
     ("Panasonic", "DC-S5M2"),
     ("RICOH", "GR III"),
 ];
+
+/// Each camera's frame, width × height as the sensor stores it.
+const SENSORS: [(u32, u32); 12] = [
+    (7728, 5152),
+    (7728, 5152),
+    (6000, 4000),
+    (7728, 5152),
+    (11648, 8736),
+    (6240, 4160),
+    (7008, 4672),
+    (8192, 5464),
+    (6048, 4024),
+    (4032, 3024),
+    (6000, 4000),
+    (6000, 4000),
+];
+
+const EXTS: [&str; 10] = ["raf", "raf", "raf", "raf", "raf", "raf", "raf", "raf", "jpg", "dng"];
 
 const APERTURES: [f64; 9] = [1.2, 1.4, 2.0, 2.8, 4.0, 5.6, 8.0, 11.0, 16.0];
 const ISOS: [u32; 10] = [125, 160, 200, 400, 640, 800, 1600, 3200, 6400, 12800];
@@ -238,6 +256,26 @@ impl Shoot {
     }
 }
 
+/// The picture as shown, from the sensor's frame: mostly the frame as taken, some turned
+/// to portrait, some cropped (and maybe turned), a few square or panoramic. So
+/// orientation, megapixels and pixel ranges have a spread to count and filter.
+fn shown(rng: &mut SmallRng, (w, h): (u32, u32)) -> (u32, u32) {
+    let part = |rng: &mut SmallRng, side: u32, from: f64| (f64::from(side) * rng.random_range(from..1.0)) as u32;
+    match rng.random_range(0..1000) {
+        0..700 => (w, h),
+        700..820 => (h, w),
+        820..960 => {
+            let (cw, ch) = (part(rng, w, 0.5), part(rng, h, 0.5));
+            if rng.random_bool(0.2) { (ch, cw) } else { (cw, ch) }
+        }
+        960..985 => {
+            let side = part(rng, h, 0.6);
+            (side, side)
+        }
+        _ => (w, (f64::from(w) / rng.random_range(2.2..4.0)) as u32),
+    }
+}
+
 fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
     let source = SourceId("bench".into());
     let start =
@@ -268,9 +306,11 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
             asset += 1;
         }
         let date = chrono::DateTime::from_timestamp_millis(t).unwrap();
-        let ext = *pick(rng, &["raf", "raf", "raf", "raf", "raf", "raf", "raf", "raf", "jpg", "dng"]);
+        let ext = *pick(rng, &EXTS);
         let name = format!("DSCF{:04}.{}", asset % 10_000, ext.to_uppercase());
-        let (make, model) = if rng.random_bool(0.9) { CAMERAS[shoot.camera] } else { *pick(rng, &CAMERAS) };
+        let camera = if rng.random_bool(0.9) { shoot.camera } else { rng.random_range(0..CAMERAS.len()) };
+        let (make, model) = CAMERAS[camera];
+        let sensor = SENSORS[camera];
         let (lens, focal) = &v.lenses[*pick(rng, &shoot.lenses)];
         let city = shoot.city.map(|c| &v.cities[c]);
 
@@ -307,8 +347,8 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
                 aperture: Some(*pick(rng, &APERTURES)),
                 shutter: Some(1.0 / f64::from(*pick(rng, &[30u32, 60, 125, 250, 500, 1000, 4000]))),
                 focal: Some(*focal),
-                width: Some(7728),
-                height: Some(5152),
+                width: Some(sensor.0),
+                height: Some(sensor.1),
             },
             rating: match rng.random_range(0..100) {
                 0..55 => None,
@@ -347,13 +387,16 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
                 styles: shoot.style.map(|s| vec![v.styles[s].clone()]).unwrap_or_default(),
                 local_layers: if rng.random_bool(0.1) { rng.random_range(1..4) } else { 0 },
                 retouch_layers: 0,
-                shown: Some((6240, 4160)),
+                shown: Some(shown(rng, sensor)),
             },
             trashed: rng.random_bool(0.01),
         });
     }
     out
 }
+
+/// How many kinds of constraint [`add_constraint`] knows.
+const KINDS: u8 = 20;
 
 /// One constraint of a kind the filter bar offers, which `p` satisfies. False when `p`
 /// has no value for that kind.
@@ -420,6 +463,47 @@ fn add_constraint(rng: &mut SmallRng, p: &Photo, f: &mut Filter, kind: u8) -> bo
             }
             None => return false,
         },
+        // Faster or slower than its own, as `shutter:>1/250` would ask.
+        14 => match p.exif.shutter {
+            Some(s) if rng.random_bool(0.5) => f.shutter = Some(Range { min: Some(s * 0.98), ..Range::default() }),
+            Some(s) => f.shutter = Some(Range { max: Some(s * 1.02), ..Range::default() }),
+            None => return false,
+        },
+        15 => match p.file.size {
+            Some(size) => {
+                let at_least = (size as f64 * rng.random_range(0.5..1.0)).floor();
+                f.file_size = Some(Range { min: Some(at_least), ..Range::default() })
+            }
+            None => return false,
+        },
+        16 => match schema::shown_size(p) {
+            Some((w, h)) => {
+                let mp = f64::from(w) * f64::from(h) / 1e6;
+                f.megapixels = Some(if rng.random_bool(0.5) {
+                    Range { min: Some(mp.floor()), ..Range::default() }
+                } else {
+                    Range { max: Some(mp.ceil()), ..Range::default() }
+                })
+            }
+            None => return false,
+        },
+        17 => match schema::shown_size(p) {
+            Some((w, h)) => f.orientation.push(schema::orientation(w, h).to_owned()),
+            None => return false,
+        },
+        // Leaving out a file type it is not.
+        18 => {
+            let own = p.file.ext.to_lowercase();
+            let others: Vec<&str> = EXTS.iter().copied().filter(|e| *e != own).collect();
+            if others.is_empty() {
+                return false;
+            }
+            f.ext_not.push(pick(rng, &others).to_string());
+        }
+        19 => match &p.exif.camera_make {
+            Some(make) => f.make = Some(make.to_lowercase()),
+            None => return false,
+        },
         _ => return false,
     }
     true
@@ -428,7 +512,7 @@ fn add_constraint(rng: &mut SmallRng, p: &Photo, f: &mut Filter, kind: u8) -> bo
 /// Up to `count` constraints that `p` satisfies: someone narrowing down towards a photo
 /// they remember. Every such query has at least one hit.
 fn filter_around(rng: &mut SmallRng, p: &Photo, count: usize) -> Filter {
-    let mut kinds: Vec<u8> = (0..14).collect();
+    let mut kinds: Vec<u8> = (0..KINDS).collect();
     let mut f = Filter::default();
     let mut added = 0;
     while added < count && !kinds.is_empty() {

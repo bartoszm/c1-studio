@@ -285,7 +285,7 @@ enum Command {
         #[arg(long)]
         rebuild: bool,
         /// Dimensions counted with every query, as the sidebar would.
-        #[arg(long, default_value = "rating,color,year,camera,lens,keyword_tree,collection,country")]
+        #[arg(long, default_value = "rating,color,year,camera,lens,ext,orientation,keyword_tree,collection,country")]
         dims: String,
     },
 }

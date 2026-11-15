@@ -275,10 +275,12 @@ pub fn build_schema() -> (Schema, Fields) {
         aperture: b.add_f64_field("aperture", num()),
         shutter: b.add_f64_field("shutter", num()),
         focal: b.add_f64_field("focal", num()),
-        size: b.add_u64_field("size", num()),
-        width: b.add_u64_field("width", num()),
-        height: b.add_u64_field("height", num()),
-        megapixels: b.add_f64_field("mp", num()),
+        // Only ever asked as ranges, which tantivy answers from the fast column whether or
+        // not a field is indexed: no term dictionary of a value per photo.
+        size: b.add_u64_field("size", FAST),
+        width: b.add_u64_field("width", FAST),
+        height: b.add_u64_field("height", FAST),
+        megapixels: b.add_f64_field("mp", FAST),
         lat: b.add_f64_field("lat", num()),
         lon: b.add_f64_field("lon", num()),
         variant_index: b.add_u64_field("variant_index", num()),
@@ -403,6 +405,10 @@ pub struct Marks {
     /// The user deleted it (see [`flag::BINNED`]).
     pub binned: bool,
 }
+
+/// The values of [`Dim::Orientation`], as [`orientation`] gives them.
+pub const ORIENTATIONS: [&str; 4] =
+    [c1analysis::LANDSCAPE, c1analysis::PORTRAIT, c1analysis::SQUARE, c1analysis::PANORAMA];
 
 /// Landscape, portrait, square or panorama, drawn where the analysis draws its shapes by
 /// default. Not where the user moved those lines: changing them re-indexes only the
