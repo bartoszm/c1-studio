@@ -978,7 +978,10 @@ fn places_nest_country_state_city_location_with_gaps_kept() {
         place(None, None, Some("London"), None),
         place(Some("Japan"), None, None, None),
         Place::default(),
-        Place { location: Some("Wawel".into()), ..place(Some("Poland"), Some("Malopolska"), Some("Kraków"), Some("PL")) },
+        Place {
+            location: Some("Wawel".into()),
+            ..place(Some("Poland"), Some("Malopolska"), Some("Kraków"), Some("PL"))
+        },
         place(Some("Germany"), None, Some("Berlin"), Some("DE")),
     ]
     .into_iter()

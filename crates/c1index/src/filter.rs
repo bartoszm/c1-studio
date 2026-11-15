@@ -326,7 +326,10 @@ fn places_query(f: &Fields, places: &[&String]) -> anyhow::Result<Option<Box<dyn
         either.push(any_of(field, plain));
     }
     if !cities.is_empty() {
-        either.push(Box::new(BooleanQuery::new(vec![(Occur::Must, any_of(field, cities)), (Occur::MustNot, deepest(f)?)])));
+        either.push(Box::new(BooleanQuery::new(vec![
+            (Occur::Must, any_of(field, cities)),
+            (Occur::MustNot, deepest(f)?),
+        ])));
     }
     Ok(match either.len() {
         0 => None,
@@ -347,7 +350,9 @@ pub fn normalise_places(own: &[String], other: &[String]) -> Vec<String> {
     let between = |p: &str, q: &str| other.iter().any(|o| o != q && o != p && is_under(p, o) && is_under(o, q));
     own.iter()
         .enumerate()
-        .filter(|&(i, p)| !own.iter().enumerate().any(|(j, q)| if p == q { j < i } else { is_under(p, q) && !between(p, q) }))
+        .filter(|&(i, p)| {
+            !own.iter().enumerate().any(|(j, q)| if p == q { j < i } else { is_under(p, q) && !between(p, q) })
+        })
         .map(|(_, p)| p.clone())
         .collect()
 }
@@ -496,7 +501,12 @@ impl Filter {
     /// pick over a photo's place decides whether it is in: Poland except Kraków, or not
     /// Poland but Kraków. A place both in and out is out. With no place in, every photo
     /// is, but those of the places out.
-    fn place_clauses(&self, f: &Fields, must: &mut Vec<Box<dyn Query>>, must_not: &mut Vec<Box<dyn Query>>) -> anyhow::Result<()> {
+    fn place_clauses(
+        &self,
+        f: &Fields,
+        must: &mut Vec<Box<dyn Query>>,
+        must_not: &mut Vec<Box<dyn Query>>,
+    ) -> anyhow::Result<()> {
         let out = normalise_places(&self.places_under_not, &self.places_under);
         let picked_in: Vec<String> = self.places_under.iter().filter(|p| !out.contains(p)).cloned().collect();
         let inn = normalise_places(&picked_in, &out);
