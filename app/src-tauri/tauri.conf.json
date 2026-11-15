@@ -30,12 +30,17 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.png", "icons/icon.ico"],
+    "category": "Photography",
     "publisher": "Bartosz Michalik",
     "copyright": "Copyright © 2026 Bartosz Michalik. MIT licensed.",
     "homepage": "https://github.com/bartoszm/c1-studio",
     "shortDescription": "A fast browser for Capture One catalogs and photo folders",
     "longDescription": "C1 Studio finds photos in a Capture One catalog or in plain photo folders by album, date, folder, keyword, rating, colour, camera, place and free text, and edits ratings, colour tags, keywords, location and GPS.",
+    "linux": {
+      "deb": { "section": "graphics" },
+      "appimage": { "bundleMediaFramework": false }
+    },
     "windows": {
       "webviewInstallMode": { "type": "downloadBootstrapper" },
       "nsis": {

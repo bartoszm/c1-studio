@@ -82,9 +82,10 @@ mod tests {
     #[test]
     fn the_data_key_ignores_how_the_path_is_spelled() {
         let p = CaptureOneProvider;
-        let key = p.data_key(r"C:\c1_catalogs\fuji\fiuji.cocatalogdb");
-        assert!(key.starts_with("fiuji-"));
+        let here = Path::new("c1_catalogs").join("fuji").join("fiuji.cocatalogdb");
+        assert!(p.data_key(&here.to_string_lossy()).starts_with("fiuji-"));
         if cfg!(windows) {
+            let key = p.data_key(r"C:\c1_catalogs\fuji\fiuji.cocatalogdb");
             // What the app keyed this catalog's library by before providers: unchanged.
             assert_eq!(key, "fiuji-ba047789");
             assert_eq!(p.data_key("c:/C1_catalogs/fuji/FIUJI.cocatalogdb"), key);

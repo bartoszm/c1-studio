@@ -487,13 +487,19 @@ fn known_under(src: &FolderSource, id: &str) -> bool {
 
 /// The excludes as one set. A pattern for everything in a folder (`**/tmp/**`) also
 /// matches the folder itself, so it is not entered.
+/// Does the filesystem ignore case in names? On Windows, and under WSL, whose photo
+/// folders are on the Windows drives.
+fn case_insensitive_names() -> bool {
+    cfg!(windows) || c1model::platform::is_wsl()
+}
+
 fn excludes(def: &Definition, problems: &mut Vec<String>) -> GlobSet {
     let mut builder = GlobSetBuilder::new();
     for pattern in def.all_excludes() {
         let pattern = pattern.trim_end_matches('/');
         let folder = pattern.strip_suffix("/**").filter(|f| !f.is_empty());
         for p in std::iter::once(pattern).chain(folder) {
-            match GlobBuilder::new(p).case_insensitive(cfg!(windows)).build() {
+            match GlobBuilder::new(p).case_insensitive(case_insensitive_names()).build() {
                 Ok(glob) => {
                     builder.add(glob);
                 }

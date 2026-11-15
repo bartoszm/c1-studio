@@ -12,7 +12,9 @@ thiserror.workspace = true
 xxhash-rust.workspace = true
 base64 = "0.22"
 ureq = { version = "3", features = ["json"] }
-keyring = { version = "3", features = ["windows-native"] }
+# The Credential Manager on Windows, the Secret Service (GNOME Keyring, KWallet) on Linux,
+# talking D-Bus through a built-in libdbus (no -dev package to build, nothing to install).
+keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 
 [dev-dependencies]
 c1image.workspace = true

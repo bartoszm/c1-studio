@@ -157,12 +157,12 @@
       <div>
         {#if view.key}
           <code>{view.key[0]}</code>
-          <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : "in the Windows Credential Manager"}</span>
+          <span class="muted">{view.key[1] === "environment" ? "from ANTHROPIC_API_KEY" : "in the system keyring"}</span>
           {#if view.key[1] === "stored"}<button class="small-btn" disabled={busy} onclick={() => saveKey("")}>Remove</button>{/if}
         {:else}
           <input id="ai-key" type="password" placeholder="sk-ant-…" bind:value={keyInput} autocomplete="off" />
           <button class="small-btn" disabled={busy || !keyInput.trim()} onclick={() => saveKey(keyInput)}>Save</button>
-          <small class="muted">Kept in the Windows Credential Manager, never in a file.</small>
+          <small class="muted">Kept in the system keyring (Windows' Credential Manager), never in a file.</small>
         {/if}
       </div>
     {/if}

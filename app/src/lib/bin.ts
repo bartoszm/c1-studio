@@ -16,6 +16,10 @@ export function deleteAction(o: { ctrl: boolean; album: boolean; inBin: boolean;
   return "bin";
 }
 
+/** Where deleted files go: Windows' Recycle Bin, else the desktop's trash (Linux). */
+const systemBin =
+  typeof navigator !== "undefined" && navigator.userAgent.includes("Windows") ? "the Windows Recycle Bin" : "the system trash";
+
 const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`;
 
 /** How the status line says it: "2 photos moved to Trash" / "1 photo restored". */
@@ -25,7 +29,7 @@ export const binNote = (n: number, binned: boolean) => `${photos(n)} ${binned ? 
 export function removalText(n: number, removes: Removal, wording: Wording = GENERAL): string {
   switch (removes) {
     case "Files":
-      return `The files of ${photos(n)} go to the Windows Recycle Bin, with their own .xmp sidecars. Their edits in C1 Studio are lost.`;
+      return `The files of ${photos(n)} go to ${systemBin}, with their own .xmp sidecars. Their edits in C1 Studio are lost.`;
     case "MarksTrashed":
       return `${photos(n)} ${n === 1 ? "is" : "are"} marked deleted in ${wording.name} and show${n === 1 ? "s" : ""} in its Trash; the files stay. Any other variants of the same images go too. A backup of the ${wording.noun} is made first.`;
     case "None":

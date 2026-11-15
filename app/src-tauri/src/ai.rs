@@ -457,7 +457,7 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     tauri::async_runtime::spawn_blocking(move || view(&s)).await.map_err(text)?
 }
 
-/// Stores the API key in the Windows Credential Manager; an empty one removes it.
+/// Stores the API key in the system keyring; an empty one removes it.
 #[tauri::command]
 pub(crate) async fn set_ai_key(app: State<'_, App>, key: String) -> Result<AiView, String> {
     let s = app.session()?;

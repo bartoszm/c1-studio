@@ -1,5 +1,6 @@
-//! API keys, kept in the Windows Credential Manager (never in a settings file). An
-//! environment variable overrides the stored key, for development and tests.
+//! API keys, kept in the system keyring: the Credential Manager on Windows, the Secret
+//! Service on Linux (never in a settings file). An environment variable overrides the
+//! stored key, for development, tests, and machines without a keyring (WSL often has none).
 
 use crate::AiError;
 
@@ -42,7 +43,14 @@ pub fn set(slot: &KeySlot, key: &str) -> Result<(), AiError> {
             Err(e) => Err(AiError::Keys(e.to_string())),
         };
     }
-    entry.set_password(key).map_err(|e| AiError::Keys(e.to_string()))
+    entry.set_password(key).map_err(|e| {
+        let hint = if cfg!(windows) {
+            String::new()
+        } else {
+            format!(" (no keyring to keep it in? Set {} instead)", slot.env)
+        };
+        AiError::Keys(format!("{e}{hint}"))
+    })
 }
 
 /// Where the key in use comes from, for the settings screen: `None` without one.
