@@ -56,8 +56,8 @@ pub use selection::{Merged, Selection, group_places};
 const KEEP_REMOVED: usize = 5_000;
 
 /// Dimensions whose values substring filters match against.
-const SUBSTRING_DIMS: [Dim; 7] =
-    [Dim::Camera, Dim::Lens, Dim::City, Dim::State, Dim::Country, Dim::Style, Dim::KeywordTree];
+const SUBSTRING_DIMS: [Dim; 8] =
+    [Dim::Camera, Dim::Lens, Dim::Make, Dim::City, Dim::State, Dim::Country, Dim::Style, Dim::KeywordTree];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Sort {

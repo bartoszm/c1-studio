@@ -301,18 +301,23 @@ impl ClassSettings {
     }
 }
 
+/// The shape class of a `width` × `height` picture.
+pub fn shape_of(width: u32, height: u32, s: &ClassSettings) -> &'static str {
+    let ratio = width as f32 / height.max(1) as f32;
+    if ratio >= s.panorama_ratio || ratio <= 1.0 / s.panorama_ratio {
+        PANORAMA
+    } else if ratio > s.square_ratio {
+        LANDSCAPE
+    } else if ratio < 1.0 / s.square_ratio {
+        PORTRAIT
+    } else {
+        SQUARE
+    }
+}
+
 impl Analysis {
     pub fn shape(&self, s: &ClassSettings) -> &'static str {
-        let ratio = self.width as f32 / self.height.max(1) as f32;
-        if ratio >= s.panorama_ratio || ratio <= 1.0 / s.panorama_ratio {
-            PANORAMA
-        } else if ratio > s.square_ratio {
-            LANDSCAPE
-        } else if ratio < 1.0 / s.square_ratio {
-            PORTRAIT
-        } else {
-            SQUARE
-        }
+        shape_of(self.width, self.height, s)
     }
 
     /// The colours the picture is made of: black and white, or in [`ColourMode::Covers`] the

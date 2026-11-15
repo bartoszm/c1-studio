@@ -203,6 +203,22 @@ pub(crate) fn on_canvas(crop: Crop, width: f64, height: f64, degrees: f64) -> Cr
     Crop { dx: crop.dx * kx, dy: crop.dy * ky, width: crop.width * kx, height: crop.height * ky }
 }
 
+/// The picture's size as Capture One shows it: the `width` × `height` sensor image turned
+/// by `degrees` (`ZROTATION`), then cut to `crop` (`ZCROP`) or, without one, to what the
+/// straightening fills. `None` when the sensor size is unknown.
+pub(crate) fn shown_size(width: f64, height: f64, degrees: f64, crop: Option<&str>) -> Option<(u32, u32)> {
+    if !(width > 0.0 && height > 0.0) {
+        return None;
+    }
+    let (w, h) = if quarter_turn(degrees) % 180 == 90 { (height, width) } else { (width, height) };
+    let (kw, kh) = crop
+        .and_then(|c| display_crop(c, width, height, degrees))
+        .or_else(|| straightened_crop(width, height, degrees))
+        .map_or((1.0, 1.0), |c| (f64::from(c.width.min(1.0)), f64::from(c.height.min(1.0))));
+    let px = |v: f64| (v.round() as u32).max(1);
+    Some((px(w * kw), px(h * kh)))
+}
+
 /// Degrees to the nearest quarter turn, in 0..360.
 pub(crate) fn quarter_turn(degrees: f64) -> u16 {
     if !degrees.is_finite() {
@@ -371,6 +387,24 @@ mod tests {
         assert!(c.dy < 0.0 && c.dx.abs() < 0.04, "{c:?}");
         assert!(display_crop("3864;2576;7728;5152", 7728.0, 5152.0, 0.0).is_none());
         assert!(display_crop("", 7728.0, 5152.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn shown_size_is_turned_and_cropped() {
+        assert_eq!(shown_size(6000.0, 4000.0, 0.0, None), Some((6000, 4000)));
+        assert_eq!(shown_size(6000.0, 4000.0, 90.0, None), Some((4000, 6000)));
+        assert_eq!(shown_size(6000.0, 4000.0, 270.0, Some("")), Some((4000, 6000)));
+        assert_eq!(shown_size(0.0, 4000.0, 0.0, None), None);
+        // A crop of the whole frame is no crop.
+        assert_eq!(shown_size(7728.0, 5152.0, 0.0, Some("3864;2576;7728;5152")), Some((7728, 5152)));
+        // DSCF5264's 82% crop.
+        assert_eq!(shown_size(7728.0, 5152.0, 0.0, Some("3843.28;2803.90;6360.57;4240.38")), Some((6361, 4240)));
+        // A portrait crop of a turned landscape frame.
+        let (w, h) = shown_size(6000.0, 4000.0, 270.0, Some("3151.89;2101.26;3797.43;5696.15")).unwrap();
+        assert!(w < h && (w as i32 - 3797).abs() <= 1 && (h as i32 - 5696).abs() <= 1, "{w}x{h}");
+        // Straightened without a crop of its own: 96% of the frame stays.
+        let (w, h) = shown_size(6000.0, 4000.0, -1.43, None).unwrap();
+        assert!((5770..5800).contains(&w) && (3850..3870).contains(&h), "{w}x{h}");
     }
 
     #[test]

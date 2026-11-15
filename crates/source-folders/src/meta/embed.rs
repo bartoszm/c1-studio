@@ -61,6 +61,16 @@ pub(crate) fn jpeg_header(bytes: &[u8]) -> Option<(Vec<Segment>, bool)> {
     }
 }
 
+/// The pixel size a JPEG's frame header (SOFn) gives, width × height as stored: the
+/// picture itself, where EXIF's PixelXDimension may still be the camera's after a resize.
+pub(crate) fn jpeg_size(bytes: &[u8], segments: &[Segment]) -> Option<(u32, u32)> {
+    // SOF0..SOF15, less DHT, JPG and DAC, which share the range.
+    let sof = segments.iter().find(|s| matches!(s.marker, 0xC0..=0xCF) && !matches!(s.marker, 0xC4 | 0xC8 | 0xCC))?;
+    let p = bytes.get(sof.payload.clone())?;
+    let (h, w) = (u16::from_be_bytes([*p.get(1)?, *p.get(2)?]), u16::from_be_bytes([*p.get(3)?, *p.get(4)?]));
+    (w > 0 && h > 0).then_some((u32::from(w), u32::from(h)))
+}
+
 /// The start of a JPEG file, long enough to hold all its marker segments (or as much as
 /// the first 16 MB of the file give).
 pub(crate) fn read_jpeg_head(path: &Path) -> Option<Vec<u8>> {

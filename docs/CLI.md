@@ -82,8 +82,9 @@ first; that is quick when nothing changed. Pass `--no-sync` to skip it.
 **facets**
 
 - `--dims`: comma-separated, default `rating,color,year,camera,keyword_tree`. Any of
-  `keyword`, `keyword_tree`, `collection`, `camera`, `lens`, `country`, `state`, `city`,
-  `year`, `month`, `rating`, `color`, `ext`, `style`, `flag`, `source`.
+  `keyword`, `keyword_tree`, `collection`, `camera`, `make`, `lens`, `country`, `state`,
+  `city`, `year`, `month`, `rating`, `color`, `ext`, `orientation`, `style`, `flag`,
+  `source`.
   `keyword_tree` counts a photo under every ancestor of its keywords; `keyword` only
   under the exact ones.
 - `--top N`: values shown per dimension (default 15).
@@ -130,6 +131,7 @@ flag given narrows the selection (AND). Trashed photos are left out unless asked
 | `--variant-index N` | Position among its image's variants; 0 is the original. |
 | `--filename GLOB` | Filename glob, case-insensitive: `'DSCF*.RAF'`, `'IMG_00?2.jpg'`. |
 | `--ext LIST` | Extensions, any of: `raf,dng`. |
+| `--no-ext LIST` | None of these extensions: `jpg,tif`. |
 | `--folder PATH` | Folder and everything below it; either slash direction. |
 | `--rating R` | `3`, `>=4`, `<2`, `2-4`, `none` (unrated) or `any` (rated). |
 | `--color LIST` | Colour tags, any of: `red,blue`; or `none` / `any`. Alias `--colour`. Colours are red, orange, yellow, green, blue, pink, purple. |
@@ -138,8 +140,12 @@ flag given narrows the selection (AND). Trashed photos are left out unless asked
 | `--keyword-under PATH` | Has this keyword or any keyword below it; repeatable. |
 | `--no-keyword PATH` | Does not have this keyword; repeatable. |
 | `--unkeyworded` | Has no keywords. |
-| `--camera TEXT`, `--lens TEXT` | Substring, case-insensitive: `--camera x100`. |
+| `--camera TEXT`, `--lens TEXT`, `--make TEXT` | Substring, case-insensitive: `--camera x100`, `--make ricoh`. |
 | `--iso R`, `--aperture R`, `--focal R` | Ranges as for `--rating`: `--iso '>=3200'`, `--aperture '<=2.8'`, `--focal 23-35`. |
+| `--shutter R` | Exposure in seconds: `--shutter '<0.004'` (faster than 1/250), `--shutter '>=1'`. |
+| `--size-mb R`, `--megapixels R` | The original's file size in MB; megapixels as shown, after rotation and crop: `--megapixels '<12'`. |
+| `--orientation LIST` | As shown, after rotation and crop, any of: `landscape`, `portrait`, `square`, `panorama` (any case; another word is an error). |
+| `--no-orientation LIST` | None of these orientations. |
 | `--from DATE`, `--to DATE` | Capture date, inclusive, local time. `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `--to 2025-06` runs to the end of June. |
 | `--year YYYY`, `--month YYYY-MM` | Capture year or month. |
 | `--imported-from DATE`, `--imported-to DATE` | Import date, as `--from` / `--to`. |
@@ -343,8 +349,11 @@ not need a catalog.
 ```
 
 `--photos`, `--keywords`, `--queries`, `--seed` set the data; `--dims` the facets counted
-with every query. The library in `--dir` is reused across runs with the same size and
-seed; `--rebuild` builds it again.
+with every query (by default the sidebar's: rating, colour, year, camera, lens, format,
+orientation, keyword tree, album and country). The queries draw on every kind of filter
+the app offers, exposure, file size, megapixels, orientation and excluded formats
+included, over photos turned and cropped in varied ways. The library in `--dir` is
+reused across runs with the same size and seed; `--rebuild` builds it again.
 
 ## Differential tests
 
