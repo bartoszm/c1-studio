@@ -115,9 +115,15 @@ pub fn compose(source: &SourceId, def: &Definition, ext: &str, rec: &FileRec, la
         place: user.place.clone().unwrap_or_else(|| m.place.clone()),
         geo: user.geo.unwrap_or(m.geo),
         collections,
-        edit: EditInfo::default(),
+        edit: EditInfo { shown: shown(m), ..EditInfo::default() },
         trashed: false,
     }
+}
+
+/// The picture's size as shown: the stored pixels turned by their EXIF orientation.
+fn shown(m: &crate::meta::FileMeta) -> Option<(u32, u32)> {
+    let (w, h) = (m.exif.width?, m.exif.height?);
+    (w > 0 && h > 0).then_some(if m.orientation % 180 == 90 { (h, w) } else { (w, h) })
 }
 
 /// The photo `rec` makes on its own, without the user's edits.
@@ -200,6 +206,20 @@ mod tests {
             p
         });
         assert_eq!(back.rating, Some(Some(1)));
+    }
+
+    #[test]
+    fn shown_size_follows_the_exif_orientation() {
+        let def = Definition::new("t", &[std::path::PathBuf::from("/photos")]);
+        let root = def.roots[0].id.clone();
+        let mut r = rec(&root, "a.jpg");
+        let src = def.source_id();
+        r.meta.exif.width = None;
+        assert_eq!(compose_file(&src, &def, "e1", &r).edit.shown, None);
+        (r.meta.exif.width, r.meta.exif.height) = (Some(6000), Some(4000));
+        assert_eq!(compose_file(&src, &def, "e1", &r).edit.shown, Some((6000, 4000)));
+        r.meta.orientation = 270;
+        assert_eq!(compose_file(&src, &def, "e1", &r).edit.shown, Some((4000, 6000)));
     }
 
     #[test]

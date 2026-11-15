@@ -58,6 +58,16 @@ test("any one turns the includes into alternatives and keeps the excludes", () =
   });
 });
 
+test("lenses, formats and orientations are alternatives to a camera", () => {
+  const f = { cameras: ["X100VI"], lenses: ["XF23"], lenses_not: ["XF35"], ext: ["jpg"], orientation: ["portrait"], iso: { min: 800 } };
+  assert.equal(criteriaCount(f), 4);
+  assert.deepEqual(compile(f, "any"), {
+    lenses_not: ["XF35"],
+    iso: { min: 800 },
+    all_of: [{ any_of: [{ cameras: ["X100VI"] }, { lenses: ["XF23"] }, { ext: ["jpg"] }, { orientation: ["portrait"] }] }],
+  });
+});
+
 test("'none' picks are alternatives too, and one alone is no choice", () => {
   const out = compile({ unkeyworded: true, rating: ratingFor("≥", 4) }, "any");
   assert.deepEqual(out.all_of?.[0].any_of, [{ rating: ratingFor("≥", 4) }, { unkeyworded: true }]);

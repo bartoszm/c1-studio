@@ -6,7 +6,7 @@ import type { LeftOut } from "./keywordChoice";
 
 export type Dim =
   | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
-  | "place_tree" | "flag" | "shape" | "hue" | "light" | "focus" | "group";
+  | "place_tree" | "flag" | "shape" | "hue" | "light" | "focus" | "group" | "make" | "ext" | "orientation";
 
 export type Range = { min?: number; max?: number; min_exclusive?: boolean; max_exclusive?: boolean };
 export type Presence<T> = "None" | "Any" | { Values: T };
@@ -44,6 +44,33 @@ export type Filter = {
   /** Exact camera models: any of them / none of them. */
   cameras?: string[];
   cameras_not?: string[];
+  /** Substring of the lens / the camera's maker, ignoring case. */
+  lens?: string;
+  make?: string;
+  /** Exact lenses / makers: any of them / none of them. */
+  lenses?: string[];
+  lenses_not?: string[];
+  makes?: string[];
+  makes_not?: string[];
+  iso?: Range;
+  /** The f-number. */
+  aperture?: Range;
+  /** Millimetres. */
+  focal?: Range;
+  /** Exposure time in seconds. */
+  shutter?: Range;
+  /** The original's size in bytes. */
+  file_size?: Range;
+  /** The picture as shown (turned and cropped). */
+  megapixels?: Range;
+  width?: Range;
+  height?: Range;
+  /** Lower-case file extensions without the dot: any of them / none of them. */
+  ext?: string[];
+  ext_not?: string[];
+  /** `landscape`, `portrait`, `square`, `panorama` as shown: any of them / none of them. */
+  orientation?: string[];
+  orientation_not?: string[];
   /** None of these colour labels. */
   colors_not?: Color[];
   country?: string;
@@ -313,7 +340,8 @@ export type Photo = {
   };
   geo: { lat: number; lon: number; alt: number | null; origin: GeoOrigin } | null;
   collections: string[];
-  edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number };
+  /** `shown`: width and height as displayed (turned and cropped), when known. */
+  edit: { edited: boolean; styles: string[]; local_layers: number; retouch_layers: number; shown: [number, number] | null };
   trashed: boolean;
   /** Hidden by the user in C1 Studio (not a Capture One field). */
   hidden?: boolean;

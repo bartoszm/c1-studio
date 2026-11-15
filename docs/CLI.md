@@ -138,8 +138,11 @@ flag given narrows the selection (AND). Trashed photos are left out unless asked
 | `--keyword-under PATH` | Has this keyword or any keyword below it; repeatable. |
 | `--no-keyword PATH` | Does not have this keyword; repeatable. |
 | `--unkeyworded` | Has no keywords. |
-| `--camera TEXT`, `--lens TEXT` | Substring, case-insensitive: `--camera x100`. |
+| `--camera TEXT`, `--lens TEXT`, `--make TEXT` | Substring, case-insensitive: `--camera x100`, `--make ricoh`. |
 | `--iso R`, `--aperture R`, `--focal R` | Ranges as for `--rating`: `--iso '>=3200'`, `--aperture '<=2.8'`, `--focal 23-35`. |
+| `--shutter R` | Exposure in seconds: `--shutter '<0.004'` (faster than 1/250), `--shutter '>=1'`. |
+| `--size-mb R`, `--megapixels R` | The original's file size in MB; megapixels as shown, after rotation and crop: `--megapixels '<12'`. |
+| `--orientation LIST` | As shown, after rotation and crop: `landscape`, `portrait`, `square`, `panorama`. |
 | `--from DATE`, `--to DATE` | Capture date, inclusive, local time. `YYYY`, `YYYY-MM` or `YYYY-MM-DD`; `--to 2025-06` runs to the end of June. |
 | `--year YYYY`, `--month YYYY-MM` | Capture year or month. |
 | `--imported-from DATE`, `--imported-to DATE` | Import date, as `--from` / `--to`. |

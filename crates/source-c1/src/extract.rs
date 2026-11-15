@@ -43,11 +43,13 @@ SELECT v.Z_PK, v.ZINDEX, v.ZISMODIFIED,
        m.ZCONTACT_CREATOR, m.ZSTATUS_COPYRIGHTNOTICE,
        m.ZIMAGE_CITY, m.ZIMAGE_STATE, m.ZIMAGE_COUNTRY, m.ZIMAGE_LOCATION,
        m.ZIMAGE_ISOCOUNTRYCODE,
-       m.ZSTATUS_JOBIDENTIFIER, m.ZSTATUS_INSTRUCTIONS, m.ZSTATUS_SOURCE
+       m.ZSTATUS_JOBIDENTIFIER, m.ZSTATUS_INSTRUCTIONS, m.ZSTATUS_SOURCE,
+       c.ZROTATION, c.ZCROP
   FROM ZVARIANT v
   JOIN ZIMAGE i           ON i.Z_PK   = v.ZIMAGE
   JOIN ZPATHLOCATION p    ON p.Z_PK   = i.ZIMAGELOCATION
   JOIN ZVARIANTMETADATA m ON m.ZLAYER = v.ZADJUSTMENTLAYER
+  LEFT JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
 ";
 
 pub fn extract(con: &Connection, catalog_dir: &Path, source: &SourceId) -> Result<Extract> {
@@ -225,6 +227,12 @@ fn load_variants(
                 styles: layers.styles.get(&vpk).cloned().unwrap_or_default(),
                 local_layers: layers.local.get(&vpk).copied().unwrap_or(0),
                 retouch_layers: layers.retouch.get(&vpk).copied().unwrap_or(0),
+                shown: config::shown_size(
+                    int(15)?.unwrap_or(0) as f64,
+                    int(16)?.unwrap_or(0) as f64,
+                    float(39)?.unwrap_or(0.0),
+                    text(40)?.as_deref(),
+                ),
             },
             trashed: int(5)?.unwrap_or(0) != 0,
         });

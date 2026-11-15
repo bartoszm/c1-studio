@@ -17,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -67,13 +67,18 @@ pub enum Dim {
     Focus,
     /// The duplicate group and series a photo falls in: `dup:<row>`, `series:<row>`.
     Group,
+    /// The camera's maker, as the file names it.
+    Make,
+    /// From the picture's size as shown (turned and cropped): landscape, portrait, square,
+    /// panorama.
+    Orientation,
 }
 
 /// A level of [`Dim::PlaceTree`] the photo has no value for (`Poland|—|Kraków`: no state).
 pub const NO_PLACE: &str = "—";
 
 impl Dim {
-    pub const ALL: [Dim; 24] = [
+    pub const ALL: [Dim; 26] = [
         Dim::Source,
         Dim::Keyword,
         Dim::KeywordTree,
@@ -98,6 +103,8 @@ impl Dim {
         Dim::Light,
         Dim::Focus,
         Dim::Group,
+        Dim::Make,
+        Dim::Orientation,
     ];
 
     pub fn field_name(self) -> &'static str {
@@ -126,6 +133,8 @@ impl Dim {
             Dim::Light => "light",
             Dim::Focus => "focus",
             Dim::Group => "group",
+            Dim::Make => "make",
+            Dim::Orientation => "orientation",
         }
     }
 }
@@ -197,6 +206,12 @@ pub struct Fields {
     pub aperture: Field,
     pub shutter: Field,
     pub focal: Field,
+    /// The original's size in bytes.
+    pub size: Field,
+    /// The picture as shown (turned and cropped): pixels across and down, and megapixels.
+    pub width: Field,
+    pub height: Field,
+    pub megapixels: Field,
     pub lat: Field,
     pub lon: Field,
     pub variant_index: Field,
@@ -260,6 +275,10 @@ pub fn build_schema() -> (Schema, Fields) {
         aperture: b.add_f64_field("aperture", num()),
         shutter: b.add_f64_field("shutter", num()),
         focal: b.add_f64_field("focal", num()),
+        size: b.add_u64_field("size", num()),
+        width: b.add_u64_field("width", num()),
+        height: b.add_u64_field("height", num()),
+        megapixels: b.add_f64_field("mp", num()),
         lat: b.add_f64_field("lat", num()),
         lon: b.add_f64_field("lon", num()),
         variant_index: b.add_u64_field("variant_index", num()),
@@ -385,6 +404,22 @@ pub struct Marks {
     pub binned: bool,
 }
 
+/// Landscape, portrait, square or panorama, drawn where the analysis draws its shapes by
+/// default. Not where the user moved those lines: changing them re-indexes only the
+/// measured photos, so following them would leave the rest classed the old way.
+pub fn orientation(width: u32, height: u32) -> &'static str {
+    static LINES: std::sync::LazyLock<ClassSettings> = std::sync::LazyLock::new(ClassSettings::default);
+    c1analysis::shape_of(width, height, &LINES)
+}
+
+/// The picture's size as shown, or the original's when the source does not know that.
+pub fn shown_size(photo: &Photo) -> Option<(u32, u32)> {
+    photo.edit.shown.or(match (photo.exif.width, photo.exif.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w, h)),
+        _ => None,
+    })
+}
+
 /// `classes`: where the analysis draws the lines between classes.
 pub fn document(
     f: &Fields,
@@ -413,6 +448,7 @@ pub fn document(
     }
     for (d, value) in [
         (Dim::Camera, &photo.exif.camera_model),
+        (Dim::Make, &photo.exif.camera_make),
         (Dim::Lens, &photo.exif.lens),
         (Dim::Country, &photo.place.country),
         (Dim::State, &photo.place.state),
@@ -431,6 +467,10 @@ pub fn document(
     dim(Dim::Color, photo.color.map_or("none", |c| c.name()));
     if !photo.file.ext.is_empty() {
         dim(Dim::Ext, &photo.file.ext);
+    }
+    let shown = shown_size(photo);
+    if let Some((w, h)) = shown {
+        dim(Dim::Orientation, orientation(w, h));
     }
     for style in &photo.edit.styles {
         dim(Dim::Style, style);
@@ -529,6 +569,14 @@ pub fn document(
         if let Some(v) = value {
             doc.add_f64(field, v);
         }
+    }
+    if let Some(size) = photo.file.size {
+        doc.add_u64(f.size, size);
+    }
+    if let Some((w, h)) = shown {
+        doc.add_u64(f.width, u64::from(w));
+        doc.add_u64(f.height, u64::from(h));
+        doc.add_f64(f.megapixels, f64::from(w) * f64::from(h) / 1e6);
     }
     if let Some(geo) = &photo.geo {
         doc.add_f64(f.lat, geo.lat);

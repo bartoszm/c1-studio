@@ -201,6 +201,9 @@ pub struct EditInfo {
     pub styles: Vec<String>,
     pub local_layers: u32,
     pub retouch_layers: u32,
+    /// Width × height in pixels as the picture is shown: turned, straightened and cropped.
+    /// `None` when the source does not know the size.
+    pub shown: Option<(u32, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

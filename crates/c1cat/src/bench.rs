@@ -347,6 +347,7 @@ fn photos(rng: &mut SmallRng, v: &Vocab, count: usize) -> Vec<Photo> {
                 styles: shoot.style.map(|s| vec![v.styles[s].clone()]).unwrap_or_default(),
                 local_layers: if rng.random_bool(0.1) { rng.random_range(1..4) } else { 0 },
                 retouch_layers: 0,
+                shown: Some((6240, 4160)),
             },
             trashed: rng.random_bool(0.01),
         });

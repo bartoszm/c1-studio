@@ -55,6 +55,21 @@ pub struct Selector {
     pub aperture: Option<String>,
     #[arg(long)]
     pub focal: Option<String>,
+    /// Camera maker, substring.
+    #[arg(long)]
+    pub make: Option<String>,
+    /// Exposure time in seconds, e.g. '<0.004' or '>=1'.
+    #[arg(long)]
+    pub shutter: Option<String>,
+    /// The original's size in megabytes, e.g. '>30'.
+    #[arg(long)]
+    pub size_mb: Option<String>,
+    /// Megapixels as shown (turned and cropped), e.g. '<12'.
+    #[arg(long)]
+    pub megapixels: Option<String>,
+    /// Comma-separated: landscape, portrait, square, panorama (as shown).
+    #[arg(long)]
+    pub orientation: Option<String>,
     /// Capture date from (YYYY-MM-DD, YYYY-MM or YYYY).
     #[arg(long = "from")]
     pub date_from: Option<String>,
@@ -166,6 +181,15 @@ impl Selector {
             iso: self.iso.as_deref().map(Range::parse).transpose()?,
             aperture: self.aperture.as_deref().map(Range::parse).transpose()?,
             focal: self.focal.as_deref().map(Range::parse).transpose()?,
+            make: self.make.clone(),
+            shutter: self.shutter.as_deref().map(Range::parse).transpose()?,
+            file_size: self.size_mb.as_deref().map(Range::parse).transpose()?.map(|r| Range {
+                min: r.min.map(|v| v * 1e6),
+                max: r.max.map(|v| v * 1e6),
+                ..r
+            }),
+            megapixels: self.megapixels.as_deref().map(Range::parse).transpose()?,
+            orientation: self.orientation.as_deref().map(split).unwrap_or_default(),
             year: self.year,
             month: self.month.clone(),
             city: self.city.clone(),
