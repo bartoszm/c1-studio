@@ -61,6 +61,15 @@ pub fn open_in_system(path: &Path) -> std::io::Result<()> {
     let opener = "open";
     #[cfg(all(unix, not(target_os = "macos")))]
     let opener = "xdg-open";
+    // Under WSL a Linux desktop is rarely set up: Explorer opens it, by its Windows path.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if c1model::platform::is_wsl()
+        && let Ok(out) = std::process::Command::new("wslpath").arg("-w").arg(path).output()
+        && out.status.success()
+    {
+        let windows = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        return std::process::Command::new("explorer.exe").arg(windows).spawn().map(|_| ());
+    }
     // Explorer reports failure even when it opened the file; only starting it counts.
     std::process::Command::new(opener).arg(path).spawn().map(|_| ())
 }

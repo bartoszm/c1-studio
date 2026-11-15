@@ -18,7 +18,11 @@ const CAPTURE_ONE: &str = "capture-one";
 pub struct SourceArgs {
     /// The source to open: a catalog file, a folder holding one, or a `.c1folders`
     /// definition. Defaults to C1_CATALOG, then the source the app opened last, then the
-    /// Capture One catalog named in config.json or found under C:\c1_catalogs.
+    #[cfg_attr(windows, doc = r"Capture One catalog named in config.json or found under C:\c1_catalogs.")]
+    #[cfg_attr(
+        not(windows),
+        doc = "Capture One catalog named in config.json or, under WSL, found under /mnt/c/c1_catalogs."
+    )]
     #[arg(long, global = true, visible_alias = "catalog", value_name = "PATH")]
     pub source: Option<String>,
     /// Open it with this provider (capture-one, folders) instead of the first that

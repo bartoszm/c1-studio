@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { LeftOut } from "./keywordChoice";
+import { isWindows } from "./platform";
 
 export type Dim =
   | "rating" | "color" | "year" | "month" | "week" | "camera" | "lens" | "keyword_tree" | "collection" | "folder" | "country" | "city"
@@ -88,7 +89,7 @@ export type Filter = {
   any_of?: Filter[];
   /** The photos a part of the change log is about (the History tab). */
   history?: HistoryPick;
-  /** Folder subtree, `H:/fotos/2026`. */
+  /** Folder subtree, `H:/fotos/2026` or `/home/me/Photos/2026`. */
   folder?: string;
   /** From the analysis, each any of its values. */
   shape?: string[];
@@ -285,7 +286,7 @@ export type ProviderView = {
   name: string;
   pick: { File: { label: string; extensions: string[] } } | "Folder";
 };
-/** A kind of source, and whether the app offers it (`%APPDATA%\c1studio\providers.json`). */
+/** A kind of source, and whether the app offers it (`providers.json` in the app's settings folder). */
 export type KindView = { id: string; name: string; offered: boolean };
 export type SourcesView = {
   current: SourceEntry | null;
@@ -1009,7 +1010,7 @@ export const aiSettings = () => invoke<AiView>("ai_settings");
 /** Settings > AI's ticks alone (%): cheap to read on every edit. */
 export const aiThresholds = () => invoke<{ place_tick: number; precise: number }>("ai_thresholds");
 export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
-/** Stores the key in the Windows Credential Manager; an empty one removes it. */
+/** Stores the key in the system keyring; an empty one removes it. */
 export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
 export const aiPrompt = (task: AiTask = "describe") => invoke<AiPrompt>("ai_prompt", { task });
 export const aiEstimate = (rows: number[], again: boolean, task: AiTask = "describe") =>
@@ -1120,7 +1121,7 @@ export type WriteReport = { written: number; backup: string | null; warnings: st
 export const writeApply = () => invoke<WriteReport>("write_apply");
 
 // WebView2 on Windows reaches custom protocols as http://<scheme>.localhost.
-const base = navigator.userAgent.includes("Windows") ? "http://c1img.localhost" : "c1img://localhost";
+const base = isWindows ? "http://c1img.localhost" : "c1img://localhost";
 export const thumbUrl = (row: number) => `${base}/thumb/${row}`;
 /** The source's own large preview, or a 404 without one: for grid tiles, which must not
  *  decode originals. */

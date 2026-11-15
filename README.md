@@ -168,6 +168,33 @@ nothing is open: choose a Capture One catalog (the `.cocatalogdb` file) or photo
 from the source menu at the top left. Catalogs from Capture One 16.8 are read and
 written, 16.5 read only; see [docs/GUIDE.md](docs/GUIDE.md).
 
+### Linux and WSL
+
+On Ubuntu 22.04 or newer, install `C1.Studio_<version>_amd64.deb` from the same release
+(`sudo apt install ./C1.Studio_*_amd64.deb`), or make the `.AppImage` executable and run
+it. Under WSL 2 the window opens through WSLg (Windows 11, or Windows 10 with WSL from
+the Store).
+
+- **A catalog on Windows** is opened from its drive mount, such as
+  `/mnt/c/c1_catalogs/fuji/fuji.cocatalogdb`. Reading through the mount is slower than
+  on Windows, so opening a large catalog takes longer.
+- **Originals** are found through the drive mounts (`H:\fotos` is `/mnt/h/fotos`). On a
+  Linux machine, or for network shares, say where each volume is in
+  `~/.config/c1studio/volumes.json`: `{"H:": "/media/photos", "\\\\nas\\photos": "/mnt/nas"}`.
+  The file is read when the app starts.
+- **Writes to a catalog** wait while Capture One runs on Windows; under WSL the app asks
+  Windows' process list through `tasklist.exe`, and holds writes back when it cannot.
+  Close Capture One first, as on Windows. On a Linux machine nothing is checked: the app
+  cannot see programs on other computers, so **do not write to a catalog on a network
+  share while Capture One has it open on another machine**: Capture One would overwrite
+  the changes when it saves. A catalog copied onto the Linux machine is safe.
+- **API keys** go to the desktop keyring (GNOME Keyring or KWallet). WSL usually has none:
+  set `ANTHROPIC_API_KEY` instead.
+- **Deleting files** in photo folders moves them to the desktop trash. Under WSL, files on
+  a Windows drive cannot reach Windows' Recycle Bin, so the app leaves them for you to
+  delete in Windows.
+- Settings live in `~/.config/c1studio` and library data in `~/.local/share/c1studio`.
+
 ## Build
 
 ```powershell
@@ -180,6 +207,20 @@ pnpm tauri build                        # the installer: target\release\bundle\n
 
 The app opens a catalog given on the command line (`c1studio.exe C:\c1_catalogs\mine`),
 then the one opened last. Library data lives in `%LOCALAPPDATA%\c1studio\<catalog id>\`.
+
+On Linux (Ubuntu 22.04+, WSL included), install the build dependencies first, then build
+the packages:
+
+```sh
+sudo apt install build-essential curl wget file pkg-config libssl-dev libwebkit2gtk-4.1-dev \
+  libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev patchelf xdg-utils
+cd app
+pnpm install
+pnpm tauri build --bundles deb,appimage   # target/release/bundle/{deb,appimage}/
+```
+
+Under WSL, keep the checkout on the Linux side (`~/…`), not on `/mnt/c`: building
+through the drive mount is many times slower.
 
 ### The command line
 

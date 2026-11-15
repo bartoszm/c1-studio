@@ -16,6 +16,13 @@ Install it with `C1.Studio_<version>_x64-setup.exe` from the
 about an unknown publisher: choose *More info* → *Run anyway*. The first time, nothing
 is open: choose a catalog from the source menu (see below).
 
+On Linux (Ubuntu 22.04 or newer, and WSL 2 on Windows) install the `.deb` from the same
+release, or run the `.AppImage`. Under WSL, open a catalog on Windows from its drive mount
+(`/mnt/c/…`); originals are found the same way (`H:\` is `/mnt/h/`). On another Linux
+machine, map each Windows volume to a folder in `~/.config/c1studio/volumes.json`, for
+example `{"H:": "/media/photos"}`. Writes to a catalog wait while Capture One is open on
+Windows, as they do on Windows. The README's *Linux and WSL* section has the rest.
+
 The installer asks which kinds of photo source to offer: *Capture One catalogs*, *Photo
 folders*, or both. The source menu then offers only those. Change the choice later
 under *Kinds of source…* at the bottom of the source menu, where at least one kind stays
@@ -686,7 +693,7 @@ accept a suggestion and write it.
 **Access** (*Settings › AI*, kept per catalog):
 
 - **Anthropic API key:** billed per token. Paste the key once; it is kept in the Windows
-  Credential Manager (or comes from `ANTHROPIC_API_KEY`). Choose the model (Opus, Sonnet,
+  Credential Manager, or the desktop keyring on Linux (or comes from `ANTHROPIC_API_KEY`). Choose the model (Opus, Sonnet,
   Haiku) and the effort.
 - **Claude plan, through Claude Code:** uses your plan's limits instead. Claude Code must
   be installed and signed in with the plan (`claude auth login`).

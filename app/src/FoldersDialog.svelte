@@ -3,7 +3,7 @@
   import { onMount } from "svelte";
   import * as api from "./lib/api";
   import {
-    PRESETS, TOKENS, addRoot, excludesToText, gbToMb, mbToGb, renderPattern, storeMoved, textToExcludes, withPreset,
+    EXAMPLE, PRESETS, TOKENS, addRoot, excludesToText, gbToMb, mbToGb, renderPattern, storeMoved, textToExcludes, withPreset,
   } from "./lib/folders";
 
   // A photo folders source: its name, the folders it holds, what it leaves out, where its
@@ -192,7 +192,7 @@
         </p>
       {/if}
       <p class="muted small example">
-        For <code>D:/Photos/Family/2024/Trip/DSCF0001.RAF</code>:<br />
+        For <code>{EXAMPLE.root}/{EXAMPLE.relpath}</code>:<br />
         <code>{renderPattern(def.images.thumb, "thumb")}</code><br />
         <code>{renderPattern(def.images.preview, "preview")}</code>
       </p>

@@ -26,7 +26,7 @@ test("Delete trashes, except in an album, where Ctrl+Delete does", () => {
 test("the notes count the photos and say what emptying does", () => {
   assert.equal(binNote(1, true), "1 photo moved to Trash");
   assert.equal(binNote(2, false), "2 photos restored");
-  assert.match(removalText(3, "Files"), /files of 3 photos go to the Windows Recycle Bin/);
+  assert.match(removalText(3, "Files"), /files of 3 photos go to the (Windows Recycle Bin|system trash)/);
   assert.match(removalText(1, "MarksTrashed", C1), /^1 photo is marked deleted in Capture One and shows/);
   assert.match(removalText(2, "MarksTrashed", C1), /^2 photos are marked deleted in Capture One and show /);
 });
