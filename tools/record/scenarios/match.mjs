@@ -11,10 +11,10 @@ export default {
     await d.evaluate(`document.querySelector(".analysis")?.scrollTo({ top: 0 })`);
     await d.sleep(600);
     await d.record(async () => {
-      await d.caption("Pick what you are after: red and blue");
+      await d.caption("Pick what you are after: red, and Ctrl+click blue");
       await d.click(".analysis .bar-row", /^red\n/);
       await d.sleep(800);
-      await d.click(".analysis .bar-row", /^blue\n/);
+      await d.click(".analysis .bar-row", /^blue\n/, { modifiers: 2 }); // Ctrl: beside red
       await d.sleep(1000);
       await d.click(".tabs button", /^Photos$/);
       await d.settle();

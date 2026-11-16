@@ -13,12 +13,12 @@ export default {
     await d.record(async () => {
       await d.caption("Every photo is measured once: shape, colour, light, focus");
       await d.sleep(1800);
-      await d.caption("Each card says what it measures; each bar is a filter");
+      await d.caption("Each card says what it measures; each bar is a filter, Ctrl+click adds one");
       await d.move(...Object.values(await d.locate(".analysis .card .hint", /colours/)).slice(0, 2));
       await d.sleep(1400);
       await d.click(".analysis .bar-row", /^red\n/);
       await d.sleep(1200);
-      await d.click(".analysis .bar-row", /^blue\n/);
+      await d.click(".analysis .bar-row", /^blue\n/, { modifiers: 2 }); // Ctrl: beside red
       await d.sleep(1300);
       await d.caption("Red or blue … or, switched to all, red and blue");
       await d.click(".analysis .combine button", /^all$/);
