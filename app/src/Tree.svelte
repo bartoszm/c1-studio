@@ -50,13 +50,12 @@
     class:under-out={m === "under-out"}
     class:empty={node.count === 0}
     class:queued={node.queued}
-    class:multi={!!multi && !node.container && !node.disabled}
     style:padding-left="{6 + depth * 14}px"
     title={node.disabled ??
       (node.queued
         ? `Changed here; not yet written to ${source.word}`
         : multi && !node.container
-          ? `Click: only this · Ctrl+click: add${multi === true ? " · Alt+click: leave out" : ""}`
+          ? `Click: only this${multi === true ? " · Alt+click: leave out" : ""}`
           : undefined)}
     role="treeitem"
     aria-selected={selected === node.key || m === "in"}
@@ -90,6 +89,30 @@
     {:else}
       <span class="chev"></span>
     {/if}
+    {#if multi}
+      {#if node.container || node.disabled}
+        <span class="box blank"></span>
+      {:else}
+        <!-- Ticks it in beside the other picks, or out of them; ⊘: left out. -->
+        <button
+          class="box"
+          class:in={m === "in" || m === "under-in"}
+          class:out={m === "out" || m === "under-out"}
+          class:under={m === "under-in" || m === "under-out"}
+          role="checkbox"
+          aria-checked={m === "in"}
+          aria-label="{node.name}{m === 'out' ? ', left out' : ''}"
+          title={m === "in"
+            ? "Take away from the picks"
+            : m === "under-in"
+              ? "In a picked place: untick to leave it out"
+              : m === "out"
+                ? "Show it instead of leaving it out"
+                : "Add to the picks (Ctrl+click on the name)"}
+          onclick={() => onpick(node, m === "under-in" ? "out" : "add")}
+        >{m === "out" || m === "under-out" ? "⊘" : m === "in" || m === "under-in" ? "✓" : ""}</button>
+      {/if}
+    {/if}
     <button
       class="label"
       disabled={!!node.disabled}
@@ -99,14 +122,6 @@
       <span class="name">{node.name}</span>
       {#if node.count !== undefined}<span class="n">{node.count.toLocaleString()}</span>{/if}
     </button>
-    {#if multi && !node.container && !node.disabled}
-      <span class="pm">
-        <button aria-label="Add {node.name} to the picks" title="Add to the picks (Ctrl+click)" onclick={() => onpick(node, "add")}>+</button>
-        {#if multi === true}
-          <button aria-label="Leave {node.name} out" title="Leave out (Alt+click)" onclick={() => onpick(node, "out")}>−</button>
-        {/if}
-      </span>
-    {/if}
   </div>
   {#if open && node.children.length}
     <Tree nodes={node.children} {selected} {mark} {multi} {expanded} {onpick} {oncontext} {drag} {candrop} {ondropnode} depth={depth + 1} />

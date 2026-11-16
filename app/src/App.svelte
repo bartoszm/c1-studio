@@ -1667,10 +1667,10 @@
 
   // Trees: a click picks only the node, Ctrl+click adds it, Alt+click leaves it out; a
   // click on the only pick lets go.
-  function pickAlbum(n: Node, mode: PickMode = "only") {
+  function pickAlbum(value: string, mode: PickMode = "only") {
     // A smart album can only be included: the index has no "not this rule".
-    if (mode === "out" && byId.get(n.value)?.kind === "Smart") return;
-    const { inc, exc } = pickIn(filter.collections, filter.not_in_collections, n.value, mode);
+    if (mode === "out" && byId.get(value)?.kind === "Smart") return;
+    const { inc, exc } = pickIn(filter.collections, filter.not_in_collections, value, mode);
     filter = { ...filter, collections: inc, not_in_collections: exc };
     run();
   }
@@ -1694,8 +1694,8 @@
     run();
   }
   /** Places are alternatives: a city's "(no location)" (`City|—`) is one of them too. */
-  function onPlace(n: Node, mode: PickMode = "only") {
-    const { inc, exc } = pickPlace(filter.places_under, filter.places_under_not, n.value, mode);
+  function onPlace(value: string, mode: PickMode = "only") {
+    const { inc, exc } = pickPlace(filter.places_under, filter.places_under_not, value, mode);
     filter = { ...filter, places_under: inc, places_under_not: exc };
     run();
   }
@@ -1789,8 +1789,8 @@
     }
     await edited(rowsOf(undo));
   }
-  function pickKeyword(n: Node, mode: PickMode = "only") {
-    const { inc, exc } = pickIn(filter.keywords_under, filter.keywords_under_not, n.value, mode);
+  function pickKeyword(value: string, mode: PickMode = "only") {
+    const { inc, exc } = pickIn(filter.keywords_under, filter.keywords_under_not, value, mode);
     filter = { ...filter, keywords_under: inc, keywords_under_not: exc };
     run();
   }
@@ -2323,7 +2323,7 @@
         ? [{ what: "Colour", text: v === "None" ? "none" : "any" }]
         : v.Values.map((c) => {
             const rest = without(v.Values, c);
-            return { what: "Colour", text: c.toLowerCase(), dot: COLORS[c.toLowerCase()], rest: rest && { Values: rest } };
+            return { what: "Colour", text: c.toLowerCase(), value: c, dot: COLORS[c.toLowerCase()], rest: rest && { Values: rest } };
           }),
     // A week carries its month and year: one chip, and dropping it goes up a level.
     year: (v) => (filter.month ? [] : [{ text: String(v) }]),
@@ -2332,37 +2332,37 @@
     captured: (v) => [{ text: rangeText(v) }],
     trip: (v) => [{ what: "Trip", text: shownTrip ? tripName(shownTrip) : rangeText(v), title: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
-    cameras: (v) => v.map((c) => ({ what: "Camera", text: c, rest: without(v, c) })),
-    cameras_not: (v) => v.map((c) => ({ what: "Camera", text: c, out: true, rest: without(v, c) })),
+    cameras: (v) => v.map((c) => ({ what: "Camera", text: c, value: c, rest: without(v, c) })),
+    cameras_not: (v) => v.map((c) => ({ what: "Camera", text: c, out: true, value: c, rest: without(v, c) })),
     make: (v) => [{ what: "Make", text: v }],
-    makes: (v) => v.map((c) => ({ what: "Make", text: c, rest: without(v, c) })),
-    makes_not: (v) => v.map((c) => ({ what: "Make", text: c, out: true, rest: without(v, c) })),
+    makes: (v) => v.map((c) => ({ what: "Make", text: c, value: c, rest: without(v, c) })),
+    makes_not: (v) => v.map((c) => ({ what: "Make", text: c, out: true, value: c, rest: without(v, c) })),
     lens: (v) => [{ what: "Lens", text: v }],
-    lenses: (v) => v.map((c) => ({ what: "Lens", text: c, rest: without(v, c) })),
-    lenses_not: (v) => v.map((c) => ({ what: "Lens", text: c, out: true, rest: without(v, c) })),
+    lenses: (v) => v.map((c) => ({ what: "Lens", text: c, value: c, rest: without(v, c) })),
+    lenses_not: (v) => v.map((c) => ({ what: "Lens", text: c, out: true, value: c, rest: without(v, c) })),
     ...rangeChips,
-    ext: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), rest: without(v, x) })),
-    ext_not: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), out: true, rest: without(v, x) })),
-    orientation: (v) => v.map((x) => ({ what: "Orientation", text: x, rest: without(v, x) })),
-    orientation_not: (v) => v.map((x) => ({ what: "Orientation", text: x, out: true, rest: without(v, x) })),
+    ext: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), value: x, rest: without(v, x) })),
+    ext_not: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), out: true, value: x, rest: without(v, x) })),
+    orientation: (v) => v.map((x) => ({ what: "Orientation", text: x, value: x, rest: without(v, x) })),
+    orientation_not: (v) => v.map((x) => ({ what: "Orientation", text: x, out: true, value: x, rest: without(v, x) })),
     colors_not: (v) =>
-      v.map((c) => ({ what: "Colour", text: c.toLowerCase(), out: true, dot: COLORS[c.toLowerCase()], rest: without(v, c) })),
+      v.map((c) => ({ what: "Colour", text: c.toLowerCase(), out: true, dot: COLORS[c.toLowerCase()], value: c, rest: without(v, c) })),
     country: (v) => [{ what: "Country", text: v }],
-    keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
+    keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, value: p, rest: without(v, p) })),
     keywords_under_not: (v) =>
-      v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), out: true, title: p, rest: without(v, p) })),
+      v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), out: true, title: p, value: p, rest: without(v, p) })),
     unkeyworded: (v) => (v ? [{ text: "no keywords" }] : []),
     collections: (v) =>
-      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
+      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, value: id, rest: without(v, id) })),
     not_in_collections: (v) =>
-      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, out: true, title: byId.get(id)?.path, rest: without(v, id) })),
+      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, out: true, title: byId.get(id)?.path, value: id, rest: without(v, id) })),
     uncollected: (v) => [{ what: "Album", text: v ? "none" : "any" }],
     all_of: () => [],
     any_of: () => [],
     folder: (v) => [{ what: "Folder", text: v }],
-    places_under: (v) => v.map((p) => ({ what: "Place", text: placeText(p), title: p, rest: without(v, p) })),
+    places_under: (v) => v.map((p) => ({ what: "Place", text: placeText(p), title: p, value: p, rest: without(v, p) })),
     places_under_not: (v) =>
-      v.map((p) => ({ what: "Place", text: placeText(p), out: true, title: p, rest: without(v, p) })),
+      v.map((p) => ({ what: "Place", text: placeText(p), out: true, title: p, value: p, rest: without(v, p) })),
     gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
     placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
     located: (v) => [{ text: v ? "has a location" : "no location" }],
@@ -2437,6 +2437,35 @@
     run();
   }
   const dropTerm = (t: Term) => dropFields([[t.key, t.rest]]);
+  /** A value of the filter bar shown, or left out, as the sidebar would: leaving it out or
+   *  showing it again goes through the same pick (places keep their nesting). */
+  const FLIPS: Partial<Record<keyof Filter, (value: string, mode: PickMode) => void>> = {
+    cameras: (v, m) => toggle("camera", v, m),
+    lenses: (v, m) => toggle("lens", v, m),
+    ext: (v, m) => toggle("ext", v, m),
+    orientation: (v, m) => toggle("orientation", v, m),
+    color: (v, m) => toggle("color", v.toLowerCase(), m),
+    keywords_under: pickKeyword,
+    collections: pickAlbum,
+    places_under: onPlace,
+    makes: (v, m) => {
+      const { inc, exc } = pickIn(filter.makes, filter.makes_not, v, m);
+      filter = { ...filter, makes: inc, makes_not: exc };
+      run();
+    },
+  };
+  const FLIP_OF: Partial<Record<keyof Filter, keyof Filter>> = {
+    cameras_not: "cameras", lenses_not: "lenses", ext_not: "ext", orientation_not: "orientation", colors_not: "color",
+    keywords_under_not: "keywords_under", not_in_collections: "collections", places_under_not: "places_under", makes_not: "makes",
+  };
+  /** How a value in the filter bar is flipped, if it can be: a smart album has no "not". */
+  function flipper(t: Term): (() => void) | undefined {
+    const flip = FLIPS[FLIP_OF[t.key] ?? t.key];
+    if (!flip || t.value === undefined) return undefined;
+    if (t.key === "collections" && byId.get(t.value)?.kind === "Smart") return undefined;
+    const value = t.value;
+    return () => flip(value, t.out ? "add" : "out");
+  }
   /** A whole section let go: a date's year, month and week together. */
   const dropPill = (p: Pill) =>
     dropFields(
@@ -2452,10 +2481,16 @@
 </script>
 
 {#snippet termChip(term: Term)}
+  {@const flip = flipper(term)}
   <span class="term" class:out={term.out} title={term.title}>
     {#if term.dot}<i class="dot" style:background={term.dot}></i>{/if}
     {#if term.what}<span class="what">{term.what}</span>{/if}
-    <span class="text" class:stars={term.stars}>{term.text}</span>
+    {#if flip}
+      <!-- A click on the value leaves it out, or shows it again. -->
+      <button class="text flip" title={term.out ? "Click to show it again" : "Click to leave it out"} onclick={flip}>{term.text}</button>
+    {:else}
+      <span class="text" class:stars={term.stars}>{term.text}</span>
+    {/if}
     <button class="drop" aria-label="Remove {term.what ?? ''} {term.text}" onclick={() => dropTerm(term)}>×</button>
   </span>
 {/snippet}
@@ -2741,7 +2776,7 @@
               mark={(n) => pickOf(filter.collections, filter.not_in_collections, n.value)}
               multi
               {expanded}
-              onpick={pickAlbum}
+              onpick={(n, m) => pickAlbum(n.value, m)}
               oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
               drag={dragAlbum}
               candrop={(n) => canDrop(byId.get(n.value))}
@@ -2793,7 +2828,7 @@
               mark={(n) => placePick(filter.places_under, filter.places_under_not, n.value)}
               multi
               {expanded}
-              onpick={onPlace}
+              onpick={(n, m) => onPlace(n.value, m)}
               oncontext={(node, e) => { if (!cityWithoutLocation(node.value)) placeMenu = { x: e.clientX, y: e.clientY, node }; }}
             />
             {#if missingCodes}
@@ -2835,7 +2870,7 @@
               mark={(n) => pickOf(filter.keywords_under, filter.keywords_under_not, n.value)}
               multi
               expanded={keywordSearch.trim() ? searchOpen : expanded}
-              onpick={pickKeyword}
+              onpick={(n, m) => pickKeyword(n.value, m)}
               oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
             />
             {#if keywordSearch.trim() && !keywordView.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
@@ -2868,7 +2903,7 @@
                     class="facet"
                     class:on={state === "in"}
                     class:out={state === "out"}
-                    title={many ? `Click: only this · Ctrl+click: add${canOut ? " · Alt+click: leave out" : ""}` : "Click to pick · again to let go"}
+                    title={many ? `Click: only this${canOut ? " · Alt+click: leave out" : ""}` : "Click to pick · again to let go"}
                     onclick={(e) => toggle(dim, value, many ? modeOf(e) : "only")}
                   >
                     {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
@@ -2877,12 +2912,17 @@
                     <span class="n">{n.toLocaleString()}</span>
                   </button>
                   {#if many}
-                    <span class="pm">
-                      <button aria-label="Add {label(dim, value)} to the picks" title="Add to the picks (Ctrl+click)" onclick={() => toggle(dim, value, "add")}>+</button>
-                      {#if canOut}
-                        <button aria-label="Leave {label(dim, value)} out" title="Leave out (Alt+click)" onclick={() => toggle(dim, value, "out")}>−</button>
-                      {/if}
-                    </span>
+                    <!-- Ticks it in beside the other picks, or out of them; ⊘: left out. -->
+                    <button
+                      class="box"
+                      class:in={state === "in"}
+                      class:out={state === "out"}
+                      role="checkbox"
+                      aria-checked={state === "in"}
+                      aria-label="{label(dim, value)}{state === 'out' ? ', left out' : ''}"
+                      title={state === "in" ? "Take away from the picks" : state === "out" ? "Show it instead of leaving it out" : "Add to the picks (Ctrl+click on the name)"}
+                      onclick={() => toggle(dim, value, "add")}
+                    >{state === "out" ? "⊘" : state === "in" ? "✓" : ""}</button>
                   {/if}
                 </div>
               {/each}
@@ -3271,7 +3311,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu-shield" role="presentation" onclick={() => (keywordMenu = null)} oncontextmenu={(e) => { e.preventDefault(); keywordMenu = null; }}></div>
   <div class="menu" role="menu" style:left="{keywordMenu.x}px" style:top="{keywordMenu.y}px">
     <div class="menu-title">{node.value}</div>
-    {@render pickItems((mode) => { keywordMenu = null; pickKeyword(node, mode); }, true)}
+    {@render pickItems((mode) => { keywordMenu = null; pickKeyword(node.value, mode); }, true)}
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "rename", start: node.value }; keywordMenu = null; }}>Rename…</button>
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "join", start: node.value }; keywordMenu = null; }}>Join or replace…</button>
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "group", start: node.value }; keywordMenu = null; }}>Group under…</button>
@@ -3294,7 +3334,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
     {#if c}<div class="menu-title">{c.path}</div>{/if}
     {#if albumMenu.node && (c?.kind === "Album" || c?.kind === "Smart")}
       {@const node = albumMenu.node}
-      {@render pickItems((mode) => { albumMenu = null; pickAlbum(node, mode); }, c.kind === "Album")}
+      {@render pickItems((mode) => { albumMenu = null; pickAlbum(node.value, mode); }, c.kind === "Album")}
     {/if}
     {#if c?.kind === "Album" && n}
       <button role="menuitem" onclick={() => { const id = c.id; albumMenu = null; applyEdit({ AddToAlbum: id }); }}>
@@ -3356,7 +3396,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu-shield" role="presentation" onclick={() => (placeMenu = null)} oncontextmenu={(e) => { e.preventDefault(); placeMenu = null; }}></div>
   <div class="menu" role="menu" style:left="{placeMenu.x}px" style:top="{placeMenu.y}px">
     <div class="menu-title">{placeText(node.value)}</div>
-    {@render pickItems((mode) => { placeMenu = null; onPlace(node, mode); }, true)}
+    {@render pickItems((mode) => { placeMenu = null; onPlace(node.value, mode); }, true)}
     <button role="menuitem" onclick={() => { placeDialog = { mode: "rename", path: node.value }; placeMenu = null; }}>
       {node.value.endsWith("—") ? "Set a name…" : "Rename…"}
     </button>

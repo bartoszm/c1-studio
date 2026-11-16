@@ -11,6 +11,8 @@ import type { SectionKey } from "./sections";
 export type Term = {
   key: keyof Filter;
   text: string;
+  /** The value itself, for a field that can show it or leave it out (a click flips it). */
+  value?: string;
   what?: string;
   out?: boolean;
   title?: string;

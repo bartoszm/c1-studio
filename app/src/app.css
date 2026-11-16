@@ -98,6 +98,10 @@ header > * { flex-shrink: 0; }
 .term .text { overflow: hidden; text-overflow: ellipsis; }
 .term .dot { flex: none; }
 .term.out .text { color: var(--error); }
+/* A value that a click leaves out or shows again. */
+button.text.flip { padding: 0; border: none; background: none; font: inherit; color: inherit; cursor: pointer; }
+.term.out button.text.flip { color: var(--error); }
+button.text.flip:hover { text-decoration: underline dotted; }
 .pill .drop { flex: none; width: 16px; height: 16px; border-radius: 50%; color: var(--muted); line-height: 1; }
 .pill .drop:hover { color: var(--error); background: var(--hover); }
 /* A value's own × shows on hover; the pill's drops the whole section. */
@@ -706,13 +710,29 @@ footer > span { white-space: nowrap; }
 .seg button:hover { background: var(--hover); }
 .seg button.on { background: var(--on); color: var(--text); }
 .rating-op { display: flex; align-items: center; gap: 8px; padding: 2px 8px 4px; color: var(--muted); }
-/* A value's add (+) and leave out (−), on hover, over its count. */
-.facet-row, .node { position: relative; }
-.pm { position: absolute; top: 50%; right: 6px; display: none; gap: 2px; transform: translateY(-50%); }
-.facet-row:hover .pm, .node:hover > .pm { display: inline-flex; }
-.facet-row:hover .n, .node.multi:hover .n { visibility: hidden; }
-.pm button { width: 18px; height: 18px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel, #222); color: var(--muted); line-height: 1; }
-.pm button:hover { color: var(--text); background: var(--hover); }
+/* A value's box: ticked in beside the other picks (✓) or left out (⊘). In a flat list it
+   sits in the row's left gutter; in a tree, after the expander. */
+.box {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 5px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text);
+  border: 1px solid var(--muted);
+  border-radius: 2px;
+}
+.box:hover { border-color: var(--text); background: var(--hover); }
+.box.out { color: var(--error); border-color: var(--error); }
+.box.under { opacity: 0.5; }
+.box.blank { border-color: transparent; }
+.facet-row { position: relative; }
+.facet-row > .box { position: absolute; top: 50%; left: 7px; margin: 0; transform: translateY(-50%); }
 .none-row { display: flex; width: 100%; align-items: center; padding: 3px 8px 3px 24px; text-align: left; font-style: italic; }
 .none-row:hover { background: var(--hover); }
 .none-row.on { background: var(--on); }

@@ -23,6 +23,9 @@ test("one pill per section, in the sidebar's order, the search first", () => {
     "Camera: X-T5 or X100VI except GFX",
   ]);
   assert.deepEqual(ps[3].keys, ["cameras", "cameras_not"]);
+  // The value goes along, for a click to leave it out or show it again.
+  const gfx: Term = { key: "cameras_not", what: "Camera", text: "GFX 100S", value: "GFX100S", out: true };
+  assert.equal(pills([gfx], order, {}, {})[0].outs[0].value, "GFX100S");
 });
 
 test("the sidebar's own order decides", () => {

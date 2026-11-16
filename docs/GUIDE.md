@@ -93,8 +93,9 @@ up at the next of these, or on the next start.
 - **Filter bar:** above the grid while anything is filtered, one pill per section, in
   the sidebar's order, with *and* between them: *Camera: X-T5 or X100VI except GFX*,
   *Keyword: Food and Kraków*, *Place: not Germany*. The × at a pill's end drops the
-  section; hover a value for its own ×. Between keywords or albums, *and* / *or* is a
-  switch (see the sidebar). *Clear filters* drops them all.
+  section; hover a value for its own ×. Click a value to leave it out, or to show it
+  again (*Camera: X-T5 or X100VI* → *Camera: X-T5 except X100VI*). Between keywords or
+  albums, *and* / *or* is a switch (see the sidebar). *Clear filters* drops them all.
 - **Grid:** the matching photos, newest first unless the sort box says otherwise.
 - **Details panel** (right): everything about the focused photo. `i` or *Details*
   shows and hides it.
@@ -125,10 +126,11 @@ beside the box lists every token; clicking one adds it.
 Where a section can hold several values (Albums, Location, Keywords, Colour, Main colour,
 Camera, Lens, Format, Orientation):
 
-- **Ctrl+click** (or **+** on hover) adds the value to the section's picks, or takes it
-  away again.
-- **Alt+click** (or **−** on hover) leaves it out, or lets it back. Smart albums and main
-  colours cannot be left out.
+- **The box** beside a value (or **Ctrl+click** on its name) adds it to the section's
+  picks (✓), or takes it away again. Inside a picked place, a place shows a faint ✓:
+  untick it to leave it out.
+- **Alt+click** leaves a value out (⊘ in its box); its box, or a click on it in the filter
+  bar, shows it again. Smart albums and main colours cannot be left out.
 - The right-click menu of an album, a place or a keyword has the same three: *Show only
   this*, *Add to the filter*, *Leave out*.
 
