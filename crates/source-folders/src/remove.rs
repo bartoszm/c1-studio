@@ -166,8 +166,16 @@ fn no_recycle_bin(root: &Path) -> Option<String> {
 }
 
 #[cfg(not(windows))]
-fn no_recycle_bin(_root: &Path) -> Option<String> {
-    None
+fn no_recycle_bin(root: &Path) -> Option<String> {
+    // Under WSL a file on a Windows drive would go to a hidden `.Trash-<uid>` folder on
+    // that drive, not to Windows' Recycle Bin, where nobody would look for it. Linux disks
+    // (under /mnt too) have a trash of their own.
+    c1model::platform::on_windows_drive(root).then(|| {
+        format!(
+            "{} is a Windows drive, whose Recycle Bin cannot be reached from WSL: delete it in Windows",
+            root.display()
+        )
+    })
 }
 
 /// Moves the files still to go to the recycle bin, and says which could not be, and why.

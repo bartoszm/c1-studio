@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use c1model::{Crop, SourceError};
 
 /// Resolves the catalog: explicit path, then `$C1_CATALOG`, then the config file, then
-/// a search of `C:\c1_catalogs\*\*.cocatalogdb`.
+/// a search of `C:\c1_catalogs\*\*.cocatalogdb` (through the drive mount under WSL).
 pub fn find_catalog(explicit: Option<&Path>) -> Result<PathBuf, SourceError> {
     let from_config = read_config_catalog();
     let candidates = [explicit.map(Path::to_path_buf), env::var_os("C1_CATALOG").map(PathBuf::from), from_config];
@@ -14,7 +14,8 @@ pub fn find_catalog(explicit: Option<&Path>) -> Result<PathBuf, SourceError> {
         return if path.is_file() { Ok(path) } else { Err(SourceError::NotFound(path.display().to_string())) };
     }
 
-    let root = Path::new(r"C:\c1_catalogs");
+    // Off Windows and outside WSL there is no C: drive: nothing is found there.
+    let root = c1model::platform::local_path(r"C:\c1_catalogs").unwrap_or_default();
     let mut found: Vec<PathBuf> = std::fs::read_dir(root)
         .into_iter()
         .flatten()
@@ -314,7 +315,9 @@ mod tests {
         let dir = Path::new(r"C:\c1_catalogs\fuji");
         assert_eq!(original_path(r"H:\", r"fotos\2026", "A.RAF", false, dir), r"H:\fotos\2026\A.RAF");
         assert_eq!(original_path(r"H:\", "", "A.RAF", false, dir), r"H:\A.RAF");
-        assert_eq!(original_path("", r"Originals\x", "A.RAF", true, dir), r"C:\c1_catalogs\fuji\Originals\x\A.RAF");
+        // Imported images hang off the catalog's own folder, with this system's separator.
+        let inside = dir.join("Originals").join("x").join("A.RAF");
+        assert_eq!(original_path("", r"Originals\x", "A.RAF", true, dir), inside.to_string_lossy());
     }
 
     #[test]
@@ -429,14 +432,15 @@ mod tests {
 
     #[test]
     fn thumbnail_is_zero_padded() {
-        let p = thumbnail_path(Path::new(r"C:\cat"), 42);
-        assert!(p.ends_with(r"Cache\Thumbnails\00000042.cot"));
+        let p = thumbnail_path(Path::new("cat"), 42);
+        assert!(p.ends_with(Path::new("Cache").join("Thumbnails").join("00000042.cot")));
     }
 
     #[test]
     fn catalog_id_is_readable_and_stable() {
-        let id = catalog_id(Path::new(r"C:\c1_catalogs\fuji\fiuji.cocatalogdb"));
+        let catalog = |root: &str| Path::new(root).join("fuji").join("fiuji.cocatalogdb");
+        let id = catalog_id(&catalog("c1_catalogs"));
         assert!(id.starts_with("fiuji-"));
-        assert_eq!(id, catalog_id(Path::new(r"C:\C1_CATALOGS\fuji\fiuji.cocatalogdb")));
+        assert_eq!(id, catalog_id(&catalog("C1_CATALOGS")));
     }
 }

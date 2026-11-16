@@ -24,7 +24,11 @@ pub struct Selector {
     /// Comma-separated extensions to leave out, e.g. jpg,tif.
     #[arg(long)]
     pub no_ext: Option<String>,
-    /// Folder subtree, e.g. 'H:\fotos\2026'.
+    #[cfg_attr(windows, doc = r"Folder subtree, e.g. 'H:\fotos\2026'.")]
+    #[cfg_attr(
+        not(windows),
+        doc = r"Folder subtree, e.g. '/home/me/Photos/2026' (a Capture One catalog keeps its Windows paths: 'H:/fotos/2026')."
+    )]
     #[arg(long)]
     pub folder: Option<String>,
     /// '>=4', '3', '2-4', 'none' or 'any'.

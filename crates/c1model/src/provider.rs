@@ -57,19 +57,32 @@ pub trait Provider: Send + Sync {
 }
 
 /// Where the app keeps its data about each source: `$C1_DATA_DIR`, else
-/// `%LOCALAPPDATA%` (Windows) or `~/.local/share`, then `c1studio`.
+/// `%LOCALAPPDATA%` (Windows) or `$XDG_DATA_HOME` (`~/.local/share`), then `c1studio`.
 pub fn data_root() -> PathBuf {
     env::var_os("C1_DATA_DIR")
         .or_else(|| env::var_os("LOCALAPPDATA"))
+        .or_else(|| xdg("XDG_DATA_HOME"))
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local").join("share"))
         .join("c1studio")
 }
 
 /// Where the app keeps its own settings, such as the recent sources:
-/// `%APPDATA%\c1studio` (Windows) or `~/.config/c1studio`.
+/// `%APPDATA%\c1studio` (Windows) or `$XDG_CONFIG_HOME/c1studio` (`~/.config`).
 pub fn config_root() -> PathBuf {
-    env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("c1studio")
+    env::var_os("APPDATA")
+        .or_else(|| xdg("XDG_CONFIG_HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".config"))
+        .join("c1studio")
+}
+
+/// An XDG base directory, honoured off Windows when it is set to an absolute path.
+fn xdg(var: &str) -> Option<std::ffi::OsString> {
+    if cfg!(windows) {
+        return None;
+    }
+    env::var_os(var).filter(|v| Path::new(v).is_absolute())
 }
 
 fn home() -> PathBuf {

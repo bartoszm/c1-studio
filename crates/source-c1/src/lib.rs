@@ -221,7 +221,11 @@ impl PhotoSource for CaptureOne {
             }
             ImageTier::Original => {
                 let con = catalog::open_live(&self.catalog)?;
-                let Some(path) = catalog::original_path(&con, self.catalog_dir(), vpk)?.map(PathBuf::from) else {
+                // The catalog keeps Windows paths; under WSL or Linux they go through the
+                // drive mounts or the user's volume map.
+                let Some(path) = catalog::original_path(&con, self.catalog_dir(), vpk)?
+                    .and_then(|p| c1model::platform::local_path(&p))
+                else {
                     return Ok(None);
                 };
                 if !path.is_file() {

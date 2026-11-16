@@ -54,7 +54,7 @@
   import { STRIP_DEFAULT, STRIP_MIN, clampStrip, dragged, storedStrip } from "./lib/splitter";
   import { FIELDS, effectiveField, matchAvailable, restore, toSort, words, type SortField } from "./lib/sorting";
   import SortControl from "./SortControl.svelte";
-  import { LOCK_HELP, isLockError } from "./lib/lock";
+  import { LOCK_HELP, isLockError, ownerUnknown, waitingText } from "./lib/lock";
   import { activatesCell, typingIn } from "./lib/keys";
   import { opensVariants } from "./lib/variants";
   import SettingsDialog from "./SettingsDialog.svelte";
@@ -2092,7 +2092,7 @@
     switch (s.state) {
       case "pending": return [`saving to ${source.word} when you pause…`, false];
       case "waiting":
-        return [/captureone|imgcore/i.test(s.by) ? `autosave waits for ${source.owner ?? s.by} to close` : `autosave waits: the ${source.noun} is open in another program`, false];
+        return [waitingText(s.by, source.owner, source.noun), false];
       case "attention": {
         const parts = [s.conflicts && `${s.conflicts} conflict${s.conflicts > 1 ? "s" : ""}`, s.blocked && `${s.blocked} that cannot be written`];
         return [`autosave paused: ${parts.filter(Boolean).join(", ")}`, true];
@@ -3223,7 +3223,11 @@
       {/if}
       <span>{status.photos.toLocaleString()} in library</span>
       {#if source.owner}
-        <span>{source.owner}: {typeof status.writes === "object" ? "open" : "closed"}</span>
+        {#if typeof status.writes === "object" && ownerUnknown(status.writes.Locked.by)}
+          <span title={status.writes.Locked.by}>{source.owner}: cannot tell</span>
+        {:else}
+          <span>{source.owner}: {typeof status.writes === "object" ? "open" : "closed"}</span>
+        {/if}
       {/if}
       {#if status.offline_roots.length}
         <span class="offline-roots" title={`Not reachable at the last scan:\n${status.offline_roots.join("\n")}\nTheir photos stay, dimmed, with their edits.`}>

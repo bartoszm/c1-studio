@@ -9,6 +9,7 @@ pub mod change;
 pub mod conformance;
 pub mod memory;
 pub mod photo;
+pub mod platform;
 pub mod provider;
 pub mod source;
 

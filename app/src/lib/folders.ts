@@ -3,6 +3,7 @@
 // tested without a window. The presets mirror source-folders' `pattern::preset`.
 
 import type { ImageStore, Preset, RootDef, SourceProgress } from "./api";
+import { examplePhotos } from "./platform";
 
 /** Patterns for the thumbnail and preview tiers. */
 export type Patterns = { thumb: string; preview: string };
@@ -62,7 +63,7 @@ export type Example = { data: string; root: string; relpath: string; hash: strin
 
 export const EXAMPLE: Example = {
   data: "…/work",
-  root: "D:/Photos/Family",
+  root: `${examplePhotos}/Family`,
   relpath: "2024/Trip/DSCF0001.RAF",
   hash: "9f3c1a2b4d5e6f70",
 };

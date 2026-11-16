@@ -5,6 +5,7 @@
 ### New
 
 - **Or across sections:** Shift+click Kraków, then *black & white*, for the photos taken in Kraków or black & white; the rest of the filter still narrows both. The filter bar brackets them (*either … or …*); click its *and* / *or* to add a pill or take it out. The `?` beside the search box now says how filters work, and [FEATURES](docs/FEATURES.md#filters-only-add-leave-out-or) has a clip.
+- **Linux and WSL:** C1 Studio builds and runs on Ubuntu 22.04 or newer, and under WSL 2 through WSLg. Releases add a `.deb` and an `.AppImage`. Under WSL a catalog on Windows opens from its drive mount, originals are found through `/mnt/<drive>`, and writes wait while Capture One runs on Windows. On other Linux machines `~/.config/c1studio/volumes.json` says where each Windows volume is. API keys go to the desktop keyring.
 
 ### Changed
 
