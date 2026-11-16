@@ -3,6 +3,7 @@
 // match all together (the default) or any one of them.
 
 import type { Filter, Presence, Range } from "./api";
+import { under } from "./places";
 
 export type Match = "all" | "any";
 export type RatingOp = "≥" | "=" | "≤";
@@ -31,6 +32,52 @@ export function cycle(
   if (was === null) return { inc: add(inc), exc: drop(exc) };
   if (was === "in") return { inc: drop(inc), exc: add(exc) };
   return { inc: drop(inc), exc: drop(exc) };
+}
+
+/** A place tree's node: picked in or out itself, or in a place that is ("under-…"). */
+export type PlacePick = Pick | "under-in" | "under-out";
+
+/** Where `path` stands among the picked places: its own pick, else the one of the
+ *  nearest picked place it is in. */
+export function placePick(inc: readonly string[] | undefined, exc: readonly string[] | undefined, path: string): PlacePick {
+  const own = pickOf(inc, exc, path);
+  if (own) return own;
+  const nearest = (l: readonly string[] | undefined) =>
+    Math.max(-1, ...(l ?? []).filter((p) => under(path, p)).map((p) => p.length));
+  const i = nearest(inc);
+  const o = nearest(exc);
+  if (i < 0 && o < 0) return null;
+  return i > o ? "under-in" : "under-out";
+}
+
+/** Picks of one kind (`own`: places in, or out) without those another of them already
+ *  says: Kraków when Poland is, unless a pick of the `other` kind lies between (Poland,
+ *  except Małopolskie, but Kraków). As `normalise_places` in the index. */
+export function tidyPlaces(own: readonly string[], other: readonly string[]): string[] {
+  const between = (p: string, q: string) => other.some((o) => o !== q && o !== p && under(p, o) && under(o, q));
+  return own.filter((p, i) => !own.some((q, j) => (p === q ? j < i : under(p, q) && !between(p, q))));
+}
+
+/**
+ * Click on a place: off → included → excluded → off. Places are alternatives, and the
+ * deepest pick over a place decides: picking Poland lets go of Kraków; in an included
+ * place a click leaves the place out (Poland except Kraków), in a left-out one it takes
+ * it in (not Poland, but Kraków).
+ */
+export function cyclePlace(
+  inc: readonly string[] | undefined,
+  exc: readonly string[] | undefined,
+  path: string,
+): { inc: string[] | undefined; exc: string[] | undefined } {
+  const was = placePick(inc, exc, path);
+  const i = (inc ?? []).filter((p) => p !== path);
+  const o = (exc ?? []).filter((p) => p !== path);
+  if (was === null || was === "under-out") i.push(path);
+  else if (was === "under-in") o.push(path);
+  // In → out, unless out is what it is without its own pick.
+  else if (was === "in" && placePick(i, o, path) !== "under-out") o.push(path);
+  const list = (l: string[]) => (l.length ? l : undefined);
+  return { inc: list(tidyPlaces(i, o)), exc: list(tidyPlaces(o, i)) };
 }
 
 /** The rating a click on `n` stars asks for under `op`. */

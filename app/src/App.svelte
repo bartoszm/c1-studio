@@ -11,7 +11,7 @@
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import { HELP, ORIENTATIONS, RANGES, parseSearch, rangeChip, withSearch, type Parsed } from "./lib/search";
   import {
-    LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, pickOf, ratingFor, ratingParts, ratingText, sameRating,
+    LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, cyclePlace, pickOf, placePick, ratingFor, ratingParts, ratingText, sameRating,
     type AllOf, type Match, type Pick, type RatingOp,
   } from "./lib/criteria";
   import { settings } from "./lib/settings.svelte";
@@ -1105,7 +1105,7 @@
       // Only to a filter that shows them: one the edit left empty for another reason stays.
       const found = await api.positions(asking(next), { sort: sortBy }, done.rows);
       if (!found.length || mine !== generation) return false;
-      if (next.place_under) openPlace(next.place_under);
+      for (const p of next.places_under ?? []) openPlace(p);
       filter = next;
       const ran = run(false, false, { restore: { picks: done.rows, focus: focus !== undefined && done.rows.includes(focus) ? focus : done.rows[0] } });
       const its = generation;
@@ -1689,24 +1689,12 @@
     filter = { ...filter, folder: filter.folder === n.value ? undefined : n.value };
     run();
   }
+  /** Places are alternatives: a city's "(no location)" (`City|—`) is one of them too. */
   function pickPlace(n: Node) {
-    const city = cityWithoutLocation(n.value);
-    if (city) {
-      // A city's photos with no location: the city, and No location.
-      const on = filter.place_under === city && filter.located === false;
-      filter = { ...filter, place_under: on ? undefined : city, located: on ? undefined : false };
-    } else filter = { ...filter, place_under: filter.place_under === n.value ? undefined : n.value };
+    const { inc, exc } = cyclePlace(filter.places_under, filter.places_under_not, n.value);
+    filter = { ...filter, places_under: inc, places_under_not: exc };
     run();
   }
-  /** The place tree's entry the filter picks: a city with No location is its "(no location)". */
-  let placePicked = $derived.by(() => {
-    const p = filter.place_under;
-    if (!p) return undefined;
-    const noLocation = filter.located === false && places.some(function has(n): boolean {
-      return n.value === `${p}|—` || n.children.some(has);
-    });
-    return "p:" + (noLocation ? `${p}|—` : p);
-  });
   /** Photos in view with a country but no ISO code (from the index's flags). */
   let missingCodes = $derived(result?.facets.flag?.find(([v]) => v === "no_country_code")?.[1] ?? 0);
   let importingGpx = $state(false);
@@ -2361,7 +2349,9 @@
     collections: (v) =>
       v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
-    place_under: (v) => [{ what: "Place", text: placeText(v) }],
+    places_under: (v) => v.map((p) => ({ what: "Place", text: placeText(p), title: p, rest: without(v, p) })),
+    places_under_not: (v) =>
+      v.map((p) => ({ what: "Place", text: `not ${placeText(p)}`, out: true, title: p, rest: without(v, p) })),
     gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
     placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
     located: (v) => [{ what: "Location", text: v ? "has a location" : "no location" }],
@@ -2737,7 +2727,8 @@
             ><span class="name">{filter.located === true ? "With a location" : "No location"}</span></button>
             <Tree
               nodes={places}
-              selected={placePicked}
+              selected={undefined}
+              mark={(n) => placePick(filter.places_under, filter.places_under_not, n.value)}
               {expanded}
               onpick={pickPlace}
               oncontext={(node, e) => { if (!cityWithoutLocation(node.value)) placeMenu = { x: e.clientX, y: e.clientY, node }; }}
@@ -2909,15 +2900,15 @@
       onselect={mapSelect}
       onsetgeo={mapSetGeo}
       onerror={(text) => (editError = text)}
-      onplace={(path) => showOffMap({ place_under: path, approx: true, gps: undefined, placed: undefined })}
+      onplace={(path) => showOffMap({ places_under: [path], places_under_not: undefined, approx: true, gps: undefined, placed: undefined })}
       onpromote={promotePlace}
       ondragrows={(rows) => (dragging = rows && { rows })}
       onneighbours={() => (placingFromNeighbours = true)}
       onunplaced={(placed) =>
         showOffMap(
           placed
-            ? { placed, approx: true, gps: undefined, place_under: undefined }
-            : { placed, gps: false, approx: undefined, place_under: undefined },
+            ? { placed, approx: true, gps: undefined, places_under: undefined, places_under_not: undefined }
+            : { placed, gps: false, approx: undefined, places_under: undefined, places_under_not: undefined },
         )}
       onaccepted={aiAccepted}
     />

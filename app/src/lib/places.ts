@@ -60,6 +60,9 @@ const deepestOf = (place: Record<Level, string | null>) =>
   LEVELS.reduce((d, l, i) => ((place[l] ?? "").trim() ? i + 1 : d), 0);
 
 /** A place's `place_tree` key, down to its last level filled; "" for none. */
+/** Whether the place path `key` is `path` or somewhere in it. */
+export const under = (key: string, path: string) => key === path || key.startsWith(path + "|");
+
 export const keyOf = (place: Record<Level, string | null>) => pathKey(place, deepestOf(place));
 
 /** The `place_tree` keys a set of places makes, with how many photos each: every level

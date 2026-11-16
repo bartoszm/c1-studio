@@ -5,7 +5,8 @@
 
 import type { Color, Edit, Filter, Merged, Range, Selection } from "./api";
 import { ratingFor } from "./criteria";
-import { keyOf } from "./places";
+import { keyOf, under } from "./places";
+import { cityWithoutLocation } from "./tree";
 
 /** Fields whose emptying is the goal, not something to undo by looking elsewhere. */
 export function isWorkList(f: Filter): boolean {
@@ -28,6 +29,9 @@ export function isWorkList(f: Filter): boolean {
     some(f.ext_not) ||
     some(f.orientation_not) ||
     some(f.keywords_under_not) ||
+    some(f.places_under_not) ||
+    // A city's "(no location)": photos still to locate.
+    !!f.places_under?.some((p) => cityWithoutLocation(p)) ||
     some(f.not_in_collections)
   );
 }
@@ -71,8 +75,6 @@ function commonPlace(keys: string[], depth: number): string {
   return common.join("|");
 }
 
-const under = (key: string, path: string) => key === path || key.startsWith(path + "|");
-
 /**
  * The filter `f` changed to hold the photos `sel` describes (`n` of them), now that an edit
  * took them all out of it; null when it should stay as it is: a work list, Match any, or a
@@ -103,10 +105,14 @@ export function followFilter(f: Filter, sel: Selection, n: number, edit?: Edit, 
   }
 
   const placeKeys = sel.places.map(([p]) => keyOf(p));
-  if (f.place_under && !placeKeys.every((k) => under(k, f.place_under!))) {
-    const to = commonPlace(placeKeys, f.place_under.split("|").length);
+  const picked = f.places_under ?? [];
+  if (picked.length && !placeKeys.every((k) => picked.some((p) => under(k, p)))) {
+    // One place follows its photos; of several, there is no telling which they left.
+    // A "(no location)" is no place to follow to (and a work list besides).
+    if (picked.length > 1 || cityWithoutLocation(picked[0])) return null;
+    const to = commonPlace(placeKeys, picked[0].split("|").length);
     if (!to) return null;
-    next.place_under = to;
+    next.places_under = [to];
     changed = true;
   }
   if (f.country !== undefined) {

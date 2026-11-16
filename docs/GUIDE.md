@@ -139,7 +139,13 @@ the Date tree still shows every year.
   tree replace each other.
 - **Location:** Country › State › City › Location, each including everything below it.
   A level the photos have no value for keeps its place as *(no state)*, *(no city)* and
-  so on, so a city without a state is not mixed in with the states. Below the tree,
+  so on, so a city without a state is not mixed in with the states. A click cycles a
+  place through in → out → off, and several places can be picked: they add up (Poland
+  and Germany), and one inside another picked place is that place (Kraków and Poland is
+  Poland). The deepest pick decides, shown faintly on the places it covers: inside an
+  included place a click leaves a place out (*Poland except Kraków*), inside a left-out
+  one it takes it in (*not Poland, but Kraków*). A city's *(no location)* is a place like
+  the others, its photos without a location. Below the tree,
   *N without an ISO country code · Fill in…* lists those photos' countries with the code
   each name gives (change it or untick a row) and fills them as one edit.
   Right-click a place to **Rename…** it (Krakow → Kraków; USA → United States, with
@@ -185,8 +191,10 @@ example photos filtered by Kraków given Warszawa as their city, the filter take
 values they have now (the place, the rating, the colour, the country, a keyword the edit
 added, the album they were put into), keeps them picked and says so, with Back. Work
 lists are never followed, since emptying them is the point: no keywords, no place, no
-location, no GPS, not in an album, any "not" pick (a camera, lens, format or orientation
-left out included), the search words, a History pick, the trash, and *Match any*. Neither are hiding and the trash.
+location (or a city's *(no location)*), no GPS, not in an album, any "not" pick (a
+camera, lens, format, orientation or place left out included), the search words, a
+History pick, the trash, and *Match any*. Of several places picked, none is followed.
+Neither are hiding and the trash.
 
 **Back and Forward.** ‹ and › in the header, or Alt+← and Alt+→, go through the filters
 shown, each with the photos that were picked in it (up to 50 steps). A search typed or
