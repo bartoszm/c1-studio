@@ -1,35 +1,86 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { allOfPicks, compile, criteriaCount, cycle, cyclePlace, placePick, ratingFor, tidyPlaces, ratingParts, ratingText } from "../src/lib/criteria.ts";
+import {
+  combinePicks, flipJoin, joinOf, keptCombine, modeOf, pick, pickPlace, placePick, ratingFor, tidyPlaces, ratingParts, ratingText,
+} from "../src/lib/criteria.ts";
 
 test("cards set to all ask for every pick; any is left as it is", () => {
   const f = { hues: ["red", "blue"], light: ["dark", "clipped highlights", "low contrast"] };
-  assert.deepEqual(allOfPicks(f, {}), f);
-  assert.deepEqual(allOfPicks(f, { hues: true }), {
+  assert.deepEqual(combinePicks(f, {}), f);
+  assert.deepEqual(combinePicks(f, { hues: "all" }), {
     light: ["dark", "clipped highlights", "low contrast"],
     all_of: [{ hues: ["red"] }, { hues: ["blue"] }],
   });
-  assert.deepEqual(allOfPicks(f, { problems: true }), {
+  assert.deepEqual(combinePicks(f, { problems: "all" }), {
     hues: ["red", "blue"],
     light: ["dark"],
     all_of: [{ light: ["clipped highlights"] }, { light: ["low contrast"] }],
   });
   // One pick: nothing to combine.
-  assert.deepEqual(allOfPicks({ hues: ["red"] }, { hues: true }), { hues: ["red"] });
-  // Alternatives made earlier (Match: any) are kept.
-  const any = { hues: ["red", "blue"], all_of: [{ any_of: [{ rating: "Any" as const }] }] };
-  assert.equal(allOfPicks(any, { hues: true }).all_of?.length, 3);
+  assert.deepEqual(combinePicks({ hues: ["red"] }, { hues: "all" }), { hues: ["red"] });
+  // Groups made earlier are kept.
+  const earlier = { hues: ["red", "blue"], all_of: [{ any_of: [{ rating: "Any" as const }] }] };
+  assert.equal(combinePicks(earlier, { hues: "all" }).all_of?.length, 3);
 });
 
-test("a value cycles through included, excluded and off", () => {
-  let s = cycle(undefined, undefined, "a");
+test("keywords and albums ask for every pick unless switched to any", () => {
+  const f = { keywords_under: ["Food", "Kraków"], keywords_under_not: ["Work"], collections: ["1", "2"], year: 2024 };
+  // The index takes several of each as "every one".
+  assert.deepEqual(combinePicks(f, {}), f);
+  assert.deepEqual(combinePicks(f, { keywords: "any" }), {
+    keywords_under_not: ["Work"],
+    collections: ["1", "2"],
+    year: 2024,
+    all_of: [{ any_of: [{ keywords_under: ["Food"] }, { keywords_under: ["Kraków"] }] }],
+  });
+  assert.deepEqual(combinePicks(f, { albums: "any" }).all_of, [{ any_of: [{ collections: ["1"] }, { collections: ["2"] }] }]);
+  // One keyword: no choice to make.
+  const one = { keywords_under: ["Food"] };
+  assert.equal(combinePicks(one, { keywords: "any" }), one);
+});
+
+test("a section's join flips, and goes back to its default under two picks", () => {
+  assert.equal(joinOf({}, "keywords"), "all");
+  assert.equal(joinOf({}, "hues"), "any");
+  const c = flipJoin({}, "keywords");
+  assert.deepEqual(c, { keywords: "any" });
+  assert.deepEqual(flipJoin(c, "keywords"), {});
+  assert.deepEqual(flipJoin({}, "hues"), { hues: "all" });
+  const both = { keywords: "any" as const, albums: "any" as const };
+  assert.equal(keptCombine({ keywords_under: ["a", "b"], collections: ["1", "2"] }, both), both);
+  assert.deepEqual(keptCombine({ keywords_under: ["a", "b"], collections: ["1"] }, both), { keywords: "any" });
+});
+
+test("a click picks only the value; again lets go", () => {
+  let s = pick(undefined, undefined, "a", "only");
   assert.deepEqual(s, { inc: ["a"], exc: undefined });
-  s = cycle(s.inc, s.exc, "b");
-  assert.deepEqual(s.inc, ["a", "b"]);
-  s = cycle(s.inc, s.exc, "a");
-  assert.deepEqual(s, { inc: ["b"], exc: ["a"] });
-  s = cycle(s.inc, s.exc, "a");
+  s = pick(s.inc, s.exc, "b", "only");
   assert.deepEqual(s, { inc: ["b"], exc: undefined });
+  s = pick(s.inc, s.exc, "b", "only");
+  assert.deepEqual(s, { inc: undefined, exc: undefined });
+  // Picked among others, or with some left out: a click narrows to it, not off.
+  assert.deepEqual(pick(["a", "b"], undefined, "a", "only"), { inc: ["a"], exc: undefined });
+  assert.deepEqual(pick(["a"], ["c"], "a", "only"), { inc: ["a"], exc: undefined });
+  assert.deepEqual(pick(undefined, ["a"], "a", "only"), { inc: ["a"], exc: undefined });
+});
+
+test("Ctrl+click adds or takes away a value; Alt+click leaves it out or lets it back", () => {
+  let s = pick(["a"], undefined, "b", "add");
+  assert.deepEqual(s, { inc: ["a", "b"], exc: undefined });
+  s = pick(s.inc, s.exc, "a", "add");
+  assert.deepEqual(s, { inc: ["b"], exc: undefined });
+  s = pick(s.inc, s.exc, "b", "out");
+  assert.deepEqual(s, { inc: undefined, exc: ["b"] });
+  s = pick(s.inc, s.exc, "b", "add");
+  assert.deepEqual(s, { inc: ["b"], exc: undefined });
+  s = pick(s.inc, s.exc, "c", "out");
+  assert.deepEqual(s, { inc: ["b"], exc: ["c"] });
+  s = pick(s.inc, s.exc, "c", "out");
+  assert.deepEqual(s, { inc: ["b"], exc: undefined });
+  assert.equal(modeOf({ ctrlKey: true, metaKey: false, altKey: false }), "add");
+  assert.equal(modeOf({ ctrlKey: false, metaKey: true, altKey: false }), "add");
+  assert.equal(modeOf({ ctrlKey: false, metaKey: false, altKey: true }), "out");
+  assert.equal(modeOf({ ctrlKey: false, metaKey: false, altKey: false }), "only");
 });
 
 test("ratings compare", () => {
@@ -43,52 +94,21 @@ test("ratings compare", () => {
   assert.equal(ratingParts("None"), null);
 });
 
-test("all together leaves the filter alone", () => {
-  const f = { rating: ratingFor("≥", 4), keywords_under: ["a", "b"] };
-  assert.equal(compile(f, "all"), f);
-});
-
-test("any one turns the includes into alternatives and keeps the excludes", () => {
-  const f = { rating: ratingFor("≥", 4), keywords_under: ["a", "b"], keywords_under_not: ["c"], year: 2024 };
-  const out = compile(f, "any");
-  assert.deepEqual(out, {
-    keywords_under_not: ["c"],
-    year: 2024,
-    all_of: [{ any_of: [{ rating: ratingFor("≥", 4) }, { keywords_under: ["a"] }, { keywords_under: ["b"] }] }],
-  });
-});
-
-test("lenses, formats and orientations are alternatives to a camera", () => {
-  const f = { cameras: ["X100VI"], lenses: ["XF23"], lenses_not: ["XF35"], ext: ["jpg"], orientation: ["portrait"], iso: { min: 800 } };
-  assert.equal(criteriaCount(f), 4);
-  assert.deepEqual(compile(f, "any"), {
-    lenses_not: ["XF35"],
-    iso: { min: 800 },
-    all_of: [{ any_of: [{ cameras: ["X100VI"] }, { lenses: ["XF23"] }, { ext: ["jpg"] }, { orientation: ["portrait"] }] }],
-  });
-});
-
-test("'none' picks are alternatives too, and one alone is no choice", () => {
-  const out = compile({ unkeyworded: true, rating: ratingFor("≥", 4) }, "any");
-  assert.deepEqual(out.all_of?.[0].any_of, [{ rating: ratingFor("≥", 4) }, { unkeyworded: true }]);
-  const one = { unkeyworded: true };
-  assert.equal(compile(one, "any"), one);
-  assert.equal(criteriaCount({ unkeyworded: true, collections: ["1", "2"], cameras: ["x"] }), 4);
-});
-
 test("places are alternatives: one in a picked place is that place", () => {
   const PL = "Poland";
   const KR = "Poland|Małopolskie|Kraków";
-  // Off → in, beside another country.
-  assert.deepEqual(cyclePlace(["Germany"], undefined, PL), { inc: ["Germany", PL], exc: undefined });
-  // Kraków, then Poland: Poland.
-  assert.deepEqual(cyclePlace([KR], undefined, PL), { inc: [PL], exc: undefined });
+  // A click: only that place.
+  assert.deepEqual(pickPlace(["Germany"], [KR], PL, "only"), { inc: [PL], exc: undefined });
+  // Ctrl+click adds it beside another country.
+  assert.deepEqual(pickPlace(["Germany"], undefined, PL, "add"), { inc: ["Germany", PL], exc: undefined });
+  // Kraków, then Poland added: Poland.
+  assert.deepEqual(pickPlace([KR], undefined, PL, "add"), { inc: [PL], exc: undefined });
   // A city's "(no location)" is in it too.
-  assert.deepEqual(cyclePlace([`${KR}|—`], undefined, KR), { inc: [KR], exc: undefined });
-  // In → out takes what was picked inside it along.
-  assert.deepEqual(cyclePlace([PL, "Germany"], [KR], PL), { inc: ["Germany"], exc: [PL] });
-  // Out → off.
-  assert.deepEqual(cyclePlace(undefined, [PL], PL), { inc: undefined, exc: undefined });
+  assert.deepEqual(pickPlace([`${KR}|—`], undefined, KR, "add"), { inc: [KR], exc: undefined });
+  // Leaving out a picked place takes what was left out inside it along.
+  assert.deepEqual(pickPlace([PL, "Germany"], [KR], PL, "out"), { inc: ["Germany"], exc: [PL] });
+  // Out, and Alt+click again: off.
+  assert.deepEqual(pickPlace(undefined, [PL], PL, "out"), { inc: undefined, exc: undefined });
 });
 
 test("the deepest pick decides: a place in an included one is left out, in an excluded one taken in", () => {
@@ -96,17 +116,18 @@ test("the deepest pick decides: a place in an included one is left out, in an ex
   const KR = "Poland|Małopolskie|Kraków";
   const WA = `${KR}|Wawel`;
   assert.equal(placePick([PL], undefined, KR), "under-in");
-  assert.deepEqual(cyclePlace([PL], undefined, KR), { inc: [PL], exc: [KR] });
-  // Poland except Kraków keeps the exception when Poland is picked again.
-  assert.deepEqual(cyclePlace(undefined, [KR], PL), { inc: [PL], exc: [KR] });
-  // Out → off: back to being in Poland.
-  assert.deepEqual(cyclePlace([PL], [KR], KR), { inc: [PL], exc: undefined });
-  // Poland, except Kraków, but Wawel; a click on Wawel again lets it go with Kraków.
+  // Poland except Kraków.
+  assert.deepEqual(pickPlace([PL], undefined, KR, "out"), { inc: [PL], exc: [KR] });
+  // Poland except Kraków keeps the exception when Poland is added.
+  assert.deepEqual(pickPlace(undefined, [KR], PL, "add"), { inc: [PL], exc: [KR] });
+  // Kraków let back: Poland whole again.
+  assert.deepEqual(pickPlace([PL], [KR], KR, "out"), { inc: [PL], exc: undefined });
+  // Poland, except Kraków, but Wawel; Wawel added again lets it go with Kraków.
   assert.equal(placePick([PL], [KR], WA), "under-out");
-  assert.deepEqual(cyclePlace([PL], [KR], WA), { inc: [PL, WA], exc: [KR] });
-  assert.deepEqual(cyclePlace([PL, WA], [KR], WA), { inc: [PL], exc: [KR] });
+  assert.deepEqual(pickPlace([PL], [KR], WA, "add"), { inc: [PL, WA], exc: [KR] });
+  assert.deepEqual(pickPlace([PL, WA], [KR], WA, "add"), { inc: [PL], exc: [KR] });
   // Not Poland, but Kraków.
-  assert.deepEqual(cyclePlace(undefined, [PL], KR), { inc: [KR], exc: [PL] });
+  assert.deepEqual(pickPlace(undefined, [PL], KR, "add"), { inc: [KR], exc: [PL] });
   // Picks only drop what a pick of their kind says with none of the other between.
   assert.deepEqual(tidyPlaces([PL, WA], [KR]), [PL, WA]);
   assert.deepEqual(tidyPlaces([PL, WA, PL], []), [PL]);
@@ -114,4 +135,13 @@ test("the deepest pick decides: a place in an included one is left out, in an ex
   assert.equal(placePick([PL, KR], ["Poland|Małopolskie"], `${KR}|Wawel`), "under-in");
   assert.equal(placePick([PL, KR], ["Poland|Małopolskie"], "Poland|Małopolskie|Tarnów"), "under-out");
   assert.equal(placePick(["Poland|—|Kra"], undefined, "Poland|—|Kraków"), null);
+});
+
+test("Shift+click adds as an alternative, and keeps a value already shown", () => {
+  assert.equal(modeOf({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: true }), "either");
+  assert.deepEqual(pick(["a"], undefined, "b", "either"), { inc: ["a", "b"], exc: undefined });
+  assert.deepEqual(pick(["a"], undefined, "a", "either"), { inc: ["a"], exc: undefined });
+  assert.deepEqual(pick(undefined, ["a"], "a", "either"), { inc: ["a"], exc: undefined });
+  // A place covered by a picked one stays covered.
+  assert.deepEqual(pickPlace(["Poland"], undefined, "Poland|Małopolskie|Kraków", "either"), { inc: ["Poland"], exc: undefined });
 });

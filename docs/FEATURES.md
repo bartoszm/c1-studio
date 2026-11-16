@@ -10,6 +10,7 @@ and [variants](#variants). New in 0.7.0: [the selection through filters, Back an
 [photo folders](#photo-folders) and [places from neighbours in time](#places-from-neighbours-in-time).
 
 - [Find anything, instantly](#find-anything-instantly)
+- [Filters: only, add, leave out, or](#filters-only-add-leave-out-or)
 - [Photo folders](#photo-folders)
 - [Browse](#browse)
 - [Compare photos](#compare-photos)
@@ -41,10 +42,25 @@ Type to search keywords, captions, places and file names, and narrow down with a
 dates, folders, keywords, rating, colour tag, camera, lens, format, orientation and
 place. Tokens in the search box reach the exposure and the file: `iso:>3200 f:<2
 orient:portrait format:raw size:>30mb` (`?` beside the box lists them all), and Enter
-turns them into chips. Every count in the sidebar follows as you go, and each filter
-shows as a chip above the grid. Queries take milliseconds, however big the catalog.
+turns them into filters. Every count in the sidebar follows as you go, and the filter
+bar above the grid says what is picked. Queries take milliseconds, however big the
+catalog.
 
 ![Searching "hong kong street", then picking 2025 and four stars](media/features/search.gif)
+
+[In the guide: Finding photos](GUIDE.md#finding-photos)
+
+## Filters: only, add, leave out, or
+
+One click, one meaning, in every section. A click shows only that value; **Ctrl+click**
+adds it (*X-T5 or X100VI*); **Alt+click** leaves it out (*Poland except Kraków*, red and
+struck through); **Shift+click** makes it an alternative to other sections (*Kraków or
+black & white*). The filter bar reads as a sentence, a pill per section with *and*
+between them. Click a value in it to leave it out or show it again, and click *and* /
+*or* to switch: two keywords, all or any of them; two pills, both or either. `?` beside
+the search box has it all.
+
+![Only a camera, another added, a third left out and taken back from the bar; two keywords and or; Kraków or black & white](media/features/filters.gif)
 
 [In the guide: Finding photos](GUIDE.md#finding-photos)
 

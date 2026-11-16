@@ -4,7 +4,7 @@
   import { HUES } from "./lib/format";
   import { emptyNote } from "./lib/analysis";
   import { COMBINE_NOTE, barRule, cardHint, type Card } from "./lib/explain";
-  import { LIGHT_PROBLEMS, type AllOf } from "./lib/criteria";
+  import { LIGHT_PROBLEMS, modeOf, type AllOf, type PickMode } from "./lib/criteria";
   import AlikePanel from "./AlikePanel.svelte";
 
   type Key = "shape" | "hues" | "light" | "focus";
@@ -25,7 +25,8 @@
     version: number;
     /** One photo per burst or duplicate group is shown (the counts follow). */
     stack: boolean;
-    ontoggle: (key: Key, value: string) => void;
+    /** A bar clicked: only it, or (Ctrl+click) beside the card's other picks. */
+    ontoggle: (key: Key, value: string, mode: PickMode) => void;
     onflag: (flag: "duplicates" | "series" | "analysed") => void;
     /** Show one group's photos in the grid. */
     ongroup: (id: string) => void;
@@ -161,7 +162,7 @@
               title={rule ? `${value}: ${rule}` : value}
               aria-label="{value}, {n.toLocaleString()} photos{rule ? `: ${rule}` : ''}"
               aria-pressed={!!picked[key]?.includes(value)}
-              onclick={() => ontoggle(key, value)}
+              onclick={(e) => ontoggle(key, value, modeOf(e))}
             >
               <span class="name">
                 {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? "#888"}></i>{/if}{value}

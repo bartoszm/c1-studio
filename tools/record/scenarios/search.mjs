@@ -21,8 +21,8 @@ export default {
       await d.sleep(500);
       await d.settle();
       await d.sleep(900);
-      await d.caption("Each filter is a chip: × drops it");
-      await d.click(".chip .drop");
+      await d.caption("The filter bar says what is picked: × drops a section");
+      await d.click(".pill .drop.all");
       await d.sleep(500);
       await d.settle();
       await d.sleep(1400);

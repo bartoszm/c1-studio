@@ -89,7 +89,7 @@ test("an album filter follows photos put into another album", () => {
   assert.equal(followFilter({ collections: ["a"] }, sel({}), 2, { RemoveFromAlbum: "a" }), null);
 });
 
-test("work lists, Match any and fields that still match never follow", () => {
+test("work lists, alternatives (any, either) and fields that still match never follow", () => {
   const s = sel({ places: [[place("Poland", "Mazowieckie", "Warszawa"), [1, 2]]], rating: one(5) });
   assert.equal(followFilter({ places_under: ["Poland|Małopolskie"], unkeyworded: true }, s, 2), null);
   assert.equal(followFilter({ places_under: ["Poland|Małopolskie"] }, s, 2, undefined, true), null);
@@ -106,7 +106,7 @@ test("work lists, Match any and fields that still match never follow", () => {
 });
 
 const shown = (text: string, picks: number[] = []): Shown => ({
-  filter: text ? { text } : {}, sortField: "date", sortReversed: false, match: "all",
+  filter: text ? { text } : {}, sortField: "date", sortReversed: false, combine: {}, either: [],
   bin: false, hidden: false, tile: null, follow: true, picks,
 });
 
