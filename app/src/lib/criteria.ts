@@ -12,11 +12,14 @@ export const RATING_OPS: RatingOp[] = ["≥", "=", "≤"];
 /** `null`: not picked. */
 export type Pick = "in" | "out" | null;
 
-/** What a click does to a section's picks: this value only, this one too, or leave it out. */
-export type PickMode = "only" | "add" | "out";
+/** What a click does to a section's picks: this value only, this one too, leave it out,
+ *  or this one too with the section an alternative to the other sections ("either"). */
+export type PickMode = "only" | "add" | "out" | "either";
 
-/** Ctrl (⌘) adds, Alt leaves out, a plain click picks only this. */
-export function modeOf(e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean }): PickMode {
+/** Ctrl (⌘) adds, Alt leaves out, Shift adds as an alternative to other sections, a plain
+ *  click picks only this. */
+export function modeOf(e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean; shiftKey?: boolean }): PickMode {
+  if (e.shiftKey) return "either";
   if (e.ctrlKey || e.metaKey) return "add";
   if (e.altKey) return "out";
   return "only";
@@ -36,10 +39,14 @@ const list = (l: readonly string[]) => (l.length ? [...l] : undefined);
  * already is, the section lets go. `add`: this one on or off beside the others. `out`:
  * this one left out, or no longer. A value is never both in and out.
  */
-export function pick(inc: readonly string[] | undefined, exc: readonly string[] | undefined, value: string, mode: PickMode): Picks {
+export function pick(inc: readonly string[] | undefined, exc: readonly string[] | undefined, value: string, how: PickMode): Picks {
+  // In its section, an alternative to other sections is one more value.
+  const mode = how === "either" ? "add" : how;
   const i = (inc ?? []).filter((v) => v !== value);
   const o = (exc ?? []).filter((v) => v !== value);
   const was = pickOf(inc, exc, value);
+  // Shift on a value already shown keeps it: it only makes the section an alternative.
+  if (how === "either" && was === "in") return { inc: list(inc ?? []), exc: list(exc ?? []) };
   if (mode === "only") {
     const alone = was === "in" && !i.length && !o.length;
     return alone ? { inc: undefined, exc: undefined } : { inc: [value], exc: undefined };
@@ -81,6 +88,8 @@ export function tidyPlaces(own: readonly string[], other: readonly string[]): st
 export function pickPlace(inc: readonly string[] | undefined, exc: readonly string[] | undefined, path: string, mode: PickMode): Picks {
   const { inc: i, exc: o } = pick(inc, exc, path, mode);
   if (mode === "only") return { inc: i, exc: o };
+  // Shift on a place already shown (or covered) keeps it, rather than taking it away.
+  if (mode === "either" && placePick(inc, exc, path)?.endsWith("in")) return { inc: list(inc ?? []), exc: list(exc ?? []) };
   return { inc: list(tidyPlaces(i ?? [], o ?? [])), exc: list(tidyPlaces(o ?? [], i ?? [])) };
 }
 

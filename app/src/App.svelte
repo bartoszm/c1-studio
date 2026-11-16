@@ -15,7 +15,9 @@
     ratingText, sameRating,
     type Combine, type CombineKey, type Pick, type PickMode, type RatingOp,
   } from "./lib/criteria";
-  import { joinWord, pillText, pills as toPills, type Pill, type Term } from "./lib/filterLine";
+  import {
+    eitherPicks, eitherText, joinWord, keptEither, pillOf, pillText, pills as toPills, tidyEither, type Pill, type Term,
+  } from "./lib/filterLine";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
@@ -794,7 +796,7 @@
   // The filter kept is the one searched for, tokens still in the box included: a token typed
   // is a step, and going back or forward to it brings its tokens back as chips.
   const shownNow = (): Shown => ({
-    filter: $state.snapshot(current), sortField, sortReversed, combine: $state.snapshot(combine), bin: inBin, hidden: showHidden,
+    filter: $state.snapshot(current), sortField, sortReversed, combine: $state.snapshot(combine), either: [...either], bin: inBin, hidden: showHidden,
     tile: mapTile, follow, picks: [],
   });
   function leaving(was: Picks, how: Step) {
@@ -825,6 +827,7 @@
     sortField = to.sortField;
     sortReversed = to.sortReversed;
     combine = to.combine;
+    either = to.either;
     rememberSort();
     run(false, false, { restore: { picks: to.picks, focus: to.focus }, travelling: true });
   }
@@ -1511,6 +1514,16 @@
   // they are typed; Enter, or leaving the box, takes them out of it into chips.
   let typing: ReturnType<typeof setTimeout>;
   let showSearchHelp = $state(false);
+  /** The `?` panel's word on filters: what each click does, and the filter bar's words. */
+  const FILTER_HELP: [string, string][] = [
+    ["Click", "only this value in its section (again: let go)"],
+    ["Ctrl+click", "this one too: X-T5 or X100VI"],
+    ["Alt+click", "leave it out: Poland except Kraków"],
+    ["Shift+click", "or with other sections: Kraków or black & white"],
+    ["Right-click", "the same, from a menu (albums, places, keywords)"],
+    ["Filter bar", "click a value to leave it out or show it again; × drops it"],
+    ["and / or", "click one to switch: keywords or albums all or any; pills and ↔ or"],
+  ];
   function onSearch() {
     clearTimeout(typing);
     typing = setTimeout(() => {
@@ -1583,7 +1596,7 @@
           const r = filter.rating;
           filter = { ...filter, rating: r === "None" ? "Any" : r === "Any" ? undefined : "None" };
         } else {
-          filter = { ...filter, rating: pickState(dim, value) ? undefined : ratingFor(ratingOp, +value) };
+          filter = { ...filter, rating: pickState(dim, value) && mode !== "either" ? undefined : ratingFor(ratingOp, +value) };
         }
         break;
       case "color":
@@ -1619,6 +1632,8 @@
       case "country": filter = { ...filter, country: pickState(dim, value) ? undefined : value }; break;
       default: return;
     }
+    // A flat section's pill has its name (camera, hue, rating…).
+    if (mode === "either") joinEither(dim);
     run();
   }
 
@@ -1626,23 +1641,41 @@
   /** Sections whose picks combine the other way than their default (keywords or albums on
    *  "any", Main colour or Light problems on "all"). */
   let combine = $state<Combine>({});
-  /** The filter as the index is asked: each section's picks joined its way. */
+  /** Pills that are alternatives to each other ("Kraków or black & white"), by pill id;
+   *  the rest narrow as ever. One alone waits for a second. */
+  let either = $state<readonly string[]>([]);
+  /** The filter as the index is asked: each section's picks joined its way, and the
+   *  "either" group's pills as alternatives. */
   function compiled(f: Filter): Filter {
-    return withBin(withHidden(combinePicks(withSearch(f, typed), combine), showHidden), inBin);
+    return withBin(withHidden(eitherPicks(withSearch(f, typed), either, combine), showHidden), inBin);
   }
   function flipCombine(key: CombineKey) {
     combine = flipJoin(combine, key);
     run();
   }
-  /** Keywords or albums asked for "any": a filter an edit cannot follow. */
-  const anyJoined = () => joinOf(combine, "keywords") === "any" || joinOf(combine, "albums") === "any";
+  /** A pill made an alternative to the group's others (Shift+click, or an "and" clicked). */
+  function joinEither(...ids: string[]) {
+    const next = [...either, ...ids.filter((id, i) => !either.includes(id) && ids.indexOf(id) === i)];
+    if (next.length !== either.length) either = next;
+  }
+  /** A pill back to narrowing with the rest; a group of one is none. */
+  function leaveEither(id: string) {
+    const next = either.filter((e) => e !== id);
+    either = next.length > 1 ? next : [];
+    run();
+  }
+  /** Keywords or albums asked for "any", or an "either" group: a filter an edit cannot follow. */
+  const anyJoined = () =>
+    joinOf(combine, "keywords") === "any" || joinOf(combine, "albums") === "any" || keptEither(filter, either).length > 0;
   // A section down to one pick goes back to its default, so the next picks are not
-  // silently combined the other way.
+  // silently combined the other way; a pill let go leaves the "either" group.
   $effect(() => {
     const f = filter;
     untrack(() => {
       const kept = keptCombine(f, combine);
       if (kept !== combine) combine = kept;
+      const group = tidyEither(f, either);
+      if (group !== either) either = group;
     });
   });
   /** What the rest of the app asks the index: the filter with each section's join applied. */
@@ -1654,14 +1687,21 @@
     run();
   }
   /** "No album" / "No place" / "No location" rows: off → none → has some → off. */
-  function toggleNone(key: "uncollected" | "placed" | "located") {
+  function toggleNone(key: "uncollected" | "placed" | "located", e?: MouseEvent) {
     const none = key === "uncollected";
     const v = filter[key];
-    filter = { ...filter, [key]: v === undefined ? none : v === none ? !none : undefined };
+    // Shift: the row as an alternative to other sections ("no place, or black & white").
+    if (e?.shiftKey) {
+      if (v === undefined) filter = { ...filter, [key]: none };
+      joinEither(pillOf(key));
+    } else filter = { ...filter, [key]: v === undefined ? none : v === none ? !none : undefined };
     run();
   }
-  function toggleUnkeyworded() {
-    filter = { ...filter, unkeyworded: filter.unkeyworded ? undefined : true };
+  function toggleUnkeyworded(e?: MouseEvent) {
+    if (e?.shiftKey) {
+      filter = { ...filter, unkeyworded: true };
+      joinEither("keywords");
+    } else filter = { ...filter, unkeyworded: filter.unkeyworded ? undefined : true };
     run();
   }
 
@@ -1672,6 +1712,7 @@
     if (mode === "out" && byId.get(value)?.kind === "Smart") return;
     const { inc, exc } = pickIn(filter.collections, filter.not_in_collections, value, mode);
     filter = { ...filter, collections: inc, not_in_collections: exc };
+    if (mode === "either") joinEither("albums");
     run();
   }
   /** A value of a many-valued filter field picked (the analysis' groups); there is no
@@ -1682,6 +1723,7 @@
     const { inc } = pickIn(filter[key]?.filter(card), undefined, value, mode === "out" ? "only" : mode);
     const next = [...(filter[key]?.filter((v) => !card(v)) ?? []), ...(inc ?? [])];
     filter = { ...filter, [key]: next.length ? next : undefined };
+    if (mode === "either") joinEither(key === "hues" ? "hue" : key);
     run();
   }
   function toggleFlag(flag: "duplicates" | "series" | "analysed") {
@@ -1697,6 +1739,7 @@
   function onPlace(value: string, mode: PickMode = "only") {
     const { inc, exc } = pickPlace(filter.places_under, filter.places_under_not, value, mode);
     filter = { ...filter, places_under: inc, places_under_not: exc };
+    if (mode === "either") joinEither("places");
     run();
   }
   /** Photos in view with a country but no ISO code (from the index's flags). */
@@ -1792,6 +1835,7 @@
   function pickKeyword(value: string, mode: PickMode = "only") {
     const { inc, exc } = pickIn(filter.keywords_under, filter.keywords_under_not, value, mode);
     filter = { ...filter, keywords_under: inc, keywords_under_not: exc };
+    if (mode === "either") joinEither("keywords");
     run();
   }
 
@@ -1937,6 +1981,7 @@
   function clearAll() {
     mapTile = null;
     filter = {};
+    either = [];
     setSearch("");
     run();
   }
@@ -2417,8 +2462,11 @@
       settings.sections.map((s) => s.key),
       filter,
       combine,
+      either,
     ),
   );
+  let eitherPills = $derived(pills.filter((p) => p.inEither));
+  let restPills = $derived(pills.filter((p) => !p.inEither));
 
   /** Fields dropped, each to what it holds without the value (undefined: let go). */
   function dropFields(rests: [keyof Filter, unknown][]) {
@@ -2480,6 +2528,37 @@
   }
 </script>
 
+{#snippet pillView(pill: Pill)}
+  <span class="pill" role="group" aria-label={pillText(pill)} title={pillText(pill)}>
+    {#if pill.label}<span class="what">{pill.label}:</span>{/if}
+    {#each pill.parts as part, j}
+      {#if j}<span class="join">and</span>{/if}
+      {#each part.terms as term, k}
+        {#if k}
+          {#if part.combine}
+            <button
+              class="join switch"
+              title="Photos with {part.join === 'all' ? 'every one' : 'any one'} of these · click for {part.join === 'all' ? 'any one' : 'every one'}"
+              onclick={() => flipCombine(part.combine!)}
+            >{joinWord(part.join)}</button>
+          {:else}
+            <span class="join">{joinWord(part.join)}</span>
+          {/if}
+        {/if}
+        {@render termChip(term)}
+      {/each}
+    {/each}
+    {#if pill.outs.length}
+      <span class="join">{pill.parts.length ? "except" : "not"}</span>
+      {#each pill.outs as term, k}
+        {#if k}<span class="join">,</span>{/if}
+        {@render termChip(term)}
+      {/each}
+    {/if}
+    <button class="drop all" aria-label="Remove {pillText(pill)}" title="Let go of the whole section" onclick={() => dropPill(pill)}>×</button>
+  </span>
+{/snippet}
+
 {#snippet termChip(term: Term)}
   {@const flip = flipper(term)}
   <span class="term" class:out={term.out} title={term.title}>
@@ -2500,6 +2579,7 @@
   <button role="menuitem" onclick={() => onpick("only")}>Show only this</button>
   <button role="menuitem" onclick={() => onpick("add")}>Add to the filter <span class="key">Ctrl+click</span></button>
   {#if canOut}<button role="menuitem" onclick={() => onpick("out")}>Leave out <span class="key">Alt+click</span></button>{/if}
+  <button role="menuitem" onclick={() => onpick("either")}>Or with other sections <span class="key">Shift+click</span></button>
 {/snippet}
 
 <!-- How a section's picks combine, once there are two: every one, or any. -->
@@ -2523,6 +2603,9 @@
     oncontextmenu={(e) => { e.preventDefault(); sectionMenu = { x: e.clientX, y: e.clientY, key }; }}
   >
     <span class="chev" class:open={!folded.has(key)}>›</span>{TITLES[key]}
+    {#if either.includes(key)}
+      <span class="or-tag" title="Its picks are an alternative to other sections' (Shift+click picked it)">or</span>
+    {/if}
   </button>
 {/snippet}
 
@@ -2637,7 +2720,7 @@
       onkeydown={(e) => { if (e.key === "Enter") commitSearch(); }}
       onblur={commitSearch}
     />
-    <button class="search-help" aria-label="Search tokens" title="What the search box understands" onclick={() => (showSearchHelp = !showSearchHelp)}>?</button>
+    <button class="search-help" aria-label="Filters and search tokens" title="How filters work, and what the search box understands" onclick={() => (showSearchHelp = !showSearchHelp)}>?</button>
     <nav class="tabs" aria-label="View">
       <button class:on={tab === "photos"} onclick={() => showTab("photos")}>Photos</button>
       <button class:on={tab === "map"} title="Where the photos were taken" onclick={() => showTab("map")}>Map</button>
@@ -2767,7 +2850,7 @@
               class:on={filter.uncollected === true}
               class:out={filter.uncollected === false}
               title="Photos in no album · click again for photos in some album"
-              onclick={() => toggleNone("uncollected")}
+              onclick={(e) => toggleNone("uncollected", e)}
             ><span class="name">{filter.uncollected === false ? "In an album" : "No album"}</span></button>
             {@render joinRow("albums", "albums")}
             <Tree
@@ -2813,14 +2896,14 @@
               class:on={filter.placed === false}
               class:out={filter.placed === true}
               title="Photos without a place · click again for photos with one"
-              onclick={() => toggleNone("placed")}
+              onclick={(e) => toggleNone("placed", e)}
             ><span class="name">{filter.placed === true ? "With a place" : "No place"}</span></button>
             <button
               class="none-row"
               class:on={filter.located === false}
               class:out={filter.located === true}
               title="Photos with nothing in the Location field · click again for photos with a location"
-              onclick={() => toggleNone("located")}
+              onclick={(e) => toggleNone("located", e)}
             ><span class="name">{filter.located === true ? "With a location" : "No location"}</span></button>
             <Tree
               nodes={places}
@@ -2861,7 +2944,7 @@
               class="none-row"
               class:on={filter.unkeyworded}
               title="Photos without any keyword"
-              onclick={toggleUnkeyworded}
+              onclick={(e) => toggleUnkeyworded(e)}
             ><span class="name">No keywords</span></button>
             {@render joinRow("keywords", "keywords")}
             <Tree
@@ -2903,27 +2986,16 @@
                     class="facet"
                     class:on={state === "in"}
                     class:out={state === "out"}
-                    title={many ? `Click: only this${canOut ? " · Alt+click: leave out" : ""}` : "Click to pick · again to let go"}
-                    onclick={(e) => toggle(dim, value, many ? modeOf(e) : "only")}
+                    title={many
+                      ? `Click: only this · Ctrl+click: add${canOut ? " · Alt+click: leave out" : ""} · Shift+click: or with other sections`
+                      : "Click to pick · again to let go · Shift+click: or with other sections"}
+                    onclick={(e) => toggle(dim, value, many ? modeOf(e) : e.shiftKey ? "either" : "only")}
                   >
                     {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
                     {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? HUES.muted}></i>{/if}
                     <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
                     <span class="n">{n.toLocaleString()}</span>
                   </button>
-                  {#if many}
-                    <!-- Ticks it in beside the other picks, or out of them; ⊘: left out. -->
-                    <button
-                      class="box"
-                      class:in={state === "in"}
-                      class:out={state === "out"}
-                      role="checkbox"
-                      aria-checked={state === "in"}
-                      aria-label="{label(dim, value)}{state === 'out' ? ', left out' : ''}"
-                      title={state === "in" ? "Take away from the picks" : state === "out" ? "Show it instead of leaving it out" : "Add to the picks (Ctrl+click on the name)"}
-                      onclick={() => toggle(dim, value, "add")}
-                    >{state === "out" ? "⊘" : state === "in" ? "✓" : ""}</button>
-                  {/if}
                 </div>
               {/each}
             {/if}
@@ -2954,37 +3026,28 @@
           <button title="Back to the library" onclick={toggleBin}>Close</button>
         </span>
       {/if}
-      <!-- One pill per section; sections narrow together ("and" between pills). -->
-      {#each pills as pill, i (pill.id)}
-        {#if i}<span class="and" aria-hidden="true">and</span>{/if}
-        <span class="pill" role="group" aria-label={pillText(pill)} title={pillText(pill)}>
-          {#if pill.label}<span class="what">{pill.label}:</span>{/if}
-          {#each pill.parts as part, j}
-            {#if j}<span class="join">and</span>{/if}
-            {#each part.terms as term, k}
-              {#if k}
-                {#if part.combine}
-                  <button
-                    class="join switch"
-                    title="Photos with {part.join === 'all' ? 'every one' : 'any one'} of these · click for {part.join === 'all' ? 'any one' : 'every one'}"
-                    onclick={() => flipCombine(part.combine!)}
-                  >{joinWord(part.join)}</button>
-                {:else}
-                  <span class="join">{joinWord(part.join)}</span>
-                {/if}
-              {/if}
-              {@render termChip(term)}
-            {/each}
+      <!-- The "either" group's pills are alternatives ("or" between them); the rest of the
+           pills narrow together ("and"). Clicking a word moves a pill in or out of the group. -->
+      {#if eitherPills.length}
+        <span class="either" role="group" aria-label={eitherText(eitherPills)} title={eitherText(eitherPills)}>
+          <span class="either-label">either</span>
+          {#each eitherPills as pill, i (pill.id)}
+            {#if i}
+              <button class="join switch" title="Back to narrowing with the rest (and)" onclick={() => leaveEither(pill.id)}>or</button>
+            {/if}
+            {@render pillView(pill)}
           {/each}
-          {#if pill.outs.length}
-            <span class="join">{pill.parts.length ? "except" : "not"}</span>
-            {#each pill.outs as term, k}
-              {#if k}<span class="join">,</span>{/if}
-              {@render termChip(term)}
-            {/each}
-          {/if}
-          <button class="drop all" aria-label="Remove {pillText(pill)}" title="Let go of the whole section" onclick={() => dropPill(pill)}>×</button>
         </span>
+      {/if}
+      {#each restPills as pill, i (pill.id)}
+        {#if i || eitherPills.length}
+          <button
+            class="and switch"
+            title="Make it an alternative instead (or)"
+            onclick={() => { joinEither(...(i ? [restPills[i - 1].id] : []), pill.id); run(); }}
+          >and</button>
+        {/if}
+        {@render pillView(pill)}
       {/each}
       {#if active}<button class="clear" onclick={clearAll}>Clear filters</button>{/if}
     </div>
@@ -3282,7 +3345,11 @@ Pick those among the photos shown, then have ${source.word} build their previews
 
 {#if showSearchHelp}
   <div class="menu-shield" role="presentation" onclick={() => (showSearchHelp = false)}></div>
-  <div class="menu search-tokens" role="dialog" aria-label="Search tokens">
+  <div class="menu search-tokens" role="dialog" aria-label="Filters and search tokens">
+    <div class="menu-title">Filters in the sidebar</div>
+    <dl class="filter-help">
+      {#each FILTER_HELP as [how, what]}<dt>{how}</dt><dd>{what}</dd>{/each}
+    </dl>
     <div class="menu-title">Type these in the search box; Enter makes them filters. Click one to add it.</div>
     {#each HELP as h}
       <button

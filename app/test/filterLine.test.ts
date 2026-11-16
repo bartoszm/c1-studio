@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { pillText, pills, type Term } from "../src/lib/filterLine.ts";
+import { eitherPicks, fieldsOf, keptEither, pillText, pills, tidyEither, type Term } from "../src/lib/filterLine.ts";
+import { ratingFor } from "../src/lib/criteria.ts";
 import { SECTION_KEYS } from "../src/lib/sections.ts";
 
 const order = [...SECTION_KEYS];
@@ -74,4 +75,47 @@ test("fields outside the sidebar keep their own pill, after the sections", () =>
   assert.deepEqual(ps.map((p) => p.id), ["hue", "iso"]);
   assert.equal(pillText(ps[0]), "Main colour: red and blue");
   assert.equal(pillText(ps[1]), "ISO: ≥ 800");
+});
+
+const KR = "Poland|Małopolskie|Kraków";
+
+test("a pill's fields: its section's, or its own", () => {
+  assert.deepEqual(fieldsOf("hue"), ["hues"]);
+  assert.ok(fieldsOf("places").includes("places_under_not"));
+  assert.deepEqual(fieldsOf("light"), ["light"]);
+});
+
+test("either: Kraków or black & white, and the rest still narrows", () => {
+  const f = { places_under: [KR], hues: ["black & white"], rating: ratingFor("≥", 4) };
+  assert.deepEqual(eitherPicks(f, ["places", "hue"], {}), {
+    rating: ratingFor("≥", 4),
+    all_of: [{ any_of: [{ places_under: [KR] }, { hues: ["black & white"] }] }],
+  });
+  // One alone, or none: no alternatives.
+  assert.deepEqual(eitherPicks(f, ["places"], {}), f);
+  assert.deepEqual(eitherPicks(f, [], {}), f);
+  // A section's own join still holds inside its branch.
+  const kw = { keywords_under: ["Food", "Tram"], hues: ["black & white"] };
+  assert.deepEqual(eitherPicks(kw, ["keywords", "hue"], { keywords: "any" }).all_of, [
+    { any_of: [{ all_of: [{ any_of: [{ keywords_under: ["Food"] }, { keywords_under: ["Tram"] }] }] }, { hues: ["black & white"] }] },
+  ]);
+});
+
+test("the group keeps pills with picks; one waits for a second", () => {
+  const f = { places_under: [KR] };
+  assert.deepEqual(tidyEither(f, ["places", "hue"]), ["places"]);
+  const same = ["places"];
+  assert.equal(tidyEither(f, same), same);
+  assert.deepEqual(keptEither(f, ["places"]), []);
+});
+
+test("the group's pills go first, marked", () => {
+  const terms: Term[] = [
+    { key: "rating", text: "★ ≥ 4" },
+    { key: "hues", what: "Main colour", text: "black & white" },
+    { key: "places_under", what: "Place", text: "Kraków" },
+  ];
+  const f = { rating: ratingFor("≥", 4), hues: ["black & white"], places_under: [KR] };
+  const ps = pills(terms, order, f, {}, ["hue", "places"]);
+  assert.deepEqual(ps.map((p) => [p.id, !!p.inEither]), [["places", true], ["hue", true], ["rating", false]]);
 });

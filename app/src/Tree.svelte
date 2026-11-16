@@ -55,7 +55,7 @@
       (node.queued
         ? `Changed here; not yet written to ${source.word}`
         : multi && !node.container
-          ? `Click: only this${multi === true ? " · Alt+click: leave out" : ""}`
+          ? `Click: only this · Ctrl+click: add${multi === true ? " · Alt+click: leave out" : ""} · Shift+click: or with other sections`
           : undefined)}
     role="treeitem"
     aria-selected={selected === node.key || m === "in"}
@@ -88,30 +88,6 @@
       <button class="chev" class:open aria-label={open ? "Collapse" : "Expand"} onclick={() => flip(node)}>›</button>
     {:else}
       <span class="chev"></span>
-    {/if}
-    {#if multi}
-      {#if node.container || node.disabled}
-        <span class="box blank"></span>
-      {:else}
-        <!-- Ticks it in beside the other picks, or out of them; ⊘: left out. -->
-        <button
-          class="box"
-          class:in={m === "in" || m === "under-in"}
-          class:out={m === "out" || m === "under-out"}
-          class:under={m === "under-in" || m === "under-out"}
-          role="checkbox"
-          aria-checked={m === "in"}
-          aria-label="{node.name}{m === 'out' ? ', left out' : ''}"
-          title={m === "in"
-            ? "Take away from the picks"
-            : m === "under-in"
-              ? "In a picked place: untick to leave it out"
-              : m === "out"
-                ? "Show it instead of leaving it out"
-                : "Add to the picks (Ctrl+click on the name)"}
-          onclick={() => onpick(node, m === "under-in" ? "out" : "add")}
-        >{m === "out" || m === "under-out" ? "⊘" : m === "in" || m === "under-in" ? "✓" : ""}</button>
-      {/if}
     {/if}
     <button
       class="label"

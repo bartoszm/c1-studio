@@ -2,9 +2,13 @@
 
 ## Unreleased
 
+### New
+
+- **Or across sections:** Shift+click Kraków, then *black & white*, for the photos taken in Kraków or black & white; the rest of the filter still narrows both. The filter bar brackets them (*either … or …*); click its *and* / *or* to add a pill or take it out. The `?` beside the search box now says how filters work, and [FEATURES](docs/FEATURES.md#filters-only-add-leave-out-or) has a clip.
+
 ### Changed
 
-- **One click, one meaning in the sidebar.** A click on a value's name shows only it in its section; its box (or Ctrl+click) adds it beside the others, Alt+click leaves it out (⊘). Albums, places and keywords have the same three in their right-click menu. Before, a click added to some sections, replaced in others and cycled in → out → off in the rest.
+- **One click, one meaning in the sidebar.** A click on a value shows only it in its section; Ctrl+click adds it beside the others, Alt+click leaves it out (red, struck through). A picked value is in bold. Albums, places and keywords have the same in their right-click menu. Before, a click added to some sections, replaced in others and cycled in → out → off in the rest.
 - **The filter bar reads as a sentence.** One pill per section, in the sidebar's order, with *and* between them: *Camera: X-T5 or X100VI except GFX*, *Place: Poland except Kraków*, *Keyword: Food and Kraków*. Click a value in it to leave it out, or show it again.
 - **Keywords and albums: all or any.** Several keywords or albums ask for every one, as before; *Photos with all / any of these* above the tree, or the *and* in the filter bar, switches to any one. This replaces the global *Match all / any*, which covered only some sections.
 - **Several places** can be picked, and places left out: *Poland except Kraków*, *not Poland, but Kraków*.

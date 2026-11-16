@@ -12,6 +12,8 @@ export type Shown = {
   sortReversed: boolean;
   /** Sections whose picks combine the other way than their default. */
   combine: Combine;
+  /** Pills that are alternatives to each other. */
+  either: readonly string[];
   /** The trash shown, hidden photos shown: the same filter is other photos there. */
   bin: boolean;
   hidden: boolean;
@@ -32,8 +34,8 @@ export const KEPT_PICKS = 10_000;
 
 /** Same filter, order, joins and mode: going there changes nothing on screen. */
 export const sameView = (a: Shown, b: Shown) =>
-  JSON.stringify([a.filter, a.sortField, a.sortReversed, a.combine, a.bin, a.hidden]) ===
-  JSON.stringify([b.filter, b.sortField, b.sortReversed, b.combine, b.bin, b.hidden]);
+  JSON.stringify([a.filter, a.sortField, a.sortReversed, a.combine, a.either, a.bin, a.hidden]) ===
+  JSON.stringify([b.filter, b.sortField, b.sortReversed, b.combine, b.either, b.bin, b.hidden]);
 
 const trimmed = (s: Shown): Shown => (s.picks.length > KEPT_PICKS ? { ...s, picks: [] } : s);
 

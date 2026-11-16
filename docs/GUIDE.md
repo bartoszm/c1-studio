@@ -95,7 +95,10 @@ up at the next of these, or on the next start.
   *Keyword: Food and Kraków*, *Place: not Germany*. The × at a pill's end drops the
   section; hover a value for its own ×. Click a value to leave it out, or to show it
   again (*Camera: X-T5 or X100VI* → *Camera: X-T5 except X100VI*). Between keywords or
-  albums, *and* / *or* is a switch (see the sidebar). *Clear filters* drops them all.
+  albums, *and* / *or* is a switch (see the sidebar). Pills that are alternatives to each
+  other sit in a blue bracket, *either … or …* (see [Or across sections](#finding-photos));
+  click the *and* before a pill to add it to them, or an *or* to take it out. *Clear
+  filters* drops them all.
 - **Grid:** the matching photos, newest first unless the sort box says otherwise.
 - **Details panel** (right): everything about the focused photo. `i` or *Details*
   shows and hides it.
@@ -120,19 +123,27 @@ range: `iso:>1600`, `f:<=2.8`, `focal:35-50`, `shutter:>1/30`, `size:>30mb`), `f
 as shown, turned and cropped. The photos follow the tokens as you type; **Enter** (or
 leaving the box) turns them into chips, and the words stay in the box. A token that
 cannot be read gets a red outline, says why on hover, and is not searched for. `?`
-beside the box lists every token; clicking one adds it.
+beside the box says how filters work and lists every token; clicking a token adds it.
 
 **Sidebar.** Click a value to show only it (in its section), click it again to let go.
-Where a section can hold several values (Albums, Location, Keywords, Colour, Main colour,
-Camera, Lens, Format, Orientation):
+A picked value is in bold; one left out is red and struck through. Where a section can
+hold several values (Albums, Location, Keywords, Colour, Main colour, Camera, Lens,
+Format, Orientation):
 
-- **The box** beside a value (or **Ctrl+click** on its name) adds it to the section's
-  picks (✓), or takes it away again. Inside a picked place, a place shows a faint ✓:
-  untick it to leave it out.
-- **Alt+click** leaves a value out (⊘ in its box); its box, or a click on it in the filter
-  bar, shows it again. Smart albums and main colours cannot be left out.
-- The right-click menu of an album, a place or a keyword has the same three: *Show only
-  this*, *Add to the filter*, *Leave out*.
+- **Ctrl+click** adds the value to the section's picks, or takes it away again.
+- **Alt+click** leaves a value out; Ctrl+click, or a click on it in the filter bar, shows
+  it again. Smart albums and main colours cannot be left out. Places inside a picked
+  place show in italics: Alt+click one to leave it out (*Poland except Kraków*).
+- **Shift+click** adds it as an alternative to other sections (see below).
+- The right-click menu of an album, a place or a keyword has the same: *Show only this*,
+  *Add to the filter*, *Leave out*, *Or with other sections*.
+
+**Or across sections.** Shift+click Kraków in Location, then *black & white* in Main
+colour: the photos taken in Kraków **or** black & white, whatever else is picked (*★ ≥ 4*
+still narrows both). The sections in it show an *or* beside their title, and the filter
+bar brackets them: *either Place: Kraków or Main colour: black & white*. Shift+click works
+on rating, colours, the *No …* rows and the Analysis bars too. A section let go leaves
+the group, and a group of one is no choice.
 
 Sections always narrow together. In one section, values are alternatives (*X-T5 or
 X100VI*: a photo has one camera), but keywords and albums, which a photo has several

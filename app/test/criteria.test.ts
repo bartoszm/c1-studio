@@ -136,3 +136,12 @@ test("the deepest pick decides: a place in an included one is left out, in an ex
   assert.equal(placePick([PL, KR], ["Poland|Małopolskie"], "Poland|Małopolskie|Tarnów"), "under-out");
   assert.equal(placePick(["Poland|—|Kra"], undefined, "Poland|—|Kraków"), null);
 });
+
+test("Shift+click adds as an alternative, and keeps a value already shown", () => {
+  assert.equal(modeOf({ ctrlKey: false, metaKey: false, altKey: false, shiftKey: true }), "either");
+  assert.deepEqual(pick(["a"], undefined, "b", "either"), { inc: ["a", "b"], exc: undefined });
+  assert.deepEqual(pick(["a"], undefined, "a", "either"), { inc: ["a"], exc: undefined });
+  assert.deepEqual(pick(undefined, ["a"], "a", "either"), { inc: ["a"], exc: undefined });
+  // A place covered by a picked one stays covered.
+  assert.deepEqual(pickPlace(["Poland"], undefined, "Poland|Małopolskie|Kraków", "either"), { inc: ["Poland"], exc: undefined });
+});

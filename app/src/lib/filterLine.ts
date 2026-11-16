@@ -1,9 +1,10 @@
 // The filter line above the grid: one pill per section, in the sidebar's order, that says
 // how its values combine ("X-T5 or X100VI", "Food and Kraków", "Poland except Kraków").
-// Pills always narrow together. Kept apart from the Svelte state so it can be tested.
+// Pills narrow together, but those in the "either" group, which are alternatives to each
+// other ("Kraków or black & white"). Kept apart from the Svelte state so it can be tested.
 
 import type { Filter } from "./api";
-import { joinOf, joined, type Combine, type CombineKey, type Join } from "./criteria";
+import { combinePicks, joinOf, joined, type Combine, type CombineKey, type Join } from "./criteria";
 import type { SectionKey } from "./sections";
 
 /** One value of the filter, as its field's chips say it. `rest` is what the field holds
@@ -33,6 +34,8 @@ export type Pill = {
   outs: Term[];
   /** Every field the pill holds, to drop them all. */
   keys: (keyof Filter)[];
+  /** One of the "either" group: an alternative to the group's other pills. */
+  inEither?: boolean;
 };
 
 /** The sidebar section a field's pill sits with. Fields not listed have a pill of their own. */
@@ -64,11 +67,58 @@ const COMBINED: Partial<Record<keyof Filter, CombineKey>> = {
   keywords_under: "keywords", collections: "albums", hues: "hues", light: "problems",
 };
 
+/** The pill a field's picks show in: its section's, or its own. */
+export const pillOf = (key: keyof Filter): string => SECTION[key] ?? key;
+
+/** The fields a pill holds: its section's, or the one field with a pill of its own. */
+export function fieldsOf(id: string): (keyof Filter)[] {
+  const mine = (Object.keys(SECTION) as (keyof Filter)[]).filter((k) => SECTION[k] === id);
+  return mine.length ? mine : [id as keyof Filter];
+}
+
+const holds = (f: Filter, id: string) => fieldsOf(id).some((k) => f[k] !== undefined);
+
+/** The "either" group as kept: pills without picks leave it. One can wait there for a
+ *  second (Shift+click Kraków, then black & white); the same list when nothing left. */
+export function tidyEither(f: Filter, either: readonly string[]): readonly string[] {
+  const kept = either.filter((id) => holds(f, id));
+  return kept.length === either.length ? either : kept;
+}
+
+/** The "either" group as asked: two pills or more, or none (one alone is no choice). */
+export function keptEither(f: Filter, either: readonly string[]): string[] {
+  const kept = either.filter((id) => holds(f, id));
+  return kept.length > 1 ? kept : [];
+}
+
 /**
- * The terms (in the order the fields' chips list them) as pills. Sections go in `order`
- * (the sidebar's), after the search; the rest keep the order of their terms.
+ * What to ask the index: each section's picks joined its way (`combinePicks`), and the
+ * pills in the "either" group made alternatives to each other: Kraków or black & white,
+ * and everything else as well.
  */
-export function pills(terms: Term[], order: readonly SectionKey[], filter: Filter, combine: Combine): Pill[] {
+export function eitherPicks(f: Filter, either: readonly string[], combine: Combine): Filter {
+  const group = keptEither(f, either);
+  if (!group.length) return combinePicks(f, combine);
+  const rest: Filter = { ...f };
+  const branches = group.map((id) => {
+    const branch: Filter = {};
+    for (const k of fieldsOf(id)) {
+      if (f[k] === undefined) continue;
+      (branch as Record<string, unknown>)[k] = f[k];
+      delete rest[k];
+    }
+    return combinePicks(branch, combine);
+  });
+  const base = combinePicks(rest, combine);
+  return { ...base, all_of: [...(base.all_of ?? []), { any_of: branches }] };
+}
+
+/**
+ * The terms (in the order the fields' chips list them) as pills. The "either" group goes
+ * first, then the search, then sections in `order` (the sidebar's); the rest keep the
+ * order of their terms.
+ */
+export function pills(terms: Term[], order: readonly SectionKey[], filter: Filter, combine: Combine, either: readonly string[] = []): Pill[] {
   const byId = new Map<string, Pill>();
   for (const t of terms) {
     const section = SECTION[t.key];
@@ -95,14 +145,20 @@ export function pills(terms: Term[], order: readonly SectionKey[], filter: Filte
     const join: Join = combineKey && joined(filter, combineKey).length > 1 ? joinOf(combine, combineKey) : "any";
     pill.parts.push({ terms: [term], join, combine: combineKey });
   }
+  const group = keptEither(filter, either);
   const rank = (id: string) => {
-    if (id === "search") return -1;
-    const i = order.indexOf(id as SectionKey);
-    return i < 0 ? order.length : i;
+    const at = id === "search" ? -1 : order.indexOf(id as SectionKey);
+    const i = at < 0 && id !== "search" ? order.length : at;
+    return group.includes(id) ? i - 1000 : i;
   };
   // A stable sort: pills outside the sidebar keep the order their terms came in.
-  return [...byId.values()].sort((a, b) => rank(a.id) - rank(b.id));
+  return [...byId.values()]
+    .sort((a, b) => rank(a.id) - rank(b.id))
+    .map((p) => (group.includes(p.id) ? { ...p, inEither: true } : p));
 }
+
+/** The "either" group as one line of text. */
+export const eitherText = (ps: Pill[]) => `either ${ps.map(pillText).join(" or ")}`;
 
 /** The word between two values of a part. */
 export const joinWord = (join: Join) => (join === "all" ? "and" : "or");
