@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **One click, one meaning in the sidebar.** A click on a value shows only it in its section; Ctrl+click (or **+** on hover) adds it to the section's picks, Alt+click (or **−**) leaves it out. Albums, places and keywords have the same three in their right-click menu. Before, a click added to some sections, replaced in others and cycled in → out → off in the rest.
+- **The filter bar reads as a sentence.** One pill per section, in the sidebar's order, with *and* between them: *Camera: X-T5 or X100VI except GFX*, *Place: Poland except Kraków*, *Keyword: Food and Kraków*.
+- **Keywords and albums: all or any.** Several keywords or albums ask for every one, as before; *Photos with all / any of these* above the tree, or the *and* in the filter bar, switches to any one. This replaces the global *Match all / any*, which covered only some sections.
+- **Several places** can be picked, and places left out: *Poland except Kraków*, *not Poland, but Kraków*.
+
 ## 0.9.0 — 2026-11-12
 
 ### New

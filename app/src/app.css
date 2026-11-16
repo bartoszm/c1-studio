@@ -68,7 +68,8 @@ header > * { flex-shrink: 0; }
 .clear { padding: 2px 10px; border: 1px solid var(--line); border-radius: 4px; white-space: nowrap; }
 .clear:hover { background: var(--hover); }
 
-/* What the grid is filtered by, above it: a chip per value, wrapping, never taller than three lines. */
+/* What the grid is filtered by, above it: a pill per section, "and" between them, wrapping,
+   never taller than three lines. */
 .filters {
   grid-area: filters;
   display: flex;
@@ -80,23 +81,33 @@ header > * { flex-shrink: 0; }
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
 }
-.chip {
+.pill {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 2px 4px;
   min-width: 0;
   max-width: 100%;
-  height: 22px;
+  min-height: 22px;
   padding: 0 2px 0 9px;
-  white-space: nowrap;
   background: var(--on);
   border-radius: 11px;
 }
-.chip .what { color: var(--muted); }
-.chip .text { overflow: hidden; text-overflow: ellipsis; }
-.chip .dot { flex: none; }
-.chip .drop { flex: none; width: 18px; height: 18px; border-radius: 50%; color: var(--muted); line-height: 1; }
-.chip .drop:hover { color: var(--error); background: var(--hover); }
+.pill .what { color: var(--muted); white-space: nowrap; }
+.term { display: inline-flex; align-items: center; gap: 3px; min-width: 0; white-space: nowrap; }
+.term .text { overflow: hidden; text-overflow: ellipsis; }
+.term .dot { flex: none; }
+.term.out .text { color: var(--error); }
+.pill .drop { flex: none; width: 16px; height: 16px; border-radius: 50%; color: var(--muted); line-height: 1; }
+.pill .drop:hover { color: var(--error); background: var(--hover); }
+/* A value's own × shows on hover; the pill's drops the whole section. */
+.term .drop { width: 14px; height: 14px; opacity: 0; }
+.term:hover .drop, .term .drop:focus-visible { opacity: 1; }
+.pill .drop.all { width: 18px; height: 18px; }
+/* The words between values ("or", "and", "except") and between pills ("and"). */
+.join, .filters > .and { color: var(--muted); font-size: 11px; white-space: nowrap; }
+button.join.switch { padding: 0 4px; border: 1px dashed var(--muted); border-radius: 3px; color: var(--text); }
+button.join.switch:hover { background: var(--hover); }
 .toggle { padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); }
 .toggle:hover { background: var(--hover); }
 .toggle.on { color: var(--text); background: var(--on); }
@@ -519,6 +530,7 @@ footer .edit-error { padding: 0; color: var(--error); text-align: left; }
 .menu button { padding: 4px 12px; text-align: left; }
 .menu button:hover { background: var(--hover); }
 .menu button.danger { color: var(--error); }
+.menu button .key { float: right; margin-left: 16px; color: var(--muted); font-size: 11px; }
 .menu-note { padding: 4px 12px; color: var(--muted); font-size: 12px; }
 /* Albums: actions under the title, drop targets while dragging. */
 .album-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px 26px; }
@@ -688,16 +700,21 @@ footer > span { white-space: nowrap; }
 .info-panel .places li > .link, .info-panel .fill-places li > .link { flex: 1 1 auto; min-width: 0; text-align: left; }
 .info-panel .places .count, .info-panel .fill-places .count { flex: none; }
 
-/* Multi-criteria: Match toggle, rating operator, "No …" rows. */
+/* Multi-criteria: rating operator, a section's all/any, "No …" rows. */
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
 .seg button { padding: 1px 9px; color: var(--muted); }
 .seg button:hover { background: var(--hover); }
 .seg button.on { background: var(--on); color: var(--text); }
-.match { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
 .rating-op { display: flex; align-items: center; gap: 8px; padding: 2px 8px 4px; color: var(--muted); }
+/* A value's add (+) and leave out (−), on hover, over its count. */
+.facet-row, .node { position: relative; }
+.pm { position: absolute; top: 50%; right: 6px; display: none; gap: 2px; transform: translateY(-50%); }
+.facet-row:hover .pm, .node:hover > .pm { display: inline-flex; }
+.facet-row:hover .n, .node.multi:hover .n { visibility: hidden; }
+.pm button { width: 18px; height: 18px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel, #222); color: var(--muted); line-height: 1; }
+.pm button:hover { color: var(--text); background: var(--hover); }
 .none-row { display: flex; width: 100%; align-items: center; padding: 3px 8px 3px 24px; text-align: left; font-style: italic; }
 .none-row:hover { background: var(--hover); }
 .none-row.on { background: var(--on); }
 .none-row .name { flex: 1; }
 .none-row .n { color: var(--muted); font-variant-numeric: tabular-nums; }
-.chip.out .text { color: var(--error); text-decoration: line-through; }

@@ -11,9 +11,11 @@
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import { HELP, ORIENTATIONS, RANGES, parseSearch, rangeChip, withSearch, type Parsed } from "./lib/search";
   import {
-    LIGHT_PROBLEMS, RATING_OPS, allOfPicks, compile, criteriaCount, cycle, cyclePlace, pickOf, placePick, ratingFor, ratingParts, ratingText, sameRating,
-    type AllOf, type Match, type Pick, type RatingOp,
+    LIGHT_PROBLEMS, RATING_OPS, allOfCards, combinePicks, flipJoin, joinOf, joined, keptCombine, modeOf, pick as pickIn, pickOf, pickPlace, placePick, ratingFor, ratingParts,
+    ratingText, sameRating,
+    type Combine, type CombineKey, type Pick, type PickMode, type RatingOp,
   } from "./lib/criteria";
+  import { joinWord, pillText, pills as toPills, type Pill, type Term } from "./lib/filterLine";
   import { settings } from "./lib/settings.svelte";
   import Grid, { DEFAULT_TILES, MAX_COUNT, MIN_TILE, type Layout, type Shape, type Tiles } from "./Grid.svelte";
   import AlbumDialog, { rows as ruleRows } from "./AlbumDialog.svelte";
@@ -792,7 +794,7 @@
   // The filter kept is the one searched for, tokens still in the box included: a token typed
   // is a step, and going back or forward to it brings its tokens back as chips.
   const shownNow = (): Shown => ({
-    filter: $state.snapshot(current), sortField, sortReversed, match, bin: inBin, hidden: showHidden,
+    filter: $state.snapshot(current), sortField, sortReversed, combine: $state.snapshot(combine), bin: inBin, hidden: showHidden,
     tile: mapTile, follow, picks: [],
   });
   function leaving(was: Picks, how: Step) {
@@ -822,7 +824,7 @@
     setSearch(to.filter.text ?? "");
     sortField = to.sortField;
     sortReversed = to.sortReversed;
-    match = to.match;
+    combine = to.combine;
     rememberSort();
     run(false, false, { restore: { picks: to.picks, focus: to.focus }, travelling: true });
   }
@@ -1100,7 +1102,7 @@
       if ((await api.query(asking(now), { sort: sortBy, limit: 0 })).total) return false;
       const sel = await api.selectionSummary(done.rows);
       if (mine !== generation) return false;
-      const next = followFilter(now, sel, done.rows.length, done.edit, match === "any");
+      const next = followFilter(now, sel, done.rows.length, done.edit, anyJoined());
       if (!next) return false;
       // Only to a filter that shows them: one the edit left empty for another reason stays.
       const found = await api.positions(asking(next), { sort: sortBy }, done.rows);
@@ -1537,7 +1539,8 @@
     run(false, false, { kind: "search" });
   }
 
-  // Flat sidebar values ↔ filter fields. A value is off → in → out → off.
+  // Flat sidebar values ↔ filter fields. A click picks only the value, Ctrl+click adds it,
+  // Alt+click leaves it out (see `pick`).
   const cap = (v: string) => v[0].toUpperCase() + v.slice(1);
   /** The colours picked in, or none. */
   const colorsIn = () => (typeof filter.color === "object" ? filter.color.Values : undefined);
@@ -1565,10 +1568,16 @@
     }
   }
 
-  function toggle(dim: Dim, value: string) {
-    // Main colours add up, as in the analysis tab: any of those picked.
-    if (dim === "hue") return toggleList("hues", value);
+  /** Sections whose values can be added together or left out; the rest hold one value. */
+  const MANY: Dim[] = ["color", "camera", "lens", "ext", "orientation", "hue"];
+  function toggle(dim: Dim, value: string, mode: PickMode = "only") {
     switch (dim) {
+      case "hue": {
+        // No "not this colour" in the index: Alt+click is a click.
+        const { inc } = pickIn(filter.hues, undefined, value, mode === "out" ? "only" : mode);
+        filter = { ...filter, hues: inc };
+        break;
+      }
       case "rating":
         if (value === "none") {
           const r = filter.rating;
@@ -1582,27 +1591,27 @@
           const c = filter.color;
           filter = { ...filter, color: c === "None" ? "Any" : c === "Any" ? undefined : "None" };
         } else {
-          const { inc, exc } = cycle(colorsIn(), filter.colors_not, cap(value));
+          const { inc, exc } = pickIn(colorsIn(), filter.colors_not, cap(value), mode);
           filter = { ...filter, color: inc && { Values: inc as api.Color[] }, colors_not: exc as api.Color[] | undefined };
         }
         break;
       case "camera": {
-        const { inc, exc } = cycle(filter.cameras, filter.cameras_not, value);
+        const { inc, exc } = pickIn(filter.cameras, filter.cameras_not, value, mode);
         filter = { ...filter, camera: undefined, cameras: inc, cameras_not: exc };
         break;
       }
       case "lens": {
-        const { inc, exc } = cycle(filter.lenses, filter.lenses_not, value);
+        const { inc, exc } = pickIn(filter.lenses, filter.lenses_not, value, mode);
         filter = { ...filter, lens: undefined, lenses: inc, lenses_not: exc };
         break;
       }
       case "ext": {
-        const { inc, exc } = cycle(filter.ext, filter.ext_not, value);
+        const { inc, exc } = pickIn(filter.ext, filter.ext_not, value, mode);
         filter = { ...filter, ext: inc, ext_not: exc };
         break;
       }
       case "orientation": {
-        const { inc, exc } = cycle(filter.orientation, filter.orientation_not, value);
+        const { inc, exc } = pickIn(filter.orientation, filter.orientation_not, value, mode);
         filter = { ...filter, orientation: inc, orientation_not: exc };
         break;
       }
@@ -1613,34 +1622,31 @@
     run();
   }
 
-  let match = $state<Match>("all");
   let ratingOp = $state<RatingOp>("≥");
-  /** Analysis cards asking for every pick ("red and blue") instead of any. */
-  let allOf = $state<AllOf>({});
-  /** The filter as the index is asked: Match applied, and the "all" cards' picks combined. */
+  /** Sections whose picks combine the other way than their default (keywords or albums on
+   *  "any", Main colour or Light problems on "all"). */
+  let combine = $state<Combine>({});
+  /** The filter as the index is asked: each section's picks joined its way. */
   function compiled(f: Filter): Filter {
-    return withBin(withHidden(allOfPicks(compile(withSearch(f, typed), match), allOf), showHidden), inBin);
+    return withBin(withHidden(combinePicks(withSearch(f, typed), combine), showHidden), inBin);
   }
-  function toggleAllOf(card: keyof AllOf) {
-    allOf = { ...allOf, [card]: !allOf[card] };
+  function flipCombine(key: CombineKey) {
+    combine = flipJoin(combine, key);
     run();
   }
-  // A card's picks all cleared: it goes back to "any", so the next picks are not silently "all".
+  /** Keywords or albums asked for "any": a filter an edit cannot follow. */
+  const anyJoined = () => joinOf(combine, "keywords") === "any" || joinOf(combine, "albums") === "any";
+  // A section down to one pick goes back to its default, so the next picks are not
+  // silently combined the other way.
   $effect(() => {
-    const hues = !!filter.hues?.length;
-    const problems = !!filter.light?.some((l) => LIGHT_PROBLEMS.includes(l));
+    const f = filter;
     untrack(() => {
-      if ((allOf.hues && !hues) || (allOf.problems && !problems)) {
-        allOf = { hues: allOf.hues && hues, problems: allOf.problems && problems };
-      }
+      const kept = keptCombine(f, combine);
+      if (kept !== combine) combine = kept;
     });
   });
-  /** What the rest of the app asks the index: the filter with Match applied. */
+  /** What the rest of the app asks the index: the filter with each section's join applied. */
   let eff = $derived(compiled(filter));
-  function setMatch(m: Match) {
-    match = m;
-    run();
-  }
   function setRatingOp(op: RatingOp) {
     const was = ratingParts(filter.rating);
     ratingOp = op;
@@ -1659,24 +1665,22 @@
     run();
   }
 
-  // Trees: picking a node filters by it, picking it again lets go.
-  function pickAlbum(n: Node) {
+  // Trees: a click picks only the node, Ctrl+click adds it, Alt+click leaves it out; a
+  // click on the only pick lets go.
+  function pickAlbum(n: Node, mode: PickMode = "only") {
     // A smart album can only be included: the index has no "not this rule".
-    if (byId.get(n.value)?.kind === "Smart") {
-      const on = filter.collections?.includes(n.value);
-      const left = (filter.collections ?? []).filter((v) => v !== n.value);
-      const next = on ? left : [...left, n.value];
-      filter = { ...filter, collections: next.length ? next : undefined };
-    } else {
-      const { inc, exc } = cycle(filter.collections, filter.not_in_collections, n.value);
-      filter = { ...filter, collections: inc, not_in_collections: exc };
-    }
+    if (mode === "out" && byId.get(n.value)?.kind === "Smart") return;
+    const { inc, exc } = pickIn(filter.collections, filter.not_in_collections, n.value, mode);
+    filter = { ...filter, collections: inc, not_in_collections: exc };
     run();
   }
-  /** A value of a many-valued filter field on or off (the analysis' groups). */
-  function toggleList(key: "shape" | "hues" | "light" | "focus", value: string) {
-    const list = filter[key] ?? [];
-    const next = list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+  /** A value of a many-valued filter field picked (the analysis' groups); there is no
+   *  "not" for these, so leaving one out is a plain pick. */
+  function toggleList(key: "shape" | "hues" | "light" | "focus", value: string, mode: PickMode = "only") {
+    // Brightness and light problems are two cards on one field: a pick in one keeps the other's.
+    const card = (v: string) => key !== "light" || LIGHT_PROBLEMS.includes(v) === LIGHT_PROBLEMS.includes(value);
+    const { inc } = pickIn(filter[key]?.filter(card), undefined, value, mode === "out" ? "only" : mode);
+    const next = [...(filter[key]?.filter((v) => !card(v)) ?? []), ...(inc ?? [])];
     filter = { ...filter, [key]: next.length ? next : undefined };
     run();
   }
@@ -1690,8 +1694,8 @@
     run();
   }
   /** Places are alternatives: a city's "(no location)" (`City|—`) is one of them too. */
-  function pickPlace(n: Node) {
-    const { inc, exc } = cyclePlace(filter.places_under, filter.places_under_not, n.value);
+  function onPlace(n: Node, mode: PickMode = "only") {
+    const { inc, exc } = pickPlace(filter.places_under, filter.places_under_not, n.value, mode);
     filter = { ...filter, places_under: inc, places_under_not: exc };
     run();
   }
@@ -1785,8 +1789,8 @@
     }
     await edited(rowsOf(undo));
   }
-  function pickKeyword(n: Node) {
-    const { inc, exc } = cycle(filter.keywords_under, filter.keywords_under_not, n.value);
+  function pickKeyword(n: Node, mode: PickMode = "only") {
+    const { inc, exc } = pickIn(filter.keywords_under, filter.keywords_under_not, n.value, mode);
     filter = { ...filter, keywords_under: inc, keywords_under_not: exc };
     run();
   }
@@ -2145,7 +2149,7 @@
       picked.clear();
       const row = selected === null ? undefined : focusRow;
       if (row !== undefined) picked.add(row);
-    } else if (e.key === "Escape" && filter.variants_of !== undefined) dropChip("variants_of", undefined);
+    } else if (e.key === "Escape" && filter.variants_of !== undefined) dropFields([["variants_of", undefined]]);
     else if (selected !== null && opensVariants(e, variantsAt(selected))) showVariants(selected);
     else if (e.key === "Enter" && selected !== null) viewing = true;
     // On Analysis, History and AI the page keys scroll the view; arrows move in the strip.
@@ -2161,9 +2165,16 @@
     return showAround(row, null, "session", select);
   }
 
-  // Links in the info panel: filter by what was clicked.
+  // Links in the info panel: filter by what was clicked, only it in its section (as a click
+  // in the sidebar), so nothing left out there stays.
+  const LEFT_OUT: Partial<Record<keyof Filter, (keyof Filter)[]>> = {
+    cameras: ["cameras_not", "camera"], lenses: ["lenses_not", "lens"], ext: ["ext_not"], orientation: ["orientation_not"],
+    keywords_under: ["keywords_under_not"], collections: ["not_in_collections"], places_under: ["places_under_not"],
+  };
   function only(f: Filter) {
-    filter = { ...filter, ...f };
+    const next: Filter = { ...filter, ...f };
+    for (const key of Object.keys(f) as (keyof Filter)[]) for (const other of LEFT_OUT[key] ?? []) delete next[other];
+    filter = next;
     run();
   }
   /** A duplicate group's or a series' photos, from the Analysis tab or the panel: within the
@@ -2318,48 +2329,48 @@
     year: (v) => (filter.month ? [] : [{ text: String(v) }]),
     month: (v) => (filter.week ? [] : [{ text: monthText(v) }]),
     week: (v) => [{ text: weekText(v) }],
-    captured: (v) => [{ what: "Dates", text: rangeText(v) }],
+    captured: (v) => [{ text: rangeText(v) }],
     trip: (v) => [{ what: "Trip", text: shownTrip ? tripName(shownTrip) : rangeText(v), title: rangeText(v) }],
     camera: (v) => [{ what: "Camera", text: v }],
     cameras: (v) => v.map((c) => ({ what: "Camera", text: c, rest: without(v, c) })),
-    cameras_not: (v) => v.map((c) => ({ what: "Camera", text: `not ${c}`, out: true, rest: without(v, c) })),
+    cameras_not: (v) => v.map((c) => ({ what: "Camera", text: c, out: true, rest: without(v, c) })),
     make: (v) => [{ what: "Make", text: v }],
     makes: (v) => v.map((c) => ({ what: "Make", text: c, rest: without(v, c) })),
-    makes_not: (v) => v.map((c) => ({ what: "Make", text: `not ${c}`, out: true, rest: without(v, c) })),
+    makes_not: (v) => v.map((c) => ({ what: "Make", text: c, out: true, rest: without(v, c) })),
     lens: (v) => [{ what: "Lens", text: v }],
     lenses: (v) => v.map((c) => ({ what: "Lens", text: c, rest: without(v, c) })),
-    lenses_not: (v) => v.map((c) => ({ what: "Lens", text: `not ${c}`, out: true, rest: without(v, c) })),
+    lenses_not: (v) => v.map((c) => ({ what: "Lens", text: c, out: true, rest: without(v, c) })),
     ...rangeChips,
     ext: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), rest: without(v, x) })),
-    ext_not: (v) => v.map((x) => ({ what: "Format", text: `not ${x.toUpperCase()}`, out: true, rest: without(v, x) })),
+    ext_not: (v) => v.map((x) => ({ what: "Format", text: x.toUpperCase(), out: true, rest: without(v, x) })),
     orientation: (v) => v.map((x) => ({ what: "Orientation", text: x, rest: without(v, x) })),
-    orientation_not: (v) => v.map((x) => ({ what: "Orientation", text: `not ${x}`, out: true, rest: without(v, x) })),
+    orientation_not: (v) => v.map((x) => ({ what: "Orientation", text: x, out: true, rest: without(v, x) })),
     colors_not: (v) =>
-      v.map((c) => ({ what: "Colour", text: `not ${c.toLowerCase()}`, out: true, dot: COLORS[c.toLowerCase()], rest: without(v, c) })),
+      v.map((c) => ({ what: "Colour", text: c.toLowerCase(), out: true, dot: COLORS[c.toLowerCase()], rest: without(v, c) })),
     country: (v) => [{ what: "Country", text: v }],
     keywords_under: (v) => v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), title: p, rest: without(v, p) })),
     keywords_under_not: (v) =>
-      v.map((p) => ({ what: "Keyword", text: `not ${p.split("|").join(" › ")}`, out: true, title: p, rest: without(v, p) })),
+      v.map((p) => ({ what: "Keyword", text: p.split("|").join(" › "), out: true, title: p, rest: without(v, p) })),
     unkeyworded: (v) => (v ? [{ text: "no keywords" }] : []),
+    collections: (v) =>
+      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     not_in_collections: (v) =>
-      v.map((id) => ({ what: "Album", text: `not ${byId.get(id)?.name ?? id}`, out: true, title: byId.get(id)?.path, rest: without(v, id) })),
+      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, out: true, title: byId.get(id)?.path, rest: without(v, id) })),
     uncollected: (v) => [{ what: "Album", text: v ? "none" : "any" }],
     all_of: () => [],
     any_of: () => [],
-    collections: (v) =>
-      v.map((id) => ({ what: "Album", text: byId.get(id)?.name ?? id, title: byId.get(id)?.path, rest: without(v, id) })),
     folder: (v) => [{ what: "Folder", text: v }],
     places_under: (v) => v.map((p) => ({ what: "Place", text: placeText(p), title: p, rest: without(v, p) })),
     places_under_not: (v) =>
-      v.map((p) => ({ what: "Place", text: `not ${placeText(p)}`, out: true, title: p, rest: without(v, p) })),
+      v.map((p) => ({ what: "Place", text: placeText(p), out: true, title: p, rest: without(v, p) })),
     gps: (v) => [{ what: "GPS", text: v ? "has a position" : "no position" }],
     placed: (v) => [{ what: "Place", text: v ? "has a place" : "no place" }],
-    located: (v) => [{ what: "Location", text: v ? "has a location" : "no location" }],
+    located: (v) => [{ text: v ? "has a location" : "no location" }],
     approx: (v) => [{ what: "GPS", text: v ? "none of its own" : "its own" }],
     no_country_code: (v) => (v ? [{ text: "no ISO country code" }] : []),
     shape: (v) => v.map((x) => ({ what: "Shape", text: x, rest: without(v, x) })),
-    hues: (v) => v.map((x) => ({ what: allOf.hues && v.length > 1 ? "Main colour, all of" : "Main colour", text: x, rest: without(v, x) })),
-    light: (v) => v.map((x) => ({ what: allOf.problems && LIGHT_PROBLEMS.includes(x) && v.filter((p) => LIGHT_PROBLEMS.includes(p)).length > 1 ? "Light, all of" : "Light", text: x, rest: without(v, x) })),
+    hues: (v) => v.map((x) => ({ what: "Main colour", text: x, rest: without(v, x) })),
+    light: (v) => v.map((x) => ({ what: "Light", text: x, rest: without(v, x) })),
     focus: (v) => v.map((x) => ({ what: "Focus", text: x, rest: without(v, x) })),
     history: (v) => [{ what: "History", text: pickText(v, (id) => (byId.get(id) ? `“${byId.get(id)?.name}”` : id)), title: "Photos the change log says changed" }],
     group: (v) => [{ text: v.startsWith("dup:") ? "one photo's duplicates" : "one series" }],
@@ -2396,30 +2407,79 @@
     if (r.from !== undefined && r.to !== undefined) return `${day(r.from)} – ${day(r.to)}`;
     return r.from !== undefined ? `from ${day(r.from)}` : r.to !== undefined ? `until ${day(r.to)}` : "any";
   }
-  let chips = $derived(
-    (Object.keys(CHIPS) as (keyof Filter)[]).flatMap((key) => {
-      const v = filter[key];
-      return v === undefined ? [] : CHIPS[key](v as never).map((c) => ({ ...c, key }));
-    }),
+  /** The filter line: one pill per section, in the sidebar's order (see `filterLine`). */
+  let pills = $derived(
+    toPills(
+      (Object.keys(CHIPS) as (keyof Filter)[]).flatMap((key): Term[] => {
+        const v = filter[key];
+        return v === undefined ? [] : CHIPS[key](v as never).map((c) => ({ ...c, key }));
+      }),
+      settings.sections.map((s) => s.key),
+      filter,
+      combine,
+    ),
   );
 
-  function dropChip(key: keyof Filter, rest: unknown) {
-    // A picked tile dropped: the grid goes back to the map's view. The map's area dropped:
-    // the grid stops following it, or it would come straight back.
-    if (key === "within") {
-      if (mapTile) mapTile = null;
-      else follow = false;
+  /** Fields dropped, each to what it holds without the value (undefined: let go). */
+  function dropFields(rests: [keyof Filter, unknown][]) {
+    const next: Filter = { ...filter };
+    for (const [key, rest] of rests) {
+      // A picked tile dropped: the grid goes back to the map's view. The map's area
+      // dropped: the grid stops following it, or it would come straight back.
+      if (key === "within") {
+        if (mapTile) mapTile = null;
+        else follow = false;
+      }
+      (next as Record<string, unknown>)[key] = rest;
+      if (key === "text") setSearch("");
     }
-    filter = { ...filter, [key]: rest };
-    if (key === "text") setSearch("");
+    filter = next;
     run();
   }
+  const dropTerm = (t: Term) => dropFields([[t.key, t.rest]]);
+  /** A whole section let go: a date's year, month and week together. */
+  const dropPill = (p: Pill) =>
+    dropFields(
+      p.keys.flatMap((k): [keyof Filter, unknown][] =>
+        ["year", "month", "week"].includes(k) ? [["year", undefined], ["month", undefined], ["week", undefined]] : [[k, undefined]],
+      ),
+    );
 
   function fold(key: string) {
     if (folded.has(key)) folded.delete(key);
     else folded.add(key);
   }
 </script>
+
+{#snippet termChip(term: Term)}
+  <span class="term" class:out={term.out} title={term.title}>
+    {#if term.dot}<i class="dot" style:background={term.dot}></i>{/if}
+    {#if term.what}<span class="what">{term.what}</span>{/if}
+    <span class="text" class:stars={term.stars}>{term.text}</span>
+    <button class="drop" aria-label="Remove {term.what ?? ''} {term.text}" onclick={() => dropTerm(term)}>×</button>
+  </span>
+{/snippet}
+
+<!-- A tree node's menu: the three ways to pick it, as a click, Ctrl+click and Alt+click do. -->
+{#snippet pickItems(onpick: (mode: PickMode) => void, canOut: boolean)}
+  <button role="menuitem" onclick={() => onpick("only")}>Show only this</button>
+  <button role="menuitem" onclick={() => onpick("add")}>Add to the filter <span class="key">Ctrl+click</span></button>
+  {#if canOut}<button role="menuitem" onclick={() => onpick("out")}>Leave out <span class="key">Alt+click</span></button>{/if}
+{/snippet}
+
+<!-- How a section's picks combine, once there are two: every one, or any. -->
+{#snippet joinRow(key: CombineKey, noun: string)}
+  {#if joined(filter, key).length > 1}
+    <div class="rating-op">
+      Photos with
+      <span class="seg" role="group" aria-label="Picked {noun}: combine">
+        <button class:on={joinOf(combine, key) === "all"} title="Photos with every picked one" onclick={() => joinOf(combine, key) !== "all" && flipCombine(key)}>all</button>
+        <button class:on={joinOf(combine, key) === "any"} title="Photos with any picked one" onclick={() => joinOf(combine, key) !== "any" && flipCombine(key)}>any</button>
+      </span>
+      of these {noun}
+    </div>
+  {/if}
+{/snippet}
 
 {#snippet head(key: SectionKey)}
   <button
@@ -2674,10 +2734,12 @@
               title="Photos in no album · click again for photos in some album"
               onclick={() => toggleNone("uncollected")}
             ><span class="name">{filter.uncollected === false ? "In an album" : "No album"}</span></button>
+            {@render joinRow("albums", "albums")}
             <Tree
               nodes={albums}
               selected={undefined}
               mark={(n) => pickOf(filter.collections, filter.not_in_collections, n.value)}
+              multi
               {expanded}
               onpick={pickAlbum}
               oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
@@ -2729,8 +2791,9 @@
               nodes={places}
               selected={undefined}
               mark={(n) => placePick(filter.places_under, filter.places_under_not, n.value)}
+              multi
               {expanded}
-              onpick={pickPlace}
+              onpick={onPlace}
               oncontext={(node, e) => { if (!cityWithoutLocation(node.value)) placeMenu = { x: e.clientX, y: e.clientY, node }; }}
             />
             {#if missingCodes}
@@ -2765,10 +2828,12 @@
               title="Photos without any keyword"
               onclick={toggleUnkeyworded}
             ><span class="name">No keywords</span></button>
+            {@render joinRow("keywords", "keywords")}
             <Tree
               nodes={keywordView.nodes}
               selected={undefined}
               mark={(n) => pickOf(filter.keywords_under, filter.keywords_under_not, n.value)}
+              multi
               expanded={keywordSearch.trim() ? searchOpen : expanded}
               onpick={pickKeyword}
               oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
@@ -2795,18 +2860,31 @@
               {/if}
               {#each list as [value, n]}
                 {@const state = pickState(dim, value)}
-                <button
-                  class="facet"
-                  class:on={state === "in"}
-                  class:out={state === "out"}
-                  title="Click to include · again to exclude"
-                  onclick={() => toggle(dim, value)}
-                >
-                  {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
-                  {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? HUES.muted}></i>{/if}
-                  <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
-                  <span class="n">{n.toLocaleString()}</span>
-                </button>
+                <!-- Several values: a value or its "none" row; rating holds one. -->
+                {@const many = MANY.includes(dim) && value !== "none"}
+                {@const canOut = dim !== "hue"}
+                <div class="facet-row">
+                  <button
+                    class="facet"
+                    class:on={state === "in"}
+                    class:out={state === "out"}
+                    title={many ? `Click: only this · Ctrl+click: add${canOut ? " · Alt+click: leave out" : ""}` : "Click to pick · again to let go"}
+                    onclick={(e) => toggle(dim, value, many ? modeOf(e) : "only")}
+                  >
+                    {#if dim === "color"}<i class="dot" style:background={COLORS[value]}></i>{/if}
+                    {#if dim === "hue"}<i class="dot" style:background={HUES[value] ?? HUES.muted}></i>{/if}
+                    <span class="name" class:stars={dim === "rating" && value !== "none"}>{label(dim, value)}</span>
+                    <span class="n">{n.toLocaleString()}</span>
+                  </button>
+                  {#if many}
+                    <span class="pm">
+                      <button aria-label="Add {label(dim, value)} to the picks" title="Add to the picks (Ctrl+click)" onclick={() => toggle(dim, value, "add")}>+</button>
+                      {#if canOut}
+                        <button aria-label="Leave {label(dim, value)} out" title="Leave out (Alt+click)" onclick={() => toggle(dim, value, "out")}>−</button>
+                      {/if}
+                    </span>
+                  {/if}
+                </div>
               {/each}
             {/if}
           </section>
@@ -2836,27 +2914,38 @@
           <button title="Back to the library" onclick={toggleBin}>Close</button>
         </span>
       {/if}
-      {#each chips as chip}
-        <span class="chip" class:out={chip.out} title={chip.title}>
-          {#if chip.dot}<i class="dot" style:background={chip.dot}></i>{/if}
-          {#if chip.what}<span class="what">{chip.what}:</span>{/if}
-          <span class="text" class:stars={chip.stars}>{chip.text}</span>
-          <button
-            class="drop"
-            aria-label="Remove {chip.what ?? ''} {chip.text}"
-            onclick={() => dropChip(chip.key, chip.rest)}
-          >×</button>
+      <!-- One pill per section; sections narrow together ("and" between pills). -->
+      {#each pills as pill, i (pill.id)}
+        {#if i}<span class="and" aria-hidden="true">and</span>{/if}
+        <span class="pill" role="group" aria-label={pillText(pill)} title={pillText(pill)}>
+          {#if pill.label}<span class="what">{pill.label}:</span>{/if}
+          {#each pill.parts as part, j}
+            {#if j}<span class="join">and</span>{/if}
+            {#each part.terms as term, k}
+              {#if k}
+                {#if part.combine}
+                  <button
+                    class="join switch"
+                    title="Photos with {part.join === 'all' ? 'every one' : 'any one'} of these · click for {part.join === 'all' ? 'any one' : 'every one'}"
+                    onclick={() => flipCombine(part.combine!)}
+                  >{joinWord(part.join)}</button>
+                {:else}
+                  <span class="join">{joinWord(part.join)}</span>
+                {/if}
+              {/if}
+              {@render termChip(term)}
+            {/each}
+          {/each}
+          {#if pill.outs.length}
+            <span class="join">{pill.parts.length ? "except" : "not"}</span>
+            {#each pill.outs as term, k}
+              {#if k}<span class="join">,</span>{/if}
+              {@render termChip(term)}
+            {/each}
+          {/if}
+          <button class="drop all" aria-label="Remove {pillText(pill)}" title="Let go of the whole section" onclick={() => dropPill(pill)}>×</button>
         </span>
       {/each}
-      {#if criteriaCount(current) >= 2}
-        <span class="match">
-          Match
-          <span class="seg" role="group" aria-label="Match all or any">
-            <button class:on={match === "all"} onclick={() => setMatch("all")} title="Photos must satisfy every criterion">All</button>
-            <button class:on={match === "any"} onclick={() => setMatch("any")} title="Photos may satisfy any one of the rating, colour, camera, keyword, album and place picks; the rest still apply">Any</button>
-          </span>
-        </span>
-      {/if}
       {#if active}<button class="clear" onclick={clearAll}>Clear filters</button>{/if}
     </div>
   {/if}
@@ -2921,7 +3010,7 @@
       {analysis}
       {version}
       {stack}
-      {allOf}
+      allOf={allOfCards(combine)}
       picked={filter}
       ontoggle={toggleList}
       onflag={toggleFlag}
@@ -2929,7 +3018,7 @@
       onshow={() => showTab("photos")}
       onstack={toggleStack}
       onclasses={() => { version++; analysed++; refresh(true); }}
-      onallof={toggleAllOf}
+      onallof={flipCombine}
     />
   {/if}
   {#if tab === "history" && historyOn}
@@ -3182,6 +3271,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu-shield" role="presentation" onclick={() => (keywordMenu = null)} oncontextmenu={(e) => { e.preventDefault(); keywordMenu = null; }}></div>
   <div class="menu" role="menu" style:left="{keywordMenu.x}px" style:top="{keywordMenu.y}px">
     <div class="menu-title">{node.value}</div>
+    {@render pickItems((mode) => { keywordMenu = null; pickKeyword(node, mode); }, true)}
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "rename", start: node.value }; keywordMenu = null; }}>Rename…</button>
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "join", start: node.value }; keywordMenu = null; }}>Join or replace…</button>
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "group", start: node.value }; keywordMenu = null; }}>Group under…</button>
@@ -3202,6 +3292,10 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu-shield" role="presentation" onclick={() => (albumMenu = null)} oncontextmenu={(e) => { e.preventDefault(); albumMenu = null; }}></div>
   <div class="menu" role="menu" style:left="{albumMenu.x}px" style:top="{albumMenu.y}px">
     {#if c}<div class="menu-title">{c.path}</div>{/if}
+    {#if albumMenu.node && (c?.kind === "Album" || c?.kind === "Smart")}
+      {@const node = albumMenu.node}
+      {@render pickItems((mode) => { albumMenu = null; pickAlbum(node, mode); }, c.kind === "Album")}
+    {/if}
     {#if c?.kind === "Album" && n}
       <button role="menuitem" onclick={() => { const id = c.id; albumMenu = null; applyEdit({ AddToAlbum: id }); }}>
         Put the {n === 1 ? "selected photo" : `${n.toLocaleString()} selected photos`} here
@@ -3262,6 +3356,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu-shield" role="presentation" onclick={() => (placeMenu = null)} oncontextmenu={(e) => { e.preventDefault(); placeMenu = null; }}></div>
   <div class="menu" role="menu" style:left="{placeMenu.x}px" style:top="{placeMenu.y}px">
     <div class="menu-title">{placeText(node.value)}</div>
+    {@render pickItems((mode) => { placeMenu = null; onPlace(node, mode); }, true)}
     <button role="menuitem" onclick={() => { placeDialog = { mode: "rename", path: node.value }; placeMenu = null; }}>
       {node.value.endsWith("—") ? "Set a name…" : "Rename…"}
     </button>

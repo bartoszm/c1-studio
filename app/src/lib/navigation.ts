@@ -2,7 +2,7 @@
 // the photos that were picked in it, so going back finds them picked again.
 
 import type { BBox, Filter } from "./api";
-import type { Match } from "./criteria";
+import type { Combine } from "./criteria";
 import type { SortField } from "./sorting";
 
 /** A filter as it was shown, and the selection in it. */
@@ -10,7 +10,8 @@ export type Shown = {
   filter: Filter;
   sortField: SortField;
   sortReversed: boolean;
-  match: Match;
+  /** Sections whose picks combine the other way than their default. */
+  combine: Combine;
   /** The trash shown, hidden photos shown: the same filter is other photos there. */
   bin: boolean;
   hidden: boolean;
@@ -29,10 +30,10 @@ export const KEPT = 50;
  *  big catalog, fifty times over, would be millions of rows). */
 export const KEPT_PICKS = 10_000;
 
-/** Same filter, order, match and mode: going there changes nothing on screen. */
+/** Same filter, order, joins and mode: going there changes nothing on screen. */
 export const sameView = (a: Shown, b: Shown) =>
-  JSON.stringify([a.filter, a.sortField, a.sortReversed, a.match, a.bin, a.hidden]) ===
-  JSON.stringify([b.filter, b.sortField, b.sortReversed, b.match, b.bin, b.hidden]);
+  JSON.stringify([a.filter, a.sortField, a.sortReversed, a.combine, a.bin, a.hidden]) ===
+  JSON.stringify([b.filter, b.sortField, b.sortReversed, b.combine, b.bin, b.hidden]);
 
 const trimmed = (s: Shown): Shown => (s.picks.length > KEPT_PICKS ? { ...s, picks: [] } : s);
 

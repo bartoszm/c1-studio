@@ -77,7 +77,8 @@ function commonPlace(keys: string[], depth: number): string {
 
 /**
  * The filter `f` changed to hold the photos `sel` describes (`n` of them), now that an edit
- * took them all out of it; null when it should stay as it is: a work list, Match any, or a
+ * took them all out of it; null when it should stay as it is: a work list, keywords or albums
+ * on "any" (`any`), or a
  * field broken that no value of theirs can mend (a place cleared, a keyword removed).
  * `edit` is the edit when one is known: the keywords it added stand in for one removed.
  */

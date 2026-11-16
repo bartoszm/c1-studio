@@ -90,8 +90,11 @@ up at the next of these, or on the next start.
 - **Sidebar** (left): Albums, Date, Folders, Keywords, then Rating, Colour, Camera,
   Lens, Format, Orientation and Country. Click a section's title to fold it. Which
   sections are folded and which branches are open is remembered.
-- **Filter bar:** above the grid while anything is filtered, a chip per filter value.
-  × on a chip drops that value; *Clear filters* drops them all.
+- **Filter bar:** above the grid while anything is filtered, one pill per section, in
+  the sidebar's order, with *and* between them: *Camera: X-T5 or X100VI except GFX*,
+  *Keyword: Food and Kraków*, *Place: not Germany*. The × at a pill's end drops the
+  section; hover a value for its own ×. Between keywords or albums, *and* / *or* is a
+  switch (see the sidebar). *Clear filters* drops them all.
 - **Grid:** the matching photos, newest first unless the sort box says otherwise.
 - **Details panel** (right): everything about the focused photo. `i` or *Details*
   shows and hides it.
@@ -118,9 +121,25 @@ leaving the box) turns them into chips, and the words stay in the box. A token t
 cannot be read gets a red outline, says why on hover, and is not searched for. `?`
 beside the box lists every token; clicking one adds it.
 
-**Sidebar.** Click a value to filter by it, click it again to let go. Each group counts
-as if its own pick were not made, so the alternatives stay visible: with *2025* picked,
-the Date tree still shows every year.
+**Sidebar.** Click a value to show only it (in its section), click it again to let go.
+Where a section can hold several values (Albums, Location, Keywords, Colour, Main colour,
+Camera, Lens, Format, Orientation):
+
+- **Ctrl+click** (or **+** on hover) adds the value to the section's picks, or takes it
+  away again.
+- **Alt+click** (or **−** on hover) leaves it out, or lets it back. Smart albums and main
+  colours cannot be left out.
+- The right-click menu of an album, a place or a keyword has the same three: *Show only
+  this*, *Add to the filter*, *Leave out*.
+
+Sections always narrow together. In one section, values are alternatives (*X-T5 or
+X100VI*: a photo has one camera), but keywords and albums, which a photo has several
+of, ask for every one picked: *Food and Kraków*. With two or more picked, *Photos with
+all / any of these* above the tree (or the *and* / *or* in the filter bar) switches.
+Rating, Date, Trips and Folders hold one value: a click replaces it.
+
+Each group counts as if its own pick were not made, so the alternatives stay visible:
+with *2025* picked, the Date tree still shows every year.
 
 - **Albums:** albums, smart albums and their groups. Smart albums are counted by their
   own rules. *+ Album*, *+ Smart album* and *+ Group* under the title, drag and drop, and
@@ -132,12 +151,11 @@ the Date tree still shows every year.
   tree replace each other.
 - **Location:** Country › State › City › Location, each including everything below it.
   A level the photos have no value for keeps its place as *(no state)*, *(no city)* and
-  so on, so a city without a state is not mixed in with the states. A click cycles a
-  place through in → out → off, and several places can be picked: they add up (Poland
-  and Germany), and one inside another picked place is that place (Kraków and Poland is
-  Poland). The deepest pick decides, shown faintly on the places it covers: inside an
-  included place a click leaves a place out (*Poland except Kraków*), inside a left-out
-  one it takes it in (*not Poland, but Kraków*). A city's *(no location)* is a place like
+  so on, so a city without a state is not mixed in with the states. Several places can
+  be picked: they add up (Poland and Germany), and one inside another picked place is
+  that place (Kraków added to Poland is Poland). The deepest pick decides, shown faintly
+  on the places it covers: leaving out a place inside an included one gives *Poland
+  except Kraków*, adding one inside a left-out place *not Poland, but Kraków*. A city's *(no location)* is a place like
   the others, its photos without a location. Below the tree,
   *N without an ISO country code · Fill in…* lists those photos' countries with the code
   each name gives (change it or untick a row) and fills them as one edit.
@@ -149,19 +167,20 @@ the Date tree still shows every year.
   photos without a state one.
 - **Look:** what each photo looks like, measured from its thumbnail: see the
   **Analysis** tab and [Look](#look).
-  Several values in one group show photos with any of them (the Analysis tab's *all*
-  switch asks for every one).
+  Several main colours show photos with any of them (the Analysis tab's *all* switch
+  asks for every one).
 - **Folders:** the folder tree; a folder includes everything below it.
 - **Keywords:** the keyword tree; a keyword includes the keywords below it. The *Find a
   keyword* box above it shows only matching keywords, with their branches open. Esc
   clears it. Right-click a keyword to change the tree (see [Keyword tree](#keyword-tree)).
-- **Rating, Colour, Camera:** one value each. Camera lists the ten most common.
-- **Lens, Format, Orientation:** the lens, the file type and the shape as shown
-  (landscape, portrait, square, panorama). A click includes a value, a second click
-  excludes it, a third lets go.
+- **Rating:** one value, compared by the ≥ / = / ≤ above the stars.
+- **Colour, Camera, Lens, Format, Orientation:** the colour label, the camera (the ten
+  most common), the lens, the file type and the shape as shown (landscape, portrait,
+  square, panorama).
 
 **From the details panel.** The camera, the lens, the format, each keyword (or any level
-of it), each album and the folder are links: clicking one filters by it. *As shown* gives
+of it), each album and the folder are links: clicking one shows only it in its section,
+as a click in the sidebar does. *As shown* gives
 the picture's size after turning and cropping, when it differs from the sensor's: that
 is the size `mp:`, `width:`, `height:` and `orient:` search.
 
@@ -186,7 +205,8 @@ added, the album they were put into), keeps them picked and says so, with Back. 
 lists are never followed, since emptying them is the point: no keywords, no place, no
 location (or a city's *(no location)*), no GPS, not in an album, any "not" pick (a
 camera, lens, format, orientation or place left out included), the search words, a
-History pick, the trash, and *Match any*. Of several places picked, none is followed.
+History pick, the trash, and keywords or albums on *any*. Of several places picked, none
+is followed.
 Neither are hiding and the trash.
 
 **Back and Forward.** ‹ and › in the header, or Alt+← and Alt+→, go through the filters
@@ -645,10 +665,11 @@ are; each bar's tooltip gives its rule. Clicking a bar filters by it.
   (so a sharp subject on a soft background is sharp). Fog and plain walls have little
   detail too, and show as soft.
 
-A photo can count in several bars of a card. Picks in one card mean *any of them*;
-picks in different cards, *all of them*. *Main colour* and *Light problems* have an
-*any / all* switch: *all* asks for photos that are red **and** blue. The chips say so
-("Main colour, all of"). A card goes back to *any* when its picks are cleared.
+A photo can count in several bars of a card. A click on a bar shows only it in its card;
+Ctrl+click adds it to the card's picks. Picks in one card mean *any of them*; picks in
+different cards, *all of them*. *Main colour* and *Light problems* have an *any / all*
+switch: *all* asks for photos that are red **and** blue. The filter bar says so (*Main
+colour: red and blue*). A card goes back to *any* when it is down to one pick.
 
 **Stack** (on the Look tab, and in the header) shows one photo per duplicate group or
 series in the grid: its sharpest. With a filter on, a frame is hidden only when the

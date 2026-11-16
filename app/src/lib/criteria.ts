@@ -1,15 +1,26 @@
-// Multi-criteria filtering, as pure functions over the UI's Filter: a value is
-// off → included → excluded → off; ratings compare (≥, =, ≤); and the picked criteria
-// match all together (the default) or any one of them.
+// Multi-criteria filtering, as pure functions over the UI's Filter. A click on a value
+// picks only it, Ctrl+click adds it to the section's picks, Alt+click leaves it out;
+// ratings compare (≥, =, ≤). Sections narrow together; the values picked in one are
+// alternatives, but for keywords and albums (a photo has several), which can ask for
+// all of them or any.
 
 import type { Filter, Presence, Range } from "./api";
 import { under } from "./places";
 
-export type Match = "all" | "any";
 export type RatingOp = "≥" | "=" | "≤";
 export const RATING_OPS: RatingOp[] = ["≥", "=", "≤"];
 /** `null`: not picked. */
 export type Pick = "in" | "out" | null;
+
+/** What a click does to a section's picks: this value only, this one too, or leave it out. */
+export type PickMode = "only" | "add" | "out";
+
+/** Ctrl (⌘) adds, Alt leaves out, a plain click picks only this. */
+export function modeOf(e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean }): PickMode {
+  if (e.ctrlKey || e.metaKey) return "add";
+  if (e.altKey) return "out";
+  return "only";
+}
 
 export function pickOf(inc: readonly string[] | undefined, exc: readonly string[] | undefined, value: string): Pick {
   if (inc?.includes(value)) return "in";
@@ -17,21 +28,25 @@ export function pickOf(inc: readonly string[] | undefined, exc: readonly string[
   return null;
 }
 
-/** Click on a value: off → included → excluded → off. Empty lists become `undefined`. */
-export function cycle(
-  inc: readonly string[] | undefined,
-  exc: readonly string[] | undefined,
-  value: string,
-): { inc: string[] | undefined; exc: string[] | undefined } {
+type Picks = { inc: string[] | undefined; exc: string[] | undefined };
+const list = (l: readonly string[]) => (l.length ? [...l] : undefined);
+
+/**
+ * A value picked in a section. `only`: just this value, and nothing left out; when it
+ * already is, the section lets go. `add`: this one on or off beside the others. `out`:
+ * this one left out, or no longer. A value is never both in and out.
+ */
+export function pick(inc: readonly string[] | undefined, exc: readonly string[] | undefined, value: string, mode: PickMode): Picks {
+  const i = (inc ?? []).filter((v) => v !== value);
+  const o = (exc ?? []).filter((v) => v !== value);
   const was = pickOf(inc, exc, value);
-  const drop = (l: readonly string[] | undefined) => {
-    const left = (l ?? []).filter((v) => v !== value);
-    return left.length ? left : undefined;
-  };
-  const add = (l: readonly string[] | undefined) => [...(l ?? []), value];
-  if (was === null) return { inc: add(inc), exc: drop(exc) };
-  if (was === "in") return { inc: drop(inc), exc: add(exc) };
-  return { inc: drop(inc), exc: drop(exc) };
+  if (mode === "only") {
+    const alone = was === "in" && !i.length && !o.length;
+    return alone ? { inc: undefined, exc: undefined } : { inc: [value], exc: undefined };
+  }
+  if (mode === "add" && was !== "in") i.push(value);
+  if (mode === "out" && was !== "out") o.push(value);
+  return { inc: list(i), exc: list(o) };
 }
 
 /** A place tree's node: picked in or out itself, or in a place that is ("under-…"). */
@@ -59,25 +74,14 @@ export function tidyPlaces(own: readonly string[], other: readonly string[]): st
 }
 
 /**
- * Click on a place: off → included → excluded → off. Places are alternatives, and the
- * deepest pick over a place decides: picking Poland lets go of Kraków; in an included
- * place a click leaves the place out (Poland except Kraków), in a left-out one it takes
- * it in (not Poland, but Kraków).
+ * A place picked, as `pick`. Places are alternatives, and the deepest pick over a place
+ * decides: adding Poland lets go of Kraków; leaving out a place in an included one gives
+ * Poland except Kraków, adding one in a left-out place not Poland, but Kraków.
  */
-export function cyclePlace(
-  inc: readonly string[] | undefined,
-  exc: readonly string[] | undefined,
-  path: string,
-): { inc: string[] | undefined; exc: string[] | undefined } {
-  const was = placePick(inc, exc, path);
-  const i = (inc ?? []).filter((p) => p !== path);
-  const o = (exc ?? []).filter((p) => p !== path);
-  if (was === null || was === "under-out") i.push(path);
-  else if (was === "under-in") o.push(path);
-  // In → out, unless out is what it is without its own pick.
-  else if (was === "in" && placePick(i, o, path) !== "under-out") o.push(path);
-  const list = (l: string[]) => (l.length ? l : undefined);
-  return { inc: list(tidyPlaces(i, o)), exc: list(tidyPlaces(o, i)) };
+export function pickPlace(inc: readonly string[] | undefined, exc: readonly string[] | undefined, path: string, mode: PickMode): Picks {
+  const { inc: i, exc: o } = pick(inc, exc, path, mode);
+  if (mode === "only") return { inc: i, exc: o };
+  return { inc: list(tidyPlaces(i ?? [], o ?? [])), exc: list(tidyPlaces(o ?? [], i ?? [])) };
 }
 
 /** The rating a click on `n` stars asks for under `op`. */
@@ -110,96 +114,80 @@ export function ratingText(r: NonNullable<Filter["rating"]>): string {
   return min !== undefined ? `★ ≥ ${min}` : `★ ≤ ${max}`;
 }
 
-/**
- * What to ask the index. All together is the filter as it is: every field narrows. Any
- * one of them turns the includes (rating, colour, cameras, lenses, formats, orientations, keywords, albums and the
- * "none" picks) into alternatives; everything else, the excludes among it, still holds.
- */
-export function compile(f: Filter, mode: Match): Filter {
-  if (mode === "all") return f;
-  const base: Filter = { ...f };
-  const groups: Filter[] = [];
-  if (base.rating !== undefined) {
-    groups.push({ rating: base.rating });
-    delete base.rating;
-  }
-  if (base.color !== undefined) {
-    groups.push({ color: base.color });
-    delete base.color;
-  }
-  for (const key of ["cameras", "lenses", "ext", "orientation"] as const) {
-    if (base[key]?.length) {
-      groups.push({ [key]: base[key] });
-      delete base[key];
-    }
-  }
-  for (const path of base.keywords_under ?? []) groups.push({ keywords_under: [path] });
-  delete base.keywords_under;
-  for (const id of base.collections ?? []) groups.push({ collections: [id] });
-  delete base.collections;
-  if (base.unkeyworded) {
-    groups.push({ unkeyworded: true });
-    delete base.unkeyworded;
-  }
-  if (base.uncollected !== undefined) {
-    groups.push({ uncollected: base.uncollected });
-    delete base.uncollected;
-  }
-  if (base.placed !== undefined) {
-    groups.push({ placed: base.placed });
-    delete base.placed;
-  }
-  if (base.located !== undefined) {
-    groups.push({ located: base.located });
-    delete base.located;
-  }
-  // One alternative is no choice: leave the filter as it was.
-  if (groups.length < 2) return f;
-  return { ...base, all_of: [...(base.all_of ?? []), { any_of: groups }] };
-}
-
-/** How many picks are alternatives to each other, to know when Match is worth showing. */
-export function criteriaCount(f: Filter): number {
-  return (
-    (f.rating !== undefined ? 1 : 0) +
-    (f.color !== undefined ? 1 : 0) +
-    (f.cameras?.length ? 1 : 0) +
-    (f.lenses?.length ? 1 : 0) +
-    (f.ext?.length ? 1 : 0) +
-    (f.orientation?.length ? 1 : 0) +
-    (f.keywords_under?.length ?? 0) +
-    (f.collections?.length ?? 0) +
-    (f.unkeyworded ? 1 : 0) +
-    (f.uncollected !== undefined ? 1 : 0) +
-    (f.placed !== undefined ? 1 : 0) +
-    (f.located !== undefined ? 1 : 0)
-  );
-}
-
 /** Light classes a photo can have several of (the rest, dark/medium/bright, are one each). */
 export const LIGHT_PROBLEMS = ["clipped highlights", "blocked shadows", "low contrast"];
 
-/** Which analysis cards ask for every pick ("red and blue") rather than any of them. */
+/** How a section's picks combine: a photo with any of them, or with every one. */
+export type Join = "any" | "all";
+/** The sections whose values a photo can have several of, so "all" means something. */
+export type CombineKey = "keywords" | "albums" | "hues" | "problems";
+/** Each section's join where it is not its default. */
+export type Combine = Partial<Record<CombineKey, Join>>;
+/** Keywords and albums ask for every pick, as Capture One's own filters do; the Analysis
+ *  cards for any, as their other cards do. */
+export const DEFAULT_JOIN: Record<CombineKey, Join> = { keywords: "all", albums: "all", hues: "any", problems: "any" };
+
+export const joinOf = (c: Combine, key: CombineKey): Join => c[key] ?? DEFAULT_JOIN[key];
+
+/** Which Analysis cards ask for every pick, as their switch shows it. */
 export type AllOf = { hues?: boolean; problems?: boolean };
+export const allOfCards = (c: Combine): AllOf => ({ hues: joinOf(c, "hues") === "all", problems: joinOf(c, "problems") === "all" });
+
+/** The other join of a section, as the `Combine` keeps it (the default is left out). */
+export function flipJoin(c: Combine, key: CombineKey): Combine {
+  const to: Join = joinOf(c, key) === "all" ? "any" : "all";
+  const next = { ...c };
+  if (to === DEFAULT_JOIN[key]) delete next[key];
+  else next[key] = to;
+  return next;
+}
+
+/** The section's included values, those a join combines. */
+export function joined(f: Filter, key: CombineKey): string[] {
+  switch (key) {
+    case "keywords": return f.keywords_under ?? [];
+    case "albums": return f.collections ?? [];
+    case "hues": return f.hues ?? [];
+    case "problems": return (f.light ?? []).filter((l) => LIGHT_PROBLEMS.includes(l));
+  }
+}
+
+/** Sections whose join can only matter with two picks or more: the rest go back to their
+ *  default, so the next picks are not silently combined the other way. */
+export function keptCombine(f: Filter, c: Combine): Combine {
+  const kept = Object.fromEntries(Object.entries(c).filter(([k]) => joined(f, k as CombineKey).length > 1));
+  return Object.keys(kept).length === Object.keys(c).length ? c : kept;
+}
 
 /**
- * The filter with the picks of the cards set to "all" made into `all_of` alternatives, one
- * per value: "red and blue" is a photo that is red and is blue. One pick needs no change.
- * Brightness picks (dark, medium, bright) stay "any": a photo has only one.
+ * What to ask the index, with each section's picks joined its way. The index takes
+ * keywords and albums as "every one", and the Analysis cards' values as "any": the
+ * others become `all_of` / `any_of` groups, one per value. "Red and blue" is a photo
+ * that is red and is blue. One pick needs no change. Brightness picks (dark, medium,
+ * bright) stay "any": a photo has only one.
  */
-export function allOfPicks(f: Filter, all: AllOf): Filter {
+export function combinePicks(f: Filter, c: Combine): Filter {
   const out: Filter = { ...f };
-  const each: Filter[] = [];
-  if (all.hues && (f.hues?.length ?? 0) > 1) {
-    for (const hue of f.hues!) each.push({ hues: [hue] });
+  const groups: Filter[] = [];
+  const many = (key: CombineKey) => joined(f, key).length > 1;
+  if (joinOf(c, "hues") === "all" && many("hues")) {
+    for (const hue of f.hues!) groups.push({ hues: [hue] });
     delete out.hues;
   }
-  const problems = (f.light ?? []).filter((l) => LIGHT_PROBLEMS.includes(l));
-  if (all.problems && problems.length > 1) {
-    for (const p of problems) each.push({ light: [p] });
+  if (joinOf(c, "problems") === "all" && many("problems")) {
+    for (const p of joined(f, "problems")) groups.push({ light: [p] });
     const rest = (f.light ?? []).filter((l) => !LIGHT_PROBLEMS.includes(l));
     if (rest.length) out.light = rest;
     else delete out.light;
   }
-  return each.length ? { ...out, all_of: [...(out.all_of ?? []), ...each] } : f;
+  if (joinOf(c, "keywords") === "any" && many("keywords")) {
+    groups.push({ any_of: f.keywords_under!.map((k) => ({ keywords_under: [k] })) });
+    delete out.keywords_under;
+  }
+  // Smart albums too: the index makes each into its rule, inside the alternatives.
+  if (joinOf(c, "albums") === "any" && many("albums")) {
+    groups.push({ any_of: f.collections!.map((id) => ({ collections: [id] })) });
+    delete out.collections;
+  }
+  return groups.length ? { ...out, all_of: [...(out.all_of ?? []), ...groups] } : f;
 }

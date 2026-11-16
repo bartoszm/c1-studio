@@ -106,7 +106,7 @@ test("work lists, Match any and fields that still match never follow", () => {
 });
 
 const shown = (text: string, picks: number[] = []): Shown => ({
-  filter: text ? { text } : {}, sortField: "date", sortReversed: false, match: "all",
+  filter: text ? { text } : {}, sortField: "date", sortReversed: false, combine: {},
   bin: false, hidden: false, tile: null, follow: true, picks,
 });
 
