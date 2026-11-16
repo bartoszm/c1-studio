@@ -1,18 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-11-16
 
 ### New
 
-- **Or across sections:** Shift+click Kraków, then *black & white*, for the photos taken in Kraków or black & white; the rest of the filter still narrows both. The filter bar brackets them (*either … or …*); click its *and* / *or* to add a pill or take it out. The `?` beside the search box now says how filters work, and [FEATURES](docs/FEATURES.md#filters-only-add-leave-out-or) has a clip.
-- **Linux and WSL:** C1 Studio builds and runs on Ubuntu 22.04 or newer, and under WSL 2 through WSLg. Releases add a `.deb` and an `.AppImage`. Under WSL a catalog on Windows opens from its drive mount, originals are found through `/mnt/<drive>`, and writes wait while Capture One runs on Windows. On other Linux machines `~/.config/c1studio/volumes.json` says where each Windows volume is. API keys go to the desktop keyring.
+- **Or across sections:** Shift+click Kraków, then *black & white*, for the photos taken in Kraków or black & white; the rest of the filter still narrows both. The filter bar brackets them (*either … or …*); click its *and* / *or* to add a pill or take it out. The `?` beside the search box now says how filters work, and [FEATURES](docs/FEATURES.md#filters-only-add-leave-out-or) has a clip (#105).
+- **Search by camera, lens, exposure, file and shape:** tokens in the search box (`camera:` `make:` `lens:` `iso:` `f:` `focal:` `shutter:` `format:` `size:` `mp:` `width:` `height:` `orient:`), with ranges such as `iso:>1600`, `f:<=2.8` or `size:>30mb`; `-format:` and `-orient:` leave out. Enter makes them filters; a token that cannot be read is outlined in red and says why; `?` lists them all. The sidebar gains Lens, Format and Orientation, the details panel links the lens and format, and *As shown* gives the size after turning and cropping. `c1cat` takes `--make`, `--shutter`, `--size-mb`, `--megapixels` and `--orientation` (#104).
+- **Show on map:** right-click photos in the grid or the strip and choose *Show on map*: the Map tab opens on where they are, by GPS or, for photos with only a place name, at the place's level. Photos with neither are counted in the menu (#100).
+- **AI Locate says why:** when the model places a photo nowhere, or only in part, it says what kept it from doing so; the review card, the AI tab's log and events.log show the reason with its clues and landmark. A locate card's *Show on map* opens the map on the guess, or on the place it names. Positions accepted from AI Locate as approximate are drawn as violet pins (*Settings › Map* can hide them). Photos located before are offered again, as the prompt changed (#101).
+- **Linux and WSL:** C1 Studio builds and runs on Ubuntu 22.04 or newer, and under WSL 2 through WSLg. Releases add a `.deb` and an `.AppImage`. Under WSL a catalog on Windows opens from its drive mount, originals are found through `/mnt/<drive>`, and writes wait while Capture One runs on Windows. On other Linux machines `~/.config/c1studio/volumes.json` says where each Windows volume is. API keys go to the desktop keyring (#103).
 
 ### Changed
 
-- **One click, one meaning in the sidebar.** A click on a value shows only it in its section; Ctrl+click adds it beside the others, Alt+click leaves it out (red, struck through). A picked value is in bold. Albums, places and keywords have the same in their right-click menu. Before, a click added to some sections, replaced in others and cycled in → out → off in the rest.
-- **The filter bar reads as a sentence.** One pill per section, in the sidebar's order, with *and* between them: *Camera: X-T5 or X100VI except GFX*, *Place: Poland except Kraków*, *Keyword: Food and Kraków*. Click a value in it to leave it out, or show it again.
-- **Keywords and albums: all or any.** Several keywords or albums ask for every one, as before; *Photos with all / any of these* above the tree, or the *and* in the filter bar, switches to any one. This replaces the global *Match all / any*, which covered only some sections.
-- **Several places** can be picked, and places left out: *Poland except Kraków*, *not Poland, but Kraków*.
+- **One click, one meaning in the sidebar.** A click on a value shows only it in its section; Ctrl+click adds it beside the others, Alt+click leaves it out (red, struck through). A picked value is in bold. Albums, places and keywords have the same in their right-click menu. Before, a click added to some sections, replaced in others and cycled in → out → off in the rest (#105).
+- **The filter bar reads as a sentence.** One pill per section, in the sidebar's order, with *and* between them: *Camera: X-T5 or X100VI except GFX*, *Place: Poland except Kraków*, *Keyword: Food and Kraków*. Click a value in it to leave it out, or show it again (#105).
+- **Keywords and albums: all or any.** Several keywords or albums ask for every one, as before; *Photos with all / any of these* above the tree, or the *and* in the filter bar, switches to any one. This replaces the global *Match all / any*, which covered only some sections (#105).
+- **Several places** can be picked, and places left out: *Poland except Kraków*, *not Poland, but Kraków*. A city's *(no location)* is a place like the others (#102).
+
+### Install
+
+Run `C1.Studio_0.10.0_x64-setup.exe`. It installs over 0.9.x for the current user and keeps your settings and your library. The first time the library opens, the catalog is read again and the search index is rebuilt once, for the new camera, file and shape fields: a few seconds on a 100,000-photo catalog. On Linux, install the `.deb` or run the `.AppImage`.
 
 ## 0.9.0 — 2026-11-12
 

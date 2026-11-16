@@ -4,6 +4,13 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.10.0:** [filters](docs/FEATURES.md#filters-only-add-leave-out-or) that read
+as a sentence: a click shows only a value, Ctrl+click adds one, Alt+click leaves one out
+(*Poland except Kraków*), Shift+click makes sections alternatives (*Kraków or black &
+white*). [Search by camera, lens, exposure, file and shape](docs/FEATURES.md#find-anything-instantly)
+(`iso:>1600 f:<2 orient:portrait`); *Show on map* from any photo; AI Locate says why it
+placed nothing; and C1 Studio runs on [Linux and WSL](#linux-and-wsl).
+
 **New in 0.9.0:** [AI Locate](docs/FEATURES.md#find-where-photos-were-taken) finds where
 photos were taken, with clues from the catalog, a scene at a time; its guesses show
 [on the map](docs/FEATURES.md#find-where-photos-were-taken) as pins with how far off they
