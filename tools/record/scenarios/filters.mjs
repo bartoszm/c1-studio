@@ -1,6 +1,11 @@
 // How filters combine: a click picks only a value, Ctrl+click adds one, Alt+click leaves
 // one out, a click in the filter bar flips it, and/or switches, and Shift+click makes
 // sections alternatives (Kraków or black & white).
+//
+// The catalog must have three cameras and two keywords in the sidebar, Kraków under
+// Poland in Location, and *black & white* in Main colour (measured photos). Everything is
+// checked before recording starts, so a catalog without them fails with a reason and
+// no half-made clip.
 
 /** The visible names in a sidebar section (by its title), first `n`. */
 const names = (d, section, n) =>
@@ -51,7 +56,10 @@ export default {
     await d.reset();
     const cameras = await names(d, "Camera", 3);
     const keywords = await names(d, "Keywords", 2);
-    if (cameras.length < 3 || keywords.length < 2) throw new Error("needs three cameras and two keywords in the sidebar");
+    if (cameras.length < 3) throw new Error("filters: needs three cameras in the sidebar's Camera section");
+    if (keywords.length < 2) throw new Error("filters: needs two keywords in the sidebar's Keywords section");
+    if (!(await reveal(d, "Location", "Poland", "Kraków"))) throw new Error("filters: no Kraków under Poland in Location");
+    if (!(await d.locate("aside .facet", /^black & white\n/))) throw new Error("filters: no “black & white” in Main colour (measure the photos first)");
     const pause = async (ms) => {
       await d.sleep(400);
       await d.settle();

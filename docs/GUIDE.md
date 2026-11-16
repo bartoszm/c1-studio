@@ -121,7 +121,7 @@ range: `iso:>1600`, `f:<=2.8`, `focal:35-50`, `shutter:>1/30`, `size:>30mb`), `f
 `portrait`, `square`, `panorama`, or enough of one to tell it apart). `-format:` and
 `-orient:` leave those out. Megapixels, width, height and orientation are of the picture
 as shown, turned and cropped. The photos follow the tokens as you type; **Enter** (or
-leaving the box) turns them into chips, and the words stay in the box. A token that
+leaving the box) turns them into filters, and the words stay in the box. A token that
 cannot be read gets a red outline, says why on hover, and is not searched for. `?`
 beside the box says how filters work and lists every token; clicking a token adds it.
 
@@ -206,8 +206,8 @@ among the ones shown instead, leaving the filter as it is. `t` shows the focused
 shoot, Shift+T picks it. The shoot is the library's: with ★5 picked, it shows the
 shoot's five-star photos. Hidden and trashed photos take no part in shoots.
 
-**The selection through a filter.** A new filter (a sidebar pick, a chip, the search, the
-sort, *Clear filters*) keeps the picked photos it still shows; the focus stays on the
+**The selection through a filter.** A new filter (a sidebar pick, a pill in the filter
+bar, the search, the sort, *Clear filters*) keeps the picked photos it still shows; the focus stays on the
 focused one or moves to the first of them. With several picked, the footer says how many
 are outside the filter, and **Show them** goes back to the one before.
 
@@ -225,7 +225,7 @@ Neither are hiding and the trash.
 **Back and Forward.** ‹ and › in the header, or Alt+← and Alt+→, go through the filters
 shown, each with the photos that were picked in it (up to 50 steps). A search typed or
 map tiles clicked one after another are one step. Tokens still in the search box count
-as the filter they make: going back or forward to them brings them back as chips.
+as the filter they make: going back or forward to them brings them back as filters.
 
 ## Browsing
 
@@ -281,7 +281,7 @@ header's *Variants* button shows one tile per image: of its variants that match 
 filters, the lowest-numbered (variant 1 when it matches; with *Stack* on too, the variant
 stacking kept). Its number then shows a card behind it. Click the number, press `v`, or
 use *show all* in the details panel to see every variant of the image, within the other
-filters; Esc or the chip goes back. Edits reach the variant you see, not the ones
+filters; Esc or its × in the filter bar goes back. Edits reach the variant you see, not the ones
 collapsed behind it, except those that belong to the image: a position moves every
 variant, and deleting a photo from a Capture One catalog takes the whole image. The
 number counts every variant the library holds, hidden, trashed and deleted ones too, so
@@ -496,7 +496,7 @@ network; everything else works without one).
 - **Grid follows map** (on by default) makes the grid show only the photos in view: pan
   and zoom to filter. It applies at once: when you tick it, after *Clear filters*, and
   when a filter that kept the grid off the map (photos with no position, or placed only
-  by name) is dropped. Removing the chip *Map: area* turns it off. Off, the grid keeps
+  by name) is dropped. Removing *Map: area* from the filter bar turns it off. Off, the grid keeps
   its own filter. A view across the 180° meridian (the middle of the Pacific) takes in
   every photo in its latitudes.
 - **Show on map:** right-click a photo in the grid or the strip (or one of several
@@ -508,7 +508,7 @@ network; everything else works without one).
   known place are left out, and the menu says how many; with none known, the item is
   greyed out. With *Grid follows map* on, the grid then follows the new view as usual.
 - **Pick an area:** Shift+drag a box on the map. The grid then shows just its photos
-  (and stops following the map); the chip *Map: area* drops it.
+  (and stops following the map); *Map: area* in the filter bar drops it.
 - **Find a place:** the box at the map's top left searches OpenStreetMap's Nominatim by
   name and flies there, with the place in the middle: zoomed to its outline when that
   is around it, else by what it is (a country, a region, a city, a street), so far-off
@@ -566,8 +566,8 @@ network; everything else works without one).
   where no photo has a place. Trips nobody tagged look like that, and so do some weekends
   at home. Hover a suggestion: ✓ keeps it as a trip, × dismisses it. *N suggested* at the
   bottom hides or shows them; *N dismissed* shows the dismissed ones, ↺ brings one back.
-- **Click a trip** to show its photos (the chip *Trip: …*). Each trip counts its photos
-  under the other filters, and shows the best one.
+- **Click a trip** to show its photos (*Date: Trip …* in the filter bar). Each trip
+  counts its photos under the other filters, and shows the best one.
 - **Right-click a trip:** *Rename…* (or double-click it), *Keep as a trip*, *Merge with*
   the trip before or after it, *Split before the focused photo* (focus the first photo of
   the second part in the grid first), *Make an album of it* (a new album at the top level
@@ -584,7 +584,7 @@ per day, week or month, as room allows, with the trips as bands under the bars.
 - It counts the photos the other filters select, whatever dates or trip are picked, so the
   rest of the time stays in view.
 - **Drag** across it to pick those days; **click** a bar to pick its day, week or month.
-  The chip *Dates: …* drops the pick, as does the Date section.
+  Its × in the filter bar drops the pick, as does the Date section.
 - **Click a band** to pick that trip. With a trip picked the strip shows just its days
   (and a little either side); *⤢ all* goes back to every day.
 
@@ -609,7 +609,7 @@ is not known.
   made them), and how many photos ended up different: changed, added, removed, deleted
   for good, per field, the 20 keywords gained and lost the most, and per album the photos
   put in and taken out. Changes that cancelled out do not count. Click any number to show
-  those photos in the grid; the chip *History: …* above the grid drops the pick.
+  those photos in the grid; *History: …* in the filter bar drops the pick.
 - **The log.** Newest first. Entries made together (a rating on 1,240 photos from one
   action, or one read of Capture One) are one row. The chips limit it by who (here,
   Capture One, GPX, backup) and by kind; *More* reads the next page. Click a row to show

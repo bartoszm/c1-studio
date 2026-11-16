@@ -25,6 +25,10 @@ export function modeOf(e: { ctrlKey: boolean; metaKey: boolean; altKey: boolean;
   return "only";
 }
 
+/** A value's tooltip in a section that holds several: what each click does. */
+export const pickHint = (canOut: boolean) =>
+  `Click: only this · Ctrl+click: add${canOut ? " · Alt+click: leave out" : ""} · Shift+click: or with other sections`;
+
 export function pickOf(inc: readonly string[] | undefined, exc: readonly string[] | undefined, value: string): Pick {
   if (inc?.includes(value)) return "in";
   if (exc?.includes(value)) return "out";

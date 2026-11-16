@@ -77,9 +77,9 @@ function commonPlace(keys: string[], depth: number): string {
 
 /**
  * The filter `f` changed to hold the photos `sel` describes (`n` of them), now that an edit
- * took them all out of it; null when it should stay as it is: a work list, keywords or albums
- * on "any" (`any`), or a
- * field broken that no value of theirs can mend (a place cleared, a keyword removed).
+ * took them all out of it; null when it should stay as it is: a work list, picks that are
+ * alternatives (`any`: keywords or albums on "any", an "either" group), or a field broken
+ * that no value of theirs can mend (a place cleared, a keyword removed).
  * `edit` is the edit when one is known: the keywords it added stand in for one removed.
  */
 export function followFilter(f: Filter, sel: Selection, n: number, edit?: Edit, any = false): Filter | null {

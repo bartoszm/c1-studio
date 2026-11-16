@@ -7,7 +7,7 @@ import type { Filter } from "./api";
 import { combinePicks, joinOf, joined, type Combine, type CombineKey, type Join } from "./criteria";
 import type { SectionKey } from "./sections";
 
-/** One value of the filter, as its field's chips say it. `rest` is what the field holds
+/** One value of the filter, as its field's terms say it. `rest` is what the field holds
  *  without it (undefined lets go of the field). */
 export type Term = {
   key: keyof Filter;
@@ -114,7 +114,7 @@ export function eitherPicks(f: Filter, either: readonly string[], combine: Combi
 }
 
 /**
- * The terms (in the order the fields' chips list them) as pills. The "either" group goes
+ * The terms (in the order the fields list them) as pills. The "either" group goes
  * first, then the search, then sections in `order` (the sidebar's); the rest keep the
  * order of their terms.
  */
