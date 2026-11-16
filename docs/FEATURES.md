@@ -3,7 +3,9 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.8.0: [compare photos](#compare-photos), [a composition grid](#a-composition-grid)
+New in 0.10.0: [filters: only, add, leave out, or](#filters-only-add-leave-out-or) and
+[search by camera, lens, exposure, file and shape](#find-anything-instantly). New in 0.9.0:
+[find where photos were taken](#find-where-photos-were-taken). New in 0.8.0: [compare photos](#compare-photos), [a composition grid](#a-composition-grid)
 and [variants](#variants). New in 0.7.0: [the selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward),
 [photos around a photo](#photos-around-a-photo) and [AI suggestions corrected, and lessons](#correct-the-ai-and-teach-it). New in 0.6.0: [describe photos with AI](#describe-photos-with-ai),
 [History](#history-the-catalog-over-time) and [plus codes, map and grid in sync](#no-location-plus-codes-map-and-grid-in-sync). New in 0.5.0: [delete, with a trash](#delete-with-a-trash). New in 0.4.0:
