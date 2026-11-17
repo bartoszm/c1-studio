@@ -529,11 +529,28 @@ mod tests {
         assert!(source.backups().is_empty(), "no backup for a write that did not happen");
     }
 
-    /// A non-empty rollback journal next to the catalog, as a write in progress leaves.
+    #[test]
+    fn a_spent_journal_does_not_hold_up_writes() {
+        let Some((dir, source)) = source() else { return };
+        let mut journal = dir.path().join("fixture.cocatalogdb").into_os_string();
+        journal.push("-journal");
+        // Left with its header zeroed, as SQLite ends a transaction without deleting it.
+        std::fs::write(journal, [0u8; 4096]).unwrap();
+        let status = source.write_status();
+        assert!(
+            !matches!(&status, WriteStatus::Locked { by } if by.contains("journal")),
+            "a spent journal is not a write in progress: {status:?}"
+        );
+    }
+
+    /// A rollback journal holding a transaction next to the catalog, as a write in
+    /// progress leaves.
     fn fs_journal(catalog: &Path) {
         let mut journal = catalog.as_os_str().to_owned();
         journal.push("-journal");
-        std::fs::write(journal, b"busy").unwrap();
+        let mut bytes = vec![0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+        bytes.resize(512, 0);
+        std::fs::write(journal, bytes).unwrap();
     }
 
     #[test]

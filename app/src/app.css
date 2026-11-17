@@ -42,9 +42,24 @@ header {
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
-/* Controls keep their size when the window narrows: the search box gives way first, then
-   the count; nothing is squeezed into a sliver. */
+/* Controls keep their size when the window narrows: the search box and the count give way
+   first, then the view's tools; nothing is squeezed into a sliver. */
 header > * { flex-shrink: 0; }
+header > .search { flex-shrink: 1000; }
+/* The view's tools, right-aligned. Short of room, the room kept for Copy and Compare goes
+   first, then they are cut off at their end (Copy and Compare, then the tile size); the
+   panels' buttons and Settings after them always stay in view. */
+header > .head-tools {
+  flex-shrink: 1;
+  display: flex;
+  align-items: center;
+  gap: inherit;
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+}
+.head-tools > * { flex-shrink: 0; }
+header > .head-end { display: flex; align-items: center; gap: inherit; }
 .brand { font-weight: 600; letter-spacing: 0.02em; }
 .search {
   flex: 1 1 200px;
@@ -126,7 +141,7 @@ button.join.switch:hover, .filters > button.and.switch:hover { background: var(-
 .count { color: var(--muted); font-variant-numeric: tabular-nums; }
 /* A fixed width: the result's size and time change with every query. */
 header .count {
-  flex: 0 1 15em;
+  flex: 0 1000 15em; /* gives way before the view's tools, as the search box does */
   min-width: 6em;
   overflow: hidden;
   white-space: nowrap;
@@ -567,7 +582,7 @@ footer .busy { color: var(--text); }
 .info-panel .look .why.counts { color: var(--text); }
 .info-panel .look-link { display: block; margin-top: 4px; text-align: left; }
 /* Copy from the focused photo into the rest of the selection. */
-.copy-slot { flex: none; width: 24em; display: flex; justify-content: flex-end; gap: 6px; }
+.head-tools > .copy-slot { flex: 0 1 24em; display: flex; justify-content: flex-end; gap: 6px; }
 .copy-to.compare-open { background: var(--on); color: var(--text); }
 .copy-to { padding: 4px 14px; font-weight: 600; color: #fff; background: var(--queued); border-radius: 4px; white-space: nowrap; }
 .copy-to.hidden { visibility: hidden; }
@@ -575,7 +590,6 @@ footer .busy { color: var(--text); }
 .copy-to:hover { filter: brightness(1.12); }
 
 /* Tile size in the header. */
-.sort-slot { margin-left: auto; }
 .tiles { margin-left: 0; display: flex; align-items: center; gap: 4px; color: var(--muted); }
 .tiles button { width: 22px; height: 22px; border-radius: 3px; }
 /* Back and forward through the filters. */
@@ -585,20 +599,22 @@ footer .busy { color: var(--text); }
 .trail button:disabled { opacity: 0.35; }
 .tiles button:hover { color: var(--text); background: var(--hover); }
 .tiles input[type="range"] { width: 110px; accent-color: var(--accent); }
-/* Room for the sort box and the map's buttons on a narrower window. */
-@media (max-width: 1700px) {
+/* Room for the sort box, the Copy and Compare buttons and the panels' buttons on a
+   narrower window. Whatever still does not fit is cut off at the end of the view's tools. */
+@media (max-width: 2100px) {
   .tiles input[type="range"] { width: 64px; }
-}
-@media (max-width: 1500px) {
-  .tiles input[type="range"] { width: 36px; }
   header { gap: 8px; }
 }
-/* A small window: the tile slider (− and + stay), the result's count and the room kept for
-   "Copy to N selected" go, so the views, the sort and the panels' buttons still fit. */
-@media (max-width: 1400px) {
+/* The tile slider (− and + stay) and the result's count go. */
+@media (max-width: 1980px) {
   .tiles input[type="range"] { display: none; }
   header .count { display: none; }
-  .copy-slot { width: auto; }
+}
+/* A small window: the room kept for "Copy to N selected" and the tiles-per-row box go too. */
+@media (max-width: 1600px) {
+  .head-tools > .copy-slot { flex-basis: auto; }
+  .copy-to.hidden { display: none; }
+  header .tiles label { display: none; }
 }
 .tiles label { display: flex; align-items: center; gap: 4px; margin-left: 4px; white-space: nowrap; }
 .tiles input[type="number"] {

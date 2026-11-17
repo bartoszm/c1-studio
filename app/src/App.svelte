@@ -2732,98 +2732,104 @@
       {/if}
       <button class:on={tab === "ai"} title="Captions, keywords and ratings suggested by a vision model, to review" onclick={() => showTab("ai")}>AI</button>
     </nav>
-    <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
-      <SortControl
-        fields={FIELDS.map((f) => ({
-          key: f.key,
-          label: f.label,
-          disabled: f.key === "match" && !matchAvailable(filter),
-          hint: f.key === "match" ? "pick a colour, light or focus filter" : undefined,
-        }))}
-        field={sortShown}
-        words={words(sortShown, sortShown === sortField && sortReversed)}
-        label="Sort photos by"
-        onfield={(key) => setSortField(key as SortField)}
-        onflip={flipSort}
-      />
-    </div>
-    <button
-      class="toggle"
-      class:on={stack}
-      aria-pressed={stack}
-      title="Show one photo per burst or duplicate group (its sharpest). With a filter on, a frame is hidden only when the sharpest frame of its group matches too; open a group to see all its frames."
-      onclick={toggleStack}
-    >Stack</button>
-    <button
-      class="toggle"
-      class:on={collapse}
-      aria-pressed={collapse}
-      title="Show one photo per image when it has several variants: of those that match, the lowest-numbered. The number on a photo says how many variants its image has; click it, or press V, to see them all."
-      onclick={toggleCollapse}
-    >Variants</button>
-    <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
-      <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
-      <input
-        type="range"
-        aria-label="Tile size"
-        min={MIN_TILE}
-        max={Math.max(MIN_TILE + 1, layout.room)}
-        value={tiles.by === "size" ? tiles.px : layout.width}
-        oninput={(e) => (tiles = { by: "size", px: +e.currentTarget.value })}
-        onchange={(e) => e.currentTarget.blur()}
-      />
-      <button aria-label="Bigger tiles" onclick={() => grid?.step(true)}>+</button>
-      <label title="Tiles per row. Typed in, the count stays as the window changes; the slider lets it follow the window again.">
-        <input
-          type="number"
-          min="1"
-          max={MAX_COUNT}
-          value={layout.cols}
-          class:fixed={tiles.by === "count"}
-          onchange={(e) => setCount(e.currentTarget.value)}
-          onkeydown={(e) => { if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur(); }}
+    <!-- The tools give way when the window is narrow; the panels' buttons and Settings at
+         the right end never do. -->
+    <div class="head-tools">
+      <div class="sort-slot" title="The order of the photos in the grid and in the strip under the map and the analysis">
+        <SortControl
+          fields={FIELDS.map((f) => ({
+            key: f.key,
+            label: f.label,
+            disabled: f.key === "match" && !matchAvailable(filter),
+            hint: f.key === "match" ? "pick a colour, light or focus filter" : undefined,
+          }))}
+          field={sortShown}
+          words={words(sortShown, sortShown === sortField && sortReversed)}
+          label="Sort photos by"
+          onfield={(key) => setSortField(key as SortField)}
+          onflip={flipSort}
         />
-        per row
-      </label>
+      </div>
       <button
-        class="shape"
-        title={shape === "1:1" ? "Square tiles: click for 3:2" : "3:2 tiles: click for square"}
-        onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
-      >{shape}</button>
+        class="toggle"
+        class:on={stack}
+        aria-pressed={stack}
+        title="Show one photo per burst or duplicate group (its sharpest). With a filter on, a frame is hidden only when the sharpest frame of its group matches too; open a group to see all its frames."
+        onclick={toggleStack}
+      >Stack</button>
+      <button
+        class="toggle"
+        class:on={collapse}
+        aria-pressed={collapse}
+        title="Show one photo per image when it has several variants: of those that match, the lowest-numbered. The number on a photo says how many variants its image has; click it, or press V, to see them all."
+        onclick={toggleCollapse}
+      >Variants</button>
+      <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
+        <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
+        <input
+          type="range"
+          aria-label="Tile size"
+          min={MIN_TILE}
+          max={Math.max(MIN_TILE + 1, layout.room)}
+          value={tiles.by === "size" ? tiles.px : layout.width}
+          oninput={(e) => (tiles = { by: "size", px: +e.currentTarget.value })}
+          onchange={(e) => e.currentTarget.blur()}
+        />
+        <button aria-label="Bigger tiles" onclick={() => grid?.step(true)}>+</button>
+        <label title="Tiles per row. Typed in, the count stays as the window changes; the slider lets it follow the window again.">
+          <input
+            type="number"
+            min="1"
+            max={MAX_COUNT}
+            value={layout.cols}
+            class:fixed={tiles.by === "count"}
+            onchange={(e) => setCount(e.currentTarget.value)}
+            onkeydown={(e) => { if (e.key === "Enter" || e.key === "Escape") e.currentTarget.blur(); }}
+          />
+          per row
+        </label>
+        <button
+          class="shape"
+          title={shape === "1:1" ? "Square tiles: click for 3:2" : "3:2 tiles: click for square"}
+          onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
+        >{shape}</button>
+      </div>
+      <!-- Its own slot, there or not, so the header doesn't move as photos are picked. -->
+      <span class="copy-slot">
+        <button
+          class="copy-to"
+          class:hidden={!(picked.size > 1 && selected !== null)}
+          title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
+          onclick={openSync}
+        >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
+        <button
+          class="copy-to compare-open"
+          class:hidden={picked.size < 2}
+          title={picked.size > COMPARE_MAX
+            ? `Compare ${COMPARE_MAX} of the picked photos: the focused one and the first picked (c)`
+            : "Compare the picked photos side by side, in a split, an overlay or their difference (c)"}
+          onclick={openCompare}
+        >⧉ Compare {Math.min(picked.size, COMPARE_MAX)}</button>
+      </span>
     </div>
-    <!-- Its own slot, there or not, so the header doesn't move as photos are picked. -->
-    <span class="copy-slot">
+    <div class="head-end">
       <button
-        class="copy-to"
-        class:hidden={!(picked.size > 1 && selected !== null)}
-        title="Copy fields of the focused photo into the other selected photos: choose which, overwrite or merge (Ctrl+Shift+S)"
-        onclick={openSync}
-      >⇉ Copy to {Math.max(1, picked.size - 1).toLocaleString()} selected</button>
-      <button
-        class="copy-to compare-open"
-        class:hidden={picked.size < 2}
-        title={picked.size > COMPARE_MAX
-          ? `Compare ${COMPARE_MAX} of the picked photos: the focused one and the first picked (c)`
-          : "Compare the picked photos side by side, in a split, an overlay or their difference (c)"}
-        onclick={openCompare}
-      >⧉ Compare {Math.min(picked.size, COMPARE_MAX)}</button>
-    </span>
-    <button
-      class="toggle"
-      class:on={showHidden}
-      aria-pressed={showHidden}
-      title={showHidden ? "Hidden photos are shown, marked on their tiles: click to leave them out again" : "Show the photos hidden with Hide (h); they are left out of every view and count until then"}
-      onclick={toggleShowHidden}
-    >Hidden</button>
-    <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
-    <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
-    <button class="toggle settings" title="Settings: the sidebar's sections, online map services, the History tab, AI" aria-label="Settings" onclick={() => (showSettings = true)}>
-      <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
-        <circle cx="8" cy="8" r="2.2" />
-        <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round" />
-        <circle cx="8" cy="8" r="4.6" />
-      </svg>
-    </button>
+        class="toggle"
+        class:on={showHidden}
+        aria-pressed={showHidden}
+        title={showHidden ? "Hidden photos are shown, marked on their tiles: click to leave them out again" : "Show the photos hidden with Hide (h); they are left out of every view and count until then"}
+        onclick={toggleShowHidden}
+      >Hidden</button>
+      <button class="toggle" class:on={showTimeline} title="Photos over time, with trips: drag across it to pick days" onclick={() => (showTimeline = !showTimeline)}>Timeline</button>
+      <button class="toggle" class:on={showInfo} title="Details (i)" onclick={() => (showInfo = !showInfo)}>Details</button>
+      <button class="toggle settings" title="Settings: the sidebar's sections, online map services, the History tab, AI" aria-label="Settings" onclick={() => (showSettings = true)}>
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.3">
+          <circle cx="8" cy="8" r="2.2" />
+          <path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke-linecap="round" />
+          <circle cx="8" cy="8" r="4.6" />
+        </svg>
+      </button>
+    </div>
     <span class="count">
       {#if result}{result.total.toLocaleString()} photos · {(result.micros / 1000).toFixed(1)} ms{/if}
     </span>

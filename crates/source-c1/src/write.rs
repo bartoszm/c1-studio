@@ -36,8 +36,10 @@ pub(crate) fn status(catalog: &Path) -> WriteStatus {
     if let Some(name) = process::running_capture_one() {
         return WriteStatus::Locked { by: name };
     }
-    if journal_present(catalog) {
-        return WriteStatus::Locked { by: "a program in the middle of a write (a rollback journal is present)".into() };
+    if catalog::hot_journal(catalog) {
+        return WriteStatus::Locked {
+            by: "a program in the middle of a write (its rollback journal holds a transaction)".into(),
+        };
     }
     if held_elsewhere(catalog) {
         return WriteStatus::Locked { by: "another program that has the catalog open".into() };
@@ -70,12 +72,6 @@ pub(crate) fn preflight(catalog: &Path) -> Result<()> {
         WriteStatus::Locked { by } => Err(SourceError::Locked { by }),
         WriteStatus::ReadOnly => structure(catalog),
     }
-}
-
-fn journal_present(catalog: &Path) -> bool {
-    let mut journal = catalog.as_os_str().to_owned();
-    journal.push("-journal");
-    fs::metadata(journal).is_ok_and(|m| m.len() > 0)
 }
 
 /// Does another program have the catalog open? Capture One holds it open while it runs,
