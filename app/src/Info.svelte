@@ -10,6 +10,7 @@
   import { offText } from "./lib/history";
   import PlaceInput from "./PlaceInput.svelte";
   import { tick } from "svelte";
+  import { parseKeywords, pasteAt, withKeywords } from "./lib/keywordEntry";
   import { collapse, mergedField, scrollFix } from "./lib/batch";
   import { NEUTRAL, colourLines, colourRule, focusLine, lightLine, monoLine, nameOf, pct, shapeLine } from "./lib/explain";
 
@@ -176,17 +177,70 @@
   let typed = $state("");
   let typedError = $state<string | null>(null);
 
+  /** Keywords typed so far and waiting for Enter: `;`, Tab or a paste of several lines
+   *  adds one here, Enter adds them all in one edit (one undo). */
+  let adding = $state<string[]>([]);
+
+  // Not state: the photos `adding` and `typed` were meant for. Clicking another photo or
+  // picking others drops them, so Enter cannot add them to photos they were not typed for.
+  let typedFor = "";
+  $effect(() => {
+    const target = `${row}:${picked}`;
+    if (target === typedFor) return;
+    typedFor = target;
+    adding = [];
+    typed = "";
+    typedError = null;
+  });
+
+  /** Moves the keywords in `text` (what is typed) into `adding`. What is no keyword stays
+   *  in the field with the reason; false then. */
+  function chip(text = typed): boolean {
+    const { paths, error, bad } = parseKeywords(text);
+    adding = withKeywords(adding, paths);
+    typed = bad?.join("; ") ?? "";
+    typedError = error ?? null;
+    return !error;
+  }
+
   function addTyped(e: SubmitEvent) {
     e.preventDefault();
-    const path = typed.split("|").map((l) => l.trim()).join("|");
-    if (!path) return;
-    if (path.split("|").some((l) => !l)) typedError = "A keyword level is empty.";
-    else if (path.includes(",")) typedError = "Keyword names cannot contain a comma.";
-    else {
-      typedError = null;
-      typed = "";
-      onaddkeyword(path);
+    const { paths, error } = parseKeywords(typed);
+    if (error) {
+      typedError = error;
+      return;
     }
+    const all = withKeywords(adding, paths);
+    if (!all.length) return;
+    typedError = null;
+    typed = "";
+    adding = [];
+    if (all.length === 1) onaddkeyword(all[0]);
+    else onaddkeywords(all);
+  }
+
+  function keywordKey(e: KeyboardEvent) {
+    const input = e.currentTarget as HTMLInputElement;
+    if (e.key === "Escape") {
+      adding = [];
+      typed = "";
+      typedError = null;
+      input.blur();
+    } else if (e.key === ";" || (e.key === "Tab" && !e.shiftKey && typed.trim())) {
+      e.preventDefault();
+      chip();
+    } else if (e.key === "Backspace" && !typed && adding.length) {
+      e.preventDefault();
+      adding = adding.slice(0, -1);
+    }
+  }
+
+  function keywordPaste(e: ClipboardEvent) {
+    const text = e.clipboardData?.getData("text") ?? "";
+    if (!/[;\r\n]/.test(text.trim())) return;
+    e.preventDefault();
+    const input = e.currentTarget as HTMLInputElement;
+    chip(pasteAt(typed, input.selectionStart, input.selectionEnd, text));
   }
 
   /** How a queued edit reads: `rating`, `colour`, `keyword "street"`. */
@@ -515,15 +569,30 @@
 
 {#snippet keywordInput()}
   <form class="add-keyword" onsubmit={addTyped}>
+    {#if adding.length}
+      <ul class="chips" aria-label="Keywords to add">
+        {#each adding as k (k)}
+          <li>
+            {k.split("|").join(" › ")}
+            <button type="button" aria-label="Leave out {k}" onclick={() => (adding = adding.filter((x) => x !== k))}>×</button>
+          </li>
+        {/each}
+      </ul>
+    {/if}
     <input
       id="keyword-input"
       list="keyword-list"
-      placeholder={picked > 1 ? `Add a keyword to ${picked} photos` : "Add a keyword (Ctrl+K)"}
+      placeholder={picked > 1 ? `Add keywords to ${picked} photos (; for more)` : "Add keywords (Ctrl+K; ; for more)"}
+      title="Separate several keywords with ; and press Enter to add them all. Levels: a|b"
       autocomplete="off"
       spellcheck="false"
       bind:value={typed}
-      onkeydown={(e) => { if (e.key === "Escape") (e.currentTarget as HTMLInputElement).blur(); }}
+      onkeydown={keywordKey}
+      onpaste={keywordPaste}
     />
+    {#if adding.length}
+      <p class="hint">Enter adds {adding.length + (typed.trim() ? 1 : 0)} keywords{picked > 1 ? ` to ${picked.toLocaleString()} photos` : ""} · Esc clears</p>
+    {/if}
   </form>
   <datalist id="keyword-list">
     {#each keywords as k}<option value={k}></option>{/each}

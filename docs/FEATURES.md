@@ -157,7 +157,8 @@ search, so it is as fast as any other order.
 
 ## Edit, then write
 
-Rate, colour-tag and keyword one photo or many, with a key or in the details panel.
+Rate, colour-tag and keyword one photo or many, with a key or in the details panel. Type
+several keywords at once, split by `;`, or paste a list: Enter adds them all as one edit.
 Location, GPS and IPTC fields too, and copying fields from one photo to others. Edits
 show at once and wait in a queue: nothing reaches Capture One until you write them, or
 Autosave does. Ctrl+Z undoes any of them.
