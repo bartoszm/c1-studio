@@ -57,6 +57,31 @@ export function pathTree(
   return sortDeep(roots, order);
 }
 
+/** How many nodes a tree has, at every level. */
+export const treeSize = (nodes: Node[]): number => nodes.reduce((n, node) => n + 1 + treeSize(node.children), 0);
+
+/** A flat sidebar group (cameras, lenses) has a find box once it shows all of this many
+ *  values, and keeps it while something is typed in it, so a query never filters unseen. */
+export const showsFind = (all: boolean, count: number, query: string, from = 15): boolean =>
+  all && (count > from || !!query.trim());
+
+/** The values a flat sidebar group shows: the first `top` and any picked further down; or,
+ *  showing `all`, those whose label holds `query` (picked ones always). */
+export function flatValues(
+  values: [string, number][],
+  { all, query, top, picked, label }: {
+    all: boolean;
+    query: string;
+    top: number;
+    picked: (value: string) => boolean;
+    label: (value: string) => string;
+  },
+): [string, number][] {
+  if (!all) return values.filter(([v], i) => i < top || picked(v));
+  const q = query.trim().toLowerCase();
+  return q ? values.filter(([v]) => picked(v) || label(v).toLowerCase().includes(q)) : values;
+}
+
 /** How many photos use each keyword or one under it, from the uses of each keyword
  *  itself. A photo with two keywords under one parent counts twice for the parent, so
  *  this can be high; it is for telling rarely used keywords apart. */

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { byCount, cityWithoutLocation, hideRare, pathTree, placeTree, usesWithin, type Node } from "../src/lib/tree";
+import { albumTree, byCount, cityWithoutLocation, flatValues, hideRare, pathTree, placeTree, searchTree, showsFind, treeSize, usesWithin, type Node } from "../src/lib/tree";
+import type { Collection } from "../src/lib/api";
 
 const FACET: [string, number][] = [
   ["Japan", 10],
@@ -99,4 +100,36 @@ test("a keyword added since the uses were counted is not hidden", () => {
   const { nodes, hidden } = hideRare(tree, uses, 5);
   assert.deepEqual(new Set(names(nodes)), new Set(["new", "d"]));
   assert.equal(hidden, 1);
+});
+
+test("finding an album keeps the groups that hold it, opened", () => {
+  const c = (id: string, name: string, kind: Collection["kind"], parent: string | null = null): Collection =>
+    ({ id, name, kind, parent, path: name, rule: null, system: false });
+  const tree = albumTree(
+    [c("g1", "Trips", "Group"), c("g2", "2024", "Group", "g1"), c("a1", "Japan", "Album", "g2"), c("a2", "Alps", "Album", "g1"), c("a3", "Best of Japan", "Smart")],
+    new Map(),
+    null,
+  );
+  assert.equal(treeSize(tree), 5);
+  const found = searchTree(tree, " japan ");
+  assert.deepEqual(names(found.nodes), [["Trips", [["2024", ["Japan"]]]], "Best of Japan"]);
+  assert.deepEqual(found.open.sort(), ["a:g1", "a:g2"]);
+  assert.deepEqual(searchTree(tree, "nothing").nodes, []);
+});
+
+test("a flat group shows its first values and any picked further down", () => {
+  const all: [string, number][] = [["X-T5", 9], ["X100VI", 7], ["GR IV", 5], ["X-E4", 2]];
+  const o = { all: false, query: "", top: 2, picked: (v: string) => v === "X-E4", label: (v: string) => v };
+  assert.deepEqual(flatValues(all, o).map(([v]) => v), ["X-T5", "X100VI", "X-E4"]);
+  // All of them; the query narrows, picked ones stay.
+  assert.deepEqual(flatValues(all, { ...o, all: true }), all);
+  assert.deepEqual(flatValues(all, { ...o, all: true, query: " x1 " }).map(([v]) => v), ["X100VI", "X-E4"]);
+});
+
+test("the find box of a flat group stays while it holds a query", () => {
+  assert.equal(showsFind(true, 16, ""), true);
+  assert.equal(showsFind(true, 15, ""), false);
+  // The other filters left few values: the query is still there, so is its box.
+  assert.equal(showsFind(true, 4, "x1"), true);
+  assert.equal(showsFind(false, 40, "x1"), false);
 });

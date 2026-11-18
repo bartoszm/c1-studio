@@ -194,9 +194,15 @@ with *2025* picked, the Date tree still shows every year.
   keyword* box above it shows only matching keywords, with their branches open. Esc
   clears it. Right-click a keyword to change the tree (see [Keyword tree](#keyword-tree)).
 - **Rating:** one value, compared by the ≥ / = / ≤ above the stars.
-- **Colour, Camera, Lens, Format, Orientation:** the colour label, the camera (the ten
-  most common), the lens, the file type and the shape as shown (landscape, portrait,
-  square, panorama).
+- **Colour, Camera, Lens, Format, Orientation:** the colour label, the camera, the lens,
+  the file type and the shape as shown (landscape, portrait, square, panorama). Camera
+  and Lens show their ten most common, and any picked further down; *Show all N* below
+  them lists the rest, with a box to find one when there are many.
+
+**Finding in a long tree.** Albums, Folders and Location get a find box, like
+Keywords, once they hold more than 15 entries. Typing shows only the matches, with the
+groups, folders or countries above them opened; Esc clears it, and the tree opens as it
+was. Ctrl+F jumps to the search box at the top.
 
 **From the details panel.** The camera, the lens, the format, each keyword (or any level
 of it), each album and the folder are links: clicking one shows only it in its section,
@@ -1011,6 +1017,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | `0`–`5` | Rating (0 clears) |
 | `-` `+` `*` | Red, green, yellow tag |
 | Ctrl+K | Add keywords (opens the details panel) |
+| Ctrl+F | Go to the search box |
 | Ctrl+C (or Ctrl+Shift+C) | Copy… from the focused photo |
 | Ctrl+V, Ctrl+Alt+V, Ctrl+Shift+V | Paste (overwrite), merge, Paste… (choose what and how) |
 | Delete | Move the picked photos (or the one in the viewer) to the [trash](#trash); in an album, take them out of it |
