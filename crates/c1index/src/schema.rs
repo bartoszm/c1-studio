@@ -426,6 +426,29 @@ pub fn shown_size(photo: &Photo) -> Option<(u32, u32)> {
     })
 }
 
+/// The `rating_sort` value of a photo with `stars` at `row`: by stars, then by row.
+fn rating_sort(stars: u8, row: u64) -> u64 {
+    (u64::from(stars) << 32) | (row & 0xffff_ffff)
+}
+
+/// The `color_sort` and `color_sort_rev` values of a photo whose label is at `place` in
+/// [`c1model::ColorLabel::ALL`] plus one (0: none, which sorts last either way), at `row`.
+fn color_sort(place: i64, row: u64) -> (i64, i64) {
+    let tie = (row & 0xf_ffff) as i64;
+    if place > 0 { ((8 - place) * (1 << 20) + tie, place * (1 << 20) + tie) } else { (i64::MIN + tie, i64::MIN + tie) }
+}
+
+/// The stars in a `rating_sort` value.
+pub fn rating_of_sort(v: u64) -> u8 {
+    (v >> 32) as u8
+}
+
+/// The colour label's place in [`c1model::ColorLabel::ALL`] plus one (0: none), from a
+/// `color_sort` value.
+pub fn color_of_sort(v: i64) -> u8 {
+    if v < 0 { 0 } else { (8 - (v >> 20)) as u8 }
+}
+
 /// `classes`: where the analysis draws the lines between classes.
 pub fn document(
     f: &Fields,
@@ -562,7 +585,7 @@ pub fn document(
 
     doc.add_i64(f.captured_sort, sort_key(photo.captured_at, row));
     doc.add_i64(f.imported_sort, sort_key(photo.imported_at, row));
-    doc.add_u64(f.rating_sort, (u64::from(photo.rating.unwrap_or(0)) << 32) | (row & 0xffff_ffff));
+    doc.add_u64(f.rating_sort, rating_sort(photo.rating.unwrap_or(0), row));
     if let Some(ms) = photo.captured_at {
         doc.add_i64(f.captured, ms);
     }
@@ -602,11 +625,11 @@ pub fn document(
     doc.add_i64(f.brightness_sort, measure_key(bright, BRIGHTNESS_SCALE, row, false));
     doc.add_i64(f.brightness_sort_rev, measure_key(bright, BRIGHTNESS_SCALE, row, true));
     // Where the label comes in the list of labels (0: none, which sorts last either way).
+    // `color_of_sort` reads it back.
     let label = photo.color.and_then(|c| c1model::ColorLabel::ALL.iter().position(|l| *l == c));
-    let place = label.map_or(0, |i| i as i64 + 1);
-    let tie = (row & 0xf_ffff) as i64;
-    doc.add_i64(f.color_sort, if place > 0 { (8 - place) * (1 << 20) + tie } else { i64::MIN + tie });
-    doc.add_i64(f.color_sort_rev, if place > 0 { place * (1 << 20) + tie } else { i64::MIN + tie });
+    let (sort, rev) = color_sort(label.map_or(0, |i| i as i64 + 1), row);
+    doc.add_i64(f.color_sort, sort);
+    doc.add_i64(f.color_sort_rev, rev);
     if let Some(look) = look {
         let a = &look.analysis;
         doc.add_f64(f.sharpness, f64::from(a.sharpness));
@@ -670,6 +693,28 @@ mod tests {
             assert_eq!(days.midnight(ms), Some(midnight), "at {ms}");
             assert_eq!(days.day(ms), days.day(midnight), "at {ms}");
             assert_ne!(days.day(ms), days.day(midnight - 1), "at {ms}");
+        }
+    }
+
+    #[test]
+    fn the_tile_marks_read_back_what_the_sort_keys_hold() {
+        // Rows past the 20 bits of the colour's tie and the 32 of the rating's.
+        for row in [0, 1, 7, (1 << 20) - 1, 1 << 20, (1 << 20) + 5, (1 << 32) + 3] {
+            for stars in 0..=5 {
+                assert_eq!(rating_of_sort(rating_sort(stars, row)), stars, "{stars} stars at {row}");
+            }
+            for place in 0..=c1model::ColorLabel::ALL.len() as i64 {
+                let (sort, rev) = color_sort(place, row);
+                assert_eq!(i64::from(color_of_sort(sort)), place, "label {place} at {row}");
+                // The colour sorts in label order, its reverse the other way, none last.
+                if place > 1 {
+                    let (before, before_rev) = color_sort(place - 1, row);
+                    assert!(before > sort && before_rev < rev, "label {place} at {row}");
+                }
+                if place > 0 {
+                    assert!(sort > color_sort(0, row).0 && rev > color_sort(0, row).1);
+                }
+            }
         }
     }
 

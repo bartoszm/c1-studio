@@ -55,6 +55,14 @@ export function stars(n: number | null | undefined): string {
   return n ? "★".repeat(n) : "unrated";
 }
 
+/** A tile's stars and colour tag read out: `3 stars, red tag`, `1 star`, `red tag`. */
+export function markText(stars: number, tag: string | null): string {
+  const parts = [];
+  if (stars) parts.push(`${stars} star${stars === 1 ? "" : "s"}`);
+  if (tag) parts.push(`${tag} tag`);
+  return parts.join(", ");
+}
+
 /** What a field edit sets, as words: `{ field: "rating", from: "★★", to: "★★★★★" }`. */
 /** Swatches for the analysis' colour names. */
 export const HUES: Record<string, string> = {

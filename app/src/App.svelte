@@ -8,7 +8,7 @@
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, byCount, cityWithoutLocation, flatValues, hideRare, pathTree, placeText, placeTree, showsFind, treeSize, usesWithin, type Node } from "./lib/tree";
   import { treeFind, type TreeFind } from "./lib/treeFind.svelte";
-  import { keepChoice, readChoice } from "./lib/stored";
+  import { keepChoice, keepFlag, readChoice, readFlag } from "./lib/stored";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import { HELP, ORIENTATIONS, RANGES, parseSearch, rangeChip, withSearch, type Parsed } from "./lib/search";
@@ -640,6 +640,18 @@
   let offlinePages = $state.raw(new SvelteMap<number, Set<number>>());
   /** Page → position in it → how many variants that photo's image has (several only). */
   let variantPages = $state.raw(new SvelteMap<number, Map<number, number>>());
+  /** Page → position in it → [stars, colour label's place + 1] (rated or labelled only). */
+  let markPages = $state.raw(new SvelteMap<number, Map<number, [number, number]>>());
+  const marksOf = (r: api.QueryResult) => new Map(r.marks.map(([at, stars, label]) => [at, [stars, label] as [number, number]]));
+  /** Stars and colour tags drawn on the tiles. */
+  let tileMarks = $state(!readFlag("tileMarksOff"));
+  const TILE_COLORS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
+  function markAt(i: number): { stars: number; color: string | null; tag: string | null } | null {
+    const m = markPages.get(Math.floor(i / PAGE))?.get(i % PAGE);
+    if (!m) return null;
+    const tag = m[1] ? TILE_COLORS[m[1] - 1].toLowerCase() : null;
+    return { stars: m[0], color: tag && COLORS[tag], tag };
+  }
   let loading = new Map<number, Promise<void>>();
 
   /** Runs the filter. `keep` re-runs it in place after an edit: same scroll, same picks.
@@ -696,6 +708,7 @@
       const shown = grid?.range() ?? [0, 0];
       const offline = new Map<number, Set<number>>();
       const variants = new Map<number, Map<number, number>>();
+      const marks = new Map<number, Map<number, [number, number]>>();
       const { result: r, pages: fresh } = keep
         ? await refreshPages(
             first,
@@ -707,6 +720,7 @@
             (page) => api.query(asked, { sort: sortBy, limit: PAGE, offset: page * PAGE }).then((p) => {
               if (p.offline.length) offline.set(page, new Set(p.offline));
               if (p.variants.length) variants.set(page, new Map(p.variants));
+              if (p.marks.length) marks.set(page, marksOf(p));
               return p.rows;
             }),
           )
@@ -714,11 +728,13 @@
       if (mine !== generation) return;
       if (r.offline.length) offline.set(0, new Set(r.offline));
       if (r.variants.length) variants.set(0, new Map(r.variants));
+      if (r.marks.length) marks.set(0, marksOf(r));
       result = r;
       counted = groups;
       pages = new SvelteMap(fresh);
       offlinePages = new SvelteMap(offline);
       variantPages = new SvelteMap(variants);
+      markPages = new SvelteMap(marks);
       loading = new Map();
       error = null;
       onScreen = shownNow();
@@ -890,11 +906,13 @@
     const into = pages;
     const intoOffline = offlinePages;
     const intoVariants = variantPages;
+    const intoMarks = markPages;
     const p = api.query(asking($state.snapshot(filter)), { sort: sortBy, limit: PAGE, offset: page * PAGE })
       .then((r) => {
         if (mine !== generation) return;
         if (r.offline.length) intoOffline.set(page, new Set(r.offline));
         if (r.variants.length) intoVariants.set(page, new Map(r.variants));
+        if (r.marks.length) intoMarks.set(page, marksOf(r));
         into.set(page, r.rows);
       })
       .catch((e) => { if (mine === generation) error = String(e); });
@@ -2921,6 +2939,13 @@
           title={shape === "1:1" ? "Square tiles: click for 3:2" : "3:2 tiles: click for square"}
           onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
         >{shape}</button>
+        <button
+          class="shape"
+          class:on={tileMarks}
+          aria-pressed={tileMarks}
+          title={tileMarks ? "Stars and colour tags on the tiles: click to hide them" : "Show stars and colour tags on the tiles"}
+          onclick={() => { tileMarks = !tileMarks; keepFlag("tileMarksOff", !tileMarks); }}
+        >★</button>
       </div>
       <!-- Its own slot, there or not, so the header doesn't move as photos are picked; on a
            small window (1600px or less) the room goes, and the tools before it move left. -->
@@ -3341,6 +3366,7 @@
     hidden={(i) => hiddenHere.has(rowAt(i) ?? -1)}
     offline={(i) => offlinePages.get(Math.floor(i / PAGE))?.has(i % PAGE) ?? false}
     variants={variantsAt}
+    mark={tileMarks ? markAt : undefined}
     collapsed={collapse && filter.variants_of === undefined}
     onvariants={showVariants}
     onselect={pick}

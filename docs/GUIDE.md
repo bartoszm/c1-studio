@@ -302,7 +302,8 @@ photos up as they fit the pane: photos of different shapes do not line up.
 
 **Tile size.** The header slider sets about how wide the tiles are, and the count per
 row follows the window. Typing a number in *per row* keeps that many whatever the
-window. *3:2* switches to square tiles and back. Ctrl+wheel over the grid, Ctrl+plus and
+window. *3:2* switches to square tiles and back. *★* beside it shows each tile's stars
+and colour tag at its bottom right (on unless you turn it off). Ctrl+wheel over the grid, Ctrl+plus and
 Ctrl+minus step one tile per row; Ctrl+0 resets. Tiles bigger than the thumbnail load
 the sharp preview once scrolling stops.
 

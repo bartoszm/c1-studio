@@ -222,6 +222,9 @@ export type QueryResult = {
   offline: number[];
   /** [position in `rows`, how many variants its image has] for images with several. */
   variants: [number, number][];
+  /** [position in `rows`, stars, colour label's place in Red…Purple plus one] for the
+   *  photos rated or labelled (0: none). */
+  marks: [number, number, number][];
   facets: Partial<Record<Dim, [string, number][]>>;
   micros: number;
 };
