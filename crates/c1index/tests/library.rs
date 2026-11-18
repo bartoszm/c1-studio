@@ -3195,3 +3195,63 @@ fn a_scene_is_stored_together_with_one_call_recorded() {
     }
     assert_eq!(lib.described(Task::Locate, &[eight, seven, row_of(&lib, 6)], "m", 3).unwrap().len(), 2);
 }
+
+#[test]
+fn a_lens_is_one_entry_however_files_name_it() {
+    let lens = |n: u32, make: &str, model: &str, lens: &str| {
+        let mut p = photo(n);
+        p.exif = Exif {
+            camera_make: Some(make.into()),
+            camera_model: Some(model.into()),
+            lens: Some(lens.into()),
+            ..Exif::default()
+        };
+        p.trashed = false;
+        p
+    };
+    let ricoh = "RICOH IMAGING COMPANY, LTD.";
+    let photos = vec![
+        lens(1, "FUJIFILM", "X-Pro2", "Fujifilm Fujinon XF23mmF2 R WR"),
+        lens(2, "FUJIFILM", "X-Pro2", "Fujifilm Fujinon XF23mmF2 R WR"),
+        lens(3, "FUJIFILM", "X-Pro2", "XF23mmF2 R WR"),
+        lens(4, "FUJIFILM", "X100VI", "23 mm f/2"),
+        lens(5, ricoh, "RICOH GR IV", "18.3 mm f/--"),
+        lens(6, ricoh, "RICOH GR IV", "Ricoh GR IV"),
+        lens(7, "FUJIFILM", "X-Pro2", "-- mm f/--"),
+        lens(8, "Canon", "Canon EOS 6D", "50 mm f/--"),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let lib = Library::open(dir.path()).unwrap();
+    lib.sync(&MemorySource::new("mem", photos, vec![])).unwrap();
+
+    let options = QueryOptions { facets: vec![Dim::Lens], limit: Some(0), ..QueryOptions::default() };
+    let mut lenses = lib.query(&Filter::default(), &options).unwrap().facets[&Dim::Lens].clone();
+    lenses.sort();
+    assert_eq!(
+        lenses,
+        [
+            ("50 mm".to_owned(), 1),
+            ("GR IV built-in".to_owned(), 2),
+            ("X100VI built-in".to_owned(), 1),
+            ("XF23mmF2 R WR".to_owned(), 3)
+        ]
+    );
+
+    // A pick by the name a file gives still finds the lens, and so does a search.
+    for name in ["XF23mmF2 R WR", "Fujifilm Fujinon XF23mmF2 R WR"] {
+        assert_eq!(ids(&lib, &Filter { lenses: vec![name.into()], ..Filter::default() }), [1, 2, 3], "{name}");
+    }
+    assert_eq!(ids(&lib, &Filter { lenses: vec!["50 mm f/--".into()], ..Filter::default() }), [8]);
+    let not = Filter { lenses_not: vec!["Fujifilm Fujinon XF23mmF2 R WR".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &not), [4, 5, 6, 7, 8]);
+    let search = |needle: &str| ids(&lib, &Filter { lens: Some(needle.into()), ..Filter::default() });
+    assert_eq!(search("23mm"), [1, 2, 3]);
+    assert_eq!(search("fujinon xf23"), [1, 2, 3]);
+    assert_eq!(search("Fujifilm XF23"), [1, 2, 3]);
+    // The maker alone, which the index's names leave out, still finds the maker's lenses.
+    assert_eq!(search("fujinon"), [1, 2, 3]);
+    assert_eq!(search("Fujifilm"), [1, 2, 3]);
+    assert_eq!(search("built-in"), [4, 5, 6]);
+    // A built-in lens's old name needs the camera to be found: it is no longer a name.
+    assert!(search("23 mm").is_empty());
+}

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import * as api from "./lib/api";
-  import { exposure } from "./lib/format";
+  import { exposure, lensOf } from "./lib/format";
   import { viewerKey } from "./lib/keys";
   import { source } from "./lib/source.svelte";
   import { GUIDE_NAMES, TURNS, frameFor, guidePath, nextGuide, nextTurn, storedGuide, storedTurn, type Guide } from "./lib/guides";
@@ -149,7 +149,7 @@
     {#if info}
       <strong>{info.file.name}</strong>
       {#if info.captured_at}<span>{new Date(info.captured_at).toLocaleString()}</span>{/if}
-      <span>{[info.exif.camera_model, info.exif.lens].filter(Boolean).join("  ·  ")}</span>
+      <span>{[info.exif.camera_model, lensOf(info)].filter(Boolean).join("  ·  ")}</span>
       <span>{exposure(info)}</span>
       {#if info.rating}<span class="stars">{"★".repeat(info.rating)}</span>{/if}
       {#if info.place.city || info.place.country}<span>{[info.place.city, info.place.country].filter(Boolean).join(", ")}</span>{/if}
