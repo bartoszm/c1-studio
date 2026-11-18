@@ -442,6 +442,20 @@ The dialog says how many photos carry the keywords, and when the target is new. 
 change shows at once, is queued like any edit, written before the photo edits, and
 undone with Ctrl+Z.
 
+The same menu has **Add to the selected photos**.
+
+**Sorting and rarely used keywords.** Right-click the *Keywords* heading:
+
+- **Sort by name** (the default) or **Sort by most used**. Most used orders each level by
+  the count beside it, so it follows the filter.
+- **Hide keywords used fewer than** 2, 5 or 10 times. This counts across the whole
+  catalog, with the keywords under a keyword included, so the tree does not change as
+  you filter. A row under the tree says how many are hidden; *Show* brings them back
+  until you hide them again. Finding a keyword searches the hidden ones too, and a
+  keyword you picked or left out always shows.
+
+Both choices are remembered.
+
 ## Albums
 
 Capture One has two kinds of album, and so does the app:

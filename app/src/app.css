@@ -565,6 +565,7 @@ footer .edit-error { padding: 0; color: var(--error); text-align: left; }
 .menu button.danger { color: var(--error); }
 .menu button .key { float: right; margin-left: 16px; color: var(--muted); font-size: 11px; }
 .menu-note { padding: 4px 12px; color: var(--muted); font-size: 12px; }
+.menu-sep { margin: 4px 0; border-top: 1px solid var(--line); }
 /* Albums: actions under the title, drop targets while dragging. */
 .album-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px 26px; }
 .album-actions button { padding: 1px 7px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }
@@ -731,6 +732,7 @@ footer > span { white-space: nowrap; }
 /* An action under a tree: "Fill in…". */
 .tree-action { display: block; max-width: calc(100% - 34px); margin: 4px 8px 2px 26px; padding: 2px 6px; text-align: left; font-size: 12px; color: #e8b03a; border-radius: 3px; }
 .tree-action:hover { background: var(--hover); }
+.tree-action.rare { color: var(--muted); }
 .info-panel .fill-places { margin: 0 0 6px 10px; }
 .info-panel .places li, .info-panel .fill-places li { flex-wrap: nowrap; }
 .info-panel .places li > .link, .info-panel .fill-places li > .link { flex: 1 1 auto; min-width: 0; text-align: left; }

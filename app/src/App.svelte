@@ -6,7 +6,8 @@
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
-  import { albumTree, cityWithoutLocation, pathTree, placeText, placeTree, searchTree, type Node } from "./lib/tree";
+  import { albumTree, byCount, cityWithoutLocation, hideRare, pathTree, placeText, placeTree, searchTree, usesWithin, type Node } from "./lib/tree";
+  import { keepChoice, readChoice } from "./lib/stored";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
   import { HELP, ORIENTATIONS, RANGES, parseSearch, rangeChip, withSearch, type Parsed } from "./lib/search";
@@ -95,6 +96,14 @@
   let collections = $state<api.Collection[]>([]);
   /** Keyword paths for completion, most used first. */
   let keywordList = $state<string[]>([]);
+  /** How many photos use each keyword or one under it, across the catalog. */
+  let keywordUses = $state(new Map<string, number>());
+  const RARE = ["0", "2", "5", "10"] as const;
+  let keywordSort = $state(readChoice("keywordSort", ["name", "count"] as const, "name"));
+  /** Keywords used fewer times than this are hidden ("0": none are). */
+  let keywordRare = $state(readChoice("keywordRare", RARE, "0"));
+  /** The hidden rare keywords shown again, for now. */
+  let showRare = $state(false);
   let smart = $state<Map<string, number> | null>(null);
   /** Position of the photo picked in the grid; the viewer and the panel show it. */
   let selected = $state<number | null>(null);
@@ -1041,7 +1050,16 @@
   }
 
   async function refreshKeywords() {
-    keywordList = (await api.keywords()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+    const uses = await api.keywords();
+    keywordUses = usesWithin(uses);
+    keywordList = uses.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([k]) => k);
+  }
+
+  /** Counts the keyword uses again after an edit, while rare keywords are being hidden:
+   *  adding or removing keywords moves a keyword across the line. */
+  function recountKeywords() {
+    if (keywordRare === "0") return;
+    api.keywords().then((uses) => (keywordUses = usesWithin(uses))).catch(() => {});
   }
 
   /** Queues a keyword tree change (shown at once), undoable like any edit. */
@@ -1089,6 +1107,7 @@
   async function edited(done?: EditDone) {
     const focus = selected === null ? undefined : focusRow;
     version++;
+    recountKeywords();
     await refreshQueued();
     // Asked before the filter runs again, so an edit it follows shows no empty grid first.
     if (done?.rows.length && (await followEdit(done, focus))) return;
@@ -2011,9 +2030,21 @@
   let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart, queuedAlbums));
   let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
   let places = $derived(placeTree(result?.facets.place_tree ?? []));
-  let keywords = $derived(pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword"));
+  let keywords = $derived(
+    pathTree(result?.facets.keyword_tree ?? [], "|", "k:", "keyword", keywordSort === "count" ? byCount : undefined),
+  );
+  // Rarely used keywords (across the catalog, so the tree does not change with the filter)
+  // are left out when asked, except picked ones; finding a keyword or *Show* brings them.
+  let keywordRareView = $derived(
+    hideRare(
+      keywords,
+      keywordUses,
+      keywordSearch.trim() || showRare || !keywordUses.size ? 0 : +keywordRare,
+      (n) => !!pickOf(filter.keywords_under, filter.keywords_under_not, n.value),
+    ),
+  );
   // While searching, the tree shows only matches (and the branches above them), opened.
-  let keywordView = $derived(searchTree(keywords, keywordSearch));
+  let keywordView = $derived(searchTree(keywordRareView.nodes, keywordSearch));
   const searchOpen = new SvelteSet<string>();
   $effect(() => {
     searchOpen.clear();
@@ -2985,6 +3016,15 @@
               oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
             />
             {#if keywordSearch.trim() && !keywordView.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
+            {#if keywordRare !== "0" && !keywordSearch.trim()}
+              {#if showRare}
+                <button class="tree-action rare" onclick={() => (showRare = false)}>Hide keywords used fewer than {keywordRare} times</button>
+              {:else if keywordRareView.hidden}
+                <button class="tree-action rare" title="Used fewer than {keywordRare} times in the catalog. Finding a keyword shows them too." onclick={() => (showRare = true)}>
+                  {keywordRareView.hidden.toLocaleString()} rarely used hidden · Show
+                </button>
+              {/if}
+            {/if}
           {/if}
         </section>
       {:else}
@@ -3395,6 +3435,20 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu-shield" role="presentation" onclick={() => (sectionMenu = null)} oncontextmenu={(e) => { e.preventDefault(); sectionMenu = null; }}></div>
   <div class="menu" role="menu" style:left="{sectionMenu.x}px" style:top="{sectionMenu.y}px">
     <div class="menu-title">{TITLES[key]}</div>
+    {#if key === "keywords"}
+      {#each [["name", "Sort by name"], ["count", "Sort by most used"]] as const as [sort, text]}
+        <button role="menuitemradio" aria-checked={keywordSort === sort} onclick={() => { keywordSort = sort; keepChoice("keywordSort", sort); sectionMenu = null; }}>
+          {text}{#if keywordSort === sort}<span class="key">✓</span>{/if}
+        </button>
+      {/each}
+      <div class="menu-note">Hide keywords used fewer than</div>
+      {#each RARE as rare}
+        <button role="menuitemradio" aria-checked={keywordRare === rare} onclick={() => { keywordRare = rare; showRare = false; keepChoice("keywordRare", rare); sectionMenu = null; }}>
+          {rare === "0" ? "Hide none" : `${rare} times`}{#if keywordRare === rare}<span class="key">✓</span>{/if}
+        </button>
+      {/each}
+      <div class="menu-sep" role="separator"></div>
+    {/if}
     <button role="menuitem" onclick={() => { hideSection(key); sectionMenu = null; }}>Hide this section</button>
     <button role="menuitem" onclick={() => { showSettings = true; sectionMenu = null; }}>Sidebar settings…</button>
   </div>
