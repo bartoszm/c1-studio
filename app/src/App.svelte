@@ -2112,7 +2112,12 @@
       showInfo = true;
       await tick();
     }
-    document.getElementById("keyword-input")?.focus();
+    // The panel draws the field once it has read the photo: wait up to a second for it.
+    for (let i = 0; i < 60; i++) {
+      const input = document.getElementById("keyword-input");
+      if (input) return input.focus();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
   }
 
   let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu || showSearchHelp));
