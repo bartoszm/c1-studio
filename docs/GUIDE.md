@@ -397,7 +397,13 @@ What *Copy to N selected* copied also lands on the clipboard, for pasting elsewh
 
 **Undo.** Ctrl+Z undoes the last edit, however many photos it touched; Ctrl+Y or
 Ctrl+Shift+Z redoes it. Editing a field back to what Capture One holds takes it out of
-the queue.
+the queue. After an edit the footer says what it did (*★★★★ on 1,240 photos*) with an
+**Undo** button; after an undo, *Undone: …* with **Redo**. The button is for the change it
+names: once another change comes, it no longer undoes (Ctrl+Z undoes the last one).
+
+**Many photos at a keystroke.** A rating or colour key, Delete or Ctrl+Delete, that would
+reach more than 500 photos asks first (*Rate 1,240 photos ★★★★?*): a slip after Ctrl+A is easy.
+Enter says yes, Esc no. The details panel's stars and dots do not ask.
 
 ## Hidden photos
 

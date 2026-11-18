@@ -1,6 +1,32 @@
 // Editing several photos at once: what the details panel's "Edit N photos" block shows for
 // each field, how long lists are cut, and the footer while an edit runs.
-import type { Merged } from "./api";
+import type { Edit, Merged } from "./api";
+
+const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`;
+const quoted = (paths: string[]) =>
+  paths.length === 1 ? `“${paths[0].split("|").join(" › ")}”` : `${paths.length.toLocaleString()} keywords`;
+
+/** What an edit did, for the footer once it is done: `★4 on 1,240 photos`. `album`: the
+ *  album's name, for the album edits. */
+export function describeEdit(edit: Edit, n: number, album?: string): string {
+  const on = photos(n);
+  if ("Rating" in edit) return edit.Rating ? `${"★".repeat(edit.Rating)} on ${on}` : `Rating cleared on ${on}`;
+  if ("Color" in edit) return edit.Color ? `${edit.Color} tag on ${on}` : `Colour tag cleared on ${on}`;
+  if ("AddKeywords" in edit) return `${quoted(edit.AddKeywords)} added to ${on}`;
+  if ("RemoveKeywords" in edit) return `${quoted(edit.RemoveKeywords)} taken off ${on}`;
+  if ("Place" in edit) return `Location changed on ${on}`;
+  if ("Iptc" in edit) return `IPTC changed on ${on}`;
+  if ("Geo" in edit) return edit.Geo ? `GPS set on ${on}` : `GPS cleared on ${on}`;
+  if ("AddToAlbum" in edit) return `${on} put in ${album ? `“${album}”` : "the album"}`;
+  return `${on} taken out of ${album ? `“${album}”` : "the album"}`;
+}
+
+/** How many photos a keystroke may edit before it asks: more is likely a slip after
+ *  Ctrl+A. */
+export const ASK_ABOVE = 500;
+
+/** Whether a keystroke that edits `n` photos asks first. */
+export const needsAsk = (n: number): boolean => n > ASK_ABOVE;
 
 /** Whether a reply for `rows` is about the photos picked now. */
 /** Stepping in the viewer to `row`: a single pick (or none) follows it, so edits land on
