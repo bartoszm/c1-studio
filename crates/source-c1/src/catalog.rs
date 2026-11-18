@@ -5,6 +5,7 @@
 //! file read-only for a moment.
 
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -107,20 +108,48 @@ pub(crate) fn remove_stale_copies(work_dir: &Path, age: Duration) {
     }
 }
 
+/// The first bytes of a rollback journal that holds a transaction (SQLite's `aJournalMagic`).
+const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
+
+/// Is a write to the catalog under way, or cut short? Then its rollback journal holds a
+/// transaction. A journal can also be left behind with its header zeroed, which is what
+/// SQLite does to end a transaction without deleting the file: that one is harmless, and
+/// taking it for a write would refuse every read and write until something deletes it.
+///
+/// A journal that is there but cannot be read (another program holds it without sharing,
+/// say) counts as hot: a torn copy, or a write over someone else's, is worse than a wait.
+pub(crate) fn hot_journal(catalog: &Path) -> bool {
+    let mut journal = catalog.as_os_str().to_owned();
+    journal.push("-journal");
+    let mut head = [0u8; 8];
+    match fs::File::open(journal).and_then(|mut f| f.read_exact(&mut head)) {
+        Ok(()) => head == JOURNAL_MAGIC,
+        // No journal, or one too short to hold a header.
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::UnexpectedEof) => false,
+        Err(_) => true,
+    }
+}
+
 /// Copies the catalog, retrying if it changed while we copied or if a hot journal
 /// shows Capture One is mid-transaction. A torn copy would be silently wrong data.
 pub(crate) fn copy_for_reading(catalog: &Path, work_dir: &Path) -> Result<TempCopy> {
+    copy_with_pauses(catalog, work_dir, Duration::from_millis(500))
+}
+
+/// [`copy_for_reading`], waiting `pause` longer before each try than before the last.
+fn copy_with_pauses(catalog: &Path, work_dir: &Path, pause: Duration) -> Result<TempCopy> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     fs::create_dir_all(work_dir)?;
     // Unique per copy: several sources (or tests) in one process may share a work dir.
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
     let target = TempCopy(work_dir.join(format!("snapshot-{}-{n}.cocatalogdb", std::process::id())));
-    let journal = catalog.with_extension("cocatalogdb-journal");
+    let mut saving = false;
     for attempt in 0..5 {
         if attempt > 0 {
-            thread::sleep(Duration::from_millis(500 * attempt));
+            thread::sleep(pause * attempt);
         }
-        if fs::metadata(&journal).map(|m| m.len() > 0).unwrap_or(false) {
+        saving = hot_journal(catalog);
+        if saving {
             continue;
         }
         let before = file_cursor(catalog)?;
@@ -129,7 +158,11 @@ pub(crate) fn copy_for_reading(catalog: &Path, work_dir: &Path) -> Result<TempCo
             return Ok(target);
         }
     }
-    Err(SourceError::Other("the catalog kept changing while it was copied; try again".into()))
+    Err(SourceError::Other(if saving {
+        "the catalog is in the middle of a write (its rollback journal holds a transaction); try again".into()
+    } else {
+        "the catalog kept changing while it was copied; try again".into()
+    }))
 }
 
 /// Where the original file lives, in Windows form.
@@ -295,5 +328,58 @@ mod tests {
         remove_stale_copies(dir.path(), Duration::from_millis(10));
         assert!(own.exists() && other.exists());
         assert!(!copy.exists(), "a copy left by another run goes");
+    }
+
+    /// A journal of `len` bytes beginning with `head`.
+    fn journal(catalog: &Path, head: &[u8], len: usize) {
+        let mut bytes = head.to_vec();
+        bytes.resize(len.max(head.len()), 7);
+        fs::write(catalog.with_extension("cocatalogdb-journal"), bytes).unwrap();
+    }
+
+    #[test]
+    fn only_a_journal_holding_a_transaction_is_hot() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        fs::write(&catalog, b"catalog").unwrap();
+        assert!(!hot_journal(&catalog), "no journal");
+        journal(&catalog, b"", 0);
+        assert!(!hot_journal(&catalog), "an empty journal");
+        // What SQLite leaves when it ends a transaction without deleting the journal.
+        journal(&catalog, &[0; 28], 53_864);
+        assert!(!hot_journal(&catalog), "a journal with its header zeroed");
+        journal(&catalog, &JOURNAL_MAGIC[..4], 4);
+        assert!(!hot_journal(&catalog), "a journal cut short in its header");
+        journal(&catalog, &JOURNAL_MAGIC, 512);
+        assert!(hot_journal(&catalog), "a journal holding a transaction");
+    }
+
+    #[test]
+    fn a_journal_that_cannot_be_read_is_hot() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        fs::write(&catalog, b"catalog").unwrap();
+        // Opening or reading a directory fails, on Windows and elsewhere, with neither
+        // NotFound nor UnexpectedEof: as a journal held without sharing would.
+        fs::create_dir(catalog.with_extension("cocatalogdb-journal")).unwrap();
+        assert!(hot_journal(&catalog));
+    }
+
+    #[test]
+    fn a_spent_journal_does_not_stop_a_copy_and_a_hot_one_is_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        fs::write(&catalog, b"catalog").unwrap();
+        journal(&catalog, &[0; 28], 4096);
+        let copy = copy_for_reading(&catalog, &dir.path().join("work")).unwrap();
+        assert_eq!(fs::read(copy.path()).unwrap(), b"catalog");
+
+        journal(&catalog, &JOURNAL_MAGIC, 4096);
+        // Short pauses: every try finds the journal, so all of them are waited out.
+        let Err(SourceError::Other(e)) = copy_with_pauses(&catalog, &dir.path().join("work"), Duration::from_millis(1))
+        else {
+            panic!("a copy taken mid-write")
+        };
+        assert!(e.contains("middle of a write"), "{e}");
     }
 }

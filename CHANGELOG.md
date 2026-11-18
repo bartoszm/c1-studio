@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **"Sync failed: the catalog kept changing while it was copied"** when no one was changing it. A rollback journal that SQLite left next to the catalog with its header zeroed (a transaction ended, the file kept) was taken for a write under way, so every read of the catalog, and every write to it, was refused until something deleted the file. Only a journal that holds a transaction counts now, and when that is what holds a read up, the message says so.
+- **Settings out of view** on a narrower window. The header's right end (Hidden, Timeline, Details, Settings) now always stays in view: the search box and the count give way first, then the room kept for Copy and Compare, then the view's tools are cut off at their end.
+
 ## 0.10.0 — 2026-11-16
 
 ### New
