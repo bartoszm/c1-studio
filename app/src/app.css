@@ -584,6 +584,15 @@ footer .edit-error { padding: 0; color: var(--error); text-align: left; }
 .menu button .key { float: right; margin-left: 16px; color: var(--muted); font-size: 11px; }
 .menu-note { padding: 4px 12px; color: var(--muted); font-size: 12px; }
 .menu-sep { margin: 4px 0; border-top: 1px solid var(--line); }
+/* A row of small choices in a menu: the stars, the colour tags. */
+.menu .menu-row { display: flex; align-items: center; gap: 2px; padding: 0 8px; }
+.menu .menu-row button { padding: 3px 5px; font-size: 12px; color: var(--star); letter-spacing: -1px; }
+.menu .menu-row button:last-child { color: var(--muted); letter-spacing: 0; margin-left: auto; }
+.menu .menu-row .dot-item { padding: 4px; }
+.menu .menu-row .dot { display: block; width: 12px; height: 12px; border-radius: 50%; }
+.photo-menu { min-width: 230px; max-width: 320px; max-height: calc(100vh - 16px); overflow-y: auto; }
+.photo-menu .menu-find { margin: 2px 8px 4px; width: calc(100% - 16px); }
+.photo-menu .album-item { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Albums: actions under the title, drop targets while dragging. */
 .album-actions { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 8px 6px 26px; }
 .album-actions button { padding: 1px 7px; font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 3px; }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { PLACES, SHORTCUTS, keysFor } from "../src/lib/shortcuts";
+import { MENU_ITEMS, PLACES, SHORTCUTS, keysFor } from "../src/lib/shortcuts";
 
 test("no key does two things in one place", () => {
   const seen = new Map<string, string>();
@@ -37,4 +37,11 @@ test("a menu finds its key by what it does", () => {
   assert.equal(keysFor("Add keywords"), "Ctrl+K");
   assert.equal(keysFor("Undo"), "Ctrl+Z");
   assert.equal(keysFor("nothing like this"), "");
+});
+
+test("every item of the photo menu finds its key", () => {
+  for (const [item, what] of Object.entries(MENU_ITEMS)) assert.ok(keysFor(what), `${item}: “${what}” is in no shortcut`);
+  assert.equal(keysFor(MENU_ITEMS.trash), "Delete");
+  assert.equal(keysFor(MENU_ITEMS.trashInAlbum), "Ctrl+Delete");
+  assert.equal(keysFor(MENU_ITEMS.copy), "Ctrl+C");
 });
