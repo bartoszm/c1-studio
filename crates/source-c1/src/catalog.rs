@@ -5,7 +5,7 @@
 //! file read-only for a moment.
 
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
@@ -115,16 +115,29 @@ const JOURNAL_MAGIC: [u8; 8] = [0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7];
 /// transaction. A journal can also be left behind with its header zeroed, which is what
 /// SQLite does to end a transaction without deleting the file: that one is harmless, and
 /// taking it for a write would refuse every read and write until something deletes it.
+///
+/// A journal that is there but cannot be read (another program holds it without sharing,
+/// say) counts as hot: a torn copy, or a write over someone else's, is worse than a wait.
 pub(crate) fn hot_journal(catalog: &Path) -> bool {
     let mut journal = catalog.as_os_str().to_owned();
     journal.push("-journal");
     let mut head = [0u8; 8];
-    fs::File::open(journal).and_then(|mut f| f.read_exact(&mut head)).is_ok() && head == JOURNAL_MAGIC
+    match fs::File::open(journal).and_then(|mut f| f.read_exact(&mut head)) {
+        Ok(()) => head == JOURNAL_MAGIC,
+        // No journal, or one too short to hold a header.
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::UnexpectedEof) => false,
+        Err(_) => true,
+    }
 }
 
 /// Copies the catalog, retrying if it changed while we copied or if a hot journal
 /// shows Capture One is mid-transaction. A torn copy would be silently wrong data.
 pub(crate) fn copy_for_reading(catalog: &Path, work_dir: &Path) -> Result<TempCopy> {
+    copy_with_pauses(catalog, work_dir, Duration::from_millis(500))
+}
+
+/// [`copy_for_reading`], waiting `pause` longer before each try than before the last.
+fn copy_with_pauses(catalog: &Path, work_dir: &Path, pause: Duration) -> Result<TempCopy> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     fs::create_dir_all(work_dir)?;
     // Unique per copy: several sources (or tests) in one process may share a work dir.
@@ -133,7 +146,7 @@ pub(crate) fn copy_for_reading(catalog: &Path, work_dir: &Path) -> Result<TempCo
     let mut saving = false;
     for attempt in 0..5 {
         if attempt > 0 {
-            thread::sleep(Duration::from_millis(500 * attempt));
+            thread::sleep(pause * attempt);
         }
         saving = hot_journal(catalog);
         if saving {
@@ -342,6 +355,17 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_that_cannot_be_read_is_hot() {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        fs::write(&catalog, b"catalog").unwrap();
+        // Opening or reading a directory fails, on Windows and elsewhere, with neither
+        // NotFound nor UnexpectedEof: as a journal held without sharing would.
+        fs::create_dir(catalog.with_extension("cocatalogdb-journal")).unwrap();
+        assert!(hot_journal(&catalog));
+    }
+
+    #[test]
     fn a_spent_journal_does_not_stop_a_copy_and_a_hot_one_is_named() {
         let dir = tempfile::tempdir().unwrap();
         let catalog = dir.path().join("c.cocatalogdb");
@@ -351,7 +375,9 @@ mod tests {
         assert_eq!(fs::read(copy.path()).unwrap(), b"catalog");
 
         journal(&catalog, &JOURNAL_MAGIC, 4096);
-        let Err(SourceError::Other(e)) = copy_for_reading(&catalog, &dir.path().join("work")) else {
+        // Short pauses: every try finds the journal, so all of them are waited out.
+        let Err(SourceError::Other(e)) = copy_with_pauses(&catalog, &dir.path().join("work"), Duration::from_millis(1))
+        else {
             panic!("a copy taken mid-write")
         };
         assert!(e.contains("middle of a write"), "{e}");

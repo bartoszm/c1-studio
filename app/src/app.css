@@ -48,13 +48,16 @@ header > * { flex-shrink: 0; }
 header > .search { flex-shrink: 1000; }
 /* The view's tools, right-aligned. Short of room, the room kept for Copy and Compare goes
    first, then they are cut off at their end (Copy and Compare, then the tile size); the
-   panels' buttons and Settings after them always stay in view. */
+   panels' buttons and Settings after them always stay in view. The padding keeps the
+   focus ring inside what is clipped; the margin takes it back on the right. */
 header > .head-tools {
   flex-shrink: 1;
   display: flex;
   align-items: center;
   gap: inherit;
   margin-left: auto;
+  margin-right: -4px;
+  padding: 4px;
   min-width: 0;
   overflow: hidden;
 }
@@ -610,7 +613,9 @@ footer .busy { color: var(--text); }
   .tiles input[type="range"] { display: none; }
   header .count { display: none; }
 }
-/* A small window: the room kept for "Copy to N selected" and the tiles-per-row box go too. */
+/* A small window: the room kept for "Copy to N selected" and the tiles-per-row box go too.
+   Without that room, the view's tools move left when Copy and Compare show; the panels'
+   buttons and Settings stay put. */
 @media (max-width: 1600px) {
   .head-tools > .copy-slot { flex-basis: auto; }
   .copy-to.hidden { display: none; }

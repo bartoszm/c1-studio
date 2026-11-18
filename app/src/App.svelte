@@ -2794,7 +2794,8 @@
           onclick={() => (shape = shape === "1:1" ? "3:2" : "1:1")}
         >{shape}</button>
       </div>
-      <!-- Its own slot, there or not, so the header doesn't move as photos are picked. -->
+      <!-- Its own slot, there or not, so the header doesn't move as photos are picked; on a
+           small window (1600px or less) the room goes, and the tools before it move left. -->
       <span class="copy-slot">
         <button
           class="copy-to"
