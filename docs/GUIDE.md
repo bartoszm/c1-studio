@@ -1022,6 +1022,9 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Arrows, Page Up/Down, Home, End | Move the focus; with Shift, pick a range |
 | Click, Ctrl+click, Shift+click | Focus one; add or remove one; add a range |
 | Ctrl+A | Pick the whole result |
+| Ctrl+I | Invert the pick: the other photos of the result |
+| Ctrl+Shift+A | Back to the focused photo alone (as Esc) |
+| `?`, F1 | The list of keys |
 | Esc | Back to one photo; close the viewer, a dialog or a menu; leave one image's variants |
 | Enter, double-click | Open the viewer |
 | ← → (viewer) | Previous, next photo |
@@ -1030,6 +1033,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Alt+← Alt+→ | Back to the filter before, forward again |
 | `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
 | `v` | Show every variant of the focused photo's image |
+| `c` | Compare the picked photos |
 | `i` | Show or hide the details panel |
 | `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
@@ -1040,11 +1044,13 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Ctrl+V, Ctrl+Alt+V, Ctrl+Shift+V | Paste (overwrite), merge, Paste… (choose what and how) |
 | Delete | Move the picked photos (or the one in the viewer) to the [trash](#trash); in an album, take them out of it |
 | Ctrl+Delete | Move the picked photos to the trash, in an album too |
+| Backspace | In an album, take the picked photos out of it (as Delete) |
 | Ctrl+Shift+S | Copy to N selected: the focused photo's fields onto the other picked photos |
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
+| Wheel, `z` (compare) | Zoom; 1:1 and back |
 
-Keys do not act while you type in a field.
+Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 

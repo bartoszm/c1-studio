@@ -34,6 +34,7 @@
   import AnalysisPane from "./AnalysisPane.svelte";
   import HistoryPane from "./HistoryPane.svelte";
   import { pickText } from "./lib/history";
+  import { inverted } from "./lib/pick";
   import AiPane from "./AiPane.svelte";
   import GpxDialog from "./GpxDialog.svelte";
   import NeighbourDialog from "./NeighbourDialog.svelte";
@@ -60,6 +61,7 @@
   import { activatesCell, typingIn } from "./lib/keys";
   import { opensVariants } from "./lib/variants";
   import SettingsDialog from "./SettingsDialog.svelte";
+  import ShortcutsDialog from "./ShortcutsDialog.svelte";
   import Viewer from "./Viewer.svelte";
   import Compare from "./Compare.svelte";
   import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
@@ -617,6 +619,8 @@
   });
   $effect(() => allowPlaceLookups(settings.onlineMap));
   let showSettings = $state(false);
+  /** The list of keys (`?`). */
+  let showKeys = $state(false);
   /** The Settings tab it opens on: AI from the AI tab, else the sidebar's sections. */
   let settingsTab = $state<"sidebar" | "ai">("sidebar");
   /** A section header's right-click menu. */
@@ -1525,6 +1529,29 @@
     picked.clear();
     for (const r of all.rows) picked.add(r);
   }
+  /** Ctrl+I: the photos of the result not picked now (with none picked, all but the
+   *  focused one). */
+  async function invertPick() {
+    if (!result) return;
+    const mine = generation;
+    const all = await api.query(asking($state.snapshot(filter)), { sort: sortBy });
+    // The filter ran again meanwhile: these rows are not the result shown any more.
+    if (mine !== generation) return;
+    const rest = inverted(all.rows, new Set(targets()));
+    if (!rest) {
+      note("Every photo is picked: nothing left to pick");
+      return;
+    }
+    picked.clear();
+    for (const r of rest) picked.add(r);
+    note(`${picked.size.toLocaleString()} photo${picked.size === 1 ? "" : "s"} picked`);
+  }
+  /** Ctrl+Shift+A: back to the focused photo alone. */
+  function pickFocused() {
+    picked.clear();
+    const row = selected === null ? undefined : focusRow;
+    if (row !== undefined) picked.add(row);
+  }
 
   // Capture One's keys: 0-5 rate, - + * tag red, green, yellow.
   const COLOR_KEYS: Record<string, api.Color> = { "-": "Red", "+": "Green", "*": "Yellow" };
@@ -2176,7 +2203,7 @@
   let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu || showSearchHelp));
   /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
   let dialogOpen = $derived(
-    !!(writing || showBackups || emptying || showSettings || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
+    !!(writing || showBackups || emptying || showSettings || showKeys || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
   );
 
   function onkey(e: KeyboardEvent) {
@@ -2198,6 +2225,11 @@
     // A card's guess on its way to the map (*Show on map*) goes no further, the map not
     // open yet included.
     if (e.key === "Escape") mapGuess = null;
+    if ((e.key === "?" || e.key === "F1") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      showKeys = true;
+      e.preventDefault();
+      return;
+    }
     // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
     if (comparing) {
       const action = e.key === "Delete" && !e.altKey && !e.shiftKey ? deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: !!shownAlbum, inBin, removes: status?.removes }) : "none";
@@ -2221,7 +2253,11 @@
       if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin") setBinned(true, deleting());
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
-      else if (key === "a" && !viewing && !comparing) pickAll();
+      else if (key === "a" && !viewing && !comparing) {
+        if (e.shiftKey) pickFocused();
+        else pickAll();
+      }
+      else if (key === "i" && !viewing && !comparing) invertPick();
       else if (key === "k") focusKeywordInput();
       else if (key === "f" && !viewing && !comparing) {
         const box = document.getElementById("search") as HTMLInputElement | null;
@@ -3699,6 +3735,10 @@ Pick those among the photos shown, then have ${source.word} build their previews
     oncopy={(fields, fill) => { pasteFields = fields; if (clipboard) pasteRows(rows, clipboard.from, fields, fill); }}
     onclose={() => (pasting = null)}
   />
+{/if}
+
+{#if showKeys}
+  <ShortcutsDialog onclose={() => (showKeys = false)} />
 {/if}
 
 {#if showSettings}
