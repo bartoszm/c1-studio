@@ -6,7 +6,8 @@
   // Shown while a source opens: the window would otherwise sit empty for as long as the
   // index takes to open, or a first fill takes to read. It ends itself; Abort stops the
   // open, and the window then offers another source (or keeps the one open before).
-  let { progress }: { progress: Startup } = $props();
+  // Over the start screen it sits low and leaves the artwork undimmed.
+  let { progress, splash = false }: { progress: Startup; splash?: boolean } = $props();
 
   // A repair shows only once one is needed, and stays in the list after.
   let repaired = $state(false);
@@ -59,7 +60,7 @@
 <!-- Esc only while stopping loses nothing: a stray key must not throw away a first read. -->
 <svelte:window onkeydown={(e) => { if (e.key === "Escape" && (progress.step === "opening" || progress.step === "repairing")) abort(); }} />
 
-<div class="backdrop" role="presentation">
+<div class="backdrop" class:splash role="presentation">
   <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="startup-title" aria-describedby="startup-note">
     <h2 id="startup-title">Getting the library ready</h2>
     <ol>
@@ -116,6 +117,7 @@
     padding: 16px;
     background: rgb(0 0 0 / 65%);
   }
+  .backdrop.splash { align-items: end; padding-bottom: 7vh; background: none; }
   .dialog {
     width: min(460px, 100%);
     padding: 18px 20px;

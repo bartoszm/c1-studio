@@ -62,6 +62,7 @@
   import Compare from "./Compare.svelte";
   import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
   import WriteDialog from "./WriteDialog.svelte";
+  import Splash from "./Splash.svelte";
 
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
   const ALWAYS: Dim[] = ["country", "flag", "shape", "hue", "light", "focus"];
@@ -92,6 +93,8 @@
    *  this, so tokens act the same before Enter as after. */
   let current = $derived(withSearch(filter, typed));
   let result = $state<QueryResult | null>(null);
+  /** The start screen covers the window until the first photos, an error or the chooser show. */
+  let splash = $derived(!result && !error && !choosingSource);
   let collections = $state<api.Collection[]>([]);
   /** Keyword paths for completion, most used first. */
   let keywordList = $state<string[]>([]);
@@ -3544,8 +3547,12 @@ Pick those among the photos shown, then have ${source.word} build their previews
   />
 {/if}
 
+{#if splash}
+  <Splash />
+{/if}
+
 {#if startup}
-  <StartupDialog progress={startup} />
+  <StartupDialog progress={startup} {splash} />
 {/if}
 
 {#if pasting && clipboard}
