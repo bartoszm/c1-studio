@@ -4,7 +4,7 @@
 
 ### New
 
-- **Start screen:** the window opens on the C1 Studio artwork instead of an empty grid, until the first photos show. While a library opens, its progress sits below the logo.
+- **The C1 Studio artwork** heads the dialog shown while a library opens.
 
 ### Fixed
 

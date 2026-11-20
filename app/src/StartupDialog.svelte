@@ -2,12 +2,12 @@
   import { onDestroy } from "svelte";
   import { abortOpen, type Startup } from "./lib/api";
   import { progressText } from "./lib/folders";
+  import art from "./assets/startup-art.webp";
 
   // Shown while a source opens: the window would otherwise sit empty for as long as the
   // index takes to open, or a first fill takes to read. It ends itself; Abort stops the
   // open, and the window then offers another source (or keeps the one open before).
-  // Over the start screen it sits low and leaves the artwork undimmed.
-  let { progress, splash = false }: { progress: Startup; splash?: boolean } = $props();
+  let { progress }: { progress: Startup } = $props();
 
   // A repair shows only once one is needed, and stays in the list after.
   let repaired = $state(false);
@@ -60,8 +60,9 @@
 <!-- Esc only while stopping loses nothing: a stray key must not throw away a first read. -->
 <svelte:window onkeydown={(e) => { if (e.key === "Escape" && (progress.step === "opening" || progress.step === "repairing")) abort(); }} />
 
-<div class="backdrop" class:splash role="presentation">
+<div class="backdrop" role="presentation">
   <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="startup-title" aria-describedby="startup-note">
+    <img class="art" src={art} alt="C1 Studio" draggable="false" />
     <h2 id="startup-title">Getting the library ready</h2>
     <ol>
       {#each steps as s, i (s.step)}
@@ -117,15 +118,17 @@
     padding: 16px;
     background: rgb(0 0 0 / 65%);
   }
-  .backdrop.splash { align-items: end; padding-bottom: 7vh; background: none; }
   .dialog {
-    width: min(460px, 100%);
+    width: min(520px, 100%);
     padding: 18px 20px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 6px;
     box-shadow: 0 12px 40px rgb(0 0 0 / 50%);
+    overflow: hidden;
   }
+  /* The artwork heads the dialog, edge to edge. */
+  .art { display: block; width: calc(100% + 40px); height: auto; aspect-ratio: 1040 / 580; margin: -18px -20px 16px; user-select: none; }
   h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
   ol { margin: 0 0 14px; padding: 0; list-style: none; display: grid; gap: 5px; }
   li { display: flex; gap: 8px; color: var(--muted); }
