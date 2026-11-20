@@ -6,11 +6,13 @@
 //! - JPEG-XL holding linear camera-space RGB before white balance (Capture One's `.cop`
 //!   previews): white balance, highlight scaling and the sRGB curve are applied here,
 //!   then the quarter turn and straightening, the colours of the source's own small
-//!   render, fitted pixel by pixel, and the crop.
+//!   render, fitted pixel by pixel once the two are lined up, and the crop. The whole
+//!   pipeline, its limits and how to measure it: `docs/PREVIEW-COLOURS.md`.
 //! - PNG and TIFF originals: decoded like a JPEG.
 //! - Camera raws: the full-size JPEG the camera embedded, framed alike. Not a raw
 //!   conversion, so no edits show beyond the turn and crop.
 
+mod align;
 mod geometry;
 mod jxl;
 mod look;
@@ -25,9 +27,10 @@ use c1model::{ImageFormat, ImageRef};
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
+pub use align::{Aligned, align};
 pub use geometry::{crop, straighten};
 pub use image::RgbImage;
-pub use jxl::{Matching, decode_linear, jxl_size, render_preview};
+pub use jxl::{ColourFit, Matching, colour_fit, decode_linear, jxl_size, render_preview};
 pub use look::Look;
 pub use lut::Lut;
 pub use sheet::{CELL as SHEET_CELL, PER_SHEET, SCENE_COLUMNS, contact_sheet, scene_sheet};
