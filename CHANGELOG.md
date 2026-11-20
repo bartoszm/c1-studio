@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### New
+
+- **The C1 Studio artwork** heads the dialog shown while a library opens.
+
 ### Fixed
 
 - **"Sync failed: the catalog kept changing while it was copied"** when no one was changing it. A rollback journal that SQLite left next to the catalog with its header zeroed (a transaction ended, the file kept) was taken for a write under way, so every read of the catalog, and every write to it, was refused until something deleted the file. Only a journal that holds a transaction counts now, and when that is what holds a read up, the message says so.
