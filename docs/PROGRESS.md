@@ -1741,6 +1741,38 @@ country) and 68k have neither.
 - Tests: `refine` and `lessons_follow_the_instructions_and_keep_the_hash` (c1ai), the
   reviews in `accepted_suggestions_are_queued_as_the_model_s_edits`, `test/reviews.test.ts`.
 
+### UX: keywords, lenses, finding, keys, tiles, feedback, the photo menu
+
+Eight stacked PRs, each on its own.
+
+- **Several keywords at once** (`lib/keywordEntry.ts`): `;`, Tab or a pasted list make
+  chips in the details panel's field; Enter adds them as one `AddKeywords` edit. Ctrl+K
+  opens the panel and waits for the field. The keyword tree's menu adds to the selection.
+- **Keywords by use** (`tree.ts`: `byCount`, `usesWithin`, `hideRare`): sort by the
+  counts shown; hide keywords used fewer than 2/5/10 times, counted across the catalog
+  with those under them (`api.keywords`), so the tree does not change with the filter.
+  Picked keywords and the find box are never hidden from. Kept with `readChoice`.
+- **Find boxes** (`lib/treeFind.svelte.ts`) on Albums, Folders and Location past 15
+  entries, as on Keywords; Camera and Lens show their top ten plus picked ones, with
+  *Show all*. Ctrl+F goes to the search box.
+- **Lens names** (`c1model::lens`): the index lists `lens_name(make, model, raw)`
+  (SCHEMA_VERSION 12): the maker off Fujifilm lenses, a compact's lens as
+  `<camera> built-in`, `-- mm f/--` as none; `lens_pick` lets old picks and `lens:` match.
+  On the fuji catalog 17 lens values became 10. The photo keeps the file's name.
+- **Keys**: `lib/shortcuts.ts` holds every key; `?`/F1 lists them. Ctrl+I inverts the
+  pick, Ctrl+Shift+A drops back to the focused photo.
+- **Tile marks**: `QueryResult.marks` (stars, colour) from the `rating_sort` and
+  `color_sort` fast fields; drawn bottom right, ★ by the tile size turns them off.
+- **Edit feedback** (`describeEdit`): the footer says what an edit did, with Undo (and
+  Redo after an undo); a rating, colour or Delete key reaching over 500 photos asks first.
+- **Photo menu**: stars, seven colours, Add keywords, Add to album (a find box, no drag),
+  Take out of the album shown, Hide, Compare, Copy, Paste, Move to trash.
+- In Svelte 5 a `{@const}` from a menu's state is gone once the menu closes: handlers
+  read what they need before closing it (three such slips were found trying the build).
+- Tried on a copy of the fuji catalog (106k photos) over CDP. Tests: `keywordEntry`,
+  `tree` (sort, hide, album search), `shortcuts`, `batch` (`describeEdit`), `lens.rs`,
+  `a_lens_is_one_entry_however_files_name_it`, `a_page_marks_its_rated_and_labelled_photos`.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that

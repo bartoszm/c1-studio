@@ -62,6 +62,8 @@
   import { opensVariants } from "./lib/variants";
   import SettingsDialog from "./SettingsDialog.svelte";
   import ShortcutsDialog from "./ShortcutsDialog.svelte";
+  import { MENU_ITEMS, keysFor } from "./lib/shortcuts";
+  import { findAlbums, fitMenu } from "./lib/menu";
   import Viewer from "./Viewer.svelte";
   import Compare from "./Compare.svelte";
   import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
@@ -288,14 +290,43 @@
   let mapAim = $state.raw<Camera | null>(null);
   /** A photo's right-click menu: the photos it is for (the picked ones, when it is among
    *  them, as dragging takes them), and where they are, once known. */
-  let photoMenu = $state.raw<{ x: number; y: number; rows: number[]; area: api.Area | null } | null>(null);
+  let photoMenu = $state.raw<{ x: number; y: number; row: number; rows: number[]; area: api.Area | null } | null>(null);
+  /** The photo menu's album finder, while open (*Add to album…*). */
+  let albumQuery = $state<string | null>(null);
+  // However the menu closes (an item, Show on map, an error), its finder goes with it.
+  $effect(() => {
+    if (!photoMenu) albumQuery = null;
+  });
+  /** Puts a menu at `at` (the click), moved as far left or up as it needs to stay in the
+   *  window, again whenever it changes size (the album finder opening). */
+  function fitted(node: HTMLElement, at: { x: number; y: number }) {
+    const place = () => {
+      const { width, height } = node.getBoundingClientRect();
+      const { left, top } = fitMenu(at, { width, height }, { width: window.innerWidth, height: window.innerHeight });
+      node.style.left = `${left}px`;
+      node.style.top = `${top}px`;
+    };
+    place();
+    const watch = new ResizeObserver(place);
+    watch.observe(node);
+    return {
+      update(next: { x: number; y: number }) {
+        at = next;
+        place();
+      },
+      destroy: () => watch.disconnect(),
+    };
+  }
+  const MENU_COLORS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
   async function photoContext(i: number, e: MouseEvent) {
     const row = rowAt(i);
     if (row === undefined) return;
+    // A new menu opens without the last one's album finder.
+    albumQuery = null;
     // A photo not among those picked is picked instead, as a click would.
     if (!picked.has(row)) await pick(i);
     const rows = picked.size > 1 ? [...picked] : [row];
-    const menu = { x: e.clientX, y: e.clientY, rows, area: null };
+    const menu = { x: e.clientX, y: e.clientY, row, rows, area: null };
     photoMenu = menu;
     try {
       const area = await api.area(rows);
@@ -519,6 +550,18 @@
     if (needsAsk(rows.length)) confirming = { text: text(rows.length.toLocaleString()), verb, go: () => go(rows) };
     else go(rows);
   }
+  // The edits a key and the photo menu both make, asking first for many photos.
+  const rateRows = (rows: number[], stars: number) =>
+    guarded(rows, (n) => (stars ? `Rate ${n} photos ${"★".repeat(stars)}?` : `Clear the rating of ${n} photos?`), stars ? "Rate" : "Clear", (r) =>
+      applyEdit({ Rating: stars || null }, r),
+    );
+  const tagRows = (rows: number[], color: api.Color | null) =>
+    guarded(rows, (n) => (color ? `Tag ${n} photos ${color.toLowerCase()}?` : `Clear the colour tag of ${n} photos?`), color ? "Tag" : "Clear", (r) =>
+      applyEdit({ Color: color }, r),
+    );
+  const takeOutRows = (rows: number[], album: api.Collection) =>
+    guarded(rows, (n) => `Take ${n} photos out of “${album.name}”?`, "Take out", (r) => applyEdit({ RemoveFromAlbum: album.id }, r));
+  const trashRows = (rows: number[]) => guarded(rows, (n) => `Move ${n} photos to the trash?`, "Move to trash", (r) => setBinned(true, r));
   /** The background analysis, for the footer. */
   let analysis = $state<api.AnalysisState | null>(null);
   /** Photos being described by a vision model, for the footer and the AI tab. */
@@ -1265,8 +1308,9 @@
       `${clipboard.from.file.name}: ${[...new Set(clipboard.fields.map((f) => FIELD_NAMES[f] ?? f))].join(", ")}`,
   );
 
-  async function openCopy() {
-    const row = comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow;
+  /** Copy… from `from` (the photo right-clicked), else the active or focused photo. */
+  async function openCopy(from?: number) {
+    const row = from ?? (comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow);
     if (row === undefined) return;
     copying = await api.photo(row);
   }
@@ -2286,6 +2330,7 @@
       albumMenu = null;
       sectionMenu = null;
       photoMenu = null;
+      albumQuery = null;
       showSearchHelp = false;
       // Handled: the viewer, listening after us, must not close too.
       e.preventDefault();
@@ -2324,7 +2369,7 @@
     }
     if (ctrl && !e.altKey) {
       if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin")
-        guarded(deleting(), (n) => `Move ${n} photos to the trash?`, "Move to trash", (rows) => setBinned(true, rows));
+        trashRows(deleting());
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing && !comparing) {
@@ -2357,23 +2402,21 @@
     if (e.altKey) return;
     if (/^[0-5]$/.test(e.key)) {
       const stars = +e.key;
-      guarded(targets(), (n) => (stars ? `Rate ${n} photos ${"★".repeat(stars)}?` : `Clear the rating of ${n} photos?`), stars ? "Rate" : "Clear", (rows) =>
-        applyEdit({ Rating: stars || null }, rows),
-      );
+      rateRows(targets(), stars);
     } else if (e.key in COLOR_KEYS) {
       const color = COLOR_KEYS[e.key];
-      guarded(targets(), (n) => `Tag ${n} photos ${color.toLowerCase()}?`, "Tag", (rows) => applyEdit({ Color: color }, rows));
+      tagRows(targets(), color);
     }
     else if (e.key === "i") showInfo = !showInfo;
     else if (key === "t" && !e.repeat && !viewing && !comparing) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
-      guarded(targets(), (n) => `Take ${n} photos out of “${album.name}”?`, "Take out", (rows) => applyEdit({ RemoveFromAlbum: album.id }, rows));
+      takeOutRows(targets(), album);
     }
     else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") {
       // In the viewer that is the photo shown, not the picked ones: it counts them.
-      guarded(deleting(), (n) => `Move ${n} photos to the trash?`, "Move to trash", (rows) => setBinned(true, rows));
+      trashRows(deleting());
     }
     else if (viewing || comparing) return; // the viewer and the comparison have their own keys
     else if (key === "c" && !e.repeat) openCompare();
@@ -3747,9 +3790,69 @@ Pick those among the photos shown, then have ${source.word} build their previews
 {#if photoMenu}
   {@const a = photoMenu.area}
   {@const n = photoMenu.rows.length}
-  <div class="menu-shield" role="presentation" onclick={() => (photoMenu = null)} oncontextmenu={(e) => { e.preventDefault(); photoMenu = null; }}></div>
-  <div class="menu" role="menu" style:left="{photoMenu.x}px" style:top="{photoMenu.y}px">
+  <div class="menu-shield" role="presentation" onclick={() => { photoMenu = null; albumQuery = null; }} oncontextmenu={(e) => { e.preventDefault(); photoMenu = null; albumQuery = null; }}></div>
+  {@const rows = photoMenu.rows}
+  <!-- The action first: `rows` is read from the menu, gone once it closes. -->
+  {@const act = (run: () => unknown) => () => { run(); photoMenu = null; albumQuery = null; }}
+  <div class="menu photo-menu" role="menu" use:fitted={{ x: photoMenu.x, y: photoMenu.y }}>
     <div class="menu-title">{n === 1 ? "This photo" : `${n.toLocaleString()} photos`}</div>
+    <div class="menu-row" role="group" aria-label="Rating">
+      {#each [1, 2, 3, 4, 5] as s}
+        <button role="menuitem" title="{s} star{s === 1 ? '' : 's'} ({s})" onclick={act(() => rateRows(rows, s))}>{"★".repeat(s)}</button>
+      {/each}
+      <button role="menuitem" title="No rating (0)" onclick={act(() => rateRows(rows, 0))}>0</button>
+    </div>
+    <div class="menu-row" role="group" aria-label="Colour tag">
+      {#each MENU_COLORS as c}
+        {@const k = Object.keys(COLOR_KEYS).find((key) => COLOR_KEYS[key] === c)}
+        <button role="menuitem" class="dot-item" title="{c}{k ? ` (${k})` : ''}" aria-label={c} onclick={act(() => tagRows(rows, c))}>
+          <i class="dot" style:background={COLORS[c.toLowerCase()]}></i>
+        </button>
+      {/each}
+      <button role="menuitem" title="No colour tag" onclick={act(() => tagRows(rows, null))}>none</button>
+    </div>
+    <div class="menu-sep" role="separator"></div>
+    <button role="menuitem" onclick={act(() => focusKeywordInput())}>Add keywords…<span class="key">{keysFor(MENU_ITEMS.keywords)}</span></button>
+    {#if albumQuery === null}
+      <button role="menuitem" onclick={() => (albumQuery = "")}>Add to album…</button>
+    {:else}
+      {@const found = findAlbums(collections, albumQuery)}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        class="tree-search menu-find"
+        type="search"
+        placeholder="Find an album"
+        spellcheck="false"
+        autofocus
+        bind:value={albumQuery}
+        onkeydown={(e) => {
+          if (e.key === "Escape") { albumQuery = null; e.stopPropagation(); }
+          else if (e.key === "Enter" && found.length) act(() => applyEdit({ AddToAlbum: found[0].id }, rows))();
+        }}
+      />
+      {#each found as c (c.id)}
+        <button role="menuitem" class="album-item" title={c.path} onclick={act(() => applyEdit({ AddToAlbum: c.id }, rows))}>{c.path}</button>
+      {:else}
+        <div class="menu-note">No album matches.</div>
+      {/each}
+    {/if}
+    {#if shownAlbum && !inBin}
+      {@const album = shownAlbum}
+      <button role="menuitem" onclick={act(() => takeOutRows(rows, album))}>Take out of “{album.name}”<span class="key">{keysFor(MENU_ITEMS.takeOut)}</span></button>
+    {/if}
+    <div class="menu-sep" role="separator"></div>
+    <button role="menuitem" onclick={act(() => toggleHidden())}>{targetsHidden ? "Show again" : "Hide"}<span class="key">{keysFor(MENU_ITEMS.hide)}</span></button>
+    {#if n >= 2}
+      <button role="menuitem" onclick={act(() => openCompare())}>Compare {Math.min(n, COMPARE_MAX)}<span class="key">{keysFor(MENU_ITEMS.compare)}</span></button>
+    {/if}
+    <button role="menuitem" onclick={act(() => openCopy(photoMenu?.row))}>{n === 1 ? "Copy…" : "Copy from this photo…"}<span class="key">{keysFor(MENU_ITEMS.copy)}</span></button>
+    {#if clipboard}
+      <button role="menuitem" onclick={act(() => pasteClip())}>Paste<span class="key">{keysFor(MENU_ITEMS.paste)}</span></button>
+    {/if}
+    {#if !inBin}
+      <button role="menuitem" class="danger" onclick={act(() => trashRows(rows))}>Move to trash<span class="key">{keysFor(shownAlbum ? MENU_ITEMS.trashInAlbum : MENU_ITEMS.trash)}</span></button>
+    {/if}
+    <div class="menu-sep" role="separator"></div>
     <button role="menuitem" disabled={!a?.bounds} onclick={() => a && showOnMap(a)}>Show on map</button>
     {#if a && !a.bounds}
       <div class="menu-note">{n === 1 ? "No position or known place" : "None has a position or a known place"}</div>

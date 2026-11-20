@@ -46,6 +46,19 @@ export const SHORTCUTS: Shortcut[] = [
 
 export const PLACES: Place[] = ["Photos", "Anywhere", "Viewer", "Compare"];
 
+/** What the photo menu's items do, as the table above says it (its start): their key hints
+ *  are found by these, and a test checks each still finds one. */
+export const MENU_ITEMS = {
+  keywords: "Add keywords",
+  hide: "Hide the picked photos",
+  compare: "Compare the picked photos",
+  copy: "Copy… from",
+  paste: "Paste (overwrite)",
+  takeOut: "Move to the trash; in an album, take out of it",
+  trash: "Move to the trash; in an album",
+  trashInAlbum: "Move to the trash, in an album too",
+} as const;
+
 /** The keys of the shortcut that does `what` (its start), for a menu's hint. */
 export function keysFor(what: string): string {
   return SHORTCUTS.find((s) => s.what.startsWith(what))?.keys.split(" · ")[0] ?? "";
