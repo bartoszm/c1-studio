@@ -2106,6 +2106,20 @@
     }
   }
 
+  /** Ctrl+K: the details panel's keyword box, opening the panel when it is closed. */
+  async function focusKeywordInput() {
+    if (!showInfo) {
+      showInfo = true;
+      await tick();
+    }
+    // The panel draws the field once it has read the photo: wait up to a second for it.
+    for (let i = 0; i < 60; i++) {
+      const input = document.getElementById("keyword-input");
+      if (input) return input.focus();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+  }
+
   let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu || showSearchHelp));
   /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
   let dialogOpen = $derived(
@@ -2155,7 +2169,7 @@
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing && !comparing) pickAll();
-      else if (key === "k" && showInfo) document.getElementById("keyword-input")?.focus();
+      else if (key === "k") focusKeywordInput();
       else if (key === "c" && (e.shiftKey || !window.getSelection()?.toString())) openCopy();
       else if (key === "v" && e.shiftKey) { if (clipboard) pasting = targets(); }
       else if (key === "v") pasteClip();
@@ -2667,7 +2681,11 @@
       applyEdit({ AddKeywords: [path] });
     }}
     onremovekeyword={(path) => applyEdit({ RemoveKeywords: [path] })}
-    onaddkeywords={(paths) => applyEdit({ AddKeywords: paths })}
+    onaddkeywords={(paths) => {
+      const fresh = paths.filter((p) => !keywordList.includes(p));
+      if (fresh.length) keywordList = [...keywordList, ...fresh];
+      applyEdit({ AddKeywords: paths });
+    }}
     collections={byId}
     onkeyword={showKeyword}
     onalbum={showAlbum}
@@ -3388,6 +3406,12 @@ Pick those among the photos shown, then have ${source.word} build their previews
   <div class="menu" role="menu" style:left="{keywordMenu.x}px" style:top="{keywordMenu.y}px">
     <div class="menu-title">{node.value}</div>
     {@render pickItems((mode) => { keywordMenu = null; pickKeyword(node.value, mode); }, true)}
+    {#if targets().length}
+      {@const n = targets().length}
+      <button role="menuitem" onclick={() => { const path = node.value; keywordMenu = null; applyEdit({ AddKeywords: [path] }); }}>
+        Add to {n === 1 ? "the focused photo" : `the ${n.toLocaleString()} selected photos`}
+      </button>
+    {/if}
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "rename", start: node.value }; keywordMenu = null; }}>Rename…</button>
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "join", start: node.value }; keywordMenu = null; }}>Join or replace…</button>
     <button role="menuitem" onclick={() => { keywordDialog = { mode: "group", start: node.value }; keywordMenu = null; }}>Group under…</button>

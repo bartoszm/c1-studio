@@ -331,7 +331,7 @@ photos with edits not yet written, and the panel lists which fields.
 |---|---|
 | Rating | `1`–`5`; `0` clears. Or click a star in the panel; clicking the current one clears it. |
 | Colour tag | `-` red, `+` green, `*` yellow. Or click a dot in the panel; clicking the current one clears it. |
-| Add a keyword | Ctrl+K (with the panel shown), or the *Add a keyword* field in the panel. It completes from the catalog, most used first. Nested keywords are typed with `\|`: `trips \| japan`. A keyword that does not exist yet is created. |
+| Add keywords | Ctrl+K (it opens the panel if it is closed), or the *Add keywords* field in the panel. It completes from the catalog, most used first. Nested keywords are typed with `\|`: `trips \| japan`. A keyword that does not exist yet is created. For several at once, end each with `;` (or Tab) and it waits as a chip; Enter adds them all, as one edit that one Ctrl+Z undoes. `travel; people \| family` then Enter adds both, and pasting a list (one per line, or split by `;`) does the same. Backspace in the empty field drops the last chip, Esc drops them all. In the sidebar's keyword tree, right-click a keyword and choose *Add to the selected photos*. |
 | Remove a keyword | × next to it in the panel. Keywords under it go too; the × says so. |
 | Keywords of several photos | With several picked, the panel lists every keyword any of them has. One on only some is dimmed, with how many carry it (3/5); + adds it to all, *Add to all* does so for every such keyword, and × removes it from all. Long lists show their first 8 (those on only some first); *+N more* shows the rest. |
 | Location | Type in the panel's Country, Code, State, City and Location fields. Enter or leaving the field saves, Esc puts the old value back, an empty field clears it. A country fills its ISO code (English, Polish or your language's name, and USA, UK, England, Hong Kong…); clearing the country clears the code; a code typed where there is no country fills the country. |
@@ -996,7 +996,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
 | `-` `+` `*` | Red, green, yellow tag |
-| Ctrl+K | Add a keyword (details panel shown) |
+| Ctrl+K | Add keywords (opens the details panel) |
 | Ctrl+C (or Ctrl+Shift+C) | Copy… from the focused photo |
 | Ctrl+V, Ctrl+Alt+V, Ctrl+Shift+V | Paste (overwrite), merge, Paste… (choose what and how) |
 | Delete | Move the picked photos (or the one in the viewer) to the [trash](#trash); in an album, take them out of it |

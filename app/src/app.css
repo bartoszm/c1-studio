@@ -477,6 +477,11 @@ footer {
   border-radius: 3px;
 }
 .info-panel .add-keyword input:focus { outline: none; border-color: var(--queued); }
+.info-panel .add-keyword .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+.info-panel .add-keyword .chips li { display: flex; align-items: center; gap: 2px; padding: 1px 4px 1px 8px; background: var(--on); border-radius: 10px; font-size: 12px; }
+.info-panel .add-keyword .chips button { padding: 0 3px; color: var(--muted); }
+.info-panel .add-keyword .chips button:hover { color: var(--error); }
+.info-panel .add-keyword .hint { margin: 2px 0 0; color: var(--muted); font-size: 11px; }
 .info-panel .error { padding: 4px 0 0; }
 .info-panel .queued-note { margin: 8px 0 0; color: var(--queued); }
 /* Several photos picked: their fields first, at fixed heights; what varies comes below. */
