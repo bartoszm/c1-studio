@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
-  import { COLORS, bytes, camera, date, eventText, originLabel, exposure, folderOf, geoText } from "./lib/format";
+  import { COLORS, bytes, camera, lensOf, date, eventText, originLabel, exposure, folderOf, geoText } from "./lib/format";
   import { resolveGeo } from "./lib/placeHints";
   import { encode as plusCode } from "./lib/pluscode";
   import { AROUND, type Around } from "./lib/around";
@@ -511,10 +511,16 @@
       <dt>Camera</dt>
       <dd><button class="link" onclick={() => p.exif.camera_model && oncamera(p.exif.camera_model)}>{camera(p)}</button></dd>
     {/if}
-    {#if p.exif.lens}
-      {@const lens = p.exif.lens}
+    {#if lensOf(p)}
+      {@const lens = lensOf(p)!}
       <dt>Lens</dt>
-      <dd><button class="link" title="Photos taken with this lens" onclick={() => onpick({ lenses: [lens] })}>{lens}</button></dd>
+      <dd>
+        <button
+          class="link"
+          title={`Photos taken with this lens${p.exif.lens && p.exif.lens !== lens ? `\nThe file calls it “${p.exif.lens}”` : ""}`}
+          onclick={() => onpick({ lenses: [lens] })}>{lens}</button
+        >
+      </dd>
     {/if}
     {#if exposure(p)}<dt>Exposure</dt><dd>{exposure(p)}</dd>{/if}
     {#if p.exif.width && p.exif.height}

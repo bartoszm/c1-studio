@@ -7,6 +7,7 @@
 
 pub mod change;
 pub mod conformance;
+pub mod lens;
 pub mod memory;
 pub mod photo;
 pub mod platform;

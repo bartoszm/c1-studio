@@ -41,6 +41,9 @@ export function folderOf(path: string): string {
   return (/^[\\/]/.test(path) ? "/" : "") + parts.join("/");
 }
 
+/** The lens as the sidebar lists it, or what the file says when that is not known. */
+export const lensOf = (p: Photo): string | null => (p.lens_name === undefined ? p.exif.lens : p.lens_name) ?? null;
+
 export function camera(p: Photo): string {
   const { camera_make: make, camera_model: model } = p.exif;
   // Models often repeat the make ("Canon EOS 6D"); say it once.

@@ -642,12 +642,19 @@ impl Filter {
             (Dim::Style, &self.style),
         ] {
             if let Some(needle) = needle {
-                let needle = needle.to_lowercase();
+                let lens = dim == Dim::Lens;
+                let typed = needle.to_lowercase();
+                // `lens:Fujifilm XF23` looks for the index's name, `XF23`.
+                let needle = if lens { c1model::lens::lens_pick(needle).to_lowercase() } else { typed.clone() };
+                // And `lens:fujinon` finds the Fujifilm lenses whose maker the index left out.
+                let with_maker = |v: &str| {
+                    lens && c1model::lens::lens_with_maker(v).is_some_and(|long| long.to_lowercase().contains(&typed))
+                };
                 let values: Vec<String> = distinct
                     .get(&dim)
                     .into_iter()
                     .flatten()
-                    .filter(|v| v.to_lowercase().contains(&needle))
+                    .filter(|v| v.to_lowercase().contains(&needle) || with_maker(v))
                     .cloned()
                     .collect();
                 // No value contains it: an empty set query matches nothing, as it should.
@@ -711,11 +718,13 @@ impl Filter {
             (Dim::Make, &self.makes, &self.makes_not),
             (Dim::Orientation, &self.orientation, &self.orientation_not),
         ] {
+            // A lens picked by the name its file gives finds the index's name for it.
+            let named = |v: &String| if dim == Dim::Lens { c1model::lens::lens_pick(v) } else { v.clone() };
             if !include.is_empty() {
-                must.push(any_of(f.dim(dim), include.iter().cloned()));
+                must.push(any_of(f.dim(dim), include.iter().map(named)));
             }
             if !exclude.is_empty() {
-                must_not.push(any_of(f.dim(dim), exclude.iter().cloned()));
+                must_not.push(any_of(f.dim(dim), exclude.iter().map(named)));
             }
         }
         if !self.colors_not.is_empty() {

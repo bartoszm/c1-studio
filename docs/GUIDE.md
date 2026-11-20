@@ -122,7 +122,7 @@ filenames. Words must all match; `"a phrase"` matches the words together and `a 
 either.
 
 Tokens search the camera's and the file's fields: `camera:` `make:` `lens:` (any part of
-the name), `iso:` `f:` `focal:` `shutter:` `size:` `mp:` `width:` `height:` (a number or a
+the name, as the sidebar lists it: see [Lens names](#lens-names)), `iso:` `f:` `focal:` `shutter:` `size:` `mp:` `width:` `height:` (a number or a
 range: `iso:>1600`, `f:<=2.8`, `focal:35-50`, `shutter:>1/30`, `size:>30mb`), `format:`
 (`raw`, `jpeg`, `tiff`, `heif` or extensions such as `raf,dng`) and `orient:` (`landscape`,
 `portrait`, `square`, `panorama`, or enough of one to tell it apart). `-format:` and
@@ -198,6 +198,24 @@ with *2025* picked, the Date tree still shows every year.
   the file type and the shape as shown (landscape, portrait, square, panorama). Camera
   and Lens show their ten most common, and any picked further down; *Show all N* below
   them lists the rest, with a box to find one when there are many.
+
+<a id="lens-names"></a>**Lens names.** Files name the same lens in more than one way, so
+the sidebar, the details panel and `lens:` use one name for each:
+
+- The maker goes from a Fujifilm lens: *Fujifilm Fujinon XF23mmF2 R WR* and
+  *XF23mmF2 R WR* are both **XF23mmF2 R WR**.
+- A compact's built-in lens is named after the camera, whether the file gives a focal
+  length (*23 mm f/2*) or the camera's name (*Ricoh GR IV*): **X100VI built-in**,
+  **GR IV built-in**.
+- *-- mm f/--* or nothing means no lens is known; *50 mm f/--* is **50 mm**.
+
+The details panel's lens tooltip says what the file calls it. Capture One and the file
+keep their own name.
+
+A pick or `lens:` search by a Fujifilm lens's old name still finds it (`lens:fujinon`
+or `lens:Fujifilm XF23` too), and so does *50 mm f/--*. A built-in lens's old name
+(*23 mm f/2*, *Ricoh GR IV*) only becomes **X100VI built-in** with the camera known, so a
+saved filter or search by it finds nothing now: pick the lens again from the sidebar.
 
 **Finding in a long tree.** Albums, Folders and Location get a find box, like
 Keywords, once they hold more than 15 entries. Typing shows only the matches, with the

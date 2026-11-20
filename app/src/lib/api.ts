@@ -351,6 +351,9 @@ export type Photo = {
   hidden?: boolean;
   /** In C1 Studio's trash (not a Capture One field). */
   binned?: boolean;
+  /** The lens as the sidebar lists it: one name however files name it (`exif.lens` is
+   *  what this file says). Only from `photo`. */
+  lens_name?: string | null;
 };
 
 export type CollectionKind = "Album" | "Smart" | "Group" | "Project" | "Folder" | "Other";

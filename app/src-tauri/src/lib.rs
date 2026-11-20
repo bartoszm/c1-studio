@@ -1207,13 +1207,20 @@ struct PhotoView {
     photo: Photo,
     hidden: bool,
     binned: bool,
+    /// The lens as the sidebar lists it (`c1model::lens`); `exif.lens` is what the file says.
+    lens_name: Option<String>,
 }
 
 #[tauri::command]
 async fn photo(app: State<'_, App>, row: u64) -> Result<Option<PhotoView>, String> {
     let s = app.session()?;
     let photo = s.library.photo(row).map_err(text)?;
-    Ok(photo.map(|photo| PhotoView { photo, hidden: s.library.is_hidden(row), binned: s.library.is_binned(row) }))
+    Ok(photo.map(|photo| {
+        let e = &photo.exif;
+        let lens_name =
+            c1model::lens::lens_name(e.camera_make.as_deref(), e.camera_model.as_deref(), e.lens.as_deref());
+        PhotoView { hidden: s.library.is_hidden(row), binned: s.library.is_binned(row), lens_name, photo }
+    }))
 }
 
 /// Hides photos from every view (`hidden`), or shows them again; returns the rows whose

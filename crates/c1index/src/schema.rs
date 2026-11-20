@@ -17,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -452,10 +452,16 @@ pub fn document(
     for coll in &photo.collections {
         dim(Dim::Collection, &coll.0);
     }
+    // One name per lens, however the file names it (see `c1model::lens`).
+    let lens = c1model::lens::lens_name(
+        photo.exif.camera_make.as_deref(),
+        photo.exif.camera_model.as_deref(),
+        photo.exif.lens.as_deref(),
+    );
     for (d, value) in [
         (Dim::Camera, &photo.exif.camera_model),
         (Dim::Make, &photo.exif.camera_make),
-        (Dim::Lens, &photo.exif.lens),
+        (Dim::Lens, &lens),
         (Dim::Country, &photo.place.country),
         (Dim::State, &photo.place.state),
         (Dim::City, &photo.place.city),
