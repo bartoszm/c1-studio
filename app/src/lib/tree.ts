@@ -26,6 +26,9 @@ export type Node = {
 const byName = (a: Node, b: Node) =>
   a.name.trim().localeCompare(b.name.trim(), undefined, { numeric: true, sensitivity: "base" });
 
+/** Most counted first, then by name. */
+export const byCount = (a: Node, b: Node) => (b.count ?? 0) - (a.count ?? 0) || byName(a, b);
+
 function sortDeep(nodes: Node[], order: (a: Node, b: Node) => number = byName): Node[] {
   nodes.sort(order);
   for (const n of nodes) sortDeep(n.children, order);
@@ -33,7 +36,13 @@ function sortDeep(nodes: Node[], order: (a: Node, b: Node) => number = byName): 
 }
 
 /** Facet values that are paths (`a|b|c`, `H:/fotos/2026`), every prefix a value of its own. */
-export function pathTree(values: [string, number][], sep: string, prefix: string, icon: Icon): Node[] {
+export function pathTree(
+  values: [string, number][],
+  sep: string,
+  prefix: string,
+  icon: Icon,
+  order: (a: Node, b: Node) => number = byName,
+): Node[] {
   const nodes = new Map<string, Node>();
   for (const [value, count] of values) {
     const at = value.lastIndexOf(sep);
@@ -45,7 +54,53 @@ export function pathTree(values: [string, number][], sep: string, prefix: string
     const parent = at > 0 ? nodes.get(node.value.slice(0, at)) : undefined;
     (parent ? parent.children : roots).push(node);
   }
-  return sortDeep(roots);
+  return sortDeep(roots, order);
+}
+
+/** How many photos use each keyword or one under it, from the uses of each keyword
+ *  itself. A photo with two keywords under one parent counts twice for the parent, so
+ *  this can be high; it is for telling rarely used keywords apart. */
+export function usesWithin(uses: [string, number][], sep = "|"): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const [path, n] of uses) {
+    let at = path.length;
+    while (at > 0) {
+      const p = path.slice(0, at);
+      out.set(p, (out.get(p) ?? 0) + n);
+      at = path.lastIndexOf(sep, at - 1);
+    }
+  }
+  return out;
+}
+
+/** The tree without the nodes used fewer than `min` times (by `uses`), unless `keep` says
+ *  otherwise or something under them stays. A node `uses` does not know (a keyword added
+ *  since it was counted) stays. `hidden`: how many nodes were left out. */
+export function hideRare(
+  nodes: Node[],
+  uses: Map<string, number>,
+  min: number,
+  keep: (node: Node) => boolean = () => false,
+): { nodes: Node[]; hidden: number } {
+  let hidden = 0;
+  const size = (n: Node): number => 1 + n.children.reduce((sum, c) => sum + size(c), 0);
+  function walk(list: Node[]): Node[] {
+    const out: Node[] = [];
+    for (const node of list) {
+      const before = hidden;
+      const below = walk(node.children);
+      const n = uses.get(node.value);
+      if (n === undefined || n >= min || keep(node) || below.length) {
+        const same = below.length === node.children.length && below.every((c, i) => c === node.children[i]);
+        out.push(same ? node : { ...node, children: below });
+      } else {
+        hidden = before + size(node);
+      }
+    }
+    return out;
+  }
+  const out = min > 1 ? walk(nodes) : nodes;
+  return { nodes: out, hidden };
 }
 
 const ICONS: Partial<Record<Collection["kind"], Icon>> = {

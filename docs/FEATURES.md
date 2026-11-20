@@ -192,6 +192,7 @@ in Capture One's own Trash.
 
 Find a keyword among thousands, and right-click it to rename it, join it with others,
 group it under a parent, or ungroup it. Every photo carrying it follows, as one edit.
+Sort the tree by most used, and hide keywords used only once or twice until you need them.
 
 ![Grouping "chess" under a new keyword, "games"](media/features/keywords.gif)
 
