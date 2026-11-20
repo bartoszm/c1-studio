@@ -48,7 +48,7 @@
   import { tripDates, tripName } from "./lib/trips";
   import { focusCamera, shouldFollow, type Camera } from "./lib/mapview";
   import { PAGE, refreshPages, rowAt as rowIn } from "./lib/pages";
-  import { editingNote, followStep, keptPicks, sameRows, wantedRows, type Picks } from "./lib/batch";
+  import { ASK_ABOVE, describeEdit, needsAsk, editingNote, followStep, keptPicks, sameRows, wantedRows, type Picks } from "./lib/batch";
   import { followFilter } from "./lib/follow";
   import { aroundRange, dayOf, dayStart, isEmpty, wholeDays, within, type Around } from "./lib/around";
   import { Trail, type Shown } from "./lib/navigation";
@@ -343,9 +343,9 @@
   async function mapSetGeo(rows: number[], lat: number, lon: number, from?: api.BBox) {
     dragging = null;
     const at: [number, number] = [Math.round(lat * 1e6) / 1e6, Math.round(lon * 1e6) / 1e6];
-    await applyEdit({ Geo: at }, rows);
+    const made = await applyEdit({ Geo: at }, rows);
     if (editError) return;
-    note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`);
+    note(`${rows.length.toLocaleString()} photo${rows.length === 1 ? "" : "s"} placed at ${at[0].toFixed(4)}, ${at[1].toFixed(4)}`, made && undoOf(made));
     void offerFill(rows);
     // The picked tile moved as a whole: the pick goes with it, so the grid keeps its photos.
     if (from && sameBox(from, mapTile)) {
@@ -502,11 +502,22 @@
   });
   /** A word on what an edit did, shown a few seconds in the footer. */
   let editNote = $state<string | null>(null);
+  /** A button beside the note: Undo after an edit, Redo after an undo. */
+  let noteAction = $state<{ label: string; run: () => unknown } | null>(null);
   let noteTimer: ReturnType<typeof setTimeout>;
-  function note(text: string) {
+  function note(text: string, action: { label: string; run: () => unknown } | null = null) {
     editNote = text;
+    noteAction = action;
     clearTimeout(noteTimer);
-    noteTimer = setTimeout(() => (editNote = null), 4000);
+    noteTimer = setTimeout(() => { editNote = null; noteAction = null; }, action ? 8000 : 4000);
+  }
+  /** A keystroke edit of many photos, waiting for a yes. */
+  let confirming = $state<{ text: string; verb: string; go: () => unknown } | null>(null);
+  /** Runs a keystroke's edit of `rows` (the photos it acts on, counted for the question),
+   *  asking first when they are more than ASK_ABOVE. */
+  function guarded(rows: number[], text: (n: string) => string, verb: string, go: (rows: number[]) => unknown) {
+    if (needsAsk(rows.length)) confirming = { text: text(rows.length.toLocaleString()), verb, go: () => go(rows) };
+    else go(rows);
   }
   /** The background analysis, for the footer. */
   let analysis = $state<api.AnalysisState | null>(null);
@@ -526,13 +537,13 @@
   let dragging = $state<{ rows: number[] } | { album: string } | null>(null);
   // Each entry undoes one edit (one key press or click, any number of photos).
   type Done =
-    | { ops: [number, api.Op][] }
+    | { ops: [number, api.Op][]; what?: string }
     | { remap: number; request: api.RemapRequest }
     | { collection: number; change: api.CollectionChange }
     | { hidden: number[]; on: boolean }
     | { binned: number[]; on: boolean };
   type Undone =
-    | { ops: [number, api.Op][] }
+    | { ops: [number, api.Op][]; what?: string }
     | { request: api.RemapRequest }
     | { change: api.CollectionChange }
     | { hidden: number[]; on: boolean }
@@ -1315,22 +1326,43 @@
   /** The photos ops touch, for `edited` to follow. */
   const rowsOf = (ops: [number, api.Op][]): EditDone => ({ rows: [...new Set(ops.map(([row]) => row))] });
 
-  async function applyEdit(edit: api.Edit, rows = targets()) {
-    if (!rows.length) return;
+  /** Edits `rows`, saying so with an Undo button. The undo step it made, if any: a caller
+   *  that says more itself keeps the button with `undoOf`. */
+  async function applyEdit(edit: api.Edit, rows = targets()): Promise<Done | null> {
+    if (!rows.length) return null;
+    let made: Done | null = null;
     await working(editingNote("edit", rows.length), async () => {
       try {
-        const undo = await api.edit(rows, edit);
-        if (undo.length) {
-          undoStack.push({ ops: undo });
+        const back = await api.edit(rows, edit);
+        const album = "AddToAlbum" in edit ? edit.AddToAlbum : "RemoveFromAlbum" in edit ? edit.RemoveFromAlbum : null;
+        const what = describeEdit(edit, rows.length, album === null ? undefined : byId.get(album)?.name);
+        if (back.length) {
+          made = { ops: back, what };
+          undoStack.push(made);
           redoStack = [];
         }
         editError = null;
+        await edited({ rows, edit });
+        note(made ? what : `Nothing to change: ${what}`, made && undoOf(made));
+        return;
       } catch (e) {
         editError = String(e);
       }
       await edited({ rows, edit });
     });
+    return made;
   }
+
+  // The footer's Undo (Redo) button is for the step it names: once another one is on top
+  // of the stack, it does nothing but go, rather than undo something else.
+  const undoOf = (entry: Done) => ({
+    label: "Undo",
+    run: () => (undoStack.at(-1) === entry ? undo() : note("That is no longer the last change: Ctrl+Z undoes the last one")),
+  });
+  const redoOf = (entry: Undone) => ({
+    label: "Redo",
+    run: () => (redoStack.at(-1) === entry ? redo() : note("Nothing to redo: another change came since")),
+  });
 
   /** How many photos an undo or redo touches, when it is about photos. */
   const doneRows = (d: Done | Undone) =>
@@ -1423,7 +1455,6 @@
     const album = shownAlbum;
     if (fromAlbum && album) {
       await applyEdit({ RemoveFromAlbum: album.id }, [row]);
-      if (!editError) note(`1 photo taken out of “${album.name}”`);
     } else await setBinned(true, [row]);
     // The keys stayed live meanwhile: the active photo may be another one by now.
     if (!comparing || editError) return;
@@ -1461,8 +1492,16 @@
         redoStack.push(last);
         await binChanged();
         return;
-      } else if ("ops" in last) redoStack.push({ ops: await api.editOps(last.ops) });
-      else if ("collection" in last) {
+      } else if ("ops" in last) {
+        const back: Undone = { ops: await api.editOps(last.ops), what: last.what };
+        redoStack.push(back);
+        if (last.what) {
+          editError = null;
+          await edited(done);
+          note(`Undone: ${last.what}`, redoOf(back));
+          return;
+        }
+      } else if ("collection" in last) {
         await api.undoCollection(last.collection);
         redoStack.push({ change: last.change });
         await refreshCollections();
@@ -1497,8 +1536,16 @@
         undoStack.push(last);
         await binChanged();
         return;
-      } else if ("ops" in last) undoStack.push({ ops: await api.editOps(last.ops) });
-      else if ("change" in last) {
+      } else if ("ops" in last) {
+        const again: Done = { ops: await api.editOps(last.ops), what: last.what };
+        undoStack.push(again);
+        if (last.what) {
+          editError = null;
+          await edited(done);
+          note(`Redone: ${last.what}`, undoOf(again));
+          return;
+        }
+      } else if ("change" in last) {
         // The same id as before, so photo edits redone after it still find the album.
         const [seq, change] = await api.changeCollection(last.change);
         undoStack.push({ collection: seq, change });
@@ -2221,10 +2268,18 @@
   let menuOpen = $derived(!!(keywordMenu || placeMenu || albumMenu || sectionMenu || photoMenu || showSearchHelp));
   /** A dialog is open: its keys are its own, not the grid's or the viewer's. */
   let dialogOpen = $derived(
-    !!(writing || showBackups || emptying || showSettings || showKeys || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
+    !!(writing || showBackups || emptying || showSettings || showKeys || confirming || sectionMenu || pasting || keywordDialog || placeDialog || albumDialog || fillingCodes || importingGpx || placingFromNeighbours || copying || syncing),
   );
 
   function onkey(e: KeyboardEvent) {
+    if (confirming) {
+      // Enter on the focused button answers by itself; Esc says no.
+      if (e.key === "Escape") {
+        confirming = null;
+        e.preventDefault();
+      }
+      return;
+    }
     if (e.key === "Escape" && menuOpen) {
       keywordMenu = null;
       placeMenu = null;
@@ -2268,7 +2323,8 @@
       return;
     }
     if (ctrl && !e.altKey) {
-      if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin") setBinned(true, deleting());
+      if (e.key === "Delete" && deleteAction({ ctrl, album: !!shownAlbum, inBin, removes: status?.removes }) === "bin")
+        guarded(deleting(), (n) => `Move ${n} photos to the trash?`, "Move to trash", (rows) => setBinned(true, rows));
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing && !comparing) {
@@ -2299,20 +2355,25 @@
       return;
     }
     if (e.altKey) return;
-    if (/^[0-5]$/.test(e.key)) applyEdit({ Rating: +e.key || null });
-    else if (e.key in COLOR_KEYS) applyEdit({ Color: COLOR_KEYS[e.key] });
+    if (/^[0-5]$/.test(e.key)) {
+      const stars = +e.key;
+      guarded(targets(), (n) => (stars ? `Rate ${n} photos ${"★".repeat(stars)}?` : `Clear the rating of ${n} photos?`), stars ? "Rate" : "Clear", (rows) =>
+        applyEdit({ Rating: stars || null }, rows),
+      );
+    } else if (e.key in COLOR_KEYS) {
+      const color = COLOR_KEYS[e.key];
+      guarded(targets(), (n) => `Tag ${n} photos ${color.toLowerCase()}?`, "Tag", (rows) => applyEdit({ Color: color }, rows));
+    }
     else if (e.key === "i") showInfo = !showInfo;
     else if (key === "t" && !e.repeat && !viewing && !comparing) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
-      const n = targets().length;
-      applyEdit({ RemoveFromAlbum: album.id }).then(() => {
-        if (!editError) note(`${n.toLocaleString()} photo${n === 1 ? "" : "s"} taken out of “${album.name}”`);
-      });
+      guarded(targets(), (n) => `Take ${n} photos out of “${album.name}”?`, "Take out", (rows) => applyEdit({ RemoveFromAlbum: album.id }, rows));
     }
     else if (e.key === "Delete" && deleteAction({ ctrl: false, album: false, inBin, removes: status?.removes }) === "bin") {
-      setBinned(true, deleting());
+      // In the viewer that is the photo shown, not the picked ones: it counts them.
+      guarded(deleting(), (n) => `Move ${n} photos to the trash?`, "Move to trash", (rows) => setBinned(true, rows));
     }
     else if (viewing || comparing) return; // the viewer and the comparison have their own keys
     else if (key === "c" && !e.repeat) openCompare();
@@ -2461,7 +2522,6 @@
     if (!d) return;
     if ("rows" in d && target) {
       await applyEdit({ AddToAlbum: target.id }, d.rows);
-      if (!editError) note(`${d.rows.length.toLocaleString()} photo${d.rows.length === 1 ? "" : "s"} put into “${target.name}”`);
     } else if ("album" in d) {
       try {
         await applyCollection({ Move: { id: d.album, parent: target?.id ?? null } });
@@ -3441,7 +3501,7 @@
         <button onclick={() => (fillOffer = null)}>No</button>
       </span>
     {/if}
-    {#if busy}<span class="busy">{busy}</span>{:else if editError}<button class="edit-error" title="Click to dismiss" onclick={() => (editError = null)}>{editError}</button>{:else if editNote}<span class="edit-note">{editNote}</span>{/if}
+    {#if busy}<span class="busy">{busy}</span>{:else if editError}<button class="edit-error" title="Click to dismiss" onclick={() => (editError = null)}>{editError}</button>{:else if editNote}<span class="edit-note">{editNote}</span>{#if noteAction}{@const act = noteAction}<button class="note-action" onclick={() => { const run = act.run; noteAction = null; editNote = null; run(); }}>{act.label}</button>{/if}{/if}
     {#if notice?.kind === "followed"}
       <span class="fill-offer edit-note">
         The filter followed your edit{#if notice.lost}; {notice.lost.toLocaleString()} of the {notice.total.toLocaleString()} photos are not in it{/if}
@@ -3765,6 +3825,20 @@ Pick those among the photos shown, then have ${source.word} build their previews
 
 {#if showKeys}
   <ShortcutsDialog onclose={() => (showKeys = false)} />
+{/if}
+
+{#if confirming}
+  {@const ask = confirming}
+  <div class="menu-shield confirm-shade" role="presentation" onclick={() => (confirming = null)}></div>
+  <div class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-text">
+    <p id="confirm-text">{ask.text}</p>
+    <p class="muted">More than {ASK_ABOVE} photos are picked. Ctrl+Z undoes it.</p>
+    <div class="buttons">
+      <button onclick={() => (confirming = null)}>Cancel</button>
+      <!-- svelte-ignore a11y_autofocus -->
+      <button class="primary" autofocus onclick={() => { const go = ask.go; confirming = null; go(); }}>{ask.verb}</button>
+    </div>
+  </div>
 {/if}
 
 {#if showSettings}

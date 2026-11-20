@@ -1,6 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collapse, editingNote, followStep, mergedField, sameRows, scrollFix } from "../src/lib/batch";
+import { ASK_ABOVE, collapse, describeEdit, editingNote, followStep, mergedField, needsAsk, sameRows, scrollFix } from "../src/lib/batch";
+
+test("an edit says what it did", () => {
+  assert.equal(describeEdit({ Rating: 4 }, 1240), `★★★★ on ${(1240).toLocaleString()} photos`);
+  assert.equal(describeEdit({ Rating: null }, 1), "Rating cleared on 1 photo");
+  assert.equal(describeEdit({ Color: "Green" }, 2), "Green tag on 2 photos");
+  assert.equal(describeEdit({ Color: null }, 2), "Colour tag cleared on 2 photos");
+  assert.equal(describeEdit({ AddKeywords: ["people|family"] }, 3), "“people › family” added to 3 photos");
+  assert.equal(describeEdit({ AddKeywords: ["a", "b", "c"] }, 3), "3 keywords added to 3 photos");
+  assert.equal(describeEdit({ RemoveKeywords: ["street"] }, 1), "“street” taken off 1 photo");
+  assert.equal(describeEdit({ Place: { city: "Kraków" } }, 5), "Location changed on 5 photos");
+  assert.equal(describeEdit({ Iptc: { title: "x" } }, 5), "IPTC changed on 5 photos");
+  assert.equal(describeEdit({ Geo: [50, 19] }, 5), "GPS set on 5 photos");
+  assert.equal(describeEdit({ Geo: null }, 5), "GPS cleared on 5 photos");
+  assert.equal(describeEdit({ AddToAlbum: "7" }, 5, "Best"), "5 photos put in “Best”");
+  assert.equal(describeEdit({ RemoveFromAlbum: "7" }, 1), "1 photo taken out of the album");
+});
 
 const n = (v: number) => v.toLocaleString();
 
@@ -73,4 +89,11 @@ test("stepping to a photo not read yet leaves the pick alone", () => {
   const one = new Set([7]);
   assert.equal(followStep(one, undefined), false);
   assert.deepEqual([...one], [7]);
+});
+
+test("a keystroke asks first only above 500 photos", () => {
+  assert.equal(ASK_ABOVE, 500);
+  assert.equal(needsAsk(1), false);
+  assert.equal(needsAsk(500), false);
+  assert.equal(needsAsk(501), true);
 });

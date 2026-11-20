@@ -593,6 +593,29 @@ footer .edit-error { padding: 0; color: var(--error); text-align: left; }
 .node.drop { background: var(--queued); }
 .node.drop .name, .node.drop .n, .node.drop .icon { color: #fff; }
 .edit-note { color: var(--muted); }
+.note-action { margin-left: 8px; padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; color: var(--text); }
+.note-action:hover { background: var(--hover); }
+/* Asking before a keystroke edits many photos. */
+.confirm-shade { background: rgb(0 0 0 / 40%); }
+.confirm {
+  position: fixed;
+  top: 30%;
+  left: 50%;
+  z-index: 31;
+  width: min(420px, calc(100vw - 32px));
+  padding: 16px 18px;
+  transform: translateX(-50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgb(0 0 0 / 50%);
+}
+.confirm p { margin: 0 0 8px; }
+.confirm .muted { color: var(--muted); font-size: 12px; }
+.confirm .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+.confirm .buttons button { padding: 3px 10px; border: 1px solid var(--line); border-radius: 4px; }
+.confirm .buttons button:hover { background: var(--hover); }
+.confirm .buttons .primary { border: 0; background: var(--queued); color: #fff; font-weight: 600; }
 footer .busy { color: var(--text); }
 .fill-offer { display: inline-flex; align-items: center; gap: 6px; }
 .fill-offer button { padding: 0 8px; border: 1px solid var(--line); border-radius: 3px; }
