@@ -142,6 +142,9 @@ pub struct QueryResult {
     /// (position in `rows`, how many variants its image has) for the photos whose image
     /// has more than one, so a page marks them.
     pub variants: Vec<(u32, u32)>,
+    /// (position in `rows`, stars, colour label's place in [`c1model::ColorLabel::ALL`]
+    /// plus one) for the photos rated or labelled, so a page marks its tiles. 0: none.
+    pub marks: Vec<(u32, u8, u8)>,
     pub facets: Counts,
     pub micros: u128,
 }
@@ -2278,7 +2281,7 @@ impl Library {
                 (n, addrs(hits), f)
             }
         };
-        let (rows, offline) = self.rows_of(searcher, &docs)?;
+        let (rows, offline, marks) = self.rows_of(searcher, &docs)?;
         let variants = {
             let v = self.variants.read().unwrap();
             if v.is_empty() {
@@ -2290,11 +2293,18 @@ impl Library {
                     .collect()
             }
         };
-        Ok(QueryResult { total, rows, offline, variants, facets, micros: 0 })
+        Ok(QueryResult { total, rows, offline, variants, marks, facets, micros: 0 })
     }
 
     /// The rows of `docs`, and the positions among them of the photos flagged offline.
-    fn rows_of(&self, searcher: &Searcher, docs: &[DocAddress]) -> anyhow::Result<(Vec<u64>, Vec<u32>)> {
+    /// The rows of `docs`, the positions of those offline, and the rating and colour of
+    /// those with either ([`QueryResult::marks`]).
+    #[allow(clippy::type_complexity)]
+    fn rows_of(
+        &self,
+        searcher: &Searcher,
+        docs: &[DocAddress],
+    ) -> anyhow::Result<(Vec<u64>, Vec<u32>, Vec<(u32, u8, u8)>)> {
         let mut columns = Vec::new();
         for segment in searcher.segment_readers() {
             let fast = segment.fast_fields();
@@ -2304,21 +2314,27 @@ impl Library {
                 Some(column) => column.dictionary().term_ord(schema::flag::OFFLINE)?,
                 None => None,
             };
-            columns.push((fast.u64("row")?, flags.zip(offline)));
+            columns.push((fast.u64("row")?, flags.zip(offline), fast.u64("rating_sort")?, fast.i64("color_sort")?));
         }
         let mut rows = Vec::with_capacity(docs.len());
         let mut offline = Vec::new();
+        let mut marks = Vec::new();
         for a in docs {
-            let (row, flags) = &columns[a.segment_ord as usize];
+            let (row, flags, rating, color) = &columns[a.segment_ord as usize];
             let Some(r) = row.first(a.doc_id) else { continue };
             if let Some((column, ord)) = flags
                 && column.term_ords(a.doc_id).any(|o| o == *ord)
             {
                 offline.push(rows.len() as u32);
             }
+            let stars = rating.first(a.doc_id).map_or(0, schema::rating_of_sort);
+            let label = color.first(a.doc_id).map_or(0, schema::color_of_sort);
+            if stars > 0 || label > 0 {
+                marks.push((rows.len() as u32, stars, label));
+            }
             rows.push(r);
         }
-        Ok((rows, offline))
+        Ok((rows, offline, marks))
     }
 
     pub fn photo_id(&self, row: u64) -> Option<PhotoId> {

@@ -357,6 +357,24 @@ main { grid-area: main; overflow: hidden scroll; } /* a steady scrollbar keeps t
   border-radius: 3px;
   cursor: pointer;
 }
+/* Stars and the colour tag, bottom right (the hidden mark is bottom left). */
+.cell .tile-mark {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 15px;
+  letter-spacing: -1px;
+  color: var(--star);
+  background: rgb(0 0 0 / 60%);
+  border-radius: 3px;
+  pointer-events: none;
+}
+.cell .tile-mark i { width: 9px; height: 9px; border-radius: 50%; box-shadow: 0 0 0 1px rgb(255 255 255 / 60%); }
 .cell .variants-mark.collapsed { box-shadow: 2px 2px 0 -1px var(--panel), 3px 3px 0 -1px rgb(255 255 255 / 45%); }
 .cell .variants-mark:hover { border-color: var(--accent); }
 .cell img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -640,6 +658,7 @@ footer .busy { color: var(--text); }
 .tiles input[type="number"].fixed { border-color: var(--accent); }
 .tiles input[type="number"]:focus { outline: none; border-color: var(--queued); }
 .tiles .shape { width: auto; padding: 0 6px; margin-left: 4px; border: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.tiles .shape.on { color: var(--star); }
 
 /* Location fields typed in the details panel: plain text until hovered or focused. */
 .info-panel dl.fields { align-items: center; gap: 2px 8px; margin-top: 4px; }

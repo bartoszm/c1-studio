@@ -38,11 +38,12 @@
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import { markTitle } from "./lib/variants";
+  import { markText } from "./lib/format";
 
   // Only the cells on screen (plus a few rows either side) exist in the page; the
   // rest of the result is a tall empty box that keeps the scrollbar honest.
   let {
-    total, rowAt, need, selected, picked, queued, hidden = () => false, offline, variants = () => 1, collapsed = false,
+    total, rowAt, need, selected, picked, queued, hidden = () => false, offline, variants = () => 1, mark, collapsed = false,
     onvariants, onselect, onopen, ondragcell, oncontext, children, tiles, shape, ontiles, layout = $bindable(),
   }: {
     total: number;
@@ -62,6 +63,9 @@
     offline?: (i: number) => boolean;
     /** How many variants its image has (1: only this one). */
     variants?: (i: number) => number;
+    /** Its stars, and its colour tag (`tag`, drawn in `color`), to draw on it; none drawn
+     *  when not given. */
+    mark?: (i: number) => { stars: number; color: string | null; tag: string | null } | null;
     /** Are the other variants of each image left out? */
     collapsed?: boolean;
     /** Its mark clicked: show every variant of its image. */
@@ -285,6 +289,14 @@
         {/if}
         {#if queued(i)}<span class="queued" title="Edited here, not yet written to {source.word}"></span>{/if}
         {#if hidden(i)}<span class="hidden-mark" title="Hidden: left out of every view unless Hidden is on">hidden</span>{/if}
+        {#if mark}
+          {@const m = mark(i)}
+          {#if m}
+            <span class="tile-mark" role="img" aria-label={markText(m.stars, m.tag)}>
+              {#if m.color}<i style:background={m.color}></i>{/if}{#if m.stars}{"★".repeat(m.stars)}{/if}
+            </span>
+          {/if}
+        {/if}
         {#if variants(i) > 1}
           {@const n = variants(i)}
           <span class="variants-mark" class:collapsed title={markTitle(n, collapsed)}>{n}</span>

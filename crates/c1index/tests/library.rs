@@ -3197,6 +3197,17 @@ fn a_scene_is_stored_together_with_one_call_recorded() {
 }
 
 #[test]
+fn a_page_marks_its_rated_and_labelled_photos() {
+    let (_d, lib, _s) = setup();
+    let result = lib.query(&Filter::default(), &QueryOptions { sort: Sort::Row, ..QueryOptions::default() }).unwrap();
+    let id = |at: u32| -> u32 { lib.photo_id(result.rows[at as usize]).unwrap().ext.parse().unwrap() };
+    let mut marks: Vec<(u32, u8, u8)> = result.marks.iter().map(|&(at, stars, label)| (id(at), stars, label)).collect();
+    marks.sort();
+    // Photo n has n % 5 stars (none for 5 and 10); 3 is red; 9 is in the trash.
+    assert_eq!(marks, [(1, 1, 0), (2, 2, 0), (3, 3, 1), (4, 4, 0), (6, 1, 0), (7, 2, 0), (8, 3, 0)]);
+}
+
+#[test]
 fn a_lens_is_one_entry_however_files_name_it() {
     let lens = |n: u32, make: &str, model: &str, lens: &str| {
         let mut p = photo(n);
