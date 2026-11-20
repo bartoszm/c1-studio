@@ -123,7 +123,7 @@ fn main() -> anyhow::Result<()> {
         let scores = methods.map(|m| {
             let m = to_size(&m, &thumb);
             match &aligned {
-                Some(a) => mae(&a.resample(&m), &thumb, Some(&a.valid)),
+                Some(a) => mae(&a.resample(&m).expect("sized to the thumbnail"), &thumb, Some(&a.valid)),
                 None => mae(&m, &thumb, None),
             }
         });

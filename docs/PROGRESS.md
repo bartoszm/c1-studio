@@ -1796,20 +1796,29 @@ block. It writes a sheet per export. It also finds a second variant's export
 - **Measuring colour without framing**: the pairs had the same problem; framing
   differences turned into a brightness bias. `exportcheck` now also lines the preview
   up with the export (*colour only*).
+- **After review**:
+  - When the lined-up fit fails its residual, the pairs as they are are tried, so no
+    table the old way found is lost.
+  - The frame's shift is found first at quarter size (±48 px), then each block ±20 px
+    around it. A block whose match lies at the edge of its reach is dropped; the first
+    version capped the search at ±28 px, and untitled-0219-2 was cut off there.
+  - A warp moving any part more than 60 px is refused.
+  - Blocks are searched on several threads.
+  - `Aligned::resample` returns `None` for an image of the wrong size.
 
 | export | as they are | lined up | thumbnail |
 |---|---|---|---|
-| DSCF3468 | 17.7 | 8.8 | 5.0 |
-| DSCF7077_1 | 3.5 | 1.3 | 1.7 |
+| DSCF3468 | 17.9 | 10.0 | 5.0 |
+| DSCF7077_1 | 3.5 | 1.4 | 1.7 |
 | R0015727 | 11.8 | 11.8 | 7.3 |
 | untitled-0066-2 | 9.0 | 5.4 | 6.2 |
-| untitled-0219-2 | 12.6 | 8.5 | 3.8 |
+| untitled-0219-2 | 11.3 | 7.6 | 3.8 |
 | untitled-0268-2 | 9.1 | 4.8 | 4.5 |
 | untitled-0403 | 20.0 | 9.7 | 10.0 |
 
 `lookcheck` (now scored lined up too) is unchanged at the median, since most photos are
-already in line (largest shift: median 0.1 px, 90th percentile 4 px). Colour renders cost
-about 90 ms over tones. Not done: the shown preview still lacks perspective and lens
+already in line (largest shift: median 0.1 px, 90th percentile 4.7 px). Colour renders
+cost about 45 ms over tones. Not done: the shown preview still lacks perspective and lens
 corrections (DSCF3468 and untitled-0403 sit differently in the frame), and local
 adjustments. The whole pipeline is written up in `docs/PREVIEW-COLOURS.md`.
 

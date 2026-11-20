@@ -8,11 +8,11 @@
 //! because least squares pulls towards the mean: shadows come out too light and
 //! highlights too dark. So the render is first warped onto the thumbnail.
 //!
-//! How: blocks of the thumbnail are found in the render by normalised cross-correlation,
-//! first at half size and then at full size, to a fraction of a pixel. A smooth warp,
-//! quadratic in x and y, is fitted to their displacements. Blocks that disagree with it
-//! (repeating patterns, local edits) are dropped, and the render is resampled through
-//! it.
+//! How: the shift of the frame as a whole is found first, at quarter size. Then blocks of
+//! the thumbnail are found in the render near that shift by normalised cross-correlation,
+//! at half size and then at full size, to a fraction of a pixel. A smooth warp, quadratic
+//! in x and y, is fitted to their displacements. Blocks that disagree with it (repeating
+//! patterns, local edits) are dropped, and the render is resampled through it.
 
 use crate::RgbImage;
 
@@ -20,9 +20,16 @@ use crate::RgbImage;
 const BLOCK: usize = 32;
 /// Between the corners of neighbouring blocks.
 const SPACING: usize = 28;
-/// Search reach at half size (so twice this at full size), and around that at full size.
-const COARSE_REACH: i32 = 14;
+/// Search reach for the whole frame's shift at quarter size (±48 px at full size).
+const GLOBAL_REACH: i32 = 12;
+/// Search reach for each block around the whole frame's shift at half size (±20 px at
+/// full size), and around that at full size. A block whose best match lies at the edge
+/// of its reach may lie beyond it, and is not trusted.
+const LOCAL_REACH: i32 = 10;
 const FINE_REACH: i32 = 2;
+/// A warp that moves any part of the frame further than this (target pixels) has
+/// swung out where no block holds it; the two are paired as they are instead.
+const MAX_SHIFT: f32 = 60.0;
 /// A block whose best match correlates less than this is not trusted.
 const MIN_CORRELATION: f32 = 0.6;
 /// A block whose grey levels vary less than this (standard deviation, out of 255) is
@@ -46,43 +53,74 @@ pub struct Aligned {
 
 impl Aligned {
     /// Another image of the source's size (such as the source with other colours),
-    /// warped alike.
-    pub fn resample(&self, image: &RgbImage) -> RgbImage {
-        self.warp.apply(image).image
+    /// warped alike; `None` for an image of another size.
+    pub fn resample(&self, image: &RgbImage) -> Option<RgbImage> {
+        let (w, h) = image.dimensions();
+        (w as usize == self.warp.w && h as usize == self.warp.h).then(|| self.warp.apply(image).image)
     }
 }
 
 /// `source`, already at `target`'s size, warped so that each pixel shows the spot the
 /// target's pixel shows. `None` when too few parts of the two can be matched (a flat or
-/// very dark frame, or two different pictures); pair them as they are then.
+/// very dark frame, or two different pictures), or when the warp would move parts of the
+/// frame implausibly far; pair them as they are then.
 pub fn align(source: &RgbImage, target: &RgbImage) -> Option<Aligned> {
     if source.dimensions() != target.dimensions() {
         return None;
     }
     let (s, t) = (Grey::of(source), Grey::of(target));
-    let (s2, t2) = (s.half(), t.half());
-    let mut blocks = Vec::new();
     let (w, h) = (t.w, t.h);
     if w < BLOCK + 2 * FINE_REACH as usize || h < BLOCK + 2 * FINE_REACH as usize {
         return None;
     }
-    for y0 in (0..=h - BLOCK).step_by(SPACING) {
-        for x0 in (0..=w - BLOCK).step_by(SPACING) {
-            let Some(coarse) = t2.block(x0 / 2, y0 / 2, BLOCK / 2) else { continue };
-            let Some((cx, cy, _)) = best(&coarse, &s2, (0, 0), COARSE_REACH) else { continue };
-            let Some(fine) = t.block(x0, y0, BLOCK) else { continue };
-            let Some((fx, fy, ncc)) = best(&fine, &s, (2 * cx, 2 * cy), FINE_REACH) else { continue };
-            if ncc < MIN_CORRELATION {
-                continue;
-            }
-            let (sx, sy) = subpixel(&fine, &s, fx, fy, ncc);
-            let centre = ((x0 + BLOCK / 2) as f64, (y0 + BLOCK / 2) as f64);
-            blocks.push(Match { centre, shift: (f64::from(fx) + sx, f64::from(fy) + sy), weight: f64::from(ncc) });
+    let (s2, t2) = (s.half(), t.half());
+    let global = global_shift(&s2.half(), &t2.half());
+    let around = (2 * global.0, 2 * global.1);
+    let origins: Vec<(usize, usize)> = (0..=h - BLOCK)
+        .step_by(SPACING)
+        .flat_map(|y0| (0..=w - BLOCK).step_by(SPACING).map(move |x0| (x0, y0)))
+        .collect();
+    let place = |&(x0, y0): &(usize, usize)| -> Option<Match> {
+        let coarse = t2.block(x0 / 2, y0 / 2, BLOCK / 2)?;
+        let (cx, cy, _) = best(&coarse, &s2, around, LOCAL_REACH)?;
+        if (cx - around.0).abs() == LOCAL_REACH || (cy - around.1).abs() == LOCAL_REACH {
+            return None;
         }
-    }
+        let fine = t.block(x0, y0, BLOCK)?;
+        let (fx, fy, ncc) = best(&fine, &s, (2 * cx, 2 * cy), FINE_REACH)?;
+        if ncc < MIN_CORRELATION {
+            return None;
+        }
+        let (sx, sy) = subpixel(&fine, &s, fx, fy, ncc);
+        let centre = ((x0 + BLOCK / 2) as f64, (y0 + BLOCK / 2) as f64);
+        Some(Match { centre, shift: (f64::from(fx) + sx, f64::from(fy) + sy), weight: f64::from(ncc) })
+    };
+    // The blocks are placed independently, a share of them per thread.
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let share = origins.len().div_ceil(threads).max(1);
+    let blocks: Vec<Match> = std::thread::scope(|scope| {
+        let placing: Vec<_> = origins
+            .chunks(share)
+            .map(|part| scope.spawn(move || part.iter().filter_map(place).collect::<Vec<_>>()))
+            .collect();
+        placing.into_iter().flat_map(|h| h.join().expect("a block search does not panic")).collect()
+    });
     let warp = Warp::fit(&blocks, w, h)?;
     let Resampled { image, valid, largest_shift } = warp.apply(source);
-    Some(Aligned { image, valid, largest_shift, warp })
+    (largest_shift <= MAX_SHIFT).then_some(Aligned { image, valid, largest_shift, warp })
+}
+
+/// The shift of the frame as a whole, at the size of `source` and `target`: where the
+/// middle of the target, as large a square as the reach leaves room for, best matches.
+/// No shift when that square is too flat to place.
+fn global_shift(source: &Grey, target: &Grey) -> (i32, i32) {
+    let reach = GLOBAL_REACH as usize;
+    let n = target.w.min(target.h).saturating_sub(2 * reach);
+    if n < BLOCK / 4 {
+        return (0, 0);
+    }
+    let (x0, y0) = ((target.w - n) / 2, (target.h - n) / 2);
+    target.block(x0, y0, n).and_then(|b| best(&b, source, (0, 0), GLOBAL_REACH)).map_or((0, 0), |(x, y, _)| (x, y))
 }
 
 struct Resampled {
@@ -369,6 +407,24 @@ mod tests {
         let after = mean_error(&aligned.image, &target, &aligned.valid);
         assert!(after < before / 4.0, "{before:.1} → {after:.1}");
         assert!(aligned.largest_shift > 6.0, "{}", aligned.largest_shift);
+    }
+
+    #[test]
+    fn finds_a_shift_beyond_a_blocks_own_reach() {
+        // 36 px: more than a block searches around the frame's shift, found as the frame's.
+        let target = scene(450, 300, |x, y| (x, y));
+        let source = scene(450, 300, |x, y| (x - 36.0, y + 9.0));
+        let aligned = align(&source, &target).expect("aligned");
+        assert!((aligned.largest_shift - 37.1).abs() < 1.0, "{}", aligned.largest_shift);
+        assert!(mean_error(&aligned.image, &target, &aligned.valid) < 2.0);
+    }
+
+    #[test]
+    fn resampling_needs_the_source_size() {
+        let target = scene(300, 200, |x, y| (x, y));
+        let aligned = align(&target, &target).expect("aligned");
+        assert!(aligned.resample(&target).is_some());
+        assert!(aligned.resample(&RgbImage::new(299, 200)).is_none());
     }
 
     #[test]

@@ -116,18 +116,26 @@ pub fn colour_fit(image: &RgbImage, look: &RgbImage) -> ColourFit {
         return ColourFit::ShapesDiffer;
     }
     let small = shrink(image, w, h);
-    let (table, shift) = match crate::align::align(&small, look) {
-        Some(aligned) => {
-            let pairs = aligned.image.pixels().zip(look.pixels()).zip(&aligned.valid);
-            (Lut::fit_pairs(pairs.filter(|(_, ok)| **ok).map(|((s, t), _)| (s.0, t.0))), Some(aligned.largest_shift))
-        }
-        None if difference <= SHAPE_TOLERANCE => (Lut::fit(&small, look), None),
-        None => return ColourFit::ShapesDiffer,
+    // A table close enough to its pairs, or the residual of the one that was not.
+    let keep = |table: Option<Lut>, shift| match table {
+        Some(table) if table.residual <= MAX_RESIDUAL => Ok(ColourFit::Table { table, shift }),
+        other => Err(other.map(|t| t.residual)),
     };
-    match table {
-        Some(table) if table.residual <= MAX_RESIDUAL => ColourFit::Table { table, shift },
-        other => ColourFit::NoFit { residual: other.map(|t| t.residual) },
+    let mut residual = None;
+    if let Some(aligned) = crate::align::align(&small, look) {
+        let pairs = aligned.image.pixels().zip(look.pixels()).zip(&aligned.valid);
+        let table = Lut::fit_pairs(pairs.filter(|(_, ok)| **ok).map(|((s, t), _)| (s.0, t.0)));
+        match keep(table, Some(aligned.largest_shift)) {
+            Ok(fit) => return fit,
+            Err(r) => residual = r,
+        }
     }
+    // Not lined up, or lined up wrongly: pairs as they are still make a table when the
+    // two share their shape, as they did before lining up.
+    if difference > SHAPE_TOLERANCE {
+        return if residual.is_some() { ColourFit::NoFit { residual } } else { ColourFit::ShapesDiffer };
+    }
+    keep(Lut::fit(&small, look), None).unwrap_or_else(|r| ColourFit::NoFit { residual: r.or(residual) })
 }
 
 /// The mean of the pixels whose centres fall in each output pixel: a box filter, which is

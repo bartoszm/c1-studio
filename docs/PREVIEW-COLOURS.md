@@ -50,7 +50,7 @@ pixels are paired; it does not move anything in the picture that is shown.
 ### Lining up (`align.rs`)
 
 The `.cot` has corrections the `.cop` lacks, such as lens distortion and perspective
-(keystone). On real photos, parts of the two frames sit 3–28 thumbnail pixels apart, and
+(keystone). On real photos, parts of the two frames sit 3–27 thumbnail pixels apart, and
 the gap varies across the frame.
 
 A colour table fitted to pairs from slightly different spots is wrong in a predictable
@@ -61,18 +61,26 @@ preview looked flat and hazy (see the before and after numbers below).
 
 So the render is warped onto the thumbnail before pairing:
 
-- The thumbnail is cut into 32 px blocks every 28 px. Flat blocks (grey levels varying
-  by less than 3) are skipped, because they cannot be placed.
-- Each block is found in the render by normalised cross-correlation, which ignores
-  brightness and contrast differences. The search is ±28 px at half size, then ±2 px at
-  full size, refined to a fraction of a pixel with a parabola.
-- Matches correlating below 0.6 are dropped. A displacement field, quadratic in x and y
-  (12 numbers), is fitted to the rest by weighted least squares. This covers shift,
-  zoom, rotation, perspective and mild lens distortion. Blocks further than 3 px, then
-  1.5 px, from the field are dropped as mismatches (repeating patterns, local edits),
-  and the field is fitted again.
-- With fewer than 8 good blocks (a flat or very dark frame), the two are paired as they
-  are.
+All matching uses normalised cross-correlation, which ignores brightness and contrast
+differences. Distances below are in thumbnail pixels.
+
+- First, the shift of the frame as a whole: the middle of the thumbnail is searched for
+  at quarter size, ±48 px.
+- Then the thumbnail is cut into 32 px blocks every 28 px. Flat blocks (grey levels
+  varying by less than 3) are skipped, because they cannot be placed.
+- Each block is searched for ±20 px around the frame's shift at half size, then ±2 px
+  at full size, refined to a fraction of a pixel with a parabola. A block whose best
+  half-size match lies at the edge of its ±20 px may really lie beyond it, so it is
+  dropped. So are matches correlating below 0.6. The blocks are searched on several
+  threads.
+- A displacement field, quadratic in x and y (12 numbers), is fitted to the remaining
+  blocks by weighted least squares. This covers shift, zoom, rotation, perspective and
+  mild lens distortion. Blocks further than 3 px, then 1.5 px, from the field are
+  dropped as mismatches (repeating patterns, local edits), and the field is fitted
+  again.
+- The two are paired as they are instead when fewer than 8 good blocks are left (a flat
+  or very dark frame), or when the field would move any part of the frame more than
+  60 px. The second case means it has swung out where no block holds it.
 
 Lined up, the two may also differ in shape by up to 6% instead of 2%. That covers a
 perspective fix that changes the thumbnail's shape.
@@ -92,12 +100,16 @@ perspective fix that changes the thumbnail's shape.
 
 ### Fallbacks
 
-When no table can be fitted, the preview falls back to `look.rs::apply_tones`. That
+If the lined-up pairs give no table (fewer than 1,000 usable pairs, or a residual above
+25), or the two could not be lined up, the pairs are tried as they are. That is only
+done when the two have the same shape (within 2%), as before lining up existed. So
+lining up never loses a table the old way would have found.
+
+When neither gives a table, the preview falls back to `look.rs::apply_tones`. That
 matches the distribution of brightness to the thumbnail's, keeping each pixel's colour
-ratios: the tone curve, not the colours. This happens when the shapes differ by more
-than 6% (more than 2% if the two could not be lined up), when there are fewer than 1,000
-usable pairs, or when the residual is above 25. Without a `.cot` at all, the preview gets
-white balance and the sRGB curve only.
+ratios: the tone curve, not the colours. This also happens when the shapes differ by
+more than 6%. Without a `.cot` at all, the preview gets white balance and the sRGB curve
+only.
 
 The decision for one photo is `c1image::colour_fit(render, thumbnail)`. It returns a
 `ColourFit`: `Table { table, shift }`, `ShapesDiffer` or `NoFit { residual }`.
@@ -166,31 +178,39 @@ difference out of 255:
 
 | export | paired as they are | lined up | C1's thumbnail | largest shift |
 |---|---|---|---|---|
-| DSCF3468 | 17.7 | 8.8 | 5.0 | 13 px |
-| DSCF7077_1 | 3.5 | 1.3 | 1.7 | 6 px |
+| DSCF3468 | 17.9 | 10.0 | 5.0 | 15 px |
+| DSCF7077_1 | 3.5 | 1.4 | 1.7 | 5 px |
 | R0015727 | 11.8 | 11.8 | 7.3 | 1 px |
 | untitled-0066-2 (black and white) | 9.0 | 5.4 | 6.2 | 6 px |
-| untitled-0219-2 | 12.6 | 8.5 | 3.8 | 28 px |
+| untitled-0219-2 | 11.3 | 7.6 | 3.8 | 27 px |
 | untitled-0268-2 | 9.1 | 4.8 | 4.5 | 9 px |
-| untitled-0403 | 20.0 | 9.7 | 10.0 | 13 px |
+| untitled-0403 | 20.0 | 9.7 | 10.0 | 15 px |
+
+The median went from 11.3 to 7.6. Three exports are now closer to Capture One's export
+than its own thumbnail is (DSCF7077_1, untitled-0066-2, untitled-0403), and untitled-0268-2
+is within 0.3 of it. *Colour only* lines the preview up with the export using the same
+`align`, so these numbers move a little when `align` changes. The search was widened
+after review, which moved DSCF3468 from 8.8 to 10.0 and
+untitled-0219-2 from 8.5 to 7.6.
 
 Before lining up, every export showed the same signs: shadows 6–30 levels too light and
-highlights 15–115 too dark. After, the bias is within about ±5 on all but two:
+highlights 15–115 too dark. After, the bias is within about ±6 on all but two:
 
 - R0015727 is the only one already lined up, so there was nothing to gain. What is left
   looks local (shadows +6); C1's own thumbnail is +5 there too.
-- untitled-0219-2 has deep shadows +20 in green and blue, on 5% of the frame.
+- untitled-0219-2 has deep shadows +15–18 in green and blue, on 5% of the frame (the
+  thumbnail +7).
 
 On 120 random photos from the fuji catalog, `lookcheck` (held-out halves, median, out of
 255):
 
 | | plain | + b&w | + b&w + tones | table | table, lined up |
 |---|---|---|---|---|---|
-| black and white (50) | 29.1 | 28.8 | 7.3 | 4.7 | 4.7 |
-| colour (70) | 35.8 | 35.8 | 6.7 | 4.3 | 4.3 |
+| black and white (51) | 28.3 | 27.6 | 7.0 | 4.3 | 4.3 |
+| colour (69) | 33.7 | 33.7 | 6.8 | 4.9 | 4.9 |
 
 All 120 lined up. Most photos are already in line: the median of each photo's largest
-shift is 0.1 px. One in ten is more than 4 px off, the most 8.6 px. So the median does
+shift is 0.1 px. One in ten is more than 4.7 px off, the most 13.6 px. So the median does
 not move; the gain is in that tail, which is where the exports above come from. A
-colour render takes about 90 ms more than the tone-curve one (fit, lining up and table
+colour render takes about 45 ms more than the tone-curve one (fit, lining up and table
 together).
