@@ -9,6 +9,7 @@
 - **Keywords by use.** Right-click the sidebar's *Keywords* heading to sort the tree by most used, or to hide keywords used fewer than 2, 5 or 10 times in the catalog. A row under the tree counts the hidden ones and shows them again; finding a keyword still finds them, and picked keywords always show.
 - **Find an album, folder or place.** Albums, Folders and Location get a find box like Keywords' once they hold more than 15 entries: typing narrows the tree to the matches, with their groups opened. Camera and Lens show *Show all N* below their ten most common, with a find box for long lists; a value picked further down always shows. Ctrl+F goes to the search box.
 - **One name per lens.** *Fujifilm Fujinon XF23mmF2 R WR* and *XF23mmF2 R WR* are one Lens entry; a compact's built-in lens is *X100VI built-in* or *GR IV built-in*, whether the file gives a focal length or the camera's name; *-- mm f/--* counts as no lens. The details panel's tooltip gives the file's own name. A filter or `lens:` search by a Fujifilm lens's old name (with the maker, or just `lens:fujinon`) or by *50 mm f/--* still works; one saved with a built-in lens's old name (*23 mm f/2*, *Ricoh GR IV*) finds nothing now: pick the lens again. The library's index is rebuilt once on the first start.
+- **The keys, in the app.** `?` or F1 lists every key, by where it works. Ctrl+I inverts the pick within the result, Ctrl+Shift+A goes back to the focused photo alone, and the viewer's hint names the rating and tag keys.
 
 ### Fixed
 

@@ -156,7 +156,7 @@
       {#if info.keywords.length}<span class="kw">{info.keywords.map((k) => k.join(" › ")).join("   ")}</span>{/if}
     {/if}
     <button class="grid-pick" aria-label="Grid: {GUIDE_NAMES[guide]}. Show the next" title={TURNS[guide] > 1 ? "Grid over the photo (g, Shift+G); o turns it" : "Grid over the photo (g, Shift+G)"} onclick={() => stepGuide()}>{GUIDE_NAMES[guide]}</button>
-    <span class="hint">{hint} · ← → Esc · i · g{TURNS[guide] > 1 ? " · o" : ""}</span>
+    <span class="hint">{hint} · ← → Esc · 0–5 - + * · i · g{TURNS[guide] > 1 ? " · o" : ""} · ? all keys</span>
   </div>
   {@render children?.()}
 </div>
