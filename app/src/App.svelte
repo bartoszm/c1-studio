@@ -6,7 +6,8 @@
   import type { Dim, Filter, QueryResult } from "./lib/api";
   import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
-  import { albumTree, byCount, cityWithoutLocation, hideRare, pathTree, placeText, placeTree, searchTree, usesWithin, type Node } from "./lib/tree";
+  import { albumTree, byCount, cityWithoutLocation, flatValues, hideRare, pathTree, placeText, placeTree, showsFind, treeSize, usesWithin, type Node } from "./lib/tree";
+  import { treeFind, type TreeFind } from "./lib/treeFind.svelte";
   import { keepChoice, readChoice } from "./lib/stored";
   import { allowPlaceLookups } from "./lib/placeHints";
   import { SECTION_DIMS, type SectionKey } from "./lib/sections";
@@ -539,7 +540,6 @@
 
   /** Keyword tree changes queued for Capture One. */
   let remapCount = $state(0);
-  let keywordSearch = $state("");
   let keywordMenu = $state<{ x: number; y: number; node: Node } | null>(null);
   /** The Location tree's right-click menu, and its rename / join dialog. */
   let placeMenu = $state<{ x: number; y: number; node: Node } | null>(null);
@@ -2012,7 +2012,25 @@
     if (dim === "year" || dim === "rating") return [...all].sort((a, b) => b[0].localeCompare(a[0]));
     if (dim === "hue" || dim === "ext") return all;
     if (dim === "orientation") return [...all].sort((a, b) => ORIENTATIONS.indexOf(a[0]) - ORIENTATIONS.indexOf(b[0]));
-    return all.slice(0, 10);
+    // The most common, and any picked further down; or all, narrowed by the find box.
+    return flatValues(all, {
+      all: showAll.has(dim),
+      query: facetQuery[dim] ?? "",
+      top: TOP_VALUES,
+      picked: (v) => !!pickState(dim, v),
+      label: (v) => label(dim, v),
+    });
+  }
+  /** A flat group shows this many of its values until *Show all*. */
+  const TOP_VALUES = 10;
+  const showAll = new SvelteSet<Dim>();
+  /** What the find box of a group showing all its values holds. */
+  let facetQuery = $state<Partial<Record<Dim, string>>>({});
+  /** How many values a group has beyond those it shows first; 0 when it shows them all. */
+  function moreValues(dim: Dim): number {
+    if (["year", "rating", "hue", "ext", "orientation"].includes(dim)) return 0;
+    const n = result?.facets[dim]?.length ?? 0;
+    return n > TOP_VALUES ? n : 0;
   }
 
   function label(dim: Dim, value: string) {
@@ -2027,6 +2045,12 @@
     albums: "Albums", folders: "Folders", keywords: "Keywords", places: "Location", look: "Look", trips: "Trips",
   };
 
+  // Find boxes: while one has text, its tree shows only matches (and the branches above
+  // them), opened.
+  const keywordFind = treeFind(() => keywordRareView.nodes);
+  const albumFind = treeFind(() => albums);
+  const folderFind = treeFind(() => folders);
+  const placeFind = treeFind(() => places);
   let albums = $derived(albumTree(collections, new Map(result?.facets.collection ?? []), smart, queuedAlbums));
   let folders = $derived(pathTree(result?.facets.folder ?? [], "/", "f:", "folder"));
   let places = $derived(placeTree(result?.facets.place_tree ?? []));
@@ -2039,17 +2063,15 @@
     hideRare(
       keywords,
       keywordUses,
-      keywordSearch.trim() || showRare || !keywordUses.size ? 0 : +keywordRare,
+      keywordFind.searching || showRare || !keywordUses.size ? 0 : +keywordRare,
       (n) => !!pickOf(filter.keywords_under, filter.keywords_under_not, n.value),
     ),
   );
-  // While searching, the tree shows only matches (and the branches above them), opened.
-  let keywordView = $derived(searchTree(keywordRareView.nodes, keywordSearch));
-  const searchOpen = new SvelteSet<string>();
-  $effect(() => {
-    searchOpen.clear();
-    for (const key of keywordView.open) searchOpen.add(key);
-  });
+  /** A tree this large gets a find box. */
+  const FIND_FROM = 15;
+  let albumCount = $derived(treeSize(albums));
+  let folderCount = $derived(treeSize(folders));
+  let placeCount = $derived(treeSize(places));
 
   let active = $derived(Object.values(current).some((v) => v !== undefined));
 
@@ -2201,6 +2223,11 @@
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
       else if (key === "a" && !viewing && !comparing) pickAll();
       else if (key === "k") focusKeywordInput();
+      else if (key === "f" && !viewing && !comparing) {
+        const box = document.getElementById("search") as HTMLInputElement | null;
+        box?.focus();
+        box?.select();
+      }
       else if (key === "c" && (e.shiftKey || !window.getSelection()?.toString())) openCopy();
       else if (key === "v" && e.shiftKey) { if (clipboard) pasting = targets(); }
       else if (key === "v") pasteClip();
@@ -2630,6 +2657,21 @@
 {/snippet}
 
 <!-- How a section's picks combine, once there are two: every one, or any. -->
+{#snippet findBox(f: TreeFind, placeholder: string)}
+  <input
+    class="tree-search"
+    type="search"
+    {placeholder}
+    spellcheck="false"
+    bind:value={f.query}
+    onkeydown={(e) => { if (e.key === "Escape") { f.query = ""; e.currentTarget.blur(); } }}
+  />
+{/snippet}
+
+{#snippet noMatch(f: TreeFind)}
+  {#if f.searching && !f.nodes.length}<p class="tree-none">No match.</p>{/if}
+{/snippet}
+
 {#snippet joinRow(key: CombineKey, noun: string)}
   {#if joined(filter, key).length > 1}
     <div class="rating-op">
@@ -2762,6 +2804,7 @@
       <button aria-label="Forward" title="Forward again (Alt+→)" disabled={!canForward} onclick={() => travel(false)}>›</button>
     </span>
     <input
+      id="search"
       class="search"
       class:bad={typed.errors.length > 0}
       placeholder="Search words, or iso:>1600 lens:23 format:raw orient:portrait…"
@@ -2910,20 +2953,22 @@
               title="Photos in no album · click again for photos in some album"
               onclick={(e) => toggleNone("uncollected", e)}
             ><span class="name">{filter.uncollected === false ? "In an album" : "No album"}</span></button>
+            {#if albumCount > FIND_FROM || albumFind.searching}{@render findBox(albumFind, "Find an album")}{/if}
             {@render joinRow("albums", "albums")}
             <Tree
-              nodes={albums}
+              nodes={albumFind.nodes}
               selected={undefined}
               mark={(n) => pickOf(filter.collections, filter.not_in_collections, n.value)}
               multi
               canOut={(n) => byId.get(n.value)?.kind !== "Smart"}
-              {expanded}
+              expanded={albumFind.searching ? albumFind.open : expanded}
               onpick={(n, m) => pickAlbum(n.value, m)}
               oncontext={(node, e) => (albumMenu = { x: e.clientX, y: e.clientY, node })}
               drag={dragAlbum}
               candrop={(n) => canDrop(byId.get(n.value))}
               ondropnode={(n) => drop(byId.get(n.value))}
             />
+            {@render noMatch(albumFind)}
             <p class="tree-hint">
               {#if shownAlbum}Delete takes the selected photos out of “{shownAlbum.name}”.{:else}Drag photos onto an album to put them in; drag an album onto a group to move it.{/if}
             </p>
@@ -2964,15 +3009,17 @@
               title="Photos with nothing in the Location field · click again for photos with a location"
               onclick={(e) => toggleNone("located", e)}
             ><span class="name">{filter.located === true ? "With a location" : "No location"}</span></button>
+            {#if placeCount > FIND_FROM || placeFind.searching}{@render findBox(placeFind, "Find a place")}{/if}
             <Tree
-              nodes={places}
+              nodes={placeFind.nodes}
               selected={undefined}
               mark={(n) => placePick(filter.places_under, filter.places_under_not, n.value)}
               multi
-              {expanded}
+              expanded={placeFind.searching ? placeFind.open : expanded}
               onpick={(n, m) => onPlace(n.value, m)}
               oncontext={(node, e) => { if (!cityWithoutLocation(node.value)) placeMenu = { x: e.clientX, y: e.clientY, node }; }}
             />
+            {@render noMatch(placeFind)}
             {#if missingCodes}
               <button class="tree-action" onclick={() => (fillingCodes = true)} title="Fill in the ISO codes of these photos' countries">
                 {missingCodes.toLocaleString()} without an ISO country code · Fill in…
@@ -2984,21 +3031,21 @@
         <section>
           {@render head("folders")}
           {#if !folded.has("folders")}
-            <Tree nodes={folders} selected={filter.folder && "f:" + filter.folder} {expanded} onpick={pickFolder} />
+            {#if folderCount > FIND_FROM || folderFind.searching}{@render findBox(folderFind, "Find a folder")}{/if}
+            <Tree
+              nodes={folderFind.nodes}
+              selected={filter.folder && "f:" + filter.folder}
+              expanded={folderFind.searching ? folderFind.open : expanded}
+              onpick={pickFolder}
+            />
+            {@render noMatch(folderFind)}
           {/if}
         </section>
       {:else if key === "keywords"}
         <section>
           {@render head("keywords")}
           {#if !folded.has("keywords")}
-            <input
-              class="tree-search"
-              type="search"
-              placeholder="Find a keyword"
-              spellcheck="false"
-              bind:value={keywordSearch}
-              onkeydown={(e) => { if (e.key === "Escape") { keywordSearch = ""; e.currentTarget.blur(); } }}
-            />
+            {@render findBox(keywordFind, "Find a keyword")}
             <button
               class="none-row"
               class:on={filter.unkeyworded}
@@ -3007,16 +3054,16 @@
             ><span class="name">No keywords</span></button>
             {@render joinRow("keywords", "keywords")}
             <Tree
-              nodes={keywordView.nodes}
+              nodes={keywordFind.nodes}
               selected={undefined}
               mark={(n) => pickOf(filter.keywords_under, filter.keywords_under_not, n.value)}
               multi
-              expanded={keywordSearch.trim() ? searchOpen : expanded}
+              expanded={keywordFind.searching ? keywordFind.open : expanded}
               onpick={(n, m) => pickKeyword(n.value, m)}
               oncontext={(node, e) => (keywordMenu = { x: e.clientX, y: e.clientY, node })}
             />
-            {#if keywordSearch.trim() && !keywordView.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
-            {#if keywordRare !== "0" && !keywordSearch.trim()}
+            {#if keywordFind.searching && !keywordFind.nodes.length}<p class="tree-none">No keyword matches.</p>{/if}
+            {#if keywordRare !== "0" && !keywordFind.searching}
               {#if showRare}
                 <button class="tree-action rare" onclick={() => (showRare = false)}>Hide keywords used fewer than {keywordRare} times</button>
               {:else if keywordRareView.hidden}
@@ -3030,10 +3077,20 @@
       {:else}
         {@const dim = key}
         {@const list = values(dim)}
-        {#if list.length}
+        {#if list.length || showAll.has(dim)}
           <section>
             {@render head(dim)}
             {#if !folded.has(dim)}
+              {#if showsFind(showAll.has(dim), moreValues(dim), facetQuery[dim] ?? "")}
+                <input
+                  class="tree-search"
+                  type="search"
+                  placeholder="Find a {TITLES[dim].toLowerCase()}"
+                  spellcheck="false"
+                  bind:value={facetQuery[dim]}
+                  onkeydown={(e) => { if (e.key === "Escape") { facetQuery[dim] = ""; e.currentTarget.blur(); } }}
+                />
+              {/if}
               {#if dim === "rating"}
                 <div class="rating-op">
                   Stars
@@ -3061,6 +3118,13 @@
                   <span class="n">{n.toLocaleString()}</span>
                 </button>
               {/each}
+              {#if showAll.has(dim) && !list.length}<p class="tree-none">No match.</p>{/if}
+              {#if moreValues(dim)}
+                <button
+                  class="tree-action rare"
+                  onclick={() => { if (showAll.has(dim)) { showAll.delete(dim); facetQuery[dim] = ""; } else showAll.add(dim); }}
+                >{showAll.has(dim) ? "Show fewer" : `Show all ${moreValues(dim).toLocaleString()}`}</button>
+              {/if}
             {/if}
           </section>
         {/if}
