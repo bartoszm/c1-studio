@@ -14,12 +14,13 @@ use image::imageops::FilterType;
 use image::{GrayImage, RgbImage};
 use serde::{Deserialize, Serialize};
 
-pub use colour::{HUES, MONO, NEUTRAL, name_of, stats_from_palette};
+pub use colour::{HUES, MONO, MONO_SPREAD, NEUTRAL, name_of, stats_from_palette};
 pub use groups::{DUPLICATE_MAX, Groups, Taken, distance, group};
 
 /// Bumped when what [`analyse`] measures changes: stored results of another version are
-/// measured again. 2: per colour, its share of the pixels and its biggest patch.
-pub const VERSION: u32 = 2;
+/// measured again. 2: per colour, its share of the pixels and its biggest patch. 3: the
+/// tint spread.
+pub const VERSION: u32 = 3;
 
 /// One colour name in a picture: its share of the pixels, the share of its biggest single
 /// patch, and how vivid that patch is (mean Lab chroma of its pixels). All 0 when absent.
@@ -41,7 +42,7 @@ pub enum ColourMode {
 /// Bumped when the classes made of a measure change (colour names, what a class means):
 /// the search index is rebuilt, the photos are not measured again. Moving a threshold is
 /// a [`ClassSettings`] change, not this.
-pub const CLASSES: u32 = 3;
+pub const CLASSES: u32 = 4;
 
 /// One of a photo's main colours.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -60,6 +61,11 @@ pub struct Analysis {
     pub palette: Vec<Swatch>,
     /// Mean colourfulness (CIE Lab chroma); near 0 for black and white.
     pub chroma: f32,
+    /// How far the pixels' tints stray from the picture's mean tint (95th percentile of
+    /// the Lab a/b distance): near 0 for black and white, toned or not, while a muted
+    /// colour photo with a low mean keeps its faces and clothes apart.
+    #[serde(default)]
+    pub tint_spread: f32,
     /// Mean luminance, 0..1.
     pub brightness: f32,
     /// Spread of luminance (standard deviation), 0..0.5.
@@ -85,12 +91,13 @@ pub fn analyse(image: &RgbImage) -> Analysis {
     let (width, height) = image.dimensions();
     let gray = image::imageops::grayscale(&image);
     let (brightness, contrast, highlights, shadows) = tones(&gray);
-    let (palette, chroma) = colour::palette(&image);
+    let (palette, chroma, tint_spread) = colour::palette(&image);
     Analysis {
         width,
         height,
         palette,
         chroma,
+        tint_spread,
         brightness,
         contrast,
         highlights,
@@ -202,6 +209,9 @@ pub const BLURRY: &str = "blurry";
 pub struct ClassSettings {
     /// Mean Lab chroma below which a picture is black and white.
     pub mono_chroma: f32,
+    /// Tint spread ([`Analysis::tint_spread`]) below which a picture is black and white: a
+    /// muted colour photo has a low mean chroma but tints that stray.
+    pub mono_spread: f32,
     /// Share of the picture (0..1) a colour covers to be one of its colours.
     pub colour_share: f32,
     /// Share its biggest colour needs when none reaches `colour_share`; else `muted`.
@@ -244,6 +254,7 @@ impl Default for ClassSettings {
     fn default() -> Self {
         Self {
             mono_chroma: colour::MONO,
+            mono_spread: colour::MONO_SPREAD,
             colour_share: 1.0 / 6.0,
             colour_floor: 0.05,
             colour_mode: ColourMode::Covers,
@@ -279,6 +290,7 @@ impl ClassSettings {
         let square = fin(self.square_ratio, d.square_ratio).max(1.0);
         Self {
             mono_chroma: fin(self.mono_chroma, d.mono_chroma).max(0.0),
+            mono_spread: fin(self.mono_spread, d.mono_spread).max(0.0),
             colour_share: unit(self.colour_share, d.colour_share),
             colour_floor: unit(self.colour_floor, d.colour_floor),
             colour_mode: self.colour_mode,
@@ -320,14 +332,20 @@ impl Analysis {
         shape_of(self.width, self.height, s)
     }
 
+    /// Black and white: little colour on average, one tint throughout, and no vivid patch
+    /// (a grey street with a red coat is not).
+    pub fn is_black_and_white(&self, s: &ClassSettings) -> bool {
+        let vivid = |st: &HueStat| st.patch >= s.patch_share && st.chroma >= s.patch_chroma;
+        self.chroma < s.mono_chroma && self.tint_spread < s.mono_spread && !self.hue_stats.iter().any(vivid)
+    }
+
     /// The colours the picture is made of: black and white, or in [`ColourMode::Covers`] the
     /// colours (not black, white or grey) covering [`ClassSettings::colour_share`] of its
     /// pixels or more, in [`ColourMode::Patch`] those with a vivid patch big enough; else its
     /// biggest colour if it shows at all, else `muted`. Biggest first.
     pub fn hues(&self, s: &ClassSettings) -> Vec<&'static str> {
         let vivid = |st: &HueStat| st.patch >= s.patch_share && st.chroma >= s.patch_chroma;
-        // A grey picture with one vivid patch (a red coat) is not black and white.
-        if self.chroma < s.mono_chroma && !self.hue_stats.iter().any(vivid) {
+        if self.is_black_and_white(s) {
             return vec![colour::BLACK_AND_WHITE];
         }
         let patch = s.colour_mode == ColourMode::Patch;
@@ -461,7 +479,38 @@ mod tests {
         assert_eq!(a.hues(&ClassSettings { colour_share: 0.9, colour_floor: 0.9, ..d() }), ["muted"]);
         // Low mean chroma alone no longer makes it black and white: its patches are vivid.
         assert_ne!(a.hues(&ClassSettings { mono_chroma: 1000.0, ..d() }), ["black & white"]);
-        assert_eq!(a.hues(&ClassSettings { mono_chroma: 1000.0, patch_chroma: 1000.0, ..d() }), ["black & white"]);
+        // Nor with no vivid patch: its tints stray far apart.
+        assert_ne!(a.hues(&ClassSettings { mono_chroma: 1000.0, patch_chroma: 1000.0, ..d() }), ["black & white"]);
+        let all = ClassSettings { mono_chroma: 1000.0, patch_chroma: 1000.0, mono_spread: 1000.0, ..d() };
+        assert_eq!(a.hues(&all), ["black & white"]);
+    }
+
+    #[test]
+    fn a_muted_colour_photo_is_not_black_and_white() {
+        // An overcast street: grey, with a pale face or coat in every seventh pixel, none
+        // touching another, so no patch and little colour on average.
+        let street =
+            RgbImage::from_fn(
+                60,
+                60,
+                |x, y| {
+                    if (x + 2 * y) % 7 == 0 { Rgb([150, 120, 110]) } else { Rgb([128, 128, 128]) }
+                },
+            );
+        let a = analyse(&street);
+        assert!(a.chroma < MONO, "{}", a.chroma);
+        assert!(a.tint_spread > MONO_SPREAD, "{}", a.tint_spread);
+        assert_ne!(a.hues(&d()), ["black & white"]);
+        // A toned print: warm throughout, lighter or darker, but one tint.
+        let print = analyse(&RgbImage::from_fn(60, 60, |x, y| {
+            let v = 30.0 + 3.5 * (x + y) as f32 / 2.0;
+            Rgb([v as u8, (v * 0.985) as u8, (v * 0.96) as u8])
+        }));
+        assert!(print.chroma > 1.0 && print.chroma < MONO, "{}", print.chroma);
+        assert!(print.tint_spread < 2.0, "{}", print.tint_spread);
+        assert_eq!(print.hues(&d()), ["black & white"]);
+        // A plain grey has no spread at all.
+        assert!(analyse(&solid(60, 60, [128; 3])).tint_spread < 1e-3);
     }
 
     /// Grey, with a red block of `w`×`h` at the centre (a 60 px picture is measured as it is).

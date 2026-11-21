@@ -21,3 +21,7 @@ chrono.workspace = true
 rand.workspace = true
 rayon.workspace = true
 tempfile.workspace = true
+
+[dev-dependencies]
+c1analysis.workspace = true
+rusqlite.workspace = true

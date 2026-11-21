@@ -723,9 +723,10 @@ are; each bar's tooltip gives its rule. Clicking a bar filters by it.
   sixth by default), or, set to *has a vivid patch* in Settings, when the photo has one
   vivid patch of it big enough (2% by default): a red coat on a grey street. When no
   colour counts, the biggest stands for the photo if it shows at all, else it is
-  *muted*. *Black & white* is a photo with almost no colour and no vivid patch, so a
-  grey photo with one red coat is not black and white. Black, white and grey are never
-  colours.
+  *muted*. *Black & white* is a photo with almost no colour, one tint throughout (a
+  toned print counts) and no vivid patch, so a grey photo with one red coat is not black
+  and white, nor is an overcast street whose faces and coats are faint but there. Black,
+  white and grey are never colours.
 - **Brightness:** dark, medium or bright by mean brightness; one per photo.
 - **Light problems:** *clipped highlights* (pure white pixels), *blocked shadows* (pure
   black pixels) and *low contrast*; a photo can have several.
