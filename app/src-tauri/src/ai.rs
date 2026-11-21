@@ -6,13 +6,15 @@
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use c1ai::agy::{self, Agy};
 use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
+use c1ai::models::SIGLIP2;
+use c1ai::siglip::{self, Siglip};
 use c1ai::{
     AiError, Brief, Failed, Fields, Language, LeftOut, PhotoRequest, Progress, SheetRequest, Step, Task,
     VisionProvider, Vocabulary,
@@ -27,7 +29,8 @@ use crate::{App, Lowers, Session, is_current, text};
 
 /// How a model is reached: Claude through the API with a key, billed per token; Claude
 /// Code signed in with a Claude plan, counted against the plan's limits; or Gemini
-/// through agy, counted against the Google account's quota.
+/// through agy, counted against the Google account's quota; or a small model run on this
+/// computer, which costs nothing and suggests keywords only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Access {
@@ -35,6 +38,7 @@ pub(crate) enum Access {
     Api,
     Plan,
     Gemini,
+    Local,
 }
 
 /// The image a model is sent of each photo.
@@ -83,6 +87,8 @@ pub(crate) struct AiSettings {
     left_out: LeftOut,
     /// How photos are located.
     locate: LocateSettings,
+    /// The local model suggests a keyword scoring at least this (%).
+    local_threshold: f32,
 }
 
 /// What the user chose for locating photos.
@@ -136,6 +142,7 @@ impl Default for AiSettings {
             image: AiImage::Thumb,
             left_out: LeftOut::default(),
             locate: LocateSettings::default(),
+            local_threshold: siglip::DEFAULT_THRESHOLD,
         }
     }
 }
@@ -320,6 +327,96 @@ fn plan_view() -> PlanView {
     }
 }
 
+/// The local model's files: there or not, and how a download of them goes.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct LocalView {
+    name: &'static str,
+    installed: bool,
+    /// The whole download, in bytes.
+    size: u64,
+    /// The folder it is kept in.
+    folder: String,
+    downloading: bool,
+    /// Bytes there so far, while downloading.
+    done: u64,
+    /// Why the last download ended early.
+    error: Option<String>,
+}
+
+/// The folder models are kept in, shared by every catalog.
+fn models_root() -> PathBuf {
+    c1model::provider::data_root().join("models")
+}
+
+/// A download under way, or the last one's end. One at a time, whatever the catalog open.
+#[derive(Default)]
+struct Download {
+    running: bool,
+    done: u64,
+    error: Option<String>,
+}
+
+static DOWNLOAD: Mutex<Download> = Mutex::new(Download { running: false, done: 0, error: None });
+static DOWNLOAD_STOP: AtomicBool = AtomicBool::new(false);
+
+fn local_view() -> LocalView {
+    let root = models_root();
+    let download = lock(&DOWNLOAD);
+    LocalView {
+        name: SIGLIP2.name,
+        installed: !download.running && SIGLIP2.installed(&root),
+        size: SIGLIP2.size(),
+        folder: SIGLIP2.dir(&root).display().to_string(),
+        downloading: download.running,
+        done: download.done,
+        error: download.error.clone(),
+    }
+}
+
+/// Fetches the local model's files in the background: `model-download` tells how far it
+/// has got, and its end. Nothing is fetched unless the user asks here.
+#[tauri::command]
+pub(crate) async fn ai_model_download(app: AppHandle) -> Result<LocalView, String> {
+    {
+        let mut download = lock(&DOWNLOAD);
+        if download.running {
+            return Err("The model is being downloaded already".into());
+        }
+        *download = Download { running: true, ..Default::default() };
+    }
+    DOWNLOAD_STOP.store(false, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let root = models_root();
+        // A megabyte at a time comes in: told a few times a second at most.
+        let told = Mutex::new(std::time::Instant::now());
+        let outcome = SIGLIP2.download(&root, &DOWNLOAD_STOP, &|done, _| {
+            lock(&DOWNLOAD).done = done;
+            let mut told = lock(&told);
+            if told.elapsed().as_millis() >= 250 {
+                *told = std::time::Instant::now();
+                let _ = app.emit("model-download", local_view());
+            }
+        });
+        {
+            let mut download = lock(&DOWNLOAD);
+            download.running = false;
+            download.error = match outcome {
+                Ok(()) | Err(AiError::Stopped) => None,
+                Err(e) => Some(e.to_string()),
+            };
+        }
+        let _ = app.emit("model-download", local_view());
+    });
+    Ok(local_view())
+}
+
+/// Ends the download; the files fetched whole stay, so the next one goes on from there.
+#[tauri::command]
+pub(crate) fn ai_model_download_stop() -> LocalView {
+    DOWNLOAD_STOP.store(true, Ordering::SeqCst);
+    local_view()
+}
+
 #[derive(Serialize)]
 pub(crate) struct AiView {
     settings: AiSettings,
@@ -332,7 +429,10 @@ pub(crate) struct AiView {
     gemini: Option<bool>,
     /// Why agy's models could not be listed.
     gemini_error: Option<String>,
-    /// Whether a run can start: a key, Claude Code signed in, or agy there.
+    /// With the local model chosen: its files.
+    local: Option<LocalView>,
+    /// Whether a run can start: a key, Claude Code signed in, agy there, or the local
+    /// model downloaded.
     ready: bool,
     /// Calls made in this library and what they cost in all.
     calls: u64,
@@ -360,9 +460,11 @@ fn view(s: &Session) -> Result<AiView, String> {
         let models = listed.and_then(Result::ok).unwrap_or_default();
         GeminiView { installed: program.is_some(), models, error }
     });
-    let ready = match (&plan, &gemini) {
-        (Some(plan), _) => on_plan(&plan.status),
-        (_, Some(gemini)) => gemini.installed,
+    let local = (settings.access == Access::Local).then(local_view);
+    let ready = match (&plan, &gemini, &local) {
+        (Some(plan), ..) => on_plan(&plan.status),
+        (_, Some(gemini), _) => gemini.installed,
+        (.., Some(local)) => local.installed,
         _ => key.is_some(),
     };
     let (calls, spent) = s.library.ai_spent().map_err(text)?;
@@ -372,6 +474,9 @@ fn view(s: &Session) -> Result<AiView, String> {
             .iter()
             .map(|(id, name)| ModelView { id: id.clone(), name: name.clone(), input: 0.0, output: 0.0 })
             .collect(),
+        None if local.is_some() => {
+            vec![ModelView { id: SIGLIP2.id.into(), name: SIGLIP2.name.into(), input: 0.0, output: 0.0 }]
+        }
         None => claude::MODELS
             .iter()
             .map(|m| ModelView { id: m.id.into(), name: m.name.into(), input: m.input, output: m.output })
@@ -384,6 +489,7 @@ fn view(s: &Session) -> Result<AiView, String> {
         gemini: gemini.map(|g| g.installed),
         key: key.map(|k| (keys::masked(&k), keys::origin(&ANTHROPIC).unwrap_or("stored"))),
         plan,
+        local,
         ready,
         calls,
         spent,
@@ -449,6 +555,7 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
     let settings = AiSettings {
         parallel: settings.parallel.clamp(1, 8),
         place_tick: settings.place_tick.clamp(1, 100),
+        local_threshold: settings.local_threshold.clamp(siglip::THRESHOLDS.0, siglip::THRESHOLDS.1),
         locate,
         instructions,
         lessons,
@@ -488,7 +595,7 @@ pub(crate) struct Estimate {
     plan: bool,
     /// The calls it takes: one per photo, or per contact sheet.
     calls: usize,
-    /// What the calls go to: "Claude", "Gemini".
+    /// What the calls go to: "Claude", "Gemini", "Local" (this computer: no call at all).
     via: &'static str,
 }
 
@@ -542,8 +649,8 @@ pub(crate) async fn ai_prompt(app: State<'_, App>, task: Option<Task>) -> Result
     .map_err(text)?
 }
 
-/// The provider for a run with these settings: the API with the stored key, or Claude
-/// Code signed in with a plan.
+/// The provider for a run with these settings: the API with the stored key, Claude
+/// Code signed in with a plan, Gemini through agy, or the model run on this computer.
 fn provider(s: &Session, settings: &AiSettings, task: Task) -> Result<Box<dyn VisionProvider>, String> {
     let (brief, vocabulary) = brief(s, settings, task)?;
     let options = claude::Options {
@@ -563,6 +670,9 @@ fn provider(s: &Session, settings: &AiSettings, task: Task) -> Result<Box<dyn Vi
             })?;
             let options = claude::Options { model: settings.gemini_model.clone(), ..options };
             Box::new(Agy::new(program, options, &brief, vocabulary, settings.sheets))
+        }
+        Access::Local => {
+            Box::new(Siglip::new(&models_root(), options, &brief, vocabulary, settings.local_threshold).map_err(text)?)
         }
         Access::Plan => {
             let program = claude_code::find().ok_or_else(|| {
@@ -605,7 +715,13 @@ fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<Planned, S
         Task::Locate => s.library.unpositioned(rows).map_err(text)?,
     };
     let rows = rows.as_slice();
+    if settings.access == Access::Local && task == Task::Locate {
+        return Err("The local model suggests keywords only: choose Claude or Gemini to locate photos".into());
+    }
     let (id, name, prompt, price) = match settings.access {
+        Access::Local => {
+            (SIGLIP2.id.to_string(), SIGLIP2.name.to_string(), siglip::prompt_hash(settings.local_threshold), None)
+        }
         Access::Gemini => {
             let id = settings.gemini_model.clone();
             (id.clone(), id, agy::prompt_hash(&brief, settings.sheets), None)
@@ -646,7 +762,11 @@ fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<Planned, S
         model: name,
         plan: price.is_none(),
         calls,
-        via: if settings.access == Access::Gemini { "Gemini" } else { "Claude" },
+        via: match settings.access {
+            Access::Gemini => "Gemini",
+            Access::Local => "Local",
+            _ => "Claude",
+        },
     };
     Ok(Planned { todo, scenes, estimate })
 }
@@ -1555,6 +1675,8 @@ pub(crate) async fn refine_lessons(
         // Gemini describes, but refining is Claude's: the key if there is one, else the plan.
         let key = keys::get(&ANTHROPIC).map_err(text)?;
         let (answer, record) = match (settings.access, key) {
+            // The local model reads no instructions: there is nothing for lessons to change.
+            (Access::Local, _) => return Err("The local model follows no prompt: there is nothing to refine".into()),
             (Access::Api, None) => return Err(AiError::NoKey.to_string()),
             (Access::Api | Access::Gemini, Some(key)) => {
                 let claude = Claude::new(key, options, &Brief::default(), Vocabulary::default()).map_err(text)?;

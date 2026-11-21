@@ -15,6 +15,19 @@ ureq = { version = "3", features = ["json"] }
 # The Credential Manager on Windows, the Secret Service (GNOME Keyring, KWallet) on Linux,
 # talking D-Bus through a built-in libdbus (no -dev package to build, nothing to install).
 keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+# Checks a downloaded model file against its pinned hash.
+sha2 = "0.10"
+# The local model (feature `local`): ONNX Runtime, fetched as a prebuilt library at build
+# time, the model's tokenizer, and the JPEG decoder and resizer.
+ort = { version = "=2.0.0-rc.15", optional = true }
+tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
+image = { workspace = true, optional = true }
+
+[features]
+default = ["local"]
+# A SigLIP 2 model run on this computer ([`siglip`]): keywords with no call to anyone.
+local = ["dep:ort", "dep:tokenizers", "dep:image"]
 
 [dev-dependencies]
+tempfile.workspace = true
 c1image.workspace = true

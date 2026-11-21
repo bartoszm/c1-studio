@@ -53,11 +53,20 @@
     if (!settingsOpen) untrack(loadView);
   });
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
-  let modelId = $derived(view?.settings.access === "gemini" ? view.settings.gemini_model : view?.settings.model);
+  let localModel = $derived(view?.settings.access === "local");
+  let modelId = $derived(
+    localModel ? view?.models[0]?.id : view?.settings.access === "gemini" ? view.settings.gemini_model : view?.settings.model,
+  );
   let model = $derived(view?.models.find((m) => m.id === modelId) ?? (modelId ? { name: modelId } : undefined));
   /** What to do before a run can start. */
   const notReady = (v: AiView) =>
-    v.settings.access === "plan" ? "Sign in to Claude Code first" : v.settings.access === "gemini" ? "Install agy first" : "Add an API key in Settings > AI first";
+    v.settings.access === "plan"
+      ? "Sign in to Claude Code first"
+      : v.settings.access === "gemini"
+        ? "Install agy first"
+        : v.settings.access === "local"
+          ? "Download the local model in Settings > AI first"
+          : "Add an API key in Settings > AI first";
 
   // ---- describing or locating ---------------------------------------------------------
   /** What the tab runs and reviews: descriptions, or places found. Kept between visits. */
@@ -541,7 +550,7 @@
             {#if left !== null}
               · about {duration(left)} left
             {:else if !lead || now - lead.since < 10_000}
-              {bySheet ? "· a sheet's answer takes a minute or two" : "· the first answers take a few seconds"}
+              {bySheet ? "· a sheet's answer takes a minute or two" : localModel ? "· the model is loaded and new keywords worked out first" : "· the first answers take a few seconds"}
             {/if}
             {describe.failed ? `· ${describe.failed} failed` : ""}{describe.cost ? ` · ${money(describe.cost)}` : ""}
           </span>
@@ -556,7 +565,7 @@
         {@const e = estimate.of}
         <span>
           {e.photos.toLocaleString()} photo{e.photos === 1 ? "" : "s"} with {e.model},
-          {#if e.via === "Gemini"}{e.calls.toLocaleString()} call{e.calls === 1 ? "" : "s"} to Gemini: counts toward the account's quota{:else if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
+          {#if e.via === "Local"}on this computer: free, keywords only{:else if e.via === "Gemini"}{e.calls.toLocaleString()} call{e.calls === 1 ? "" : "s"} to Gemini: counts toward the account's quota{:else if e.plan}on your Claude plan: counts toward its usage limits{:else}about <b>{money(e.cost)}</b>{/if}{e.skipped
             ? ` · ${e.skipped.toLocaleString()} ${locating ? "located" : "described"} already, left out`
             : ""}{e.positioned ? ` · ${e.positioned.toLocaleString()} with a position of their own, left out` : ""}{e.scenes
             ? ` · ${e.scenes.toLocaleString()} scene${e.scenes === 1 ? "" : "s"} of photos taken together, a call each`
@@ -603,6 +612,7 @@
           ? " · Claude plan"
           : view?.settings.access === "gemini"
             ? view.settings.sheets ? " · contact sheets" : ""
+            : localModel ? " · on this computer"
             : view ? ` · ${money(view.spent)} spent` : ""}
       {/if}
     </button>
@@ -882,6 +892,7 @@
               {#each Object.keys(d.keywords) as k (k)}
                 {@const already = has(r, k)}
                 {@const mine = d.added.includes(k)}
+                {@const likely = s.keyword_scores?.[s.keywords.indexOf(k)]}
                 <label
                   class="kw"
                   class:new={s.keywords_new.includes(k) || (mine && !keywords.includes(k))}
@@ -889,7 +900,7 @@
                   class:has={already}
                   title={already ? "The photo has it already" : mine ? `Added by you${keywords.includes(k) ? "" : `: new, added to the ${source.noun}`}` : s.keywords_new.includes(k) ? `New: added to the ${source.noun}` : k}
                 >
-                  <input type="checkbox" checked={already || d.keywords[k]} disabled={already} onchange={(e) => (d.keywords[k] = e.currentTarget.checked)} />{leaf(k)}
+                  <input type="checkbox" checked={already || d.keywords[k]} disabled={already} onchange={(e) => (d.keywords[k] = e.currentTarget.checked)} />{leaf(k)}{#if likely !== undefined}<small class="muted" title="The local model's score for it">{(likely * 100).toFixed(likely < 0.1 ? 1 : 0)}%</small>{/if}
                 </label>
               {/each}
               {#if r.status === "Proposed"}
