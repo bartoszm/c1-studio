@@ -53,7 +53,7 @@ c1-studio/
   crates/source-c1/ # implementacja dla Capture One: catalog, safety, keywords, collections, images (.cot/.cop)
   crates/c1core/    # analiza, wyprawy, dziennik zdarzeń, geo (klastrowanie, geokodowanie, GPX)
   crates/c1index/   # tantivy (schemat, facety, zapytania, Filter) + redb (magazyn, kolejka) + rstar
-  crates/c1ai/      # VisionProvider: claude, gemini_agy; prompty, ai_runs
+  crates/c1ai/      # VisionProvider: claude, gemini_agy, siglip (lokalny, ONNX); prompty, ai_runs
   crates/c1cat/     # CLI (clap): zastępuje Pythonowy c1cat
   app/src-tauri/    # okno, komendy Tauri, protokół c1img://
   app/ui/           # Svelte

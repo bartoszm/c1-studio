@@ -2983,6 +2983,8 @@ pub fn run() {
             ai::ai_thresholds,
             ai::set_ai_settings,
             ai::set_ai_key,
+            ai::ai_model_download,
+            ai::ai_model_download_stop,
             ai::ai_prompt,
             ai::ai_estimate,
             ai::start_describe,
