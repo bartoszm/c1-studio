@@ -19,9 +19,12 @@ const HIGHLIGHT_PERCENTILE: f64 = 99.5;
 /// Every n-th value is enough to place the percentile; 7 is coprime with 3 channels.
 const PERCENTILE_STRIDE: usize = 7;
 
-/// Rendered and the look differ in shape by more than this share: they are not the same
-/// frame (a perspective fix only the look shows) and say nothing pixel by pixel.
+/// Rendered and the look differ in shape by more than this share: paired as they are,
+/// they say nothing pixel by pixel. A perspective fix that only the look shows changes its
+/// shape by a few percent; lined up first (see [`crate::align`]), they pair up to
+/// [`ALIGNED_SHAPE_TOLERANCE`].
 const SHAPE_TOLERANCE: f64 = 0.02;
+const ALIGNED_SHAPE_TOLERANCE: f64 = 0.06;
 
 /// A table whose fitted pairs sit further from it than this (median, out of 255) was fitted
 /// to frames that do not line up, such as a perspective fix only the look shows; it would
@@ -77,9 +80,9 @@ pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
         Matching::None => {}
         Matching::Tones => look.apply_tones(&mut image),
         Matching::Colours => {
-            match fit_colours(&image, look) {
-                Some(table) => table.apply(&mut image),
-                None => look.apply_tones(&mut image),
+            match colour_fit(&image, &look.render) {
+                ColourFit::Table { table, .. } => table.apply(&mut image),
+                _ => look.apply_tones(&mut image),
             }
             if monochrome {
                 Look::make_grey(&mut image);
@@ -89,17 +92,50 @@ pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     Ok(image)
 }
 
-/// The table that turns `image` into `look`, fitted at the look's size; `None` when the
-/// two are not the same frame.
-fn fit_colours(image: &RgbImage, look: &Look) -> Option<Lut> {
-    let target = &look.render;
-    let (w, h) = target.dimensions();
+/// How the colours of a render were matched to a look's.
+pub enum ColourFit {
+    /// A table, fitted to pairs of pixels from the two lined up. `shift` is the largest
+    /// distance (in look pixels) the lining up moved a spot, `None` when the two could
+    /// not be matched and were paired as they are.
+    Table { table: Lut, shift: Option<f32> },
+    /// The two differ in shape too much to pair.
+    ShapesDiffer,
+    /// The pairs are too few, or disagree too much (`residual`, out of 255) for one
+    /// colour mapping to explain them: likely not the same frame.
+    NoFit { residual: Option<f32> },
+}
+
+/// The table that turns `image` into `look` (a small render of the same frame), fitted at
+/// the look's size after lining the two up.
+pub fn colour_fit(image: &RgbImage, look: &RgbImage) -> ColourFit {
+    let (w, h) = look.dimensions();
     let (iw, ih) = image.dimensions();
     let (a, b) = (f64::from(iw) * f64::from(h), f64::from(w) * f64::from(ih));
-    if (a - b).abs() > SHAPE_TOLERANCE * a.max(b) {
-        return None;
+    let difference = (a - b).abs() / a.max(b);
+    if difference > ALIGNED_SHAPE_TOLERANCE {
+        return ColourFit::ShapesDiffer;
     }
-    Lut::fit(&shrink(image, w, h), target).filter(|table| table.residual <= MAX_RESIDUAL)
+    let small = shrink(image, w, h);
+    // A table close enough to its pairs, or the residual of the one that was not.
+    let keep = |table: Option<Lut>, shift| match table {
+        Some(table) if table.residual <= MAX_RESIDUAL => Ok(ColourFit::Table { table, shift }),
+        other => Err(other.map(|t| t.residual)),
+    };
+    let mut residual = None;
+    if let Some(aligned) = crate::align::align(&small, look) {
+        let pairs = aligned.image.pixels().zip(look.pixels()).zip(&aligned.valid);
+        let table = Lut::fit_pairs(pairs.filter(|(_, ok)| **ok).map(|((s, t), _)| (s.0, t.0)));
+        match keep(table, Some(aligned.largest_shift)) {
+            Ok(fit) => return fit,
+            Err(r) => residual = r,
+        }
+    }
+    // Not lined up, or lined up wrongly: pairs as they are still make a table when the
+    // two share their shape, as they did before lining up.
+    if difference > SHAPE_TOLERANCE {
+        return if residual.is_some() { ColourFit::NoFit { residual } } else { ColourFit::ShapesDiffer };
+    }
+    keep(Lut::fit(&small, look), None).unwrap_or_else(|r| ColourFit::NoFit { residual: r.or(residual) })
 }
 
 /// The mean of the pixels whose centres fall in each output pixel: a box filter, which is

@@ -6,8 +6,15 @@
 //! File names repeat across cards and years, so of the photos with that name the one
 //! whose thumbnail looks most like the export is taken. An export may also be framed
 //! tighter than the cached renders (a crop made since, or another variant): it is found
-//! inside the thumbnail by scale and offset, and only that window is compared.
-use std::path::Path;
+//! inside the thumbnail by scale and offset, and only that window is compared. An export
+//! of a second variant (`DSCF1234_1.jpg`, `untitled-0066-2.jpg`) is looked up under its
+//! image's name when no file has the full one.
+//!
+//! `--dump <dir>` also writes, for each export, a sheet of the export, the thumbnail's
+//! window, the preview as shown and their difference (four times amplified), and prints
+//! how the colours were matched and where the preview is off: the mean signed error per
+//! channel (preview − export) in the export's shadows, midtones and highlights.
+use std::path::{Path, PathBuf};
 
 use c1image::{Matching, RgbImage};
 use c1index::{Filter, Library, QueryOptions, Sort};
@@ -102,15 +109,175 @@ fn median(mut v: Vec<f64>) -> f64 {
     v.get(v.len() / 2).copied().unwrap_or(f64::NAN)
 }
 
+/// `a` at `b`'s size.
+fn sized(a: &RgbImage, b: &RgbImage) -> RgbImage {
+    image::imageops::resize(a, b.width(), b.height(), image::imageops::FilterType::Triangle)
+}
+
+/// For shadows, midtones and highlights: the mean signed error per channel and the share
+/// of pixels (percent).
+type Bands = [([f64; 3], f64); 3];
+
+/// Mean signed error per channel (`a` − `b`, out of 255) and share of pixels, for the
+/// pixels of `b` (those `valid` says, or all) whose brightness is below 64, 64–191, and
+/// 192 or more.
+fn bands(a: &RgbImage, b: &RgbImage, valid: Option<&[bool]>) -> Bands {
+    let a = sized(a, b);
+    let mut out = [([0.0f64; 3], 0u64); 3];
+    let all = vec![true; (b.width() * b.height()) as usize];
+    let valid = valid.unwrap_or(&all);
+    for ((p, q), _) in a.pixels().zip(b.pixels()).zip(valid).filter(|(_, ok)| **ok) {
+        let y = (54 * u32::from(q.0[0]) + 183 * u32::from(q.0[1]) + 19 * u32::from(q.0[2])) >> 8;
+        let band = &mut out[usize::from(y >= 64) + usize::from(y >= 192)];
+        for c in 0..3 {
+            band.0[c] += f64::from(p.0[c]) - f64::from(q.0[c]);
+        }
+        band.1 += 1;
+    }
+    let total = valid.iter().filter(|v| **v).count().max(1) as f64;
+    out.map(|(sum, n)| (sum.map(|v| v / n.max(1) as f64), n as f64 * 100.0 / total))
+}
+
+/// Colour alone: `preview` lined up with `export` at 600 px wide, so that framing does
+/// not count, then the mean absolute difference and [`bands`] over the pixels lined up.
+fn colour_only(preview: &RgbImage, export: &RgbImage) -> Option<(f64, Bands)> {
+    let w = 600.min(export.width());
+    let e =
+        image::imageops::resize(export, w, export.height() * w / export.width(), image::imageops::FilterType::Triangle);
+    let a = c1image::align(&sized(preview, &e), &e)?;
+    let keep = |img: &RgbImage| -> RgbImage {
+        let mut out = img.clone();
+        for (p, ok) in out.pixels_mut().zip(&a.valid) {
+            if !ok {
+                p.0 = [0, 0, 0];
+            }
+        }
+        out
+    };
+    let (p, e) = (keep(&a.image), keep(&e));
+    let n = a.valid.iter().filter(|v| **v).count().max(1) as f64;
+    let sum: u64 = p.as_raw().iter().zip(e.as_raw()).map(|(x, y)| u64::from(x.abs_diff(*y))).sum();
+    Some((sum as f64 / (n * 3.0), bands(&p, &e, Some(&a.valid))))
+}
+
+/// How the colour fit goes for `r`: the residual of a table fitted at the thumbnail's
+/// size, or why none is fitted.
+fn fit_report(r: &ImageRef, thumb: &RgbImage) -> anyhow::Result<String> {
+    let plain = ImageRef { monochrome: false, look: None, ..r.clone() };
+    let base = c1image::render_preview(&plain, Matching::None)?;
+    Ok(match c1image::colour_fit(&base, thumb) {
+        c1image::ColourFit::Table { table, shift: Some(s) } => {
+            format!("table, residual {:.1}, lined up (moved up to {s:.1} px)", table.residual)
+        }
+        c1image::ColourFit::Table { table, shift: None } => {
+            format!("table, residual {:.1}, paired as they are", table.residual)
+        }
+        c1image::ColourFit::ShapesDiffer => {
+            format!(
+                "shapes differ ({}x{} vs {}x{}): tones only",
+                base.width(),
+                base.height(),
+                thumb.width(),
+                thumb.height()
+            )
+        }
+        c1image::ColourFit::NoFit { residual } => format!("no fit (residual {residual:?}): tones only"),
+    })
+}
+
+/// How far the turned and straightened preview sits from the thumbnail, at the
+/// thumbnail's size: for a 5×5 grid of blocks, the shift (dx, dy in thumbnail pixels)
+/// that best lines the block up by normalised cross-correlation.
+fn alignment(r: &ImageRef, thumb: &RgbImage) -> anyhow::Result<String> {
+    let plain = ImageRef { monochrome: false, look: None, ..r.clone() };
+    let base = sized(&c1image::render_preview(&plain, Matching::None)?, thumb);
+    let (w, h) = thumb.dimensions();
+    let g = |i: &RgbImage| grey(i, w, h);
+    let (a, b) = (g(&base), g(thumb));
+    let (bw, reach) = (40i64, 10i64);
+    let mut out = String::new();
+    for gy in 0..5 {
+        out.push_str("\n     ");
+        for gx in 0..5 {
+            let x0 = reach + (i64::from(w) - 2 * reach - bw) * gx / 4;
+            let y0 = reach + (i64::from(h) - 2 * reach - bw) * gy / 4;
+            let mut best = (f64::NEG_INFINITY, 0, 0);
+            for dy in -reach..=reach {
+                for dx in -reach..=reach {
+                    let (mut sa, mut sb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
+                    for y in y0..y0 + bw {
+                        for x in x0..x0 + bw {
+                            let p = f64::from(b[(y * i64::from(w) + x) as usize]);
+                            let q = f64::from(a[((y + dy) * i64::from(w) + x + dx) as usize]);
+                            sa += q;
+                            sb += p;
+                            saa += q * q;
+                            sbb += p * p;
+                            sab += p * q;
+                        }
+                    }
+                    let n = (bw * bw) as f64;
+                    let cov = sab - sa * sb / n;
+                    let ncc = cov / ((saa - sa * sa / n) * (sbb - sb * sb / n)).sqrt().max(1e-9);
+                    if ncc > best.0 {
+                        best = (ncc, dx, dy);
+                    }
+                }
+            }
+            out.push_str(&format!(" {:+3},{:+3} ({:.2})", best.1, best.2, best.0));
+        }
+    }
+    Ok(out)
+}
+
+fn modified(path: &Path) -> String {
+    std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .map(|t| chrono::DateTime::<chrono::Local>::from(t).format("%Y-%m-%d %H:%M").to_string())
+        .unwrap_or_else(|_| "?".into())
+}
+
+/// The export, the thumbnail's window, the preview and |preview − export| × 4, in a 2×2.
+fn sheet(export: &RgbImage, thumb: &RgbImage, preview: &RgbImage) -> RgbImage {
+    let w = export.width().min(1024);
+    let h = export.height() * w / export.width();
+    let fit = |i: &RgbImage| image::imageops::resize(i, w, h, image::imageops::FilterType::Triangle);
+    let (e, t, p) = (fit(export), fit(thumb), fit(preview));
+    let mut d = p.clone();
+    for (px, q) in d.pixels_mut().zip(e.pixels()) {
+        px.0 = std::array::from_fn(|c| px.0[c].abs_diff(q.0[c]).saturating_mul(4));
+    }
+    let mut out = RgbImage::new(w * 2, h * 2);
+    for (i, img) in [e, t, p, d].iter().enumerate() {
+        let i = i as u32;
+        image::imageops::replace(&mut out, img, i64::from(w * (i % 2)), i64::from(h * (i / 2)));
+    }
+    out
+}
+
+/// `dscf1234_1` → `dscf1234`, `untitled-0066-2` → `untitled-0066`: the image a second
+/// variant's export is named after.
+fn image_stem(stem: &str) -> Option<&str> {
+    let (head, tail) = stem.rsplit_once(['_', '-'])?;
+    (!tail.is_empty() && tail.len() <= 2 && tail.bytes().all(|b| b.is_ascii_digit())).then_some(head)
+}
+
 fn main() -> anyhow::Result<()> {
-    let folder = std::env::args().nth(1).ok_or_else(|| anyhow::anyhow!("usage: exportcheck <folder of exports>"))?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let folder =
+        args.first().ok_or_else(|| anyhow::anyhow!("usage: exportcheck <folder of exports> [--dump <dir>]"))?;
+    let dump: Option<PathBuf> =
+        args.iter().position(|a| a == "--dump").and_then(|i| args.get(i + 1)).map(PathBuf::from);
+    if let Some(d) = &dump {
+        std::fs::create_dir_all(d)?;
+    }
     let catalog = find_catalog(None)?;
     let dir = data_dir(&catalog);
     let source = CaptureOne::open(&catalog, dir.join("work"))?;
     let library = Library::open(dir.join("library"))?;
     let mut scores: Vec<[f64; 3]> = vec![];
     println!("{:22} {:>9} {:>7} {:>7} {:>8}", "export", "thumbnail", "tones", "colours", "as shown");
-    let mut paths: Vec<_> = std::fs::read_dir(&folder)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
+    let mut paths: Vec<_> = std::fs::read_dir(folder)?.map(|e| e.map(|e| e.path())).collect::<Result<_, _>>()?;
     paths.sort();
     for path in paths {
         let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase());
@@ -119,8 +286,16 @@ fn main() -> anyhow::Result<()> {
         }
         let stem = path.file_stem().unwrap().to_string_lossy().to_lowercase();
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
-        let filter = Filter { filename: Some(format!("{stem}.*")), ..Filter::default() };
-        let rows = library.query(&filter, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows;
+        let named = |stem: &str| -> anyhow::Result<Vec<_>> {
+            let filter = Filter { filename: Some(format!("{stem}.*")), ..Filter::default() };
+            Ok(library.query(&filter, &QueryOptions { sort: Sort::Row, ..QueryOptions::default() })?.rows)
+        };
+        let mut rows = named(&stem)?;
+        if rows.is_empty()
+            && let Some(image) = image_stem(&stem)
+        {
+            rows = named(image)?;
+        }
         let export = load(&path)?;
         let mut best: Option<(f64, Window, ImageRef, RgbImage, String)> = None;
         for &row in &rows {
@@ -165,6 +340,44 @@ fn main() -> anyhow::Result<()> {
             window.y,
             rows.len()
         );
+        if let Some(d) = &dump {
+            println!("    fit: {}", fit_report(&r, &thumb)?);
+            println!("    preview vs thumbnail, shift per block (correlation):{}", alignment(&r, &thumb)?);
+            println!(
+                "    .cop {}  .cot {}  monochrome {}  turn {}  straighten {:.2}  crop {}",
+                modified(&r.path),
+                r.look.as_deref().map_or("-".into(), modified),
+                r.monochrome,
+                r.rotation,
+                r.straighten,
+                r.crop.is_some()
+            );
+            // Colour alone, framing taken out: the preview, and the thumbnail for scale.
+            // For comparison, the table fitted to pairs as they are, without lining up.
+            let unaligned = {
+                let plain = ImageRef { monochrome: false, look: None, ..r.clone() };
+                let mut base = c1image::render_preview(&plain, Matching::None)?;
+                if let Some(t) = c1image::Lut::fit(&sized(&base, &thumb), &thumb) {
+                    t.apply(&mut base);
+                }
+                if r.monochrome || c1image::Look::of(&thumb).grey {
+                    c1image::Look::make_grey(&mut base);
+                }
+                c1image::frame(base, &r)
+            };
+            let before = colour_only(&unaligned, &export).map_or(f64::NAN, |c| c.0);
+            match (colour_only(&colours, &export), colour_only(&window.crop(&thumb), &export)) {
+                (Some((pm, pb)), Some((tm, tb))) => {
+                    println!("    colour only: preview {pm:.1} (unaligned fit {before:.1}), thumbnail {tm:.1}");
+                    for (i, band) in ["shadows", "midtones", "highlights"].iter().enumerate() {
+                        let f = |(e, s): ([f64; 3], f64)| format!("{s:4.0}% {:+6.1} {:+6.1} {:+6.1}", e[0], e[1], e[2]);
+                        println!("    {band:10} preview {}   thumbnail {}", f(pb[i]), f(tb[i]));
+                    }
+                }
+                _ => println!("    colour only: could not line up with the export"),
+            }
+            sheet(&export, &window.crop(&thumb), &sized(&colours, &export)).save(d.join(format!("{stem}.png")))?;
+        }
         scores.push(s);
     }
     let col = |i: usize| median(scores.iter().map(|s| s[i]).collect());

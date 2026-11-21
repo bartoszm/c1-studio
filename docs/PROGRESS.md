@@ -1773,6 +1773,55 @@ Eight stacked PRs, each on its own.
   `tree` (sort, hide, album search), `shortcuts`, `batch` (`describeEdit`), `lens.rs`,
   `a_lens_is_one_entry_however_files_name_it`, `a_page_marks_its_rated_and_labelled_photos`.
 
+### Preview colours: lining up before fitting
+
+The user sent 7 photos exported from Capture One whose previews still looked wrong
+(`C:\tmp\fix_colors`). `exportcheck --dump` now says how each was fitted, where the
+preview is off by brightness band, and how far preview and thumbnail sit apart block by
+block. It writes a sheet per export. It also finds a second variant's export
+(`DSCF7077_1`, `untitled-0066-2`) under its image's name.
+
+- **Every one had the same signs**: shadows 6–30 levels too light, highlights 15–115 too
+  dark. C1's thumbnail had almost no bias against the export (±3), so the target was
+  right and the table was wrong, already at the thumbnail's size.
+- **Cause: misaligned pairs.** Blocks of the preview sat 3 to more than 10 thumbnail px
+  from the thumbnail on 6 of the 7. The gap varied across the frame, which points to
+  lens and perspective corrections that only the `.cot` has. Least squares on pairs from
+  slightly different spots predicts the average of neighbours, a flatter curve.
+- **Fix: `c1image::align`.** NCC block matching, coarse to fine with sub-pixel peaks,
+  then a quadratic warp fitted with outliers dropped. The shrunk preview is resampled
+  onto the thumbnail before `Lut::fit_pairs`, and the table is applied to the unwarped
+  preview. Lined up, shapes may differ by 6% (2% before). `c1image::colour_fit` returns
+  the decision (`ColourFit`).
+- **Measuring colour without framing**: the pairs had the same problem; framing
+  differences turned into a brightness bias. `exportcheck` now also lines the preview
+  up with the export (*colour only*).
+- **After review**:
+  - When the lined-up fit fails its residual, the pairs as they are are tried, so no
+    table the old way found is lost.
+  - The frame's shift is found first at quarter size (±48 px), then each block ±20 px
+    around it. A block whose match lies at the edge of its reach is dropped; the first
+    version capped the search at ±28 px, and untitled-0219-2 was cut off there.
+  - A warp moving any part more than 60 px is refused.
+  - Blocks are searched on several threads.
+  - `Aligned::resample` returns `None` for an image of the wrong size.
+
+| export | as they are | lined up | thumbnail |
+|---|---|---|---|
+| DSCF3468 | 17.9 | 10.0 | 5.0 |
+| DSCF7077_1 | 3.5 | 1.4 | 1.7 |
+| R0015727 | 11.8 | 11.8 | 7.3 |
+| untitled-0066-2 | 9.0 | 5.4 | 6.2 |
+| untitled-0219-2 | 11.3 | 7.6 | 3.8 |
+| untitled-0268-2 | 9.1 | 4.8 | 4.5 |
+| untitled-0403 | 20.0 | 9.7 | 10.0 |
+
+`lookcheck` (now scored lined up too) is unchanged at the median, since most photos are
+already in line (largest shift: median 0.1 px, 90th percentile 4.7 px). Colour renders
+cost about 45 ms over tones. Not done: the shown preview still lacks perspective and lens
+corrections (DSCF3468 and untitled-0403 sit differently in the frame), and local
+adjustments. The whole pipeline is written up in `docs/PREVIEW-COLOURS.md`.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that

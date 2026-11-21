@@ -321,7 +321,9 @@ number counts every variant the library holds, hidden, trashed and deleted ones 
 map, the timeline and the trips count every variant.
 
 For a Capture One catalog the app shows Capture One's thumbnails and previews, never the
-original files. A photo folders source makes its own; see [Photo folders](#photo-folders).
+original files. Capture One's preview is unedited, so its colours are matched to Capture
+One's own finished thumbnail; [How previews get Capture One's colours](PREVIEW-COLOURS.md)
+says how, and what it cannot carry over (masks and other local adjustments). A photo folders source makes its own; see [Photo folders](#photo-folders).
 
 ### Sorting
 
