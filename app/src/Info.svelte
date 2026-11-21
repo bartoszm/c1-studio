@@ -658,7 +658,7 @@
         <small class="why">{colourRule(l)}</small>
         {#each colours as c (c.name)}<small class="why" class:counts={c.counts}>{c.text}</small>{/each}
         {#if look.hues.includes("black & white") || a.chroma < l.mono_chroma}
-          <small class="why">{monoLine(a.chroma, a.hue_stats, l)}</small>
+          <small class="why">{monoLine(a.chroma, a.tint_spread ?? 0, a.hue_stats, l)}</small>
         {/if}
       </dd>
       <dt>Light</dt><dd>{look.light.join(", ")}<small class="why">{lightLine(a, l)}</small></dd>

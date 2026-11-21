@@ -8,6 +8,10 @@ use crate::{HueStat, Swatch};
 
 /// Mean Lab chroma below which a picture is black and white (toned prints included).
 pub const MONO: f32 = 4.0;
+/// Tint spread ([`crate::Analysis::tint_spread`]) below which a picture is black and white.
+/// In the fuji catalog every photo Capture One renders black and white, toned ones included,
+/// is below 1.7; muted colour photos (a red jacket by a grey waterfall, a night street) above 3.
+pub const MONO_SPREAD: f32 = 2.5;
 pub const BLACK_AND_WHITE: &str = "black & white";
 /// A colour photo with no colour to speak of.
 pub const MUTED: &str = "muted";
@@ -118,14 +122,16 @@ pub fn stats_from_palette(palette: &[Swatch], chroma: f32) -> [HueStat; HUES.len
     out
 }
 
-/// The main colours, biggest first, and the mean chroma.
-pub(crate) fn palette(image: &RgbImage) -> (Vec<Swatch>, f32) {
+/// The main colours, biggest first, the mean chroma, and the tint spread
+/// ([`crate::Analysis::tint_spread`]).
+pub(crate) fn palette(image: &RgbImage) -> (Vec<Swatch>, f32, f32) {
     let small = crate::fit_to(image, 64, FilterType::Triangle);
     let pixels: Vec<([f32; 3], [u8; 3])> = small.pixels().map(|p| (lab(p.0), p.0)).collect();
     if pixels.is_empty() {
-        return (Vec::new(), 0.0);
+        return (Vec::new(), 0.0, 0.0);
     }
     let chroma = pixels.iter().map(|(l, _)| (l[1] * l[1] + l[2] * l[2]).sqrt()).sum::<f32>() / pixels.len() as f32;
+    let spread = tint_spread(pixels.iter().map(|(l, _)| l));
 
     // Start from pixels spread through the lightness range: the same picture always
     // gives the same palette.
@@ -170,7 +176,27 @@ pub(crate) fn palette(image: &RgbImage) -> (Vec<Swatch>, f32) {
         })
         .collect();
     swatches.sort_by(|a, b| b.share.total_cmp(&a.share));
-    (swatches, chroma)
+    (swatches, chroma, spread)
+}
+
+/// How far the pixels' tints stray from the picture's own: the 95th percentile of each
+/// pixel's (a, b) distance from the mean (a, b). A black and white picture, toned or not,
+/// has one tint throughout (0–2); a muted colour one keeps faces, clothes and signs that
+/// stray from it even when its mean chroma is low.
+fn tint_spread<'a>(labs: impl Iterator<Item = &'a [f32; 3]> + Clone) -> f32 {
+    let (mut sa, mut sb, mut n) = (0f32, 0f32, 0usize);
+    for l in labs.clone() {
+        sa += l[1];
+        sb += l[2];
+        n += 1;
+    }
+    if n == 0 {
+        return 0.0;
+    }
+    let (ma, mb) = (sa / n as f32, sb / n as f32);
+    let mut d: Vec<f32> = labs.map(|l| ((l[1] - ma).powi(2) + (l[2] - mb).powi(2)).sqrt()).collect();
+    let at = (d.len() - 1) * 95 / 100;
+    *d.select_nth_unstable_by(at, f32::total_cmp).1
 }
 
 fn dist2(a: &[f32; 3], b: &[f32; 3]) -> f32 {

@@ -2242,8 +2242,8 @@ impl Library {
                         .iter()
                         .map(|h| fast.u64(&format!("hue_patch_{h}")).expect("hue patch").first_or_default_col(0))
                         .collect();
-                    let (chroma, brightness, contrast) =
-                        (measure("chroma"), measure("brightness"), measure("contrast"));
+                    let (chroma, tint_spread, brightness, contrast) =
+                        (measure("chroma"), measure("tint_spread"), measure("brightness"), measure("contrast"));
                     let (highlights, shadows, sharpness) =
                         (measure("highlights"), measure("shadows"), measure("sharpness"));
                     let measured = fast.i64("sharpness_sort").expect("sharpness_sort").first_or_default_col(i64::MIN);
@@ -2254,6 +2254,7 @@ impl Library {
                         let score = (measured.get_val(doc) >= i64::MIN + (1 << 20)).then(|| {
                             let mut m = Measures {
                                 chroma: chroma.get_val(doc) as f32,
+                                tint_spread: tint_spread.get_val(doc) as f32,
                                 brightness: brightness.get_val(doc) as f32,
                                 contrast: contrast.get_val(doc) as f32,
                                 highlights: highlights.get_val(doc) as f32,

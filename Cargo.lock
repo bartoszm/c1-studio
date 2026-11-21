@@ -529,6 +529,7 @@ name = "c1cat"
 version = "0.10.0"
 dependencies = [
  "anyhow",
+ "c1analysis",
  "c1geo",
  "c1image",
  "c1index",
@@ -539,6 +540,7 @@ dependencies = [
  "image",
  "rand 0.10.3",
  "rayon",
+ "rusqlite",
  "serde_json",
  "source-c1",
  "source-folders",

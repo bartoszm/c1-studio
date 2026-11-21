@@ -5,6 +5,7 @@ import { GROUPS, mergeFields, sameSettings, shown, summary, withField } from "..
 
 const defaults: ClassSettings = {
   mono_chroma: 4,
+  mono_spread: 2.5,
   colour_share: 0.16666667,
   colour_floor: 0.05,
   colour_mode: "Covers",

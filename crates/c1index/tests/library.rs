@@ -1189,6 +1189,7 @@ fn look(w: u32, h: u32, rgb: [u8; 3], sharpness: f32, hash: u64) -> c1analysis::
         height: h,
         palette: vec![c1analysis::Swatch { rgb, share: 1.0 }],
         chroma: 40.0,
+        tint_spread: 30.0,
         brightness: 0.5,
         contrast: 0.2,
         highlights: 0.0,
@@ -1445,6 +1446,26 @@ fn stacking_keeps_the_sharpest_of_each_group_and_groups_sort() {
     let strict = c1analysis::ClassSettings { duplicate_bits: 0, ..lib.class_settings() };
     lib.set_class_settings(&strict).unwrap();
     assert_eq!(ids(&lib, &stacked), [2, 3, 4, 6, 7, 8, 10]);
+}
+
+#[test]
+fn a_muted_colour_photo_is_not_black_and_white() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let grey = [128, 128, 128];
+    // 1: a black and white print. 2: an overcast street, as little colour on average, but
+    // its faces and coats stray from the grey.
+    let mut print = look(600, 400, grey, 5000.0, 1);
+    (print.chroma, print.tint_spread) = (1.0, 1.0);
+    let mut street = look(600, 400, grey, 5000.0, 2);
+    (street.chroma, street.tint_spread) = (2.5, 12.0);
+    lib.put_analyses(vec![(key(1), (1, 1), print), (key(2), (1, 1), street)]).unwrap();
+    let bw = Filter { hues: vec!["black & white".into()], ..Filter::default() };
+    assert_eq!(ids(&lib, &bw), [1]);
+    // A looser line lets it in, without measuring again.
+    let loose = c1analysis::ClassSettings { mono_spread: 20.0, ..lib.class_settings() };
+    lib.set_class_settings(&loose).unwrap();
+    assert_eq!(ids(&lib, &bw), [1, 2]);
 }
 
 #[test]
