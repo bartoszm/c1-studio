@@ -6,6 +6,7 @@ import { barRule, cardHint, colourLines, focusLine, lightLine, monoLine, nameOf,
 
 const lines: ClassSettings = {
   mono_chroma: 4,
+  mono_spread: 2.5,
   colour_share: 1 / 6,
   colour_floor: 0.05,
   colour_mode: "Covers",
@@ -68,8 +69,13 @@ test("colour lines say each colour's measure and whether it counts", () => {
 });
 
 test("black and white says its chroma, and a vivid patch that overrides it", () => {
-  assert.equal(monoLine(2.04, stats({}), lines), "mean chroma 2.0 (black & white below 4)");
-  assert.equal(monoLine(2, stats({ red: [0.03, 0.03, 60] }), lines), "mean chroma 2.0 (black & white below 4), but it has a vivid patch");
+  const both = "mean chroma 2.0 (black & white below 4), tint spread 1.0 (below 2.5)";
+  assert.equal(monoLine(2.04, 1, stats({}), lines), both);
+  assert.equal(monoLine(2, 1, stats({ red: [0.03, 0.03, 60] }), lines), `${both}, but it has a vivid patch`);
+  assert.equal(
+    monoLine(2, 9, stats({}), lines),
+    "mean chroma 2.0 (black & white below 4), tint spread 9.0 (below 2.5), but its tints stray: a muted colour photo",
+  );
 });
 
 test("light, focus and the card hints follow the lines", () => {

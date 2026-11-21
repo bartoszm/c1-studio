@@ -17,7 +17,7 @@ use tantivy::tokenizer::{AsciiFoldingFilter, LowerCaser, SimpleTokenizer, TextAn
 use tantivy::{Index, TantivyDocument};
 
 /// Bump when fields change; the library rebuilds the index from its store.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Tokenizer for free text: split on non-alphanumerics, lower-case, strip diacritics,
 /// so `wroclaw` finds `Wrocław` (as FTS5's `remove_diacritics 2` did in the Python index).
@@ -233,6 +233,7 @@ pub struct Fields {
     /// be a few pixels of the measured copy.
     pub hue_patches: Vec<Field>,
     pub chroma: Field,
+    pub tint_spread: Field,
     pub contrast: Field,
     pub highlights: Field,
     pub shadows: Field,
@@ -294,6 +295,7 @@ pub fn build_schema() -> (Schema, Fields) {
         hue_shares: c1analysis::HUES.iter().map(|h| b.add_u64_field(&format!("hue_share_{h}"), FAST)).collect(),
         hue_patches: c1analysis::HUES.iter().map(|h| b.add_u64_field(&format!("hue_patch_{h}"), FAST)).collect(),
         chroma: b.add_f64_field("chroma", FAST),
+        tint_spread: b.add_f64_field("tint_spread", FAST),
         contrast: b.add_f64_field("contrast", FAST),
         highlights: b.add_f64_field("highlights", FAST),
         shadows: b.add_f64_field("shadows", FAST),
@@ -635,6 +637,7 @@ pub fn document(
         doc.add_f64(f.sharpness, f64::from(a.sharpness));
         doc.add_f64(f.brightness, f64::from(a.brightness));
         doc.add_f64(f.chroma, f64::from(a.chroma));
+        doc.add_f64(f.tint_spread, f64::from(a.tint_spread));
         doc.add_f64(f.contrast, f64::from(a.contrast));
         doc.add_f64(f.highlights, f64::from(a.highlights));
         doc.add_f64(f.shadows, f64::from(a.shadows));

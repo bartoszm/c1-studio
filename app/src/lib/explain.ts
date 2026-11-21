@@ -77,12 +77,14 @@ export function colourLines(stats: Stat[], l: ClassSettings, classes: string[], 
   });
 }
 
-/** Why the photo is (or is not) black and white. */
-export function monoLine(chroma: number, stats: Stat[], l: ClassSettings): string {
+/** Why the photo is (or is not) black and white: little colour on average, one tint
+ *  throughout, and no vivid patch. */
+export function monoLine(chroma: number, spread: number, stats: Stat[], l: ClassSettings): string {
   const patches = stats.some((st) => vivid(st, l));
-  const mono = chroma < l.mono_chroma && !patches;
-  const why = `mean chroma ${chroma.toFixed(1)} (black & white below ${l.mono_chroma})`;
-  return mono ? why : chroma < l.mono_chroma && patches ? `${why}, but it has a vivid patch` : why;
+  const why = `mean chroma ${chroma.toFixed(1)} (black & white below ${l.mono_chroma}), tint spread ${spread.toFixed(1)} (below ${l.mono_spread})`;
+  if (chroma >= l.mono_chroma) return why;
+  if (spread >= l.mono_spread) return `${why}, but its tints stray: a muted colour photo`;
+  return patches ? `${why}, but it has a vivid patch` : why;
 }
 
 /** "brightness 31% (dark below 20%, bright above 55%) · clipped 4% (from 3%) · …" */
@@ -112,7 +114,7 @@ export function cardHint(card: Card, l: ClassSettings): string {
     case "shape":
       return `Width ÷ height: square within ${l.square_ratio}, panorama from ${l.panorama_ratio}.`;
     case "hue":
-      return `A photo can have several colours: ${colourRule(l)}. Black & white below chroma ${l.mono_chroma}, unless it has a vivid patch.`;
+      return `A photo can have several colours: ${colourRule(l)}. Black & white below chroma ${l.mono_chroma} with one tint (spread below ${l.mono_spread}), unless it has a vivid patch.`;
     case "brightness":
       return `Mean brightness: dark below ${pct(l.dark_below)}, bright above ${pct(l.bright_above)}. One per photo.`;
     case "problems":
@@ -129,7 +131,7 @@ export function barRule(card: Card, value: string, l: ClassSettings): string {
     portrait: `taller than 1:${l.square_ratio}, less than 1:${l.panorama_ratio}`,
     square: `width ÷ height within ${l.square_ratio}`,
     panorama: `${l.panorama_ratio}:1 or longer, either way`,
-    "black & white": `mean chroma below ${l.mono_chroma} and no vivid patch`,
+    "black & white": `mean chroma below ${l.mono_chroma}, tint spread below ${l.mono_spread} and no vivid patch`,
     muted:
       l.colour_mode === "Patch"
         ? `no colour has a vivid patch (${pct(l.patch_share)}, chroma ${num(l.patch_chroma)}), and the biggest patch is under ${pct(l.colour_floor)}`

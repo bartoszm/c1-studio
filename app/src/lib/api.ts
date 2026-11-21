@@ -171,6 +171,8 @@ export type LookView = {
     height: number;
     palette: { rgb: [number, number, number]; share: number }[];
     chroma: number;
+    /** How far the tints stray from the photo's own (Lab a/b, 95th percentile). */
+    tint_spread: number;
     brightness: number;
     contrast: number;
     highlights: number;
@@ -1148,6 +1150,7 @@ export const HUE_NAMES = ["brown", "red", "orange", "yellow", "green", "teal", "
 export type ColourMode = "Covers" | "Patch";
 export type ClassSettings = {
   mono_chroma: number;
+  mono_spread: number;
   colour_share: number;
   colour_floor: number;
   colour_mode: ColourMode;

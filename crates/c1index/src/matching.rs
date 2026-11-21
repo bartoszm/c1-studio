@@ -15,6 +15,7 @@ pub struct Measures {
     /// Each colour's biggest patch (share of the picture).
     pub hue_patches: [f32; HUES.len()],
     pub chroma: f32,
+    pub tint_spread: f32,
     pub brightness: f32,
     pub contrast: f32,
     pub highlights: f32,
@@ -84,8 +85,9 @@ impl MatchSpec {
                     ColourMode::Patch => self.colours.iter().map(|&i| one(i)).fold(0.0, f32::max),
                 }
             };
-            let mono = if self.black_and_white && self.lines.mono_chroma > 0.0 {
-                unit(1.0 - m.chroma / self.lines.mono_chroma)
+            // Little colour on average and one tint throughout: as good as the weaker of the two.
+            let mono = if self.black_and_white && self.lines.mono_chroma > 0.0 && self.lines.mono_spread > 0.0 {
+                unit(1.0 - m.chroma / self.lines.mono_chroma).min(unit(1.0 - m.tint_spread / self.lines.mono_spread))
             } else {
                 0.0
             };
@@ -187,6 +189,12 @@ mod tests {
         assert_eq!(s.score(&Measures { chroma: 0.0, ..Measures::default() }), 1.0);
         assert!(s.score(&Measures { chroma: 2.0, ..Measures::default() }) > 0.4);
         assert_eq!(s.score(&Measures { chroma: 40.0, ..Measures::default() }), 0.0);
+        // A low mean with tints that stray (a muted colour photo) scores low.
+        assert_eq!(s.score(&Measures { chroma: 1.0, tint_spread: 20.0, ..Measures::default() }), 0.0);
+        assert!(
+            s.score(&Measures { chroma: 1.0, tint_spread: 3.0, ..Measures::default() })
+                < s.score(&Measures { chroma: 1.0, tint_spread: 0.0, ..Measures::default() })
+        );
         // Next to a colour pick, whichever fits the photo better counts.
         let either = spec(&["black & white", "red"], &[], &[]);
         assert_eq!(either.score(&Measures { chroma: 0.0, ..with_hue("red", 0.1) }), 1.0);
