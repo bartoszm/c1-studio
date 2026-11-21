@@ -40,7 +40,7 @@ export const GROUPS: Group[] = [
       { key: "patch_chroma", label: "A patch is vivid from chroma", hint: "Colourfulness (Lab) of the patch's pixels. A vivid patch also keeps a grey photo out of black & white.", scale: 1, unit: "", min: 0, max: 100, step: 1 },
       pct("colour_floor", "Else the biggest colour counts from", "of the photo (its biggest patch, in patch mode); below that the photo is muted."),
       { key: "mono_chroma", label: "Black & white below chroma", hint: "Mean colourfulness (Lab). Toned prints stay black & white up to here, unless they have a vivid patch.", scale: 1, unit: "", min: 0, max: 60, step: 0.5 },
-      { key: "mono_spread", label: "…and below tint spread", hint: "How far the pixels' colours stray from the photo's own tint (Lab). A black & white print, toned or not, has one tint; a muted colour photo keeps faces and clothes apart.", scale: 1, unit: "", min: 0, max: 40, step: 0.5 },
+      { key: "mono_spread", label: "…and below tint spread", hint: "How far the pixels' colours stray from the photo's own tint (Lab). A black & white print, toned or not, has one tint; a muted colour photo keeps faces and clothes apart.", scale: 1, unit: "", min: 0.5, max: 40, step: 0.5 },
     ],
   },
   {
