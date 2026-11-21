@@ -121,23 +121,38 @@ fn local(e: impl std::fmt::Display) -> AiError {
     AiError::Local(e.to_string())
 }
 
-/// ONNX Runtime allows one environment per process.
-fn environment() -> Result<&'static Environment, AiError> {
+/// ONNX Runtime allows one environment per process. On Linux its library is one of the
+/// model's files ([`crate::models::Runtime`]), found under `dir`, the model's folder.
+fn environment(dir: &Path) -> Result<&'static Environment, AiError> {
     static ENVIRONMENT: OnceLock<Result<Environment, String>> = OnceLock::new();
     ENVIRONMENT
-        .get_or_init(|| ort::init().with_name("c1studio").build().map_err(|e| e.to_string()))
+        .get_or_init(|| builder(dir)?.with_name("c1studio").build().map_err(|e| e.to_string()))
         .as_ref()
         .map_err(|e| AiError::Local(e.clone()))
 }
 
-fn session(path: &Path, threads: usize) -> Result<Session, AiError> {
-    Session::builder(environment()?)
+#[cfg(not(target_os = "linux"))]
+fn builder(_dir: &Path) -> Result<ort::environment::EnvironmentBuilder, String> {
+    Ok(ort::init())
+}
+
+#[cfg(target_os = "linux")]
+fn builder(dir: &Path) -> Result<ort::environment::EnvironmentBuilder, String> {
+    let runtime = SIGLIP2.runtime.as_ref().ok_or("the local model does not run on this kind of computer")?;
+    let library = dir.join(runtime.file);
+    ort::init_from(&library).map_err(|e| format!("{}: {e}", library.display()))
+}
+
+/// A session on `file` of the model kept in `dir`.
+fn session(dir: &Path, file: &str, threads: usize) -> Result<Session, AiError> {
+    let path = dir.join(file);
+    Session::builder(environment(dir)?)
         .map_err(local)?
         .with_optimization_level(GraphOptimizationLevel::All)
         .map_err(local)?
         .with_intra_threads(threads)
         .map_err(local)?
-        .commit_from_file(path)
+        .commit_from_file(&path)
         .map_err(|e| AiError::Local(format!("{}: {e}", path.display())))
 }
 
@@ -221,7 +236,7 @@ impl TextTower {
             tokenizer.token_to_id(token).ok_or_else(|| AiError::Local(format!("the tokenizer has no {token}")))
         };
         let (pad, eos) = (id("<pad>")?, id("<eos>")?);
-        let session = session(&dir.join("textual/model.onnx"), threads)?;
+        let session = session(dir, "textual/model.onnx", threads)?;
         let narrow = matches!(
             session.inputs().first().map(|i| i.dtype()),
             Some(ValueType::Tensor { ty: TensorElementType::Int32, .. })
@@ -342,7 +357,7 @@ impl Siglip {
         for phrase in &phrases {
             texts.extend_from_slice(&cache.known[&TextCache::key(phrase)]);
         }
-        Ok(Loaded { image: session(&self.dir.join("visual/model.onnx"), threads)?, texts })
+        Ok(Loaded { image: session(&self.dir, "visual/model.onnx", threads)?, texts })
     }
 
     /// Every keyword offered with how likely it goes with the photo, in the names' order.

@@ -30,7 +30,38 @@ pub struct Model {
     pub repo: &'static str,
     pub revision: &'static str,
     pub files: &'static [ModelFile],
+    /// The library that runs it, where the one built into the app cannot be used.
+    pub runtime: Option<Runtime>,
 }
+
+/// ONNX Runtime as a library of its own, loaded when a model is first run. The one built
+/// into the app elsewhere asks for a newer C library than the Linux systems the app
+/// supports have; the one in Microsoft's Python package is built for glibc 2.28.
+#[derive(Debug)]
+pub struct Runtime {
+    /// The archive (a zip) the library comes in.
+    pub url: &'static str,
+    pub size: u64,
+    /// Lowercase hex, of the archive.
+    pub sha256: &'static str,
+    /// The library's path in the archive.
+    pub member: &'static str,
+    /// Its path under the model's folder, and its size there.
+    pub file: &'static str,
+    pub file_size: u64,
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+const RUNTIME: Option<Runtime> = Some(Runtime {
+    url: "https://files.pythonhosted.org/packages/6c/44/1e9e762b95b7da0a8424913a1ed7c38cdaf88624a3c41ddba24ebac88bc9/onnxruntime-1.31.0-cp312-cp312-manylinux_2_28_x86_64.whl",
+    size: 23_760_984,
+    sha256: "5e129d6c56abd53e659cb70f00a108d6824086470ff99c2e47a82e5786563db3",
+    member: "onnxruntime/capi/libonnxruntime.so.1.31.0",
+    file: "runtime/libonnxruntime.so.1.31.0",
+    file_size: 29_352_200,
+});
+#[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+const RUNTIME: Option<Runtime> = None;
 
 /// SigLIP 2 base, patch 16, 224 px (Google, Apache-2.0), as Immich exports it to ONNX: an
 /// image tower and a multilingual text tower with one embedding space.
@@ -56,6 +87,7 @@ pub const SIGLIP2: Model = Model {
             sha256: "220c63d496e0c14e63eb656c91e0215e926202e4c74b1f089e09f1920d779b04",
         },
     ],
+    runtime: RUNTIME,
 };
 
 impl Model {
@@ -66,7 +98,12 @@ impl Model {
 
     /// The whole download, in bytes.
     pub fn size(&self) -> u64 {
-        self.files.iter().map(|f| f.size).sum()
+        self.files.iter().map(|f| f.size).sum::<u64>() + self.runtime.as_ref().map_or(0, |r| r.size)
+    }
+
+    /// Where the library that runs it is kept under `root`, when it has one of its own.
+    pub fn library(&self, root: &Path) -> Option<PathBuf> {
+        self.runtime.as_ref().map(|r| self.dir(root).join(r.file))
     }
 
     /// Every file is there at its full size. Hashes are checked when a file is fetched,
@@ -74,6 +111,7 @@ impl Model {
     pub fn installed(&self, root: &Path) -> bool {
         let dir = self.dir(root);
         self.files.iter().all(|f| has(&dir.join(f.path), f.size))
+            && self.runtime.as_ref().is_none_or(|r| has(&dir.join(r.file), r.file_size))
     }
 
     fn url(&self, file: &ModelFile) -> String {
@@ -91,34 +129,29 @@ impl Model {
         let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
         for file in self.files {
             let to = dir.join(file.path);
-            if has(&to, file.size) {
-                done += file.size;
-                progress(done, total);
-                continue;
+            if !has(&to, file.size) {
+                let part = to.with_extension("part");
+                fetch(&agent, &self.url(file), &part, file.sha256, stop, &mut |n| progress(done + n, total))?;
+                fs::rename(&part, &to).map_err(|e| disk(&to, e))?;
             }
-            let folder = to.parent().unwrap_or(&dir);
-            fs::create_dir_all(folder).map_err(|e| disk(folder, e))?;
-            let mut response = agent.get(self.url(file)).call().map_err(|e| AiError::Network(e.to_string()))?;
-            let status = response.status().as_u16();
-            if status != 200 {
-                return Err(AiError::Http { status, message: format!("fetching {}", file.path), retry_after: None });
-            }
-            let part = to.with_extension("part");
-            let hash = copy(response.body_mut().as_reader(), &part, stop, &mut |n| progress(done + n, total));
-            let hash = match hash {
-                Ok(hash) => hash,
-                Err(e) => {
+            done += file.size;
+            progress(done, total);
+        }
+        if let Some(runtime) = &self.runtime {
+            let to = dir.join(runtime.file);
+            if !has(&to, runtime.file_size) {
+                let archive = to.with_extension("zip");
+                fetch(&agent, runtime.url, &archive, runtime.sha256, stop, &mut |n| progress(done + n, total))?;
+                let part = to.with_extension("part");
+                let unpacked = unpack(&archive, runtime.member, &part);
+                let _ = fs::remove_file(&archive);
+                if let Err(e) = unpacked {
                     let _ = fs::remove_file(&part);
                     return Err(e);
                 }
-            };
-            if hash != file.sha256 {
-                let _ = fs::remove_file(&part);
-                return Err(AiError::BadReply(format!("{} is not the file expected: its hash differs", file.path)));
+                fs::rename(&part, &to).map_err(|e| disk(&to, e))?;
             }
-            fs::rename(&part, &to).map_err(|e| disk(&to, e))?;
-            done += file.size;
-            progress(done, total);
+            progress(total, total);
         }
         Ok(())
     }
@@ -139,6 +172,50 @@ fn has(path: &Path, size: u64) -> bool {
 
 fn disk(path: &Path, e: std::io::Error) -> AiError {
     AiError::Local(format!("{}: {e}", path.display()))
+}
+
+/// Fetches `url` into `to`, a file not kept unless its hash is `sha256`.
+fn fetch(
+    agent: &ureq::Agent,
+    url: &str,
+    to: &Path,
+    sha256: &str,
+    stop: &AtomicBool,
+    wrote: &mut dyn FnMut(u64),
+) -> Result<(), AiError> {
+    let name = url.rsplit('/').next().unwrap_or(url);
+    if let Some(folder) = to.parent() {
+        fs::create_dir_all(folder).map_err(|e| disk(folder, e))?;
+    }
+    let mut response = agent.get(url).call().map_err(|e| AiError::Network(e.to_string()))?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(AiError::Http { status, message: format!("fetching {name}"), retry_after: None });
+    }
+    let outcome = match copy(response.body_mut().as_reader(), to, stop, wrote) {
+        Ok(hash) if hash == sha256 => return Ok(()),
+        Ok(_) => AiError::BadReply(format!("{name} is not the file expected: its hash differs")),
+        Err(e) => e,
+    };
+    let _ = fs::remove_file(to);
+    Err(outcome)
+}
+
+/// Writes one file of the zip `archive` to `to`.
+#[cfg(all(target_os = "linux", feature = "local"))]
+fn unpack(archive: &Path, member: &str, to: &Path) -> Result<(), AiError> {
+    let bad = |e: zip::result::ZipError| AiError::Local(format!("{}: {e}", archive.display()));
+    let mut zip = zip::ZipArchive::new(fs::File::open(archive).map_err(|e| disk(archive, e))?).map_err(bad)?;
+    let mut from = zip.by_name(member).map_err(bad)?;
+    let mut file = fs::File::create(to).map_err(|e| disk(to, e))?;
+    std::io::copy(&mut from, &mut file).map_err(|e| disk(to, e))?;
+    Ok(())
+}
+
+/// Only the Linux build with the local model has a library to unpack.
+#[cfg(not(all(target_os = "linux", feature = "local")))]
+fn unpack(archive: &Path, _member: &str, _to: &Path) -> Result<(), AiError> {
+    Err(AiError::Local(format!("{}: nothing reads it in this build", archive.display())))
 }
 
 /// Writes what `from` gives to `to`, telling `wrote` the bytes so far; returns their
@@ -178,7 +255,37 @@ mod tests {
             ModelFile { path: "a/one.bin", size: 3, sha256: "" },
             ModelFile { path: "two.bin", size: 2, sha256: "" },
         ],
+        runtime: None,
     };
+
+    const WITH_LIBRARY: Model = Model {
+        id: "lib",
+        name: "Lib",
+        repo: "nobody/lib",
+        revision: "abc",
+        files: &[],
+        runtime: Some(Runtime {
+            url: "https://example.invalid/lib.zip",
+            size: 7,
+            sha256: "",
+            member: "a/lib.so",
+            file: "runtime/lib.so",
+            file_size: 4,
+        }),
+    };
+
+    #[test]
+    fn a_model_with_a_library_of_its_own_needs_it_there() {
+        let root = tempfile::tempdir().unwrap();
+        let library = WITH_LIBRARY.library(root.path()).unwrap();
+        assert_eq!(library, WITH_LIBRARY.dir(root.path()).join("runtime/lib.so"));
+        assert!(!WITH_LIBRARY.installed(root.path()));
+        fs::create_dir_all(library.parent().unwrap()).unwrap();
+        fs::write(&library, b"1234").unwrap();
+        assert!(WITH_LIBRARY.installed(root.path()));
+        assert_eq!(WITH_LIBRARY.size(), 7, "the download is the archive");
+        assert_eq!(SMALL.library(root.path()), None);
+    }
 
     #[test]
     fn a_model_is_installed_when_every_file_is_there_whole() {

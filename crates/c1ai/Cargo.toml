@@ -17,16 +17,26 @@ ureq = { version = "3", features = ["json"] }
 keyring = { version = "3", features = ["windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 # Checks a downloaded model file against its pinned hash.
 sha2 = "0.10"
-# The local model (feature `local`): ONNX Runtime, fetched as a prebuilt library at build
-# time, the model's tokenizer, and the JPEG decoder and resizer.
-ort = { version = "=2.0.0-rc.15", optional = true }
+# The local model (feature `local`): ONNX Runtime (below, per system), the model's
+# tokenizer, and the JPEG decoder and resizer.
 tokenizers = { version = "0.22", default-features = false, features = ["fancy-regex"], optional = true }
 image = { workspace = true, optional = true }
+
+# ONNX Runtime, fetched as a prebuilt library at build time and linked in.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ort = { version = "=2.0.0-rc.15", optional = true }
+
+# On Linux that prebuilt library asks for glibc 2.38, newer than the systems the app is
+# built for. The library is loaded at run time instead, from a file fetched with the model
+# (`models::Runtime`); `zip` unpacks it.
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "=2.0.0-rc.15", optional = true, default-features = false, features = ["std", "ndarray", "tracing", "load-dynamic", "api-31"] }
+zip = { version = "8", optional = true, default-features = false, features = ["deflate"] }
 
 [features]
 default = ["local"]
 # A SigLIP 2 model run on this computer ([`siglip`]): keywords with no call to anyone.
-local = ["dep:ort", "dep:tokenizers", "dep:image"]
+local = ["dep:ort", "dep:zip", "dep:tokenizers", "dep:image"]
 
 [dev-dependencies]
 tempfile.workspace = true
