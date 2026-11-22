@@ -4,6 +4,7 @@
 //! view is slow to make again, and both outlive the store being rebuilt. Photos are named
 //! by key.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -134,11 +135,14 @@ fn standing(
     let mut by_cover: Vec<(u64, usize)> = covered.into_iter().collect();
     by_cover.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
     for (id, covered) in by_cover {
-        if !read.contains_key(&id) {
-            let verdict = answers.get(id)?.and_then(|bytes| postcard::from_bytes::<Verdict>(bytes.value()).ok());
-            read.insert(id, verdict.filter(|v| v.version == pick::VERSION));
-        }
-        if read[&id].as_ref().is_some_and(|v| stands(v.sent.len(), covered, keys.len())) {
+        let verdict = match read.entry(id) {
+            Entry::Occupied(known) => known.into_mut(),
+            Entry::Vacant(new) => {
+                let verdict = answers.get(id)?.and_then(|bytes| postcard::from_bytes::<Verdict>(bytes.value()).ok());
+                new.insert(verdict.filter(|v| v.version == pick::VERSION))
+            }
+        };
+        if verdict.as_ref().is_some_and(|v| stands(v.sent.len(), covered, keys.len())) {
             return Ok(Some(id));
         }
     }
