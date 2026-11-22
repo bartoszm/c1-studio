@@ -1,7 +1,7 @@
 // Choosing the best of alike photos, one duplicate group or series at a time: what
 // becomes of the photos not kept, which of a big group are side by side, and the keys.
 
-import type { Color, CullStep, Mark, RankState, Removal, Rest } from "./api";
+import type { AskEstimate, Color, CullStep, Mark, RankState, Removal, Rest } from "./api";
 import { COMPARE_MAX } from "./compare";
 import { COLOR_NAMES } from "./format";
 import { typingIn } from "./keys";
@@ -140,7 +140,6 @@ export const placeAfter = (ids: string[], id: string | undefined, at: number): n
   return i >= 0 ? i : stepGroup(at, ids.length, 0);
 };
 
-/** The photo `delta` after the active one, round the group. */
 /** Whether a `ranking` event (`now`, after `before`) says the group `shown` was the one
  *  just looked at: only then is it read again, not for every group of a long run. */
 export const lookedAt = (before: Pick<RankState, "done"> | null, now: Pick<RankState, "done" | "group">, shown: string | undefined): boolean =>
@@ -154,6 +153,42 @@ export function unseenNote(unseen: number, photos: number, looked: boolean): str
   return `${unseen.toLocaleString()} photo${unseen === 1 ? "" : "s"} not looked at`;
 }
 
+/** What the button (or the key) of a run over every group does now: the local model's
+ *  look (`cloud` false), or asking a model. It starts a run when none goes on and stops its
+ *  own; while the other kind goes on it does neither: Shift+A does not stop the local
+ *  model's run, nor Shift+R one that is paid for. */
+export function runToggle(run: Pick<RankState, "running" | "cloud"> | null, cloud: boolean): "start" | "stop" | "other" {
+  if (!run?.running) return "start";
+  return run.cloud === cloud ? "stop" : "other";
+}
+
+/** What a key does while the question about asking every group is up. The question takes
+ *  every key, so none reaches the photos behind it (Delete, a rating, `k`): Enter says yes
+ *  (`go`), Esc no (`cancel`), and the rest does nothing (`none`), but for what moves to
+ *  and presses the question's own buttons (`own`; `onButton`: one of them has the focus). */
+export function askPlanKey(
+  e: { key: string; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; repeat?: boolean },
+  onButton: boolean,
+): "go" | "cancel" | "own" | "none" {
+  if (e.key === "Escape") return "cancel";
+  if (e.key === "Tab" || (onButton && (e.key === "Enter" || e.key === " "))) return "own";
+  if (e.key === "Enter" && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) return "go";
+  return "none";
+}
+
+/** Who a group's frames are sent to when a model is asked. */
+export const askRecipient = (via: string): string => (via === "Gemini" ? "Google" : "Anthropic");
+
+/** What asking about every group costs, in words: a plan's or an account's quota, or
+ *  dollars, which are the least it comes to when the model may think more than a little. */
+export function askCost(p: Pick<AskEstimate, "cost" | "plan" | "via" | "effort">): string {
+  if (p.plan) return `counted against your ${p.via === "Gemini" ? "Google account's quota" : "Claude plan"}`;
+  if (p.cost === null) return "billed to your API key (no price is known for this model)";
+  const sum = p.cost < 0.01 ? "under $0.01" : `about $${p.cost < 10 ? p.cost.toFixed(2) : Math.round(p.cost).toLocaleString("en-US")}`;
+  return p.effort === "low" ? sum : `${sum} or more (at effort ${p.effort} the model thinks longer, and that is billed too)`;
+}
+
+/** The photo `delta` after the active one, round the group. */
 export function stepPhoto(rows: number[], active: number | undefined, delta: number): number | undefined {
   if (!rows.length) return undefined;
   const at = active === undefined ? -1 : rows.indexOf(active);

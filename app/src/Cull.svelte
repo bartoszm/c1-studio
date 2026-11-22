@@ -5,7 +5,7 @@
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
   import Compare from "./Compare.svelte";
-  import { REST_CHOICES, cullKey, keepers, lookedAt, restLabel, restOf, shownRows, stepGroup, stepPhoto, unseenNote, type RestChoice } from "./lib/cull";
+  import { REST_CHOICES, askCost, askPlanKey, askRecipient, cullKey, keepers, lookedAt, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, unseenNote, type RestChoice } from "./lib/cull";
   import { settings } from "./lib/settings.svelte";
 
   // Choosing the best of alike photos: the duplicate groups or series under the filter, one
@@ -137,8 +137,9 @@
   let looking = $state(false);
   /** It is looking at every group, in the background: how far it has got. */
   let ranking = $state<api.RankState | null>(null);
-  /** Why the last look could not be made (the model would not load, another run goes on):
-   *  said in the bar, since the group stays on screen. */
+  /** Why the last look, or the last question to a model, could not be made (the model
+   *  would not load, no key, another run goes on): said in the bar, since the group stays
+   *  on screen. */
   let lookError = $state<string | null>(null);
   /** The group it was last asked to look at by hand. */
   let lookedGroup = $state<string | undefined>(undefined);
@@ -168,12 +169,19 @@
       looking = false;
     }
   }
+  /** Said when a run's button or key is used while the other kind of run goes on. */
+  const OTHER_RUN = {
+    cloud: "AI is being asked about every group: stop that first (Shift+A)",
+    local: "The local model is looking at every group: stop that first (Shift+R)",
+  };
   async function rankAll() {
     if (view && !view.model) return onsettings();
-    lookError = null;
+    const what = runToggle(ranking, false);
+    // Not the run asking a model: this key does not stop what is paid for.
+    lookError = what === "other" ? OTHER_RUN.cloud : null;
     try {
-      if (ranking?.running) await api.stopRanking();
-      else await api.startRanking($state.snapshot(filter) as Filter, series);
+      if (what === "stop") await api.stopRanking();
+      else if (what === "start") await api.startRanking($state.snapshot(filter) as Filter, series);
     } catch (e) {
       lookError = String(e);
     }
@@ -181,9 +189,15 @@
 
   /** A model (Claude or Gemini) is comparing this group's frames. */
   let asking = $state(false);
+  /** Every group is being asked about: this one is not asked about by hand meanwhile. */
+  let askingAll = $derived(runToggle(ranking, true) === "stop");
   async function askThis() {
     const group = id;
-    if (asking || !view || group === undefined) return;
+    if (asking || !view || !current || group === undefined || view.photos.length < 2) return;
+    if (askingAll) {
+      lookError = OTHER_RUN.cloud;
+      return;
+    }
     asking = true;
     lookError = null;
     try {
@@ -207,26 +221,53 @@
   /** The groups not asked about yet are being counted, for `askPlan`. */
   let counting = $state(false);
   async function askAll() {
-    if (counting) return;
+    if (counting || askPlan) return;
+    const what = runToggle(ranking, true);
+    // Not the local model's run: this key does not stop it.
+    lookError = what === "other" ? OTHER_RUN.local : null;
     try {
-      if (ranking?.running) return await api.stopRanking();
+      if (what === "stop") await api.stopRanking();
+      if (what !== "start") return;
       counting = true;
       askPlan = await api.askEstimate($state.snapshot(filter) as Filter, series);
     } catch (e) {
-      error = String(e);
+      lookError = String(e);
     } finally {
       counting = false;
     }
   }
+  /** The question can be answered with a yes: there are groups to ask about, and a model to ask. */
+  let askReady = $derived(!!askPlan && askPlan.groups > 0 && !askPlan.unable);
   async function askAllGo() {
+    if (!askReady) return;
     askPlan = null;
+    lookError = null;
     try {
       await api.startRanking($state.snapshot(filter) as Filter, series, true);
     } catch (e) {
-      error = String(e);
+      lookError = String(e);
     }
   }
-  const money = (v: number) => (v < 0.01 ? "under $0.01" : `about $${v < 10 ? v.toFixed(2) : Math.round(v).toLocaleString()}`);
+  // The question about asking every group takes every key until it is answered, before
+  // anyone else hears it: the window's other listeners would rate, tag or trash the photo
+  // behind it. A dialog or menu over this screen (`blocked`) has the keys instead.
+  $effect(() => {
+    if (!askPlan) return;
+    const taken = (e: KeyboardEvent) => {
+      if (blocked) return;
+      const onButton = !!(e.target as HTMLElement | null)?.closest?.(".ask button");
+      const what = askPlanKey(e, onButton);
+      e.stopPropagation();
+      if (what === "own") return;
+      // Stopped above, it reaches no one here; a key of the window's own (F12) still works,
+      // but none presses a button of the bar left focused.
+      if (what !== "none" || e.key === "Enter" || e.key === " ") e.preventDefault();
+      if (what === "go") askAllGo();
+      else if (what === "cancel") askPlan = null;
+    };
+    window.addEventListener("keydown", taken, true);
+    return () => window.removeEventListener("keydown", taken, true);
+  });
   const PROVIDERS: Record<string, string> = { claude: "Claude", "claude-code": "Claude", gemini: "Gemini" };
   onMount(() => {
     api.rankingState().then((s) => (ranking = s)).catch(() => {});
@@ -277,14 +318,6 @@
   /** Our keys come before the comparison's: the arrows move through the whole group, not
    *  only the photos side by side. */
   function onkey(e: KeyboardEvent): boolean {
-    // The question about asking every group takes the keys until it is answered.
-    if (askPlan && !blocked && !e.defaultPrevented) {
-      if (e.key === "Enter" && askPlan.groups && askPlan.via !== "Local") askAllGo();
-      else if (e.key === "Escape") askPlan = null;
-      else if (e.key !== "Enter") return false;
-      e.preventDefault();
-      return true;
-    }
     const action = cullKey(e, blocked);
     if (!action) return false;
     e.preventDefault();
@@ -429,10 +462,10 @@
         {/if}
         <button
           class="toggle"
-          disabled={asking || !view || view.photos.length < 2}
-          title="Ask AI (Claude or Gemini, as Settings › AI say) to compare this group's frames: it puts them in order and says in a few words what sets each apart: an expression, a gesture, the framing (a). One call; at most 16 frames."
+          disabled={asking || askingAll || !view || !current || view.photos.length < 2}
+          title="Ask AI (Claude or Gemini, as Settings › AI say) to compare this group's frames: it puts them in order and says in a few words what sets each apart: an expression, a gesture, the framing (a). One call, at most 16 frames, which are sent to Anthropic or Google and leave this computer.{view?.verdict ? ' This group has an answer: asking again is another call.' : ''}"
           onclick={askThis}
-        >{asking ? "Asking…" : "Ask AI"}</button>
+        >{asking ? "Asking…" : view && current && view.verdict ? "Ask again" : "Ask AI"}</button>
         <button
           class="toggle"
           class:on={ranking?.running && ranking.cloud}
@@ -469,21 +502,23 @@
   {#if askPlan}
     {@const p = askPlan}
     <div class="ask" role="alertdialog" aria-label="Ask AI about every group">
-      {#if p.via === "Local"}
-        <span>Asking AI takes Claude or Gemini: the local model cannot compare frames (that is <em>Look</em>).</span>
+      {#if p.unable}
+        <span>AI cannot be asked as Settings › AI are: {p.unable}</span>
         <button onclick={() => { askPlan = null; onsettings(); }}>Settings › AI…</button>
       {:else if !p.groups}
         <span>Every group here has been asked about already{p.skipped ? ` (${p.skipped.toLocaleString()})` : ""}.</span>
       {:else}
         <span>
-          Ask {p.via} ({p.model}) about {p.groups.toLocaleString()} group{p.groups === 1 ? "" : "s"}: {p.groups.toLocaleString()} call{p.groups === 1 ? "" : "s"},
-          {p.photos.toLocaleString()} photos sent, {p.plan ? `counted against your ${p.via === "Gemini" ? "Google account's quota" : "Claude plan"}` : money(p.cost)}.
+          Ask {p.via} ({p.model}) about {p.groups.toLocaleString()} group{p.groups === 1 ? "" : "s"}: {p.groups.toLocaleString()} call{p.groups === 1 ? "" : "s"}{p.workers > 1 && p.groups > 1 ? `, ${Math.min(p.workers, p.groups)} at a time` : ""},
+          {askCost(p)}.
+          <strong>{p.photos.toLocaleString()} photos are sent to {askRecipient(p.via)} and leave this computer</strong>
+          ({p.via === "Gemini" ? "on numbered sheets, one a group" : "previews, up to 1024 px"}).
           {#if p.skipped}{p.skipped.toLocaleString()} asked about already are left out.{/if}
           It runs in the background and can be stopped; answers are kept as they come.
         </span>
         <button class="primary" onclick={askAllGo}>Ask (Enter)</button>
       {/if}
-      <button onclick={() => (askPlan = null)}>{p.groups && p.via !== "Local" ? "Cancel (Esc)" : "Close (Esc)"}</button>
+      <button onclick={() => (askPlan = null)}>{askReady ? "Cancel (Esc)" : "Close (Esc)"}</button>
     </div>
   {/if}
 

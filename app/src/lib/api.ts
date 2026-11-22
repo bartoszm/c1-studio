@@ -756,8 +756,22 @@ export const startRanking = (filter: Filter, series: boolean, cloud = false) =>
  *  order it said, with its reasons. */
 export const askGroup = (filter: Filter, id: string) => invoke<CullGroup>("ask_group", { filter, id });
 /** What asking about every group would take: groups not asked yet, frames sent, groups
- *  left out (asked already), and the cost in US dollars with an API key. */
-export type AskEstimate = { groups: number; photos: number; skipped: number; cost: number; plan: boolean; via: string; model: string };
+ *  left out (asked already), and the cost in US dollars with an API key, as at effort low
+ *  (`null`: the model has no price to work it out from). `effort`: what the settings ask
+ *  for; above low, thinking adds to the cost. `workers`: calls made at once. `unable`: why
+ *  no model can be asked as the settings are (no key, not signed in, the local model). */
+export type AskEstimate = {
+  groups: number;
+  photos: number;
+  skipped: number;
+  cost: number | null;
+  plan: boolean;
+  via: string;
+  model: string;
+  effort: string;
+  workers: number;
+  unable: string | null;
+};
 export const askEstimate = (filter: Filter, series: boolean) => invoke<AskEstimate>("ask_estimate", { filter, series });
 export const stopRanking = () => invoke<void>("stop_ranking");
 export const rankingState = () => invoke<RankState>("ranking_state");

@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CULL_DEFAULTS, afterPick, afterTurn, cullKey, cullSettings, describePick, firstUnpicked, keeperMark, keepers, lookedAt, placeAfter, restAction,
-  restLabel, restOf, shownRows, stepGroup, stepPhoto, unseenNote,
+  CULL_DEFAULTS, afterPick, afterTurn, askCost, askPlanKey, askRecipient, cullKey, cullSettings, describePick, firstUnpicked, keeperMark, keepers,
+  lookedAt, placeAfter, restAction, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, unseenNote,
 } from "../src/lib/cull";
 
 const key = (k: string, more: Record<string, unknown> = {}) => ({ key: k, target: null, defaultPrevented: false, ...more });
@@ -156,6 +156,45 @@ test("a run's progress has the group shown read again only when it is the one lo
   assert.equal(lookedAt(before, { done: 4, group: "series:7" }, "series:7"), false, "the same event again");
   assert.equal(lookedAt(null, { done: 1, group: "series:7" }, "series:7"), true);
   assert.equal(lookedAt(null, { done: 0, group: null }, undefined), false, "no group shown");
+});
+
+test("a run's key starts or stops its own kind and leaves the other kind alone", () => {
+  assert.equal(runToggle(null, false), "start");
+  assert.equal(runToggle({ running: false, cloud: true }, false), "start", "the last run is over");
+  assert.equal(runToggle({ running: true, cloud: false }, false), "stop");
+  assert.equal(runToggle({ running: true, cloud: true }, true), "stop");
+  assert.equal(runToggle({ running: true, cloud: false }, true), "other", "Shift+A does not stop the local model's run");
+  assert.equal(runToggle({ running: true, cloud: true }, false), "other", "Shift+R does not stop a run that is paid for");
+});
+
+test("the question about asking every group takes every key", () => {
+  assert.equal(askPlanKey({ key: "Enter" }, false), "go");
+  assert.equal(askPlanKey({ key: "Escape" }, false), "cancel");
+  assert.equal(askPlanKey({ key: "Escape" }, true), "cancel");
+  // Nothing reaches the photos behind it.
+  for (const k of ["Delete", "Backspace", "0", "5", "6", "k", "a", "A", "r", "h", "g", "ArrowLeft", "ArrowDown", "z", " "]) {
+    assert.equal(askPlanKey({ key: k }, false), "none", k);
+  }
+  assert.equal(askPlanKey({ key: "z", ctrlKey: true }, false), "none", "nor an undo");
+  assert.equal(askPlanKey({ key: "Enter", repeat: true }, false), "none", "a held Enter says yes once");
+  assert.equal(askPlanKey({ key: "Enter", ctrlKey: true }, false), "none");
+  // Its own buttons are reached and pressed as buttons are: Enter on Cancel is not a yes.
+  assert.equal(askPlanKey({ key: "Tab" }, false), "own");
+  assert.equal(askPlanKey({ key: "Enter" }, true), "own");
+  assert.equal(askPlanKey({ key: " " }, true), "own");
+});
+
+test("the cost of asking about every group is said for what it is", () => {
+  assert.equal(askRecipient("Claude"), "Anthropic");
+  assert.equal(askRecipient("Gemini"), "Google");
+  const api = { plan: false, via: "Claude", effort: "low" };
+  assert.equal(askCost({ ...api, cost: 0.004 }), "under $0.01");
+  assert.equal(askCost({ ...api, cost: 0.04 }), "about $0.04");
+  assert.equal(askCost({ ...api, cost: 1234.4 }), "about $1,234");
+  assert.match(askCost({ ...api, cost: 100, effort: "high" }), /^about \$100 or more \(at effort high/);
+  assert.match(askCost({ ...api, cost: null }), /no price is known/, "not shown as free");
+  assert.equal(askCost({ plan: true, via: "Claude", effort: "high", cost: null }), "counted against your Claude plan");
+  assert.equal(askCost({ plan: true, via: "Gemini", effort: "low", cost: null }), "counted against your Google account's quota");
 });
 
 test("photos the model could not look at are named once it has looked", () => {

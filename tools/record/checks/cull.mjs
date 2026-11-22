@@ -97,7 +97,7 @@ export default {
     await d.key("A", { modifiers: 8 });
     await until(`${ASK} !== null`, 120000);
     const asked = (await d.evaluate(ASK)) ?? "";
-    check("Shift+A says what asking AI about every group takes", /\d call|asked about already|Claude or Gemini/.test(asked), asked);
+    check("Shift+A says what asking AI about every group takes", /\d call|asked about already|cannot be asked/.test(asked), asked);
     await key("Escape");
     const running = (await d.invoke("ranking_state")).running;
     check("Esc answers no: nothing is asked, and the screen stays", (await d.evaluate(ASK)) === null && (await d.evaluate(OPEN)) && !running, { running });
