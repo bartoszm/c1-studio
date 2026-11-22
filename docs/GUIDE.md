@@ -781,7 +781,8 @@ measured yet says so.
 **Best of…** in the header, `b` in the grid, or *Choose the best of each…* on the Alike
 tab goes through the series (or the duplicate groups) among the photos the filter shows,
 oldest first, one group at a time. *Series* and *Duplicates* in its bar switch the kind;
-it opens on the kind used last, or the other when there are none of it.
+it opens on the kind used last, or the other when there are none of it, at the first group
+you have not picked from yet: closed and opened again, it goes on where it was left.
 
 - The group's photos are side by side, as in [Compare](#browsing): the wheel zooms every
   pane together, `z` is 1:1, and two photos can be split, overlaid or blinked. A group of
@@ -791,7 +792,8 @@ it opens on the kind used last, or the other when there are none of it.
   the sharpest, marked down for clipped highlights and shadows, and up a little for a
   frame already edited. A blurry frame never wins over one that is not. The caption says
   why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
-  the two best are too close to call.
+  the two best are too close to call. In a group you picked from before, the photo you
+  kept then is the one suggested (*picked before*), whatever was measured.
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
@@ -801,13 +803,20 @@ it opens on the kind used last, or the other when there are none of it.
   delivered), hidden, a rating, a colour tag, or nothing. **Settings › Culling** has the
   same choice, which rating or colour, and whether the photos kept get a rating or a tag
   too. The trash is the app's own: nothing is deleted until you empty it.
-- Each pick is one step: Ctrl+Z takes it back whole and shows the group again.
+- Each pick is one step: Ctrl+Z takes it back whole and shows the group again. A pick
+  that cannot be made whole is not made at all.
+- Picking again from a group replaces the earlier pick: the photo kept before is one of
+  the rest now, and Ctrl+Z gives it its pick back.
 - "The rest" are the group's photos the filter shows: a frame the filter leaves out is
   not touched. Where trashing an image takes all its variants (Capture One), a variant of
-  a photo you keep is left alone, and the footer says so.
+  a photo you keep is left alone, and the footer says so; the other variants of an image
+  that goes to the trash go with it, shown in the group or not, and the footer counts
+  them. A source with no trash has the rest hidden.
+- The grid behind is read again when you close the screen, not after every pick.
 
 A photo you keep stands for its group when Stack is on, in place of the sharpest, until
-the pick is undone.
+the pick is undone. A photo moved to the trash stands for no group: with Stack on, the
+sharpest of the others shows in its place.
 
 ## Describing photos with AI
 
