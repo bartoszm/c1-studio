@@ -23,6 +23,7 @@ use tantivy::{
 };
 
 use crate::ai::{Status, SuggestionBook, Task};
+use crate::cull::CullBook;
 use crate::db::{OpenControl, Stopped};
 use crate::edits::{
     self, Before, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key,
@@ -188,6 +189,17 @@ pub enum GroupSort {
 /// (not the sharpest of one of them).
 type Groupings = (Option<String>, Option<String>, bool);
 
+/// Which photos of one group are stacked away, given each one's row, sharpness and whether
+/// the user picked it as one to keep (the photos in the trash left out): all but the picks
+/// where there are any, else all but the sharpest (the lowest row among equals).
+fn stacked_away(members: &[(u64, f32, bool)]) -> Vec<bool> {
+    if members.iter().any(|m| m.2) {
+        return members.iter().map(|m| !m.2).collect();
+    }
+    let sharpest = members.iter().max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0))).map(|m| m.0);
+    members.iter().map(|m| Some(m.0) != sharpest).collect()
+}
+
 /// What a photo's measures come to as classes: shape, colours, light, focus.
 type Classes = (&'static str, Vec<&'static str>, Vec<&'static str>, &'static str);
 
@@ -275,6 +287,9 @@ pub struct Library {
     /// duplicate groups and series they fall in.
     looks: Looks,
     seen: RwLock<HashMap<String, Look>>,
+    /// Each duplicate group's and series' photos, by key: `seen` the other way round, as
+    /// the groups were last worked out. Taken after `seen`, where both are.
+    grouped: RwLock<HashMap<String, Vec<String>>>,
     /// Where the lines between classes lie (also in `looks`): read when documents are made.
     classes: RwLock<ClassSettings>,
     /// One writer at a time: syncs and edits both rewrite documents.
@@ -305,10 +320,16 @@ pub struct Library {
     /// Photos the user deleted, in the app's trash, by photo key (also in `bin_book`).
     bin_book: MarkBook,
     binned: RwLock<HashSet<String>>,
+    /// Photos the user picked as the ones to keep of their group, by photo key (also in
+    /// `cull_book`): they stand for the group when it is stacked.
+    cull_book: CullBook,
+    kept: RwLock<HashSet<String>>,
     /// What the History tab's picks and the log's days came to, for the log as last read.
     history: history::Cache,
     /// What a vision model suggested for photos, until accepted or rejected (stage 5).
     suggestions: SuggestionBook,
+    /// What photos look like to the local model: what it learns keywords from.
+    embeddings: crate::embeddings::Embeddings,
     /// Set when the library is being closed, or its opening was stopped: a sync under way
     /// ends without saving anything. Shared with the [`OpenControl`] it was opened with.
     stop: Arc<AtomicBool>,
@@ -417,7 +438,10 @@ impl Library {
         let hidden = RwLock::new(hidden_book.all()?);
         let bin_book = MarkBook::bin(&dir.join("bin.redb"), ctl)?;
         let binned = RwLock::new(bin_book.all()?);
+        let cull_book = CullBook::open(&dir.join("cull.redb"), ctl)?;
+        let kept = RwLock::new(cull_book.keepers()?);
         let suggestions = SuggestionBook::open(&dir.join("ai.redb"), ctl)?;
+        let embeddings = crate::embeddings::Embeddings::open(&dir.join("embeddings.redb"), ctl)?;
         let coarse = ctl.timed("coarse places", || {
             // A photo moved since it was given its place's position is placed for real: its
             // mark goes. (One with no position keeps it: an undo can be redone.)
@@ -493,6 +517,7 @@ impl Library {
             edits,
             looks,
             seen: RwLock::new(seen),
+            grouped: RwLock::default(),
             classes: RwLock::new(classes),
             writing: Mutex::new(()),
             syncing: Mutex::new(()),
@@ -507,8 +532,11 @@ impl Library {
             hidden,
             bin_book,
             binned,
+            cull_book,
+            kept,
             history: history::Cache::default(),
             suggestions,
+            embeddings,
             stop: ctl.flag(),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
@@ -716,6 +744,46 @@ impl Library {
         Ok(GroupPage { total, groups: out.into_iter().skip(offset).take(limit).collect() })
     }
 
+    /// The ids of the duplicate groups (or series) among the photos `filter` selects, in the
+    /// order of [`GroupSort::Oldest`], each with whether one of its matching photos is
+    /// picked as the one to keep: what choosing the best of each goes through. Leaves out
+    /// the same groups as [`Library::groups_sorted`], without counting their sizes.
+    pub fn group_ids(&self, filter: &Filter, series: bool) -> anyhow::Result<Vec<(String, bool)>> {
+        let narrowed = Filter {
+            duplicates: filter.duplicates || !series,
+            series: filter.series || series,
+            stacked: false,
+            ..filter.clone()
+        };
+        let rows = self.query(&narrowed, &QueryOptions { sort: Sort::DateDesc, ..QueryOptions::default() })?.rows;
+        let least = if series { self.classes.read().unwrap().series_min } else { 2 };
+        let keys = self.keys.read().unwrap();
+        let kept = self.kept.read().unwrap();
+        let seen = self.seen.read().unwrap();
+        // Per group: how many match, and whether one of them is a pick.
+        let mut found: HashMap<&String, (usize, bool)> = HashMap::new();
+        let mut order: Vec<&String> = Vec::new();
+        // Oldest first: a group comes where its oldest photo does.
+        for row in rows.into_iter().rev() {
+            let Some(Some(key)) = keys.get(row as usize) else { continue };
+            let Some(look) = seen.get(key) else { continue };
+            let Some(id) = (if series { &look.series } else { &look.duplicates }) else { continue };
+            let group = found.entry(id).or_insert_with(|| {
+                order.push(id);
+                (0, false)
+            });
+            group.0 += 1;
+            group.1 |= kept.contains(key);
+        }
+        Ok(order
+            .into_iter()
+            .filter_map(|id| {
+                let (matched, picked) = found[id];
+                (matched >= least).then(|| (id.clone(), picked))
+            })
+            .collect())
+    }
+
     /// What the analysis found for a photo, if it has been measured.
     pub fn look(&self, row: u64) -> Option<Look> {
         let key = self.keys.read().unwrap().get(row as usize)?.clone()?;
@@ -780,6 +848,7 @@ impl Library {
             return Ok(HashMap::new());
         }
         let binned = self.binned.read().unwrap().clone();
+        let kept = self.kept.read().unwrap().clone();
         for (at, (row, key)) in self.store.keys()?.into_iter().enumerate() {
             // Worked out again at the next open, and seconds on a big library.
             if at % 1024 == 0 && self.stopped() {
@@ -808,18 +877,16 @@ impl Library {
         for (prefix, list) in [("dup", &groups.duplicates), ("series", &groups.series)] {
             for group in list {
                 let name = format!("{prefix}:{}", group.iter().map(|&i| members[i].0).min().unwrap_or(0));
-                // The sharpest stays on show (the lowest row among equals).
-                let keep = group.iter().copied().max_by(|&a, &b| {
-                    sharpness[a].total_cmp(&sharpness[b]).then_with(|| members[b].0.cmp(&members[a].0))
-                });
-                for &i in group {
+                let of: Vec<(u64, f32, bool)> =
+                    group.iter().map(|&i| (members[i].0, sharpness[i], kept.contains(&members[i].1))).collect();
+                for (&i, away) in group.iter().zip(stacked_away(&of)) {
                     let slot = wanted.entry(members[i].1.clone()).or_default();
                     if prefix == "dup" {
                         slot.0 = Some(name.clone());
                     } else {
                         slot.1 = Some(name.clone());
                     }
-                    slot.2 |= Some(i) != keep;
+                    slot.2 |= away;
                 }
             }
         }
@@ -830,9 +897,13 @@ impl Library {
     fn group_looks(&self) -> anyhow::Result<Vec<String>> {
         let mut wanted = self.grouping(&self.classes.read().unwrap().clone())?;
         let mut changed = Vec::new();
+        let mut grouped: HashMap<String, Vec<String>> = HashMap::new();
         let mut seen = self.seen.write().unwrap();
         for (key, look) in seen.iter_mut() {
             let (duplicates, series, stacked) = wanted.remove(key.as_str()).unwrap_or_default();
+            for group in duplicates.iter().chain(series.iter()) {
+                grouped.entry(group.clone()).or_default().push(key.clone());
+            }
             if look.duplicates != duplicates || look.series != series || look.stacked != stacked {
                 look.duplicates = duplicates;
                 look.series = series;
@@ -840,7 +911,237 @@ impl Library {
                 changed.push(key.clone());
             }
         }
+        *self.grouped.write().unwrap() = grouped;
         Ok(changed)
+    }
+
+    /// Picks these photos as the ones to keep of their groups (`true`), or takes the pick
+    /// back (`false`), and stacks their groups again: a group with picks shows those when
+    /// stacked, not its sharpest. A mark of C1 Studio's own. Returns the rows whose pick
+    /// changed, for undo.
+    pub fn set_kept(&self, rows: &[u64], kept: bool) -> anyhow::Result<Vec<u64>> {
+        let _writing = self.writing.lock().unwrap();
+        let changed = self.mark_kept_held(rows, kept)?;
+        // Also when no pick changed: the photos around these may have gone to the trash.
+        self.restack_held(rows)?;
+        Ok(changed)
+    }
+
+    /// A pick made over: `keep` are picked as the ones to keep of their groups, the picks of
+    /// `drop` are taken back, and the groups of both and of `around` (photos that went to
+    /// the trash or came back, say) are stacked again, once. Returns the rows picked and the
+    /// rows no longer picked, for undo.
+    pub fn repick(&self, keep: &[u64], drop: &[u64], around: &[u64]) -> anyhow::Result<(Vec<u64>, Vec<u64>)> {
+        let _writing = self.writing.lock().unwrap();
+        let dropped = self.mark_kept_held(drop, false)?;
+        let picked = self.mark_kept_held(keep, true)?;
+        let all: Vec<u64> = keep.iter().chain(drop).chain(around).copied().collect();
+        self.restack_held(&all)?;
+        Ok((picked, dropped))
+    }
+
+    /// Marks these photos as picked (or not) without stacking their groups again. Returns
+    /// the rows whose pick changed. `writing` is held.
+    fn mark_kept_held(&self, rows: &[u64], kept: bool) -> anyhow::Result<Vec<u64>> {
+        let mut changed: Vec<(u64, String)> = Vec::new();
+        {
+            let marked = self.kept.read().unwrap();
+            let keys = self.keys.read().unwrap();
+            for &row in rows {
+                let Some(Some(key)) = keys.get(row as usize) else { continue };
+                if marked.contains(key) != kept && !changed.iter().any(|(r, _)| *r == row) {
+                    changed.push((row, key.clone()));
+                }
+            }
+        }
+        if !changed.is_empty() {
+            let keys: Vec<String> = changed.iter().map(|(_, k)| k.clone()).collect();
+            self.cull_book.set_keepers(&keys, kept, now_ms())?;
+            let mut marked = self.kept.write().unwrap();
+            for key in keys {
+                if kept {
+                    marked.insert(key);
+                } else {
+                    marked.remove(&key);
+                }
+            }
+        }
+        Ok(changed.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// How the local model saw each of these photos, by row: only views of the render the
+    /// analysis measured (a photo rendered again since is looked at again).
+    pub fn views(&self, rows: &[u64]) -> anyhow::Result<HashMap<u64, crate::cull::View>> {
+        let named: Vec<(u64, String, (u64, u64))> = {
+            let keys = self.keys.read().unwrap();
+            let seen = self.seen.read().unwrap();
+            rows.iter()
+                .filter_map(|&row| {
+                    let key = keys.get(row as usize)?.as_ref()?;
+                    Some((row, key.clone(), seen.get(key)?.stamp))
+                })
+                .collect()
+        };
+        let mut stored = self.cull_book.views(named.iter().map(|(_, key, _)| key.as_str()))?;
+        Ok(named
+            .into_iter()
+            .filter_map(|(row, key, stamp)| {
+                stored.remove(&key).filter(|view| view.stamp == stamp).map(|view| (row, view))
+            })
+            .collect())
+    }
+
+    /// Keeps the local model's views of photos, each stamped with the render the analysis
+    /// measured. A photo not measured ([`Library::look`] has nothing of it) has no stamp
+    /// and is left out: returns how many were kept, so the caller can tell.
+    pub fn put_views(&self, views: Vec<crate::cull::NewView>) -> anyhow::Result<usize> {
+        let records: Vec<(String, crate::cull::View)> = {
+            let keys = self.keys.read().unwrap();
+            let seen = self.seen.read().unwrap();
+            views
+                .into_iter()
+                .filter_map(|new| {
+                    let key = keys.get(new.row as usize)?.as_ref()?;
+                    let stamp = seen.get(key)?.stamp;
+                    let crate::cull::NewView { version, embedding, scores, .. } = new;
+                    Some((key.clone(), crate::cull::View { version, stamp, embedding, scores }))
+                })
+                .collect()
+        };
+        self.cull_book.put_views(&records)?;
+        Ok(records.len())
+    }
+
+    /// The key of each of `rows` that has one (a photo gone from the library has none).
+    fn keys_of(&self, rows: &[u64]) -> Vec<(u64, String)> {
+        let keys = self.keys.read().unwrap();
+        rows.iter().filter_map(|&row| Some((row, keys.get(row as usize)?.clone()?))).collect()
+    }
+
+    /// What a model that compared frames said that still answers for the group at `rows`
+    /// (its photos as they are shown now), asked the question as it is asked now: the
+    /// verdict, and per row its place in the model's order (0 is the one to keep) with the
+    /// reason given. A row not shown to it has no place. An answer holds for fewer of the
+    /// photos it was about (a narrower filter, one trashed since), not for a photo the
+    /// model never saw: see `stands` in [`crate::cull`].
+    pub fn verdict(&self, rows: &[u64]) -> anyhow::Result<Option<(crate::cull::Verdict, crate::cull::Places)>> {
+        let named = self.keys_of(rows);
+        let keys: Vec<&str> = named.iter().map(|(_, key)| key.as_str()).collect();
+        let Some(verdict) = self.cull_book.verdict(&keys)? else { return Ok(None) };
+        let row_of: HashMap<&str, u64> = named.iter().map(|(row, key)| (key.as_str(), *row)).collect();
+        let mut places = HashMap::new();
+        for (place, &frame) in verdict.order.iter().enumerate() {
+            let Some(key) = verdict.sent.get(frame as usize) else { continue };
+            if let Some(&row) = row_of.get(key.as_str()) {
+                places.insert(row, (place, verdict.reasons.get(frame as usize).cloned().unwrap_or_default()));
+            }
+        }
+        Ok(Some((verdict, places)))
+    }
+
+    /// Per group of `groups` (each its rows as they are shown now), whether a model's
+    /// answer stands for it: [`Library::verdict`] of many groups, from one read.
+    pub fn asked(&self, groups: &[Vec<u64>]) -> anyhow::Result<Vec<bool>> {
+        let named: Vec<Vec<(u64, String)>> = groups.iter().map(|rows| self.keys_of(rows)).collect();
+        let keys: Vec<Vec<&str>> = named.iter().map(|g| g.iter().map(|(_, key)| key.as_str()).collect()).collect();
+        self.cull_book.asked(&keys)
+    }
+
+    /// Keeps what a model said, having been shown the photos at `sent` in that order:
+    /// `said.order` and `said.reasons` are by index into `sent`.
+    pub fn put_verdict(&self, sent: &[u64], said: crate::cull::NewVerdict) -> anyhow::Result<()> {
+        let shown: Vec<String> = self.keys_of(sent).into_iter().map(|(_, key)| key).collect();
+        anyhow::ensure!(shown.len() == sent.len(), "a photo shown to the model is gone");
+        anyhow::ensure!(said.order.iter().all(|&i| (i as usize) < sent.len()), "the order names a frame not shown");
+        self.cull_book.put_verdict(&crate::cull::Verdict::new(shown, said))
+    }
+
+    /// Of these photos, the ones picked as the ones to keep.
+    pub fn kept_of(&self, rows: &[u64]) -> Vec<u64> {
+        let keys = self.keys.read().unwrap();
+        let kept = self.kept.read().unwrap();
+        rows.iter()
+            .copied()
+            .filter(|&r| keys.get(r as usize).and_then(|k| k.as_ref()).is_some_and(|k| kept.contains(k)))
+            .collect()
+    }
+
+    /// Works out again which photos of the groups `rows` are in stay on show when stacked,
+    /// and re-indexes those that changed: after a pick, or after photos of a group went to
+    /// the trash. The groups themselves stay as they were worked out ([`Library::regroup`]);
+    /// a photo in the trash stands for no group.
+    pub fn restack(&self, rows: &[u64]) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        self.restack_held(rows)
+    }
+
+    /// [`Library::restack`], called with `writing` held. Only the groups asked about are
+    /// read (and the other groups of their photos), not the library.
+    fn restack_held(&self, rows: &[u64]) -> anyhow::Result<()> {
+        fn groups(look: &Look) -> impl Iterator<Item = &String> {
+            look.duplicates.iter().chain(look.series.iter())
+        }
+        let changed: Vec<String>;
+        {
+            let keys = self.keys.read().unwrap();
+            let kept = self.kept.read().unwrap();
+            let binned = self.binned.read().unwrap();
+            let mut seen = self.seen.write().unwrap();
+            let grouped = self.grouped.read().unwrap();
+            let mut touched: HashSet<&String> = HashSet::new();
+            for &row in rows {
+                if let Some(Some(key)) = keys.get(row as usize)
+                    && let Some(look) = seen.get(key)
+                {
+                    touched.extend(groups(look));
+                }
+            }
+            if touched.is_empty() {
+                return Ok(());
+            }
+            // The photos of these groups: the ones whose stacking is worked out.
+            let photos: HashSet<&String> = touched.iter().filter_map(|g| grouped.get(*g)).flatten().collect();
+            // A photo can be in a duplicate group and a series, and is stacked away if
+            // either says so: the other groups of these photos are worked out too.
+            let near: HashSet<&String> = photos.iter().filter_map(|key| seen.get(*key)).flat_map(groups).collect();
+            let involved: HashSet<&str> =
+                near.iter().filter_map(|g| grouped.get(*g)).flatten().map(String::as_str).collect();
+            let row_of: HashMap<&str, u64> =
+                self.store.rows_of(involved.iter().copied())?.into_iter().map(|(row, key)| (key, row)).collect();
+            let mut away: HashMap<&String, bool> = HashMap::new();
+            for group in &near {
+                // Its photos not in the trash: a photo there stands for no group.
+                let members: Vec<(&String, (u64, f32, bool))> = grouped
+                    .get(*group)
+                    .into_iter()
+                    .flatten()
+                    .filter(|key| !binned.contains(*key))
+                    .filter_map(|key| {
+                        let look = seen.get(key)?;
+                        let row = *row_of.get(key.as_str())?;
+                        Some((key, (row, look.analysis.sharpness, kept.contains(key))))
+                    })
+                    .collect();
+                let of: Vec<(u64, f32, bool)> = members.iter().map(|m| m.1).collect();
+                for ((key, _), stacked) in members.iter().zip(stacked_away(&of)) {
+                    // Only the photos of the groups asked about had all their groups worked out.
+                    if photos.contains(*key) {
+                        *away.entry(*key).or_default() |= stacked;
+                    }
+                }
+            }
+            changed = away
+                .into_iter()
+                .filter(|(key, stacked)| seen.get(*key).is_some_and(|look| look.stacked != *stacked))
+                .map(|(key, _)| key.clone())
+                .collect();
+            for key in &changed {
+                if let Some(look) = seen.get_mut(key) {
+                    look.stacked = !look.stacked;
+                }
+            }
+        }
+        self.reindex_keys(&changed)
     }
 
     /// Hides (`true`) these photos from every view, or shows them again (`false`). A mark of
@@ -2336,6 +2637,11 @@ impl Library {
             rows.push(r);
         }
         Ok((rows, offline, marks))
+    }
+
+    /// What photos look like to the local model.
+    pub fn embeddings(&self) -> &crate::embeddings::Embeddings {
+        &self.embeddings
     }
 
     pub fn photo_id(&self, row: u64) -> Option<PhotoId> {

@@ -64,8 +64,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     for path in paths {
-        let photo =
-            PhotoRequest { jpeg: std::fs::read(path)?, context: format!("Catalog data: {path}"), progress: None };
+        let photo = PhotoRequest {
+            key: String::new(),
+            jpeg: std::fs::read(path)?,
+            context: format!("Catalog data: {path}"),
+            progress: None,
+        };
         let reply = provider.describe(&photo)?;
         println!("{path}: {:#?}", reply.suggestion);
         println!("warnings: {:?}", reply.warnings);
@@ -87,7 +91,7 @@ fn models_root() -> std::path::PathBuf {
 #[cfg(feature = "local")]
 fn local(args: &[String], paths: &[&String]) -> Result<(), Box<dyn std::error::Error>> {
     use c1ai::models::SIGLIP2;
-    use c1ai::siglip::{DEFAULT_THRESHOLD, Siglip};
+    use c1ai::siglip::{DEFAULT_THRESHOLD, DIM, Least, Siglip};
     let value = |name: &str| args.iter().find_map(|a| a.strip_prefix(name));
     let root = models_root();
     if args.iter().any(|a| a == "--download") {
@@ -109,9 +113,13 @@ fn local(args: &[String], paths: &[&String]) -> Result<(), Box<dyn std::error::E
     let threshold = value("--threshold=").map(str::parse).transpose()?.unwrap_or(DEFAULT_THRESHOLD);
     let brief = Brief { vocabulary: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
     let vocabulary = Vocabulary::new(names.iter().map(|n| (*n, 1)));
-    let provider = Siglip::new(&root, Options::default(), &brief, vocabulary, threshold)?;
+    // No photos to learn from here: the model's own scores only.
+    let least = Least { score: threshold, ..Least::default() };
+    let examples = c1ai::alike::Examples::new(DIM);
+    let provider = Siglip::new(&root, Options::default(), &brief, vocabulary, least, examples, None)?;
     for path in paths {
-        let photo = PhotoRequest { jpeg: std::fs::read(path)?, context: String::new(), progress: None };
+        let photo =
+            PhotoRequest { key: String::new(), jpeg: std::fs::read(path)?, context: String::new(), progress: None };
         let reply = provider.describe(&photo)?;
         println!("{path}: {} ({} ms)", reply.record.raw, reply.record.millis);
     }

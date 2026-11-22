@@ -10,8 +10,10 @@
   // in the order asked for, and the lines that decide what counts as one (applied on request;
   // the photos are sorted again, not measured again).
   let {
-    filter, version, total, counts, onflag, ongroup, onclasses,
+    filter, version, total, counts, onflag, ongroup, oncull, onclasses,
   }: {
+    /** Go through the series (`true`) or the duplicate groups, to keep the best of each. */
+    oncull: (series: boolean) => void;
     filter: Filter;
     /** Bumped when photos were edited or measured again. */
     version: number;
@@ -226,6 +228,12 @@
           {counts[key].toLocaleString()} photo{counts[key] === 1 ? "" : "s"}
         </button>
         · <span>{groupCount(list.total)}</span>
+        {#if list.total}
+          ·
+          <button class="link" title="Go through these groups one at a time, side by side, and keep the best of each (b in the grid)" onclick={() => oncull(key === "series")}>
+            Choose the best of each…
+          </button>
+        {/if}
       </span>
     </h3>
     <p class="muted hint">{hint}</p>

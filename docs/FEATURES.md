@@ -18,6 +18,7 @@ and [variants](#variants). New in 0.7.0: [the selection through filters, Back an
 - [Photo folders](#photo-folders)
 - [Browse](#browse)
 - [Compare photos](#compare-photos)
+- [Choose the best of a burst](#choose-the-best-of-a-burst)
 - [A composition grid](#a-composition-grid)
 - [Variants](#variants)
 - [The selection through filters, Back and Forward](#the-selection-through-filters-back-and-forward)
@@ -235,6 +236,19 @@ filter when its sharpest does not.
 ![Duplicates and series by size, then stacking the grid](media/features/alike.gif)
 
 [In the guide: Look](GUIDE.md#look)
+
+## Choose the best of a burst
+
+**Best of…** (or `b`) goes through the series and duplicate groups among the photos shown,
+one at a time. The group's photos are side by side, with the comparison's zoom and modes,
+and one is suggested: a higher rating first, then the sharpest. *Look* has the local model
+weigh composition, moment and mood; *Ask AI* has Claude or Gemini compare the frames and
+say what sets each apart. Enter keeps the active
+photo and deals with the rest (to the trash, hidden, rated or tagged: your choice), then
+shows the next group. Each pick is one Ctrl+Z, and a photo you keep stands for its group
+when Stack is on.
+
+[In the guide: Choosing the best of alike photos](GUIDE.md#choosing-the-best-of-alike-photos)
 
 ## On the map
 

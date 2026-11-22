@@ -893,6 +893,7 @@
                 {@const already = has(r, k)}
                 {@const mine = d.added.includes(k)}
                 {@const likely = s.keyword_scores?.[s.keywords.indexOf(k)]}
+                {@const alike = s.keyword_shares?.[s.keywords.indexOf(k)]}
                 <label
                   class="kw"
                   class:new={s.keywords_new.includes(k) || (mine && !keywords.includes(k))}
@@ -900,7 +901,7 @@
                   class:has={already}
                   title={already ? "The photo has it already" : mine ? `Added by you${keywords.includes(k) ? "" : `: new, added to the ${source.noun}`}` : s.keywords_new.includes(k) ? `New: added to the ${source.noun}` : k}
                 >
-                  <input type="checkbox" checked={already || d.keywords[k]} disabled={already} onchange={(e) => (d.keywords[k] = e.currentTarget.checked)} />{leaf(k)}{#if likely !== undefined}<small class="muted" title="The local model's score for it">{(likely * 100).toFixed(likely < 0.1 ? 1 : 0)}%</small>{/if}
+                  <input type="checkbox" checked={already || d.keywords[k]} disabled={already} onchange={(e) => (d.keywords[k] = e.currentTarget.checked)} />{leaf(k)}{#if alike}<small class="muted" title="The share of the look-alike photos you keyworded that have it">{(alike * 100).toFixed(0)}% alike</small>{:else if likely !== undefined}<small class="muted" title="The local model's own score for it: none of the look-alike photos you keyworded has it">{(likely * 100).toFixed(likely < 0.1 ? 1 : 0)}%</small>{/if}
                 </label>
               {/each}
               {#if r.status === "Proposed"}

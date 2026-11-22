@@ -741,7 +741,8 @@ switch: *all* asks for photos that are red **and** blue. The filter bar says so 
 colour: red and blue*). A card goes back to *any* when it is down to one pick.
 
 **Stack** (on the Look tab, and in the header) shows one photo per duplicate group or
-series in the grid: its sharpest. With a filter on, a frame is hidden only when the
+series in the grid: its sharpest, or the photos you kept of it (see
+[Choosing the best of alike photos](#choosing-the-best-of-alike-photos)). With a filter on, a frame is hidden only when the
 sharpest frame of its group matches the filter too, so a burst never disappears; the
 counts follow. Picking a group shows all of its photos. Stack and *Variants* (see
 [Browsing](#browsing)) work together: stacking goes first, then each image shows by the
@@ -775,6 +776,104 @@ show it*). The link and a group's card on the Alike tab show the group's photos 
 the other filters, which stay; drop a filter's chip to see the whole group. A photo not
 measured yet says so.
 
+### Choosing the best of alike photos
+
+**Best of…** in the header, `b` in the grid, or *Choose the best of each…* on the Alike
+tab goes through the series (or the duplicate groups) among the photos the filter shows,
+oldest first, one group at a time. *Series* and *Duplicates* in its bar switch the kind;
+it opens on the kind used last, or the other when there are none of it, at the first group
+you have not picked from yet: closed and opened again, it goes on where it was left.
+
+- The group's photos are side by side, as in [Compare](#browsing): the wheel zooms every
+  pane together, `z` is 1:1, and two photos can be split, overlaid or blinked. A group of
+  more than four shows four at a time; the strip below has them all, oldest first, each
+  with its place in the suggested order.
+- One photo is **suggested** and starts as the active one. A higher rating wins; then
+  the sharpest, marked down for clipped highlights and shadows, and up a little for a
+  frame already edited. A blurry frame never wins over one that is not. The caption says
+  why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
+  the two best are too close to call. In a group you picked from before, the photo you
+  kept then is the one suggested (*picked before*), whatever was measured.
+- **Look** (`r`) has the local model look at the group, so composition, moment and mood
+  count too; **Look at all** (Shift+R) does every group in the background, oldest first,
+  until it is done or stopped (the button counts the groups). It needs the local model
+  from *Settings › AI* (about 1.5 GB, run on this computer: no photo leaves it); without
+  it the bar offers *Get the local model…*. The model holds each photo against pairs of
+  sentences (a well or a badly composed photograph; taken at the right moment, or too
+  early or late; a strong mood, or dull; sharp, or blurry) and scores it 0 to 100 on each,
+  above 50 the better side. Where the frames of a group differ by it, that is half the
+  suggestion and sharpness the other half, and the caption lists the four scores. The
+  scores are rough (the model reads a small picture): the caption names one (*best
+  composition*, *best moment*, *best mood*) only where the best frame is at least 5 points
+  above the group's average on it, and says *best picture* otherwise. Frames it scores
+  alike are still decided by sharpness. The scores tell the frames of one group apart;
+  they do not rate photos, and say little between different pictures. What the model saw
+  is kept, so a photo is looked at once (again after it is rendered anew).
+- The model's view counts only once it has seen every photo of the group. *Look at all*
+  looks at the thumbnails and previews there are and makes none: a photo with neither is
+  counted (*3 failed* beside the button) and its group stays decided by sharpness, with
+  *1 photo not looked at* in the bar. *Look* on that group makes what is missing. Why a
+  photo could not be looked at is in `events.log` in the catalog's folder. *Stop* ends
+  the run after the photo it is on; the group it was in is not counted, and what was
+  seen of it is kept. The model is held in memory while this screen is open or a run goes
+  on, and let go after.
+- **Ask AI** (`a`) shows the group's frames together to the model *Settings › AI* has
+  chosen (Claude with an API key or on a plan, or Gemini) and asks which to keep. It
+  answers with an order, a reason of a few words per frame (*eyes closed*, *best gesture,
+  slightly soft*) and a line on how clear the choice is; its order is then the
+  suggestion, the reasons are in the captions, and the bar says who suggested. You still
+  choose: Enter keeps the active photo. The frames are sent to Anthropic (Claude) or
+  Google (Gemini) and leave this computer: Claude gets each as an image of its own,
+  1024 px on the long side; Gemini one sheet with the frames numbered. At most 16 frames
+  are sent: of a bigger group the 16 best so far, and the others follow in the order.
+  The button reads *Ask again* where the group has an answer: that is another call.
+- **Ask about all…** (Shift+A) counts the groups not asked about yet and says how many
+  calls and photos that is, that the photos leave this computer and for whom, and what it
+  costs with an API key (nothing more on a plan or with Gemini, which count against their
+  limits). The price is for effort *low*: at *medium* or *high* the model thinks longer,
+  that is billed too, and the question says *or more*. While it is up it takes every key:
+  Enter starts the run, Esc does not, and nothing reaches the photos behind it. Where no
+  model can be asked as *Settings › AI* are (no API key, Claude Code not signed in with a
+  plan, the local model chosen, which compares nothing), it says so instead.
+- The run goes in the background, oldest group first, as many groups at a time as
+  *Settings › AI › At once* says, until it is done or stopped: the button counts
+  the groups, and Shift+A (or a click) stops it. Shift+R does not stop it, and Shift+A
+  does not stop *Look at all*: one run at a time, each with its own key. A group that gets
+  no answer (a photo with no image to send, an answer cut off or declined) is counted
+  (*2 failed* beside the button), passed over and asked about by the next run;
+  `events.log` says why. Three calls in a row with no answer, or an error no group would
+  fare better with (no credit, a limit reached), end the run. *Ask AI* on one group waits
+  while it goes.
+- An answer is kept, and holds for the photos the model saw: with a filter that shows
+  fewer of the group, or after one of them went to the trash or was hidden, the order it
+  gave the others still stands, and the group is not asked about again. It is asked
+  about again once it shows a photo the model never saw (a frame added, a wider filter),
+  unless the model was shown 16 already. Every call counts in the AI tab's totals, one
+  that gave no usable answer too.
+- ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
+  rating, colour tag, hide and Delete keys act on the active photo.
+- **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
+  shows the next group. `k` (or a double-click in the strip) marks a photo to be kept
+  too. ↑ ↓ go to the previous and next group and leave this one as it is.
+- *The rest* in the bar says what happens to the photos not kept: to the trash (as
+  delivered), hidden, a rating, a colour tag, or nothing. **Settings › Culling** has the
+  same choice, which rating or colour, and whether the photos kept get a rating or a tag
+  too. The trash is the app's own: nothing is deleted until you empty it.
+- Each pick is one step: Ctrl+Z takes it back whole and shows the group again. A pick
+  that cannot be made whole is not made at all.
+- Picking again from a group replaces the earlier pick: the photo kept before is one of
+  the rest now, and Ctrl+Z gives it its pick back.
+- "The rest" are the group's photos the filter shows: a frame the filter leaves out is
+  not touched. Where trashing an image takes all its variants (Capture One), a variant of
+  a photo you keep is left alone, and the footer says so; the other variants of an image
+  that goes to the trash go with it, shown in the group or not, and the footer counts
+  them. A source with no trash has the rest hidden.
+- The grid behind is read again when you close the screen, not after every pick.
+
+A photo you keep stands for its group when Stack is on, in place of the sharpest, until
+the pick is undone. A photo moved to the trash stands for no group: with Stack on, the
+sharpest of the others shows in its place.
+
 ## Describing photos with AI
 
 The **AI** tab asks a vision model to describe photos and keeps what it suggests for you to
@@ -797,13 +896,22 @@ accept a suggestion and write it.
   *Download* fetches it once from huggingface.co (about 1.5 GB), into
   `%LOCALAPPDATA%\c1studio\models` (`~/.local/share/c1studio/models` on Linux), for every
   catalog. It needs no graphics card: about a quarter of a second per photo on a laptop.
-  The first run works out every keyword once (about a minute for 600) and keeps the result.
-  Each keyword is scored against the photo, and the eight best scoring at least *Suggest*
-  (1 % unless you change it) are offered, with the score on the review card. The model is
-  sparing with single words: a keyword that fits often scores 1 to 5 %, one that does not
-  stays under 0.3 %. Keywords in Polish work as well as English ones. Names of people and
-  of events mean nothing to it, and it guesses at city names: leave those out under
-  *Keywords offered*.
+  It suggests keywords in two ways, the first by far the better:
+  - **From the photos you keyworded.** *Your keywords › Learn from the rest* has the model
+    look once at every keyworded photo (about four a second; it can be stopped and goes on
+    from where it was). A photo then gets the keywords of the 30 keyworded photos most like
+    it, the closer counting for more: a keyword is suggested when at least *Suggest* (25 %
+    unless you change it) of them have it. This is how it comes to know your names, places
+    and private words. On a catalog keyworded over years, about six such suggestions in ten
+    are right. Press it again after keywording more photos.
+  - **From a keyword's name alone,** for keywords few photos have yet: each is scored
+    against the photo, and those scoring at least *Or* (3 % unless you change it) are
+    suggested too. The model is sparing with single words and often wrong under 3 %; names
+    of people and events mean nothing to it. Polish names work as well as English ones. The
+    first run works out every keyword once (about a minute for 600) and keeps the result.
+
+  Eight keywords at most are suggested. The review card shows *40% alike* for a keyword
+  from look-alike photos, and a bare score for one from its name alone.
 
 **Photo sent:** Capture One's thumbnail (its own render of your edits, about 450 pixels; the
 default) or the preview (up to 1568 pixels, more detail, but its colours are matched by the
@@ -1058,6 +1166,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
 | `v` | Show every variant of the focused photo's image |
 | `c` | Compare the picked photos |
+| `b` | Choose the best of each series or duplicate group among the photos shown |
 | `i` | Show or hide the details panel |
 | `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
@@ -1073,13 +1182,20 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
 | Wheel, `z` (compare) | Zoom; 1:1 and back |
+| Enter (cull) | Keep the active photo (and the ones marked), deal with the rest, go to the next group |
+| `k` (cull) | Mark the active photo to keep it too, or unmark it |
+| ↑ ↓ (cull) | Previous, next group, leaving this one as it is |
+| ← → Tab (cull) | Previous, next photo of the group |
+| `g` (cull) | Go to the suggested photo |
+| `r`, Shift+R (cull) | Have the local model look at this group; at every group, in the background |
+| `a`, Shift+A (cull) | Ask AI (Claude or Gemini) which frame of this group to keep; of every group, after saying what it takes |
 
 Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups, what the local model saw of photos and what a model said of a group (`library\cull.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
   and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
   the background and what failed (AI runs, and why a photo was placed nowhere, included) is

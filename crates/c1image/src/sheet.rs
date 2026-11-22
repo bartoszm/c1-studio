@@ -41,12 +41,41 @@ pub const SCENE_EDGE: u32 = 1568;
 /// A white sheet of a few photos (at most [`SCENE_COLUMNS`] squared), as many columns as
 /// make it squarest, each photo numbered from 1 in its cell's top left corner.
 pub fn scene_sheet(photos: &[RgbImage]) -> RgbImage {
-    let n = photos.len().clamp(1, SCENE_COLUMNS * SCENE_COLUMNS);
-    let cols = (1..=SCENE_COLUMNS).find(|c| c * c >= n).unwrap_or(SCENE_COLUMNS) as u32;
+    sheet_of(photos, SCENE_COLUMNS, SCENE_EDGE)
+}
+
+/// Columns a sheet of frames to compare has at most, and its width: the frames of a burst,
+/// sent to a model together, need more of each than a scene's photos do.
+pub const FRAMES_COLUMNS: usize = 4;
+pub const FRAMES_EDGE: u32 = 2000;
+
+/// A white sheet of the frames of a group (at most [`FRAMES_COLUMNS`] squared), laid out
+/// as [`scene_sheet`] lays out a scene.
+pub fn frames_sheet(photos: &[RgbImage]) -> RgbImage {
+    sheet_of(photos, FRAMES_COLUMNS, FRAMES_EDGE)
+}
+
+/// The side of a cell of [`frames_sheet`] with `frames` frames on it: a frame loaded no
+/// larger than this is put on the sheet as it is.
+pub fn frames_cell(frames: usize) -> u32 {
+    layout(frames, FRAMES_COLUMNS, FRAMES_EDGE).2
+}
+
+/// How `photos` photos (at most `columns` squared of them) lie on a sheet `edge` wide: the
+/// photos there are room for, the columns and the side of a cell.
+fn layout(photos: usize, columns: usize, edge: u32) -> (usize, u32, u32) {
+    let n = photos.clamp(1, columns * columns);
+    let cols = (1..=columns).find(|c| c * c >= n).unwrap_or(columns) as u32;
+    (n, cols, (edge - GAP * (cols + 1)) / cols)
+}
+
+/// A white sheet `edge` wide of at most `columns` squared photos, as many columns as make
+/// it squarest, each photo numbered from 1 in its cell's top left corner.
+fn sheet_of(photos: &[RgbImage], columns: usize, edge: u32) -> RgbImage {
+    let (n, cols, cell) = layout(photos.len(), columns, edge);
     let rows = (n as u32).div_ceil(cols);
-    let cell = (SCENE_EDGE - GAP * (cols + 1)) / cols;
     let height = GAP + rows * (cell + GAP);
-    let mut sheet = RgbImage::from_pixel(SCENE_EDGE, height, Rgb([255, 255, 255]));
+    let mut sheet = RgbImage::from_pixel(edge, height, Rgb([255, 255, 255]));
     for (i, photo) in photos.iter().take(n).enumerate() {
         let photo = crate::fit(photo.clone(), cell);
         let (col, row) = (i as u32 % cols, i as u32 / cols);
@@ -136,5 +165,28 @@ mod tests {
         assert!(five.height() < SCENE_EDGE, "three across, two rows");
         let many = scene_sheet(&vec![photo; 12]);
         assert_eq!(many.height(), SCENE_EDGE, "nine at most");
+    }
+
+    #[test]
+    fn a_sheet_of_frames_holds_sixteen_and_shows_two_large() {
+        let frame = RgbImage::from_pixel(300, 200, Rgb([10, 10, 10]));
+        let two = frames_sheet(&vec![frame.clone(); 2]);
+        assert_eq!(
+            (two.width(), two.height()),
+            (FRAMES_EDGE, GAP + (FRAMES_EDGE - 3 * GAP) / 2 + GAP),
+            "two across, one row"
+        );
+        let five = frames_sheet(&vec![frame.clone(); 5]);
+        assert!(five.height() < FRAMES_EDGE, "three across, two rows");
+        let many = frames_sheet(&vec![frame; 20]);
+        assert_eq!(many.height(), FRAMES_EDGE, "four by four at most");
+        // The sixteenth cell holds a frame; its number is on a black box.
+        let cell = (FRAMES_EDGE - GAP * 5) / 4;
+        assert_eq!((frames_cell(16), frames_cell(20)), (cell, cell));
+        assert_eq!((frames_cell(2), frames_cell(4)), ((FRAMES_EDGE - 3 * GAP) / 2, (FRAMES_EDGE - 3 * GAP) / 2));
+        assert!(frames_cell(5) < frames_cell(4) && frames_cell(9) > frames_cell(10));
+        let (x, y) = (GAP + 3 * (cell + GAP), GAP + 3 * (cell + GAP));
+        assert_eq!(*many.get_pixel(x + 1, y + 1), Rgb([0, 0, 0]));
+        assert_eq!(*many.get_pixel(x + cell / 2, y + cell / 2), Rgb([10, 10, 10]));
     }
 }

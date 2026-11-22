@@ -683,6 +683,100 @@ export const groups = (
   sort: GroupSort = "Matched",
   reverse = false,
 ) => invoke<GroupPage>("groups", { filter, series, sort, reverse, offset, limit });
+/** Every duplicate group (or series) among the photos the filter selects, oldest first: the
+ *  order they are gone through when choosing the best of each. `picked`: one of its photos
+ *  is picked already as the one to keep. */
+export const cullGroups = (filter: Filter, series: boolean) =>
+  invoke<{ id: string; picked: boolean }[]>("cull_groups", { filter, series });
+
+/** What the order of a group's photos rests on: a model that compared them, the local
+ *  model's view of each, or what was measured alone. */
+export type Judge = "cloud" | "local" | "sharpness";
+/** The local model's view of a photo: each 0 to 1, above a half the better side. It tells the
+ *  frames of a group apart; it is no rating. */
+export type Aesthetic = { composition: number; moment: number; mood: number; technical: number };
+/** A photo of a group, with what the order goes by. `kept`: picked before as the one to keep. */
+export type CullPhoto = {
+  row: number;
+  name: string;
+  rating: number | null;
+  color: Color | null;
+  edited: boolean;
+  kept: boolean;
+  sharpness: number;
+  focus: string;
+  /** How the local model saw it, once it has looked. */
+  aesthetic: Aesthetic | null;
+  /** 0 to 1, next to the others of its group. */
+  score: number;
+  reasons: string[];
+};
+/** A group's photos the filter selects, oldest first, and their rows in order of which to
+ *  keep. `close`: the two best are too close to call. `model`: the local model is downloaded.
+ *  `unseen`: how many of the photos the local model has no view of; while there is one, its
+ *  view of the others does not count. `verdict`: what a model that compared the frames said. */
+export type CullGroup = {
+  id: string;
+  photos: CullPhoto[];
+  order: number[];
+  judge: Judge;
+  close: boolean;
+  model: boolean;
+  unseen: number;
+  verdict: CullVerdict | null;
+};
+/** What a model that compared a group's frames said: who, how clear the choice is in its
+ *  words, and how many of the frames it was shown (16 at most). */
+export type CullVerdict = { provider: string; model: string; note: string; sent: number };
+/** What becomes of the photos of a group that are not kept, and what the kept ones are marked with. */
+export type Rest = "Trash" | "Hide" | "Nothing" | { Rating: number } | { Color: Color };
+export type Mark = "Nothing" | { Rating: number } | { Color: Color };
+/** A pick as made (`on`) or as taken back: what `cullRevert` turns round. `unkept`: rows
+ *  picked before whose pick this one took back. `skipped`: rows left alone, variants of an
+ *  image that is kept. */
+export type CullStep = { on: boolean; ops: [number, Op][]; binned: number[]; hidden: number[]; kept: number[]; unkept: number[]; skipped: number[] };
+export const cullGroup = (filter: Filter, id: string) => invoke<CullGroup>("cull_group", { filter, id });
+/** Keeps `keep` and deals with `rest`, as one step. */
+export const cullApply = (keep: number[], rest: number[], action: Rest, mark: Mark) =>
+  invoke<CullStep>("cull_apply", { keep, rest, action, mark });
+/** Takes a pick back, or makes it again: returns the step that turns it round once more. */
+export const cullRevert = (step: CullStep) => invoke<CullStep>("cull_revert", { step });
+/** Has the local model look at one group's photos; the group in its new order. */
+export const rankGroup = (filter: Filter, id: string) => invoke<CullGroup>("rank_group", { filter, id });
+/** How far looking at every group of this catalog (or, with `cloud`, asking a model about
+ *  it) has got: groups done of how many, photos (or groups asked about) that failed, and
+ *  the group handled last. */
+export type RankState = { running: boolean; cloud: boolean; done: number; total: number; failed: number; group: string | null; error: string | null };
+/** Has the local model look at every series (or duplicate group) under the filter, in the
+ *  background: `ranking` events carry a RankState, `ranking-done` ends it. With `cloud`, a
+ *  model is asked about each group instead. */
+export const startRanking = (filter: Filter, series: boolean, cloud = false) =>
+  invoke<void>("start_ranking", { filter, series, cloud });
+/** Asks the model the AI settings choose which frame of one group to keep; the group in the
+ *  order it said, with its reasons. */
+export const askGroup = (filter: Filter, id: string) => invoke<CullGroup>("ask_group", { filter, id });
+/** What asking about every group would take: groups not asked yet, frames sent, groups
+ *  left out (asked already), and the cost in US dollars with an API key, as at effort low
+ *  (`null`: the model has no price to work it out from). `effort`: what the settings ask
+ *  for; above low, thinking adds to the cost. `workers`: calls made at once. `unable`: why
+ *  no model can be asked as the settings are (no key, not signed in, the local model). */
+export type AskEstimate = {
+  groups: number;
+  photos: number;
+  skipped: number;
+  cost: number | null;
+  plan: boolean;
+  via: string;
+  model: string;
+  effort: string;
+  workers: number;
+  unable: string | null;
+};
+export const askEstimate = (filter: Filter, series: boolean) => invoke<AskEstimate>("ask_estimate", { filter, series });
+export const stopRanking = () => invoke<void>("stop_ranking");
+export const rankingState = () => invoke<RankState>("ranking_state");
+/** The choosing is over: the local model is let go (after the run in the background, if one goes on). */
+export const cullDone = () => invoke<void>("cull_done");
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */
@@ -855,8 +949,10 @@ export type AiSettings = {
   left_out: LeftOut;
   /** How photos are located. */
   locate: LocateSettings;
-  /** The local model suggests a keyword scoring at least this (%, to a tenth). */
+  /** The local model suggests a keyword it scores at least this (%, to a tenth) by itself, */
   local_threshold: number;
+  /** ... or one with at least this share (%) of the say of the look-alike photos keyworded already. */
+  local_share: number;
 };
 export type LocateSettings = {
   /** Photos with a position taken this many minutes either side are told of as clues. */
@@ -887,6 +983,18 @@ export type AiLocal = {
   /** Bytes there so far, while downloading. */
   done: number;
   /** Why the last download ended early. */
+  error: string | null;
+};
+/** How far the local model has got with the photos keyworded by hand, which it learns from. */
+export type AiLearn = {
+  running: boolean;
+  /** Photos looked at in this pass, of `total` it set out to. */
+  done: number; total: number;
+  /** Photos with no image to look at. */
+  failed: number;
+  /** Keyworded photos it has looked at, of `keyworded` in the library. */
+  examples: number; keyworded: number;
+  /** Why the last pass ended early. */
   error: string | null;
 };
 export type AiView = {
@@ -964,6 +1072,9 @@ export type Suggestion = {
   keywords: string[];
   /** The local model's score for each of `keywords`, 0..1, in their order; empty otherwise. */
   keyword_scores?: number[];
+  /** For each of `keywords`, 0..1: the share of the say of the look-alike photos keyworded
+   *  already (the local model); empty otherwise. */
+  keyword_shares?: number[];
   /** Keywords the catalog lacks. */
   keywords_new: string[];
   rating: number | null;
@@ -1046,6 +1157,10 @@ export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
 /** Fetches the local model in the background ("model-download" events, an AiLocal each). */
 export const aiModelDownload = () => invoke<AiLocal>("ai_model_download");
 export const aiModelDownloadStop = () => invoke<AiLocal>("ai_model_download_stop");
+/** Has the local model look at the keyworded photos in the background ("learn" events, an AiLearn each). */
+export const aiLearn = () => invoke<AiLearn>("ai_learn");
+export const aiLearnStop = () => invoke<void>("ai_learn_stop");
+export const aiLearnState = () => invoke<AiLearn>("ai_learn_state");
 export const aiPrompt = (task: AiTask = "describe") => invoke<AiPrompt>("ai_prompt", { task });
 export const aiEstimate = (rows: number[], again: boolean, task: AiTask = "describe") =>
   invoke<AiEstimate>("ai_estimate", { rows, again, task });

@@ -1822,6 +1822,146 @@ cost about 45 ms over tones. Not done: the shown preview still lacks perspective
 corrections (DSCF3468 and untitled-0403 sit differently in the frame), and local
 adjustments. The whole pipeline is written up in `docs/PREVIEW-COLOURS.md`.
 
+### Choosing the best of alike photos (first slice: no model)
+
+The groups were there (duplicates, series, Stack, Compare for four); what was missing was
+going through them and deciding. *Best of…* (`b`) does that: one group at a time, a
+suggestion, Enter keeps and deals with the rest.
+
+- **Ranking: `c1analysis::rank`** (pure; "edited" counts only where some frame is not). A model's verdict on the whole group first
+  (not asked for yet), then a higher rating, then a score: sharpness as a log-ratio to
+  the group's sharpest (8× less scores nothing), 0.5 off a blurry frame when the group has
+  one that is not, up to 0.15 off for clipped tones, 0.1 on for an edited frame. A per-photo
+  aesthetic (not measured yet) is half the score when every frame has one and they
+  differ by 0.04 or more. The order goes by the unclamped score; `close` says the two
+  best are within 0.03.
+- **Picks: `cull.redb`** (`c1index::cull::CullBook`, table `keepers`), kept apart from the
+  store like hidden and bin marks. `Library::set_kept` marks, and `restack` works out
+  again which photos of the groups touched stay on show: the picks when a group has any,
+  else the sharpest not in the trash. Only those groups are walked (and the other groups
+  of their photos, as a photo is stacked away if either of its groups says so); the
+  grouping itself is not run again. `grouping` follows the picks too, so a regroup agrees.
+- **One step: `cull_apply` / `cull_revert`** (app `cull.rs`). A step is the rating and
+  colour ops (one `edit_photos`), the rows binned, hidden and picked. `cull_revert` turns
+  a step round and returns the step that turns it round again, so undo and redo are the
+  same call; the frontend's `Done` gains `{ cull, what, group }`.
+- **Variants.** Capture One trashes whole images, and a duplicate group can hold two
+  variants of one: rest rows whose image a kept photo is a variant of are skipped
+  (`spared`) and said in the footer.
+- **Screen: `Cull.svelte`** wraps `Compare.svelte` rather than copying it. Compare gained
+  `embedded`, `hint`, `onkeyfirst` (Cull's keys come first: the arrows move through the
+  whole group, not only the four panes) and a `badge` snippet for the caption. The logic
+  is in `lib/cull.ts`: which four of a big group are shown (`shownRows`), the keys, the
+  settings and what a pick is called.
+- **Not in**: a per-card button on the Alike tab (a card is one button already); groups
+  picked from are remembered for the session only.
+
+Tests: `rank` (7), `cull` book, `a_pick_stands_for_its_group_when_stacked_until_taken_back`
+(c1index), `spared` (app), `cull.test.ts` (7), and `tools/record/checks/cull.mjs` end to end.
+
+### Choosing the best: the local model's view (second slice)
+
+*Look* (`r`) and *Look at all* (Shift+R) put the group's photos through SigLIP 2.
+
+- **`c1ai::siglip::Embedder`**: the image tower alone (`image(&RgbImage)`), and sentences
+  through the text tower with the keywords' cache (`texts`). `Siglip` (keywords) puts its
+  photos through an `Embedder` of its own; its text embedding moved into
+  `text_embeddings`, shared by both. The 24 sentences are embedded in one call, so the
+  text tower loads once at most.
+- **`c1ai::aesthetic`**: four axes (composition, moment, mood, technical), three sentences
+  each way. Per axis, `sigmoid(scale × (mean cos to the good − mean cos to the bad))` with
+  the model's own scale (112.7); the bias falls out of the difference. `overall` weighs
+  them 0.3, 0.3, 0.25, 0.15. `Aesthetic::as_array` / `From<[f32; 4]>` are the one place
+  that ties a field to its place in `AXES`.
+- **Kept in `cull.redb`** (table `views`): version, the analysis' stamp of the render,
+  the 768 numbers and the four scores, 3 KB a photo, only for photos looked at. A view of
+  another render is dropped (`Library::views`); one of another scoring version is scored
+  again from its embedding, without the model.
+- **`rank_group`**, and the run `start_ranking` / `stop_ranking` / `ranking_state` with
+  `ranking` events: one at a time, groups oldest first, stopped when another catalog
+  opens. One `RankJob` (app `cull.rs`) holds the run's flags, its state with the session
+  it is of (another catalog is told of no run), and the model: loaded by the first photo
+  that needs it, outside the slot's lock, and let go when the screen is closed and no run
+  goes on. The run reads thumbnails and previews there are (`pixels_at_hand`) and makes
+  none; a look by hand makes them. A photo that cannot be looked at is logged and counted,
+  and `CullGroupView.unseen` says how many of a group have no view.
+- **In the rank** the view is half the score when every frame has one and they differ by
+  0.04; the caption says *best composition / moment / mood* by the axis the frame is
+  furthest above its group's mean on, when that is 0.05 at least, else *best picture*.
+
+Measured on the fuji copy (105,844 photos, 3,822 series), debug build, no graphics card:
+the first group took 5.1 s with the model's load (6 frames), a group seen before 76 ms,
+about 0.4 s a frame after that (7 groups in 12 s). On 14 series spread over the catalog
+the frames of a group came 0.006 to 0.23 apart overall; 4 of the 14 fell under the 0.04
+line and stay with sharpness. Looked at by eye in two (a street performer with a hoop: it
+put the frame facing the camera first and the one bent away last; a man walking into a
+shaft of light over two men standing) the order was one a person would give. Frames of
+one series are 0.88 to 0.99 alike by cosine, so that is not used to tell them apart.
+Not done: sharing one loaded image tower between a local Describe run and this (the code
+is one, but each loads its own); more than one picture per run of the tower (the export's
+batch axis is not checked).
+
+### Choosing the best: asking a model (third slice)
+
+*Ask AI* (`a`) and *Ask about all…* (Shift+A): the model the AI settings choose sees a
+group's frames together and orders them.
+
+- **`c1ai::pick`**: the system prompt (compare the frames with each other; moment, then
+  composition, mood and light, then the technical side), the message, the schema
+  (`order`, `frames[{frame, reason}]`, `note`) and `read`, which drops numbers that name
+  no frame and repeats, and lets frames the order leaves out follow.
+- **How it is sent.** `Claude::ask_images` and `ClaudeCode::ask_images` send each frame as
+  an image block after its number ("Frame 1:"), 1024 px, which shows far more of a face
+  than a cell of a sheet; `VisionProvider` is untouched. agy takes one file:
+  `Agy::asking(..).ask_image` with `c1image::frames_sheet` (up to 4 × 4 on 2000 px;
+  `scene_sheet` now shares `sheet_of`), its frames loaded at the cell's size
+  (`frames_cell`). The message's image blocks are built in one place
+  (`c1ai::frames_content`).
+- **Who is asked** is `ai::asker`: an `Asker` (Claude, Claude Code or agy) made once for
+  a run from the same key, sign-in and program checks as `provider` (`api_key`,
+  `plan_program`, `agy_program`), before a picture is loaded. The local model is refused
+  there with a sentence.
+- **Kept in `cull.redb`**: `answers` (number → verdict) and `asked` (photo key → the
+  answer it was last shown for). An answer stands for a group as shown now (`stands`)
+  while it covers two of its photos and the model saw every photo shown, or 16; so a
+  narrower filter, or a frame trashed or hidden, keeps it, and a photo never shown asks
+  again. An answer nothing points to is removed. (First it was kept under all the keys of
+  the group as the filter showed it, table `verdicts`: any other filter paid again. That
+  table is read into the new ones once.) `Library::verdict` gives each row its place and
+  reason, `Library::asked` tells of many groups from one read; `rank` already put a
+  verdict first. At most 16 frames go: of a bigger group the 16 best so far, in the
+  order taken (`best_frames`; only such a group is ranked for it).
+- **The run** is `start_ranking(.., cloud: true)`: the same job and events as the local
+  run, `RankState.cloud` telling them apart, `RankState.group` naming the group answered.
+  `ask_each` asks about `settings.parallel` groups at a time and holds the rules, with a
+  stand-in for the model in its tests: a group's own trouble (`NoAnswer::Group`: no image
+  to send) is counted and passed over; three calls in a row with no answer
+  (`NoAnswer::Model`), a `stops_run` error or an answer that cannot be kept end it.
+- **What is counted.** `ask`, `ask_images` and `ask_image` return `Failed` with the
+  call's record when a call was made and gave nothing to use (declined, cut off, no
+  JSON), as `describe` does; `record_ask` keeps every record under `ask:<group>`, so the
+  AI tab's totals have it whatever becomes of the photos.
+- **`ask_estimate`** counts the groups no answer stands for from one read of the filter's
+  photos (a read per group took 86 s over 3,822 groups in a debug build; this takes
+  0.3 s) and prices them with `claude::estimate_frames` (950 tokens in and 70 out per
+  frame, 450 in and 250 out per call, as at effort low): about $100 for the fuji copy's
+  3,822 series (14,226 frames) on Opus, 4 cents for a group of six. It also says when no
+  model can be asked (`unable`), and gives no price for a model it has none for.
+- **The question** (*Ask about all…*) takes every key in the capture phase
+  (`askPlanKey`): the app's window listener is added before the screen's and would rate
+  or trash the photo behind it. `runToggle` keeps Shift+A from stopping the local run and
+  Shift+R from stopping a paid one.
+
+Left as it is: a group whose call fails three times in a row at the head of the list
+ends every run at the same place (it stays unasked), until it is asked about by hand or
+picked from; frames of one group are loaded one after another; a single *Ask AI* cannot
+be stopped; there is no notice the first time *Ask AI* is pressed (its tooltip and the
+guide say where the frames go).
+
+Not checked: no call to a model was made from the test instance (it would send photos
+through the stored API key). The requests are covered by unit tests of their shape, and
+`which_of_two_frames_live` (ignored) asks Claude Code about two made-up pictures.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that

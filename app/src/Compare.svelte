@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { onMount, untrack } from "svelte";
+  import { onMount, untrack, type Snippet } from "svelte";
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import { COLORS, date, exposure } from "./lib/format";
   import { FIT, MODES, compareKey, dropRow, oneToOne, panBy, zoomAt, type CompareMode, type View } from "./lib/compare";
 
-  let { rows, active, version, blocked, album = false, message, failed, onclose, onactive, onrows }: {
+  let { rows, active, version, blocked, album = false, message, failed, embedded = false, hint, onkeyfirst, badge, onclose, onactive, onrows }: {
     /** The photos compared, 2 to 4, in their order on screen. */
     rows: number[];
     /** Index in `rows` of the photo edits land on. */
@@ -20,6 +20,15 @@
     message?: string | null;
     /** `message` is an error. */
     failed?: boolean;
+    /** Part of another screen (choosing the best of a group), which has its own bar over
+     *  this one and closes it: not laid over the whole window. */
+    embedded?: boolean;
+    /** The keys, said in the bar, when they are not the comparison's own. */
+    hint?: string;
+    /** Sees each key before the comparison does; true when it was its own. */
+    onkeyfirst?: (e: KeyboardEvent) => boolean;
+    /** More to say of a photo in its caption, in place of "sharpest". */
+    badge?: Snippet<[number]>;
     onclose: () => void;
     onactive: (i: number) => void;
     /** The photos reordered or one taken out, with the active one after it. */
@@ -267,6 +276,7 @@
   }
 
   function onkey(e: KeyboardEvent) {
+    if (onkeyfirst?.(e)) return;
     const action = compareKey(e, blocked, rows.length);
     if (!action) {
       // Enter and Space never press a button left focused behind the keys.
@@ -333,15 +343,16 @@
     {/if}
     {#if l}
       <span class="muted" title="Focus class and the detail measured in the photo">{l.focus} · detail {Math.round(l.analysis.sharpness).toLocaleString()}</span>
-      {#if sharpest === row}<span class="best">sharpest</span>{/if}
+      {#if !badge && sharpest === row}<span class="best">sharpest</span>{/if}
     {/if}
+    {#if badge}{@render badge(row)}{/if}
     {#if rows.length > 2}
       <button class="drop" title="Take this photo out of the comparison (x for the active one)" onclick={(e) => { e.stopPropagation(); drop(i); root.focus(); }}>×</button>
     {/if}
   </div>
 {/snippet}
 
-<div class="compare" role="dialog" aria-modal="true" aria-label="Compare photos" tabindex="-1" bind:this={root}>
+<div class="compare" class:embedded role="dialog" aria-modal="true" aria-label="Compare photos" tabindex="-1" bind:this={root}>
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div class="bar" onclick={refocus}>
     <div class="modes" role="group" aria-label="How to compare">
@@ -384,9 +395,9 @@
     {#if message}
       <span class="status" class:failed>{message}</span>
     {:else}
-      <span class="hint">wheel zoom · drag move · Tab / ← → active photo · 0–5 and - + * edit it · Delete {album ? "out of the album" : "to the trash"} · Esc</span>
+      <span class="hint">{hint ?? `wheel zoom · drag move · Tab / ← → active photo · 0–5 and - + * edit it · Delete ${album ? "out of the album" : "to the trash"} · Esc`}</span>
     {/if}
-    <button class="close" title="Close (Esc)" onclick={onclose}>×</button>
+    {#if !embedded}<button class="close" title="Close (Esc)" onclick={onclose}>×</button>{/if}
   </div>
 
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -449,6 +460,7 @@
     grid-template-rows: auto 1fr;
     background: #111;
   }
+  .compare.embedded { position: relative; inset: auto; z-index: auto; min-height: 0; }
   .compare:focus { outline: none; }
   .bar {
     display: flex;

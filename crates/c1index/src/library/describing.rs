@@ -323,6 +323,13 @@ impl Library {
         self.suggestions.record(REFINE_KEY, record)
     }
 
+    /// Records a call about the frames of a group (which to keep), so its cost counts with
+    /// the rest: under the group's id, not a photo's key, so it stays counted whatever
+    /// becomes of the photos.
+    pub fn record_ask(&self, group: &str, record: &RunRecord) -> anyhow::Result<()> {
+        self.suggestions.record(&format!("ask:{group}"), record)
+    }
+
     /// Stored suggestions of photos in the library, with `status` or any, newest first.
     pub fn suggestions(&self, task: Task, status: Option<Status>) -> anyhow::Result<Vec<(u64, Entry)>> {
         let mut all = self.suggestions.all(task)?;

@@ -9,11 +9,15 @@
 //! `agy`. [`siglip::Siglip`] calls no one: a small model run on this computer scores the
 //! catalog's keywords against the photo.
 
+#[cfg(feature = "local")]
+pub mod aesthetic;
 pub mod agy;
+pub mod alike;
 pub mod claude;
 pub mod claude_code;
 pub mod keys;
 pub mod models;
+pub mod pick;
 mod prompt;
 pub mod refine;
 #[cfg(feature = "local")]
@@ -35,6 +39,9 @@ pub const PROMPT_VERSION: u32 = 3;
 /// One photo to describe: a JPEG of it and one line of what the catalog already knows
 /// (file name, date, camera, place), which helps the model and costs a few tokens.
 pub struct PhotoRequest {
+    /// The photo's key in the library, empty when it is of none: a provider that learns
+    /// from the library's photos leaves the photo itself out by it.
+    pub key: String,
     pub jpeg: Vec<u8>,
     pub context: String,
     /// Told when the call goes out and before it is tried again.
@@ -126,6 +133,9 @@ pub struct Suggestion {
     /// The score of each of `keywords`, 0..1, in their order, when the model scores
     /// keywords one by one (the local model); empty when it does not.
     pub keyword_scores: Vec<f32>,
+    /// For each of `keywords`, 0..1, the share of the say of the photos that look alike
+    /// and are keyworded already ([`alike`]); empty when the provider asks none.
+    pub keyword_shares: Vec<f32>,
     /// Keywords the catalog does not have yet.
     pub keywords_new: Vec<String>,
     /// 1..=5.
@@ -423,6 +433,25 @@ impl From<AiError> for Failed {
     }
 }
 
+/// A JPEG as an image block of a Claude message.
+pub(crate) fn image_block(jpeg: &[u8]) -> serde_json::Value {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+    serde_json::json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
+}
+
+/// The content of a Claude message asking about pictures: each announced by its number
+/// ("Frame 1:"), so the answer can name them, then the text.
+pub(crate) fn frames_content(text: &str, jpegs: &[Vec<u8>]) -> Vec<serde_json::Value> {
+    let mut content = Vec::with_capacity(jpegs.len() * 2 + 1);
+    for (i, jpeg) in jpegs.iter().enumerate() {
+        content.push(serde_json::json!({"type": "text", "text": format!("Frame {}:", i + 1)}));
+        content.push(image_block(jpeg));
+    }
+    content.push(serde_json::json!({"type": "text", "text": text}));
+    content
+}
+
 pub trait VisionProvider: Send + Sync {
     /// `claude`, `gemini`.
     fn id(&self) -> &str;
@@ -603,6 +632,7 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
         subject: text(&raw.subject),
         keywords,
         keyword_scores: Vec::new(),
+        keyword_shares: Vec::new(),
         keywords_new: new,
         rating: score(raw.rating),
         quality: score(raw.quality),
@@ -830,5 +860,18 @@ mod tests {
         );
         assert_eq!(with_said("no JSON answer", " \n "), "no JSON answer");
         assert_eq!(with_said("no JSON answer", ""), "no JSON answer");
+    }
+
+    #[test]
+    fn a_question_about_pictures_has_them_numbered_before_the_text() {
+        let content = frames_content("Which?", &[vec![1, 2, 3], vec![4, 5, 6]]);
+        assert_eq!(content.len(), 5);
+        assert_eq!(content[0], serde_json::json!({"type": "text", "text": "Frame 1:"}));
+        assert_eq!(content[1], image_block(&[1, 2, 3]));
+        let source = serde_json::json!({"type": "base64", "media_type": "image/jpeg", "data": "AQID"});
+        assert_eq!(content[1], serde_json::json!({"type": "image", "source": source}));
+        assert_eq!(content[2]["text"], "Frame 2:");
+        assert_eq!(content[3]["type"], "image");
+        assert_eq!(content[4], serde_json::json!({"type": "text", "text": "Which?"}));
     }
 }

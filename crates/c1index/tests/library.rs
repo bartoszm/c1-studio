@@ -1381,6 +1381,217 @@ fn stacking_under_a_filter_hides_only_frames_whose_sharpest_matches_and_follows_
 }
 
 #[test]
+fn a_pick_stands_for_its_group_when_stacked_until_taken_back() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let c = [90, 90, 90];
+    // A burst of three, seconds apart (1, 3, 5): 3 is the sharpest.
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, c, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, c, 900.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, c, 300.0, h ^ 0b1111)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    lib.sync(&source).unwrap();
+    let burst = Filter { analysed: Some(true), stacked: true, ..Filter::default() };
+    assert_eq!(ids(&lib, &burst), [3]);
+
+    // The user keeps 5, not the sharpest: it shows at once, and after the groups are worked
+    // out again.
+    let five = row_of(&lib, 5);
+    assert_eq!(lib.set_kept(&[five], true).unwrap(), [five]);
+    assert_eq!(ids(&lib, &burst), [5]);
+    assert!(lib.set_kept(&[five], true).unwrap().is_empty(), "already picked");
+    assert_eq!(lib.kept_of(&[row_of(&lib, 1), five]), [five]);
+    assert_eq!(lib.regroup().unwrap(), 0, "the groups agree with the pick");
+    assert_eq!(ids(&lib, &burst), [5]);
+    // Two picks both show.
+    lib.set_kept(&[row_of(&lib, 1)], true).unwrap();
+    assert_eq!(ids(&lib, &burst), [1, 5]);
+    // The picks outlive the library being closed.
+    let dir = lib.dir().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    assert_eq!(ids(&lib, &burst), [1, 5]);
+    // Taken back, the sharpest stands for the burst again.
+    let rows = [row_of(&lib, 1), row_of(&lib, 5)];
+    assert_eq!(lib.set_kept(&rows, false).unwrap(), rows);
+    assert_eq!(ids(&lib, &burst), [3]);
+
+    // The sharpest goes to the trash with no pick made: the next sharpest shows once the
+    // group is stacked again.
+    lib.set_binned(&[row_of(&lib, 3)], true, false).unwrap();
+    lib.set_kept(&[row_of(&lib, 5)], false).unwrap();
+    assert_eq!(ids(&lib, &burst), [5]);
+}
+
+#[test]
+fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let (one, two, three) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3));
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [90; 3], 100.0, 1)),
+        (key(2), (1, 1), look(600, 400, [90; 3], 200.0, 2)),
+    ])
+    .unwrap();
+    let view = |row, version, embedding: [f32; 2], scores| c1index::cull::NewView {
+        row,
+        version,
+        embedding: embedding.into(),
+        scores,
+    };
+    // Photo 3 is not measured: there is no render to say the view is of, and the caller
+    // hears that one was left out.
+    let kept = lib.put_views(vec![
+        view(one, 1, [1.0, 0.0], [0.1, 0.2, 0.3, 0.4]),
+        view(two, 1, [0.0, 1.0], [0.5; 4]),
+        view(three, 1, [0.5, 0.5], [0.9; 4]),
+    ]);
+    assert_eq!(kept.unwrap(), 2);
+    let views = lib.views(&[one, two, three]).unwrap();
+    assert_eq!(views.len(), 2);
+    assert_eq!((views[&one].scores, views[&one].embedding.as_slice()), ([0.1, 0.2, 0.3, 0.4], [1.0, 0.0].as_slice()));
+    // Photo 1 is rendered again (another stamp): what the model saw is of the old render.
+    lib.put_analyses(vec![(key(1), (2, 2), look(600, 400, [90; 3], 150.0, 1))]).unwrap();
+    let views = lib.views(&[one, two]).unwrap();
+    assert_eq!(views.keys().copied().collect::<Vec<_>>(), [two]);
+    // Looked at again, it is seen again; and the views outlive the library being closed.
+    assert_eq!(lib.put_views(vec![view(one, 2, [0.6, 0.8], [0.7; 4])]).unwrap(), 1);
+    let dir = lib.dir().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    let views = lib.views(&[one, two]).unwrap();
+    assert_eq!((views[&one].version, views[&two].version), (2, 1));
+}
+
+#[test]
+fn a_models_verdict_on_a_group_holds_for_the_photos_it_saw() {
+    let (_d, lib, _source) = setup();
+    let (one, two, three, four) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3), row_of(&lib, 4));
+    assert!(lib.verdict(&[one, two, three]).unwrap().is_none(), "not asked yet");
+    assert_eq!(lib.asked(&[vec![one, two, three]]).unwrap(), [false]);
+    // Shown 1, 2 and 3, the model keeps the third, then the first.
+    let said = c1index::cull::NewVerdict {
+        at: 7,
+        provider: "claude".into(),
+        model: "m".into(),
+        order: vec![2, 0, 1],
+        reasons: vec!["a step early".into(), "eyes closed".into(), "the gesture".into()],
+        note: "clear".into(),
+    };
+    lib.put_verdict(&[one, two, three], said.clone()).unwrap();
+    let (verdict, places) = lib.verdict(&[three, one, two]).unwrap().unwrap();
+    assert_eq!((verdict.provider.as_str(), verdict.sent.len(), verdict.note.as_str()), ("claude", 3, "clear"));
+    assert_eq!(verdict.version, c1ai::pick::VERSION);
+    assert_eq!(places.get(&three), Some(&(0, "the gesture".to_owned())));
+    assert_eq!(places.get(&one), Some(&(1, "a step early".to_owned())));
+    assert_eq!(places.get(&two), Some(&(2, "eyes closed".to_owned())));
+
+    // A filter that shows two of them, or one trashed since: the answer about the two
+    // left is the same one, in the order it gave.
+    let (_, places) = lib.verdict(&[one, two]).unwrap().unwrap();
+    assert_eq!((places.len(), places[&one].0, places[&two].0), (2, 1, 2));
+    // A photo the model never saw (a wider filter, a frame added): asked about again.
+    assert!(lib.verdict(&[one, two, three, four]).unwrap().is_none());
+    assert!(lib.verdict(&[three]).unwrap().is_none(), "one photo is no group");
+    let groups = [vec![one, two, three], vec![two, three], vec![one, two, three, four], vec![four]];
+    assert_eq!(lib.asked(&groups).unwrap(), [true, true, false, false]);
+
+    // It holds over a restart, and an order that names a frame not shown is not kept.
+    let dir = lib.dir().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    assert!(lib.verdict(&[one, two, three]).unwrap().is_some());
+    let wrong = c1index::cull::NewVerdict { order: vec![0, 2], ..said };
+    assert!(lib.put_verdict(&[one, two], wrong).is_err());
+}
+
+#[test]
+fn restacking_a_photo_of_two_groups_agrees_with_grouping_again() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let d = 0x3333_cccc_5555_aaaau64;
+    let c = [90, 90, 90];
+    // A burst of four from the X-Pro2 (1, 3, 5, 7; 3 is the sharpest), a copy of 5 from
+    // another import (6: its duplicate, no part of the burst), and a pair apart (2 and 4).
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, c, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, c, 900.0, h ^ 0b1)),
+        (id(5).key(), (1, 1), look(600, 400, c, 300.0, h ^ 0b11)),
+        (id(7).key(), (1, 1), look(600, 400, c, 200.0, h ^ 0b111)),
+        (id(6).key(), (1, 1), look(600, 400, c, 50.0, h ^ 0b1011)),
+        (id(2).key(), (1, 1), look(600, 400, c, 500.0, d)),
+        (id(4).key(), (1, 1), look(600, 400, c, 400.0, d ^ 1)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5, 7].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 1000 * (k as i64 + 1)));
+    }
+    source.edit_externally(&id(6), |p| p.captured_at = Some(at + 2000));
+    let two = source.photo(&id(2)).unwrap().captured_at;
+    source.edit_externally(&id(4), |p| p.captured_at = two);
+    lib.sync(&source).unwrap();
+    let look_of = |n: u32| lib.look(row_of(&lib, n)).unwrap();
+    assert!(look_of(5).series.is_some() && look_of(5).duplicates.is_some(), "5 is in both");
+    assert_eq!((look_of(6).series, look_of(6).duplicates), (None, look_of(5).duplicates));
+    // The photos stacked away, of those in a group.
+    let away = || [1, 2, 3, 4, 5, 6, 7].into_iter().filter(|&n| look_of(n).stacked).collect::<Vec<u32>>();
+    // Grouping again stacks the same photos away (a photo in the trash leaves its groups then).
+    let agrees = |what: &str| {
+        let before = away();
+        lib.regroup().unwrap();
+        assert_eq!(away(), before, "{what}: grouping again stacks as restacking did");
+    };
+    assert_eq!(away(), [1, 4, 5, 6, 7], "3 stands for the burst, 5 for its pair but behind 3");
+
+    // The groups in the order they are gone through, as the list of groups gives them.
+    for series in [true, false] {
+        let listed = lib.groups_sorted(&Filter::default(), series, c1index::GroupSort::Oldest, false, 0, 100).unwrap();
+        let listed: Vec<(String, bool)> = listed.groups.into_iter().map(|g| (g.id, false)).collect();
+        assert_eq!(listed.len(), if series { 1 } else { 2 });
+        assert_eq!(lib.group_ids(&Filter::default(), series).unwrap(), listed);
+    }
+
+    // The sharpest of the burst goes to the trash: 5 stands for both its groups.
+    let three = row_of(&lib, 3);
+    lib.set_binned(&[three], true, false).unwrap();
+    lib.restack(&[three]).unwrap();
+    assert_eq!(away(), [1, 4, 6, 7]);
+    agrees("after the trash");
+
+    // 6 is picked of the pair: 5 is stacked away by it, whatever the burst says.
+    let (five, six) = (row_of(&lib, 5), row_of(&lib, 6));
+    assert_eq!(lib.repick(&[six], &[], &[]).unwrap(), (vec![six], vec![]));
+    assert_eq!(away(), [1, 4, 5, 7]);
+    agrees("after a pick");
+    let pair = look_of(6).duplicates.unwrap();
+    let picked = lib.group_ids(&Filter::default(), false).unwrap();
+    assert_eq!(picked.iter().find(|(id, _)| *id == pair), Some(&(pair, true)), "the pair has a pick");
+
+    // The pick made over: 5 is kept, 6 no longer. One pick per group, and 5 is the burst's too.
+    assert_eq!(lib.repick(&[five], &[six], &[]).unwrap(), (vec![five], vec![six]));
+    assert_eq!(lib.kept_of(&[five, six]), [five]);
+    assert_eq!(away(), [1, 4, 6, 7]);
+    agrees("after the pick made over");
+
+    // Back from the trash, 3 is behind the pick, sharpest or not: once the groups are worked
+    // out again, which took it out of its burst while it was in the trash.
+    lib.set_binned(&[three], false, false).unwrap();
+    lib.restack(&[three]).unwrap();
+    assert_eq!(away(), [1, 4, 6, 7]);
+    lib.regroup().unwrap();
+    assert_eq!(away(), [1, 3, 4, 6, 7]);
+}
+
+#[test]
 fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
     let (_d, lib, source) = setup();
     for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {

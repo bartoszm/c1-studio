@@ -2,7 +2,7 @@
 // from here. The keys themselves are handled in App.svelte's `onkey`: a key added there
 // goes here too, and in the guide's Keyboard section (a test checks the two agree).
 
-export type Place = "Photos" | "Viewer" | "Compare" | "Anywhere";
+export type Place = "Photos" | "Viewer" | "Compare" | "Cull" | "Anywhere";
 
 export type Shortcut = {
   /** As shown: `Ctrl+K`, `0–5`. Several ways to do it are split by " · ". */
@@ -21,6 +21,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "t · Shift+T", what: "Show the focused photo's shoot; pick it among those shown", where: "Photos" },
   { keys: "v", what: "Show every variant of the focused photo's image", where: "Photos" },
   { keys: "c", what: "Compare the picked photos", where: "Photos" },
+  { keys: "b", what: "Choose the best of each series or duplicate group among the photos shown", where: "Photos" },
   { keys: "Ctrl+wheel · Ctrl+plus · Ctrl+minus · Ctrl+0", what: "Bigger, smaller, default tiles", where: "Photos" },
   { keys: "0–5", what: "Rating (0 clears)", where: "Anywhere" },
   { keys: "- · + · *", what: "Red, green, yellow tag", where: "Anywhere" },
@@ -42,9 +43,16 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "o", what: "Turn the golden triangles or the spiral", where: "Viewer" },
   { keys: "Esc", what: "Close the viewer, a dialog or a menu", where: "Viewer" },
   { keys: "Wheel · z", what: "Zoom; 1:1 and back", where: "Compare" },
+  { keys: "Enter", what: "Keep the active photo (and the ones marked), deal with the rest, go to the next group", where: "Cull" },
+  { keys: "k", what: "Mark the active photo to keep it too, or unmark it", where: "Cull" },
+  { keys: "↑ · ↓", what: "Previous, next group, leaving this one as it is", where: "Cull" },
+  { keys: "← · → · Tab", what: "Previous, next photo of the group", where: "Cull" },
+  { keys: "g", what: "Go to the suggested photo", where: "Cull" },
+  { keys: "r · Shift+R", what: "Have the local model look at this group; at every group, in the background", where: "Cull" },
+  { keys: "a · Shift+A", what: "Ask AI (Claude or Gemini) which frame of this group to keep; of every group, after saying what it takes", where: "Cull" },
 ];
 
-export const PLACES: Place[] = ["Photos", "Anywhere", "Viewer", "Compare"];
+export const PLACES: Place[] = ["Photos", "Anywhere", "Viewer", "Compare", "Cull"];
 
 /** What the photo menu's items do, as the table above says it (its start): their key hints
  *  are found by these, and a test checks each still finds one. */

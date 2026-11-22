@@ -2,6 +2,7 @@
 // next to the sidebar's layout.
 
 import { neighbourGap, SESSION_GAP, sessionGap } from "./around";
+import { cullSettings, type CullSettings } from "./cull";
 import { mergeSections, type SectionPref } from "./sections";
 
 export type Settings = {
@@ -19,6 +20,8 @@ export type Settings = {
   sessionGap: number;
   /** Placing photos from their neighbours in time: what was chosen last. */
   neighbours: Neighbours;
+  /** Choosing the best of alike photos: what becomes of the rest, and how the kept are marked. */
+  cull: CullSettings;
 };
 
 /** How the map shows positions AI Locate gave, accepted as approximate. */
@@ -51,6 +54,7 @@ function load(): Settings {
     fillPlaces: saved.fillPlaces === true,
     sessionGap: typeof saved.sessionGap === "number" ? (sessionGap(saved.sessionGap) ?? SESSION_GAP) : SESSION_GAP,
     neighbours: neighbours(saved.neighbours),
+    cull: cullSettings(saved.cull),
   };
 }
 

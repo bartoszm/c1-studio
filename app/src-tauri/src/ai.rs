@@ -10,18 +10,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use c1ai::agy::{self, Agy};
+use c1ai::alike::{self, Examples};
 use c1ai::claude::{self, Claude};
 use c1ai::claude_code::{self, ClaudeCode};
 use c1ai::keys::{self, ANTHROPIC};
 use c1ai::models::SIGLIP2;
-use c1ai::siglip::{self, Siglip};
+use c1ai::siglip::{self, Embedder, Least, Siglip};
 use c1ai::{
     AiError, Brief, Failed, Fields, Language, LeftOut, PhotoRequest, Progress, SheetRequest, Step, Task,
     VisionProvider, Vocabulary,
 };
 use c1index::ai::{Entry, Status};
-use c1index::{Accept, Accepted};
-use c1model::{ImageRef, ImageTier, Photo, PhotoId, Place};
+use c1index::{Accept, Accepted, Filter, QueryOptions, Sort};
+use c1model::{ImageRef, ImageTier, KeywordPath, Photo, PhotoId, Place};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -58,11 +59,11 @@ pub(crate) enum AiImage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AiSettings {
-    access: Access,
-    model: String,
+    pub(crate) access: Access,
+    pub(crate) model: String,
     language: Language,
     /// `low`, `medium`, `high`.
-    effort: String,
+    pub(crate) effort: String,
     /// Photos described at once.
     parallel: usize,
     /// What a description holds.
@@ -78,7 +79,7 @@ pub(crate) struct AiSettings {
     /// where the photo has none.
     place_tick: u8,
     /// The Gemini model agy is asked for.
-    gemini_model: String,
+    pub(crate) gemini_model: String,
     /// Gemini gets contact sheets of up to 36 photos rather than one photo per call.
     sheets: bool,
     /// The image sent of each photo, alone or on a sheet.
@@ -87,8 +88,17 @@ pub(crate) struct AiSettings {
     left_out: LeftOut,
     /// How photos are located.
     locate: LocateSettings,
-    /// The local model suggests a keyword scoring at least this (%).
+    /// The local model suggests a keyword it scores at least this (%) by itself,
     local_threshold: f32,
+    /// ... or one with at least this share (%) of the say of the photos that look alike
+    /// among those keyworded already.
+    local_share: f32,
+}
+
+impl AiSettings {
+    fn least(&self) -> Least {
+        Least { score: self.local_threshold, share: self.local_share }
+    }
 }
 
 /// What the user chose for locating photos.
@@ -124,6 +134,13 @@ impl Default for LocateSettings {
     }
 }
 
+impl AiSettings {
+    /// How many calls a run makes at once.
+    pub(crate) fn workers(&self) -> usize {
+        self.parallel.clamp(1, 8)
+    }
+}
+
 impl Default for AiSettings {
     fn default() -> Self {
         AiSettings {
@@ -143,6 +160,7 @@ impl Default for AiSettings {
             left_out: LeftOut::default(),
             locate: LocateSettings::default(),
             local_threshold: siglip::DEFAULT_THRESHOLD,
+            local_share: alike::DEFAULT_SHARE,
         }
     }
 }
@@ -151,7 +169,7 @@ fn settings_path(s: &Session) -> PathBuf {
     s.settings_path.with_file_name("ai.json")
 }
 
-fn load_settings(s: &Session) -> AiSettings {
+pub(crate) fn load_settings(s: &Session) -> AiSettings {
     std::fs::read(settings_path(s)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
@@ -344,7 +362,7 @@ pub(crate) struct LocalView {
 }
 
 /// The folder models are kept in, shared by every catalog.
-fn models_root() -> PathBuf {
+pub(crate) fn models_root() -> PathBuf {
     c1model::provider::data_root().join("models")
 }
 
@@ -415,6 +433,211 @@ pub(crate) async fn ai_model_download(app: AppHandle) -> Result<LocalView, Strin
 pub(crate) fn ai_model_download_stop() -> LocalView {
     DOWNLOAD_STOP.store(true, Ordering::SeqCst);
     local_view()
+}
+
+/// How far the local model has got with the photos keyworded by hand, which it learns
+/// keywords from.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct LearnState {
+    running: bool,
+    /// Photos looked at in this pass, of `total` it set out to.
+    done: usize,
+    total: usize,
+    /// Photos with no image to look at.
+    failed: usize,
+    /// Keyworded photos it has looked at, of `keyworded` in the library.
+    examples: usize,
+    keyworded: usize,
+    /// Why the last pass ended early.
+    error: Option<String>,
+}
+
+/// The long edge a photo is looked at by: the model takes 224 pixels a side.
+const LEARN_EDGE: u32 = 512;
+
+/// Every keyworded photo, with its keywords as pipe paths.
+fn keyworded(s: &Session) -> anyhow::Result<Vec<(PhotoId, Vec<String>)>> {
+    let options = QueryOptions { sort: Sort::Row, ..QueryOptions::default() };
+    let rows = s.library.query(&Filter::default(), &options)?.rows;
+    let mut out = Vec::new();
+    s.library.photos(&rows, |_, photo| {
+        if !photo.keywords.is_empty() {
+            out.push((photo.id.clone(), photo.keywords.iter().map(KeywordPath::to_pipe).collect()));
+        }
+    })?;
+    Ok(out)
+}
+
+/// The keyworded photos the model has looked at: what it learns keywords from.
+fn examples(s: &Session) -> anyhow::Result<Examples> {
+    let keywords: HashMap<String, Vec<String>> = keyworded(s)?.into_iter().map(|(id, k)| (id.key(), k)).collect();
+    let mut examples = Examples::new(siglip::DIM);
+    s.library.embeddings().each(|key, numbers| {
+        if let Some(paths) = keywords.get(key) {
+            examples.add(key, numbers, paths.iter().map(String::as_str));
+        }
+    })?;
+    Ok(examples)
+}
+
+/// Looks at the keyworded photos not looked at yet. `report` hears how far it has got.
+fn learn(s: &Session, report: &dyn Fn(LearnState)) -> anyhow::Result<()> {
+    let store = s.library.embeddings();
+    store.of_model(SIGLIP2.id)?;
+    let known = store.keys()?;
+    let keyworded = keyworded(s)?;
+    let todo: Vec<&PhotoId> = keyworded.iter().map(|(id, _)| id).filter(|id| !known.contains(&id.key())).collect();
+    let mut state = LearnState {
+        running: true,
+        total: todo.len(),
+        keyworded: keyworded.len(),
+        examples: keyworded.len() - todo.len(),
+        ..LearnState::default()
+    };
+    report(state.clone());
+    if todo.is_empty() {
+        return Ok(());
+    }
+    let mut embedder = Embedder::open(&models_root())?;
+    let mut batch = Vec::new();
+    let mut told = std::time::Instant::now();
+    let pass = || -> anyhow::Result<()> {
+        for id in todo {
+            if s.learn_stop.load(Ordering::SeqCst) {
+                break;
+            }
+            match pixels(s, id, AiImage::Thumb, LEARN_EDGE) {
+                Ok(Some(image)) => {
+                    batch.push((id.key(), embedder.image(&image)?));
+                    state.examples += 1;
+                }
+                Ok(None) => state.failed += 1,
+                Err(e) => {
+                    // The first is told of: the rest most likely fail the same way.
+                    if state.failed == 0 {
+                        s.log.event(&format!("Learning: no image of {} to look at: {e:#}", id.key()), &[]);
+                    }
+                    state.failed += 1;
+                }
+            }
+            state.done += 1;
+            // Kept as it goes: a pass stopped or cut short goes on from where it was.
+            if batch.len() >= LEARN_BATCH {
+                store.put(&batch)?;
+                batch.clear();
+            }
+            if told.elapsed().as_millis() >= 500 {
+                told = std::time::Instant::now();
+                report(state.clone());
+            }
+        }
+        Ok(())
+    };
+    // What a pass that failed had looked at is kept too.
+    let outcome = pass();
+    let kept = store.put(&batch);
+    report(state);
+    outcome.and(kept)
+}
+
+/// Embeddings written at a time: a write is flushed to disk, which costs.
+const LEARN_BATCH: usize = 50;
+
+/// The embeddings of the photos a run describes, written a batch at a time and, the
+/// last ones, when the run's provider goes.
+struct Kept {
+    session: Arc<Session>,
+    batch: Mutex<Vec<(String, Vec<f32>)>>,
+}
+
+impl Kept {
+    fn add(&self, key: &str, numbers: &[f32]) {
+        let mut batch = lock(&self.batch);
+        batch.push((key.to_string(), numbers.to_vec()));
+        if batch.len() >= LEARN_BATCH {
+            self.flush(&mut batch);
+        }
+    }
+
+    fn flush(&self, batch: &mut Vec<(String, Vec<f32>)>) {
+        if let Err(e) = self.session.library.embeddings().put(batch) {
+            self.session.log.event(&format!("Embeddings could not be kept: {e:#}"), &[]);
+        }
+        batch.clear();
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        let mut batch = std::mem::take(&mut *lock(&self.batch));
+        self.flush(&mut batch);
+    }
+}
+
+/// Where learning stands: the pass under way, or what a pass would find to do.
+fn learn_view(s: &Session) -> anyhow::Result<LearnState> {
+    let last = lock(&s.learn).clone();
+    if s.learning.load(Ordering::SeqCst) {
+        return Ok(last);
+    }
+    let known = s.library.embeddings().keys()?;
+    let keyworded = keyworded(s)?;
+    let examples = keyworded.iter().filter(|(id, _)| known.contains(&id.key())).count();
+    Ok(LearnState { examples, keyworded: keyworded.len(), error: last.error, ..LearnState::default() })
+}
+
+#[tauri::command]
+pub(crate) async fn ai_learn_state(app: State<'_, App>) -> Result<LearnState, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || learn_view(&s)).await.map_err(text)?.map_err(|e| format!("{e:#}"))
+}
+
+/// Has the local model look at the keyworded photos it has not looked at, in the
+/// background: `learn` tells how far it has got, and its end.
+#[tauri::command]
+pub(crate) async fn ai_learn(app: AppHandle) -> Result<LearnState, String> {
+    let s = app.state::<App>().session()?;
+    if !SIGLIP2.installed(&models_root()) {
+        return Err("Download the model first".into());
+    }
+    if s.learning.swap(true, Ordering::SeqCst) {
+        return Err("The model is learning already".into());
+    }
+    // Said before asking, as a run does the other way round: the two can refuse each
+    // other, never both start.
+    if s.describing.load(Ordering::SeqCst) {
+        s.learning.store(false, Ordering::SeqCst);
+        return Err("An AI run is under way: learn once it is done".into());
+    }
+    s.learn_stop.store(false, Ordering::SeqCst);
+    let starting = LearnState { running: true, ..lock(&s.learn).clone() };
+    *lock(&s.learn) = LearnState { error: None, ..starting.clone() };
+    let session = s.clone();
+    std::thread::spawn(move || {
+        let s = session;
+        let _done = Lowers(&s.learning);
+        let report = |state: LearnState| {
+            *lock(&s.learn) = state.clone();
+            if is_current(&app, &s) {
+                let _ = app.emit("learn", state);
+            }
+        };
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| learn(&s, &report)))
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("learning from the photos failed unexpectedly")));
+        let last = lock(&s.learn).clone();
+        if let Err(e) = &outcome {
+            s.log.event(&format!("Learning from keyworded photos failed: {e:#}"), &[]);
+        }
+        report(LearnState { running: false, error: outcome.err().map(|e| format!("{e:#}")), ..last });
+    });
+    Ok(starting)
+}
+
+/// Ends the pass; what it looked at stays, so the next one goes on from there.
+#[tauri::command]
+pub(crate) async fn ai_learn_stop(app: State<'_, App>) -> Result<(), String> {
+    app.session()?.learn_stop.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -556,6 +779,7 @@ pub(crate) async fn set_ai_settings(app: State<'_, App>, settings: AiSettings) -
         parallel: settings.parallel.clamp(1, 8),
         place_tick: settings.place_tick.clamp(1, 100),
         local_threshold: settings.local_threshold.clamp(siglip::THRESHOLDS.0, siglip::THRESHOLDS.1),
+        local_share: settings.local_share.clamp(alike::SHARES.0, alike::SHARES.1),
         locate,
         instructions,
         lessons,
@@ -651,47 +875,131 @@ pub(crate) async fn ai_prompt(app: State<'_, App>, task: Option<Task>) -> Result
 
 /// The provider for a run with these settings: the API with the stored key, Claude
 /// Code signed in with a plan, Gemini through agy, or the model run on this computer.
-fn provider(s: &Session, settings: &AiSettings, task: Task) -> Result<Box<dyn VisionProvider>, String> {
+fn provider(s: &Arc<Session>, settings: &AiSettings, task: Task) -> Result<Box<dyn VisionProvider>, String> {
     let (brief, vocabulary) = brief(s, settings, task)?;
-    let options = claude::Options {
-        model: settings.model.clone(),
-        effort: settings.effort.clone(),
-        attempts: 4,
-        stop: s.describe_stop.clone(),
-    };
+    let options = options(settings, s.describe_stop.clone());
     Ok(match settings.access {
-        Access::Api => {
-            let key = keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())?;
-            Box::new(Claude::new(key, options, &brief, vocabulary).map_err(text)?)
-        }
+        Access::Api => Box::new(Claude::new(api_key()?, options, &brief, vocabulary).map_err(text)?),
         Access::Gemini => {
-            let program = agy::find().ok_or_else(|| {
-                AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()).to_string()
-            })?;
             let options = claude::Options { model: settings.gemini_model.clone(), ..options };
-            Box::new(Agy::new(program, options, &brief, vocabulary, settings.sheets))
+            Box::new(Agy::new(agy_program()?, options, &brief, vocabulary, settings.sheets))
         }
         Access::Local => {
-            Box::new(Siglip::new(&models_root(), options, &brief, vocabulary, settings.local_threshold).map_err(text)?)
-        }
-        Access::Plan => {
-            let program = claude_code::find().ok_or_else(|| {
-                AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into())
-                    .to_string()
-            })?;
-            let status = claude_code::status(&program).map_err(text)?;
-            if !on_plan(&status) {
-                return Err(match status.auth_method {
-                    Some(method) if status.logged_in => format!(
-                        "Claude Code is signed in with {method}, billed per token, not a Claude plan: \
-                         run `claude auth login` with your plan, or choose API key access"
-                    ),
-                    _ => "Claude Code is not signed in: run `claude auth login`".into(),
-                });
+            if s.learning.load(Ordering::SeqCst) {
+                return Err(
+                    "The model is learning from the keyworded photos: wait for it, or stop it in Settings > AI".into(),
+                );
             }
-            Box::new(ClaudeCode::new(program, options, &brief, vocabulary).map_err(text)?)
+            s.library.embeddings().of_model(SIGLIP2.id).map_err(text)?;
+            let examples = examples(s).map_err(text)?;
+            // Each photo's embedding is kept: keyworded later, it teaches without being
+            // looked at again.
+            let kept = Kept { session: s.clone(), batch: Mutex::new(Vec::new()) };
+            let keep: siglip::Keep = Box::new(move |key, numbers| kept.add(key, numbers));
+            let (root, least) = (models_root(), settings.least());
+            Box::new(Siglip::new(&root, options, &brief, vocabulary, least, examples, Some(keep)).map_err(text)?)
+        }
+        Access::Plan => Box::new(ClaudeCode::new(plan_program()?, options, &brief, vocabulary).map_err(text)?),
+    })
+}
+
+/// What a call is made with under these settings; `stop` ends one under way.
+fn options(settings: &AiSettings, stop: Arc<AtomicBool>) -> claude::Options {
+    claude::Options { model: settings.model.clone(), effort: settings.effort.clone(), attempts: 4, stop }
+}
+
+/// The stored API key.
+fn api_key() -> Result<String, String> {
+    keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())
+}
+
+/// agy, where it is installed.
+fn agy_program() -> Result<PathBuf, String> {
+    agy::find()
+        .ok_or_else(|| AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()).to_string())
+}
+
+/// Claude Code, installed and signed in with a Claude plan.
+fn plan_program() -> Result<PathBuf, String> {
+    let program = claude_code::find().ok_or_else(|| {
+        AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into()).to_string()
+    })?;
+    let status = claude_code::status(&program).map_err(text)?;
+    if on_plan(&status) {
+        return Ok(program);
+    }
+    Err(match status.auth_method {
+        Some(method) if status.logged_in => format!(
+            "Claude Code is signed in with {method}, billed per token, not a Claude plan: \
+             run `claude auth login` with your plan, or choose API key access"
+        ),
+        _ => "Claude Code is not signed in: run `claude auth login`".into(),
+    })
+}
+
+/// A model to put one question about pictures to, again and again: the one the AI settings
+/// choose, made once for a run (the key read, Claude Code's sign-in checked, its prompt
+/// written), not for each call.
+pub(crate) enum Asker {
+    Claude { claude: Claude, system: String, schema: serde_json::Value },
+    Code(ClaudeCode),
+    Gemini(Agy),
+}
+
+/// The model these settings choose, for questions under `system` answered in the shape
+/// `schema` gives: reached the way [`provider`] reaches it, with the same errors when it
+/// cannot be. `stop` ends a call under way. The local model answers no question.
+pub(crate) fn asker(
+    settings: &AiSettings,
+    stop: Arc<AtomicBool>,
+    system: &str,
+    schema: serde_json::Value,
+) -> Result<Asker, String> {
+    let options = options(settings, stop);
+    Ok(match settings.access {
+        Access::Local => {
+            return Err("The local model cannot compare frames (that is Look): choose Claude or Gemini in \
+                        Settings › AI"
+                .into());
+        }
+        Access::Api => {
+            let claude = Claude::asking(api_key()?, options).map_err(text)?;
+            Asker::Claude { claude, system: system.to_owned(), schema }
+        }
+        Access::Plan => Asker::Code(ClaudeCode::asking(plan_program()?, options, system, schema).map_err(text)?),
+        Access::Gemini => {
+            let options = claude::Options { model: settings.gemini_model.clone(), ..options };
+            Asker::Gemini(Agy::asking(agy_program()?, options, system, &schema))
         }
     })
+}
+
+impl Asker {
+    /// The pictures go on one numbered sheet (agy takes one file), not each as an image
+    /// of its own.
+    pub(crate) fn sheet(&self) -> bool {
+        matches!(self, Asker::Gemini(_))
+    }
+
+    /// The long edge to load each of `frames` pictures at: what is sent of it, no more.
+    pub(crate) fn edge(&self, frames: usize) -> u32 {
+        if self.sheet() { c1image::frames_cell(frames) } else { claude::FRAME_EDGE }
+    }
+
+    /// Asks `message` about `pictures`. Returns the answer and the call's record; a call
+    /// made that gave no answer to use fails with its record.
+    pub(crate) fn ask(
+        &self,
+        message: &str,
+        pictures: &[c1image::RgbImage],
+    ) -> Result<(serde_json::Value, c1ai::RunRecord), Failed> {
+        let jpegs = || pictures.iter().map(|p| c1image::encode_jpeg(p, 88)).collect::<Vec<_>>();
+        match self {
+            Asker::Claude { claude, system, schema } => claude.ask_images(system, message, &jpegs(), schema),
+            Asker::Code(cli) => cli.ask_images(message, &jpegs()),
+            Asker::Gemini(agy) => agy.ask_image(message, &c1image::encode_jpeg(&c1image::frames_sheet(pictures), 88)),
+        }
+    }
 }
 
 /// What a run would do: the photos, the calls (each a photo, a contact sheet or a scene)
@@ -720,7 +1028,7 @@ fn plan(s: &Session, rows: &[u64], again: bool, task: Task) -> Result<Planned, S
     }
     let (id, name, prompt, price) = match settings.access {
         Access::Local => {
-            (SIGLIP2.id.to_string(), SIGLIP2.name.to_string(), siglip::prompt_hash(settings.local_threshold), None)
+            (SIGLIP2.id.to_string(), SIGLIP2.name.to_string(), siglip::prompt_hash(&settings.least()), None)
         }
         Access::Gemini => {
             let id = settings.gemini_model.clone();
@@ -850,6 +1158,7 @@ fn request(
     let (Some(id), Some(photo)) = (s.library.photo_id(row), s.library.photo(row)?) else { return Ok(None) };
     let Some(pixels) = pixels(s, &id, image, claude::LONG_EDGE)? else { return Ok(None) };
     Ok(Some(PhotoRequest {
+        key: id.key(),
         jpeg: c1image::encode_jpeg(&pixels, 85),
         context: context_with(&photo, clues),
         progress: Some(progress),
@@ -861,7 +1170,12 @@ fn request(
 /// for Capture One its render of the edits (the colours of a preview read from its cache
 /// can be off); a missing preview is made if need be. An image that cannot be found, made
 /// or loaded gives way to the next; the first such error is returned if none will do.
-fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+pub(crate) fn pixels(
+    s: &Session,
+    id: &PhotoId,
+    image: AiImage,
+    long_edge: u32,
+) -> anyhow::Result<Option<c1image::RgbImage>> {
     let mut why: Option<anyhow::Error> = None;
     let mut fitted = |image: anyhow::Result<Option<ImageRef>>| match image
         .and_then(|image| image.map(|r| c1image::load_fitted(&r, long_edge)).transpose().map_err(Into::into))
@@ -895,6 +1209,27 @@ fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::
     }
 }
 
+/// [`pixels`] from what is there already, nothing made: the photo's thumbnail (the
+/// source's, or one made here before), else its preview. For work over a whole catalog,
+/// where making what is missing would render the catalog as a side effect.
+pub(crate) fn pixels_at_hand(s: &Session, id: &PhotoId, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+    let thumb = || s.thumbs.get(s.source.as_ref(), id);
+    let preview = || s.source.image(id, ImageTier::Preview).map_err(anyhow::Error::from);
+    let places: [&dyn Fn() -> anyhow::Result<Option<ImageRef>>; 2] = [&thumb, &preview];
+    let mut why: Option<anyhow::Error> = None;
+    for find in places {
+        let fitted = find().and_then(|image| Ok(image.map(|r| c1image::load_fitted(&r, long_edge)).transpose()?));
+        match fitted {
+            Ok(Some(pixels)) => return Ok(Some(pixels)),
+            Ok(None) => {}
+            Err(e) => {
+                why.get_or_insert(e);
+            }
+        }
+    }
+    why.map_or(Ok(None), Err)
+}
+
 /// Describes (or locates) these photos in the background, a few at a time, unless a run
 /// is under way. Each answer is stored as it comes, so a run stopped or crashed keeps
 /// what it got.
@@ -910,7 +1245,10 @@ pub(crate) async fn start_describe(
     if s.describing.swap(true, Ordering::SeqCst) {
         return Err("An AI run is under way already".into());
     }
-    let started = (|| {
+    // Off the async workers: the local model's provider reads every example.
+    let session = s.clone();
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        let s = session;
         let settings = load_settings(&s);
         let Planned { todo, scenes, .. } = plan(&s, &rows, again, task)?;
         Ok::<_, String>((
@@ -921,7 +1259,9 @@ pub(crate) async fn start_describe(
             settings.image,
             (settings.locate.window_minutes, settings.locate.group_max),
         ))
-    })();
+    })
+    .await
+    .unwrap_or_else(|e| Err(text(e)));
     let (provider, todo, scenes, parallel, image, (window, scene_max)) = match started {
         Ok(started) => started,
         Err(e) => {
@@ -1479,7 +1819,7 @@ fn locate_scene(
         rows.len()
     );
     let context = format!("{scene}. {}", context_with(&first, &lines));
-    let request = PhotoRequest { jpeg, context, progress: Some(progress) };
+    let request = PhotoRequest { key: String::new(), jpeg, context, progress: Some(progress) };
     let reply = match provider.describe(&request) {
         Ok(reply) => reply,
         Err(failed) => return Err(paid_for(s, rows[0], failed)),
@@ -1674,13 +2014,12 @@ pub(crate) async fn refine_lessons(
         };
         // Gemini describes, but refining is Claude's: the key if there is one, else the plan.
         let key = keys::get(&ANTHROPIC).map_err(text)?;
-        let (answer, record) = match (settings.access, key) {
+        let asked = match (settings.access, key) {
             // The local model reads no instructions: there is nothing for lessons to change.
             (Access::Local, _) => return Err("The local model follows no prompt: there is nothing to refine".into()),
             (Access::Api, None) => return Err(AiError::NoKey.to_string()),
             (Access::Api | Access::Gemini, Some(key)) => {
-                let claude = Claude::new(key, options, &Brief::default(), Vocabulary::default()).map_err(text)?;
-                claude.ask(&system, &message, &schema).map_err(text)?
+                Claude::asking(key, options).map_err(text)?.ask(&system, &message, &schema)
             }
             (Access::Plan | Access::Gemini, _) => {
                 let program = claude_code::find().ok_or_else(|| {
@@ -1690,7 +2029,17 @@ pub(crate) async fn refine_lessons(
                 if !on_plan(&claude_code::status(&program).map_err(text)?) {
                     return Err("Refining the prompt asks Claude: Claude Code is not signed in with a Claude plan".into());
                 }
-                ClaudeCode::asking(program, options, &system, schema).map_err(text)?.ask(&message).map_err(text)?
+                ClaudeCode::asking(program, options, &system, schema).map_err(text)?.ask(&message)
+            }
+        };
+        // An answer that could not be used was paid for all the same.
+        let (answer, record) = match asked {
+            Ok(answered) => answered,
+            Err(failed) => {
+                if let Some(record) = &failed.record {
+                    s.library.record_refine(record).map_err(text)?;
+                }
+                return Err(failed.to_string());
             }
         };
         s.library.record_refine(&record).map_err(text)?;
@@ -1714,6 +2063,13 @@ pub(crate) async fn set_suggestion_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_local_model_is_asked_no_question() {
+        let settings = AiSettings { access: Access::Local, ..AiSettings::default() };
+        let refused = asker(&settings, Arc::default(), "Compare.", serde_json::json!({})).err().expect("refused");
+        assert!(refused.contains("Look") && refused.contains("Claude or Gemini"), "{refused}");
+    }
 
     #[test]
     fn a_scene_tells_of_a_photo_once_whatever_the_minutes() {
