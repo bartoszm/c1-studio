@@ -987,22 +987,25 @@ impl Library {
             .collect())
     }
 
-    /// Keeps the local model's views of photos, by row, each stamped with the render the
-    /// analysis measured. A photo not measured has no stamp and is left out.
-    pub fn put_views(&self, views: Vec<(u64, u32, Vec<f32>, [f32; 4])>) -> anyhow::Result<()> {
+    /// Keeps the local model's views of photos, each stamped with the render the analysis
+    /// measured. A photo not measured ([`Library::look`] has nothing of it) has no stamp
+    /// and is left out: returns how many were kept, so the caller can tell.
+    pub fn put_views(&self, views: Vec<crate::cull::NewView>) -> anyhow::Result<usize> {
         let records: Vec<(String, crate::cull::View)> = {
             let keys = self.keys.read().unwrap();
             let seen = self.seen.read().unwrap();
             views
                 .into_iter()
-                .filter_map(|(row, version, embedding, scores)| {
-                    let key = keys.get(row as usize)?.as_ref()?;
+                .filter_map(|new| {
+                    let key = keys.get(new.row as usize)?.as_ref()?;
                     let stamp = seen.get(key)?.stamp;
+                    let crate::cull::NewView { version, embedding, scores, .. } = new;
                     Some((key.clone(), crate::cull::View { version, stamp, embedding, scores }))
                 })
                 .collect()
         };
-        self.cull_book.put_views(&records)
+        self.cull_book.put_views(&records)?;
+        Ok(records.len())
     }
 
     /// Of these photos, the ones picked as the ones to keep.

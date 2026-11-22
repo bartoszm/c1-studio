@@ -4,19 +4,20 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 
 use c1ai::aesthetic::{self, Aesthetic, Prompts};
 use c1ai::models::SIGLIP2;
 use c1ai::siglip::Embedder;
 use c1analysis::{Candidate, Judge};
-use c1index::{Filter, GroupSort, Library, QueryOptions, Sort};
+use c1index::cull::NewView;
+use c1index::{Filter, Library, QueryOptions, Sort};
 use c1model::{ColorLabel, Op, Photo, Removal};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::ai::{AiImage, models_root, pixels};
-use crate::{App, Lowers, Session, is_current, text};
+use crate::ai::{AiImage, models_root, pixels, pixels_at_hand};
+use crate::{App, Session, is_current, text};
 
 /// The long edge of the picture the local model is given: it squashes it to 224 itself.
 const LOOK_EDGE: u32 = 448;
@@ -54,6 +55,9 @@ pub(crate) struct CullGroupView {
     close: bool,
     /// The local model is downloaded: it can be asked to look.
     model: bool,
+    /// How many of `photos` the local model has no view of: while there is one, its
+    /// views of the others do not count in the order.
+    unseen: usize,
 }
 
 /// The rows of a group among the photos `filter` selects, oldest first: every frame that
@@ -63,27 +67,25 @@ fn group_rows(library: &Library, filter: &Filter, id: &str) -> Result<Vec<u64>, 
     Ok(library.query(&narrowed, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows)
 }
 
-fn aesthetic_of(scores: [f32; 4]) -> Aesthetic {
-    let [composition, moment, mood, technical] = scores;
-    Aesthetic { composition, moment, mood, technical }
-}
-
 /// What ranking calls the frame the model likes best.
 const BEST_PICTURE: &str = "best picture";
 
-/// The way `seen` stands out most from the group's `views`: the axis on which it is
-/// furthest above their mean.
-fn leading(seen: &Aesthetic, views: &[Aesthetic]) -> &'static str {
-    let axes = |a: &Aesthetic| [a.composition, a.moment, a.mood, a.technical];
+/// A score this far above the group's mean sets a frame apart on that axis. The four
+/// scores are noisy, and the model reads a small picture: under this they are too alike
+/// to name one, and the frame is the best picture, no more.
+const LEADS_BY: f32 = 0.05;
+
+/// The way `seen` stands out from the group's `views`: the axis on which it is furthest
+/// above their mean, where that is [`LEADS_BY`] at least.
+fn leading(seen: &Aesthetic, views: &[Aesthetic]) -> Option<&'static str> {
     let n = views.len().max(1) as f32;
-    let mut best = ("picture", 0.0);
-    for (i, axis) in aesthetic::AXES.iter().enumerate() {
-        let above = axes(seen)[i] - views.iter().map(|v| axes(v)[i]).sum::<f32>() / n;
-        if above > best.1 {
-            best = (if axis.name == "technical" { "technically" } else { axis.name }, above);
-        }
-    }
-    best.0
+    let mean = |axis: usize| views.iter().map(|v| v.as_array()[axis]).sum::<f32>() / n;
+    seen.named()
+        .enumerate()
+        .map(|(axis, (name, score))| (name, score - mean(axis)))
+        .filter(|(_, above)| *above >= LEADS_BY)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(name, _)| if name == "technical" { "technically" } else { name })
 }
 
 fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupView, String> {
@@ -91,7 +93,8 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
     let kept: HashSet<u64> = library.kept_of(&rows).into_iter().collect();
     // Only views scored the way photos are scored now: older ones wait to be scored again.
     let views = library.views(&rows).map_err(text)?;
-    let seen = |row: u64| views.get(&row).filter(|v| v.version == aesthetic::VERSION).map(|v| aesthetic_of(v.scores));
+    let seen =
+        |row: u64| views.get(&row).filter(|v| v.version == aesthetic::VERSION).map(|v| Aesthetic::from(v.scores));
     let classes = library.class_settings();
     let mut photos = Vec::with_capacity(rows.len());
     let mut candidates = Vec::with_capacity(rows.len());
@@ -127,11 +130,14 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
         photo.score = entry.score;
         photo.reasons = entry.reasons;
     }
-    // The best picture by the model's view is best in some way: said by name.
+    // The best picture by the model's view is said by what sets it apart, where something does.
     let views: Vec<Aesthetic> = photos.iter().filter_map(|p| p.aesthetic).collect();
     for photo in &mut photos {
-        if let (Some(seen), Some(reason)) = (photo.aesthetic, photo.reasons.iter_mut().find(|r| *r == BEST_PICTURE)) {
-            *reason = format!("best {}", leading(&seen, &views));
+        if let Some(seen) = photo.aesthetic
+            && let Some(reason) = photo.reasons.iter_mut().find(|r| *r == BEST_PICTURE)
+            && let Some(way) = leading(&seen, &views)
+        {
+            *reason = format!("best {way}");
         }
     }
     // The user's own choice, made before, outranks any measure.
@@ -144,6 +150,7 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
         id: id.to_owned(),
         close: ranked.close && !picked.contains(&true),
         order: order.iter().map(|&i| photos[i].row).collect(),
+        unseen: photos.iter().filter(|p| p.aesthetic.is_none()).count(),
         photos,
         judge: ranked.judge,
         model: SIGLIP2.installed(&models_root()),
@@ -184,115 +191,295 @@ pub(crate) async fn cull_groups(app: State<'_, App>, filter: Filter, series: boo
 }
 
 /// The local model as ranking uses it: the image tower and the sentences photos are held
-/// against. Loaded when first asked for, and let go when the choosing ends.
+/// against.
 struct Ranker {
     embedder: Embedder,
     prompts: Prompts,
 }
 
-static RANKER: Mutex<Option<Arc<Ranker>>> = Mutex::new(None);
-
-fn ranker(stop: &AtomicBool) -> Result<Arc<Ranker>, String> {
-    let mut held = RANKER.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(ranker) = &*held {
-        return Ok(ranker.clone());
-    }
-    let embedder = Embedder::open(&models_root()).map_err(text)?;
-    let prompts = Prompts::load(&embedder, &|| stop.load(Ordering::Relaxed)).map_err(text)?;
-    let ranker = Arc::new(Ranker { embedder, prompts });
-    *held = Some(ranker.clone());
-    Ok(ranker)
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Has the local model look at the photos at `rows` it has not seen yet (or saw rendered
-/// otherwise), and keeps what it saw. A view scored another way is scored again from its
-/// embedding, without the model. `stop` ends it between photos. Returns how many photos
-/// could not be looked at.
-fn look_at(s: &Session, ranker: &Ranker, rows: &[u64], stop: &AtomicBool) -> Result<usize, String> {
-    let have = s.library.views(rows).map_err(text)?;
+/// How far looking at every group has got.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub(crate) struct RankState {
+    running: bool,
+    /// Groups looked at, of how many.
+    done: usize,
+    total: usize,
+    /// Photos that could not be looked at; `events.log` says why of each.
+    failed: usize,
+    /// The group looked at last: a screen showing that one reads it again.
+    group: Option<String>,
+    /// Why the last run ended early.
+    error: Option<String>,
+}
+
+/// A run's state with the session it is of: asked about from another session (another
+/// catalog opened since), there is no run to tell of.
+struct Held<S> {
+    of: Weak<S>,
+    state: RankState,
+}
+
+impl<S> Held<S> {
+    const fn new() -> Self {
+        let state = RankState { running: false, done: 0, total: 0, failed: 0, group: None, error: None };
+        Held { of: Weak::new(), state }
+    }
+
+    fn is_of(&self, s: &Arc<S>) -> bool {
+        Weak::ptr_eq(&self.of, &Arc::downgrade(s))
+    }
+
+    fn read(&self, s: &Arc<S>) -> RankState {
+        if self.is_of(s) { self.state.clone() } else { RankState::default() }
+    }
+
+    /// Changes the state of `s`'s run, which starts from nothing when the state held was
+    /// another session's.
+    fn change(&mut self, s: &Arc<S>, change: impl FnOnce(&mut RankState)) -> RankState {
+        if !self.is_of(s) {
+            *self = Held { of: Arc::downgrade(s), state: RankState::default() };
+        }
+        change(&mut self.state);
+        self.state.clone()
+    }
+}
+
+/// Looking at photos with the local model: the one run over every group, and the model
+/// itself. One for the process, whatever the catalog open: the model is one.
+///
+/// - `running` is raised by [`start_ranking`] before the run's thread starts and lowered
+///   by [`Ends`] when it ends, however it ends. `stop` is cleared only by the start that
+///   raised `running`, so a stop asked for never reaches a later run.
+/// - `state` is of one session; any other is told of no run.
+/// - `ranker` is the model, kept while it is `wanted` (the choosing screen is open) or a
+///   run goes on. Its lock is held only to read or change the slot, never across a load:
+///   `loading` is what a second caller waits on while the first loads.
+struct RankJob {
+    running: AtomicBool,
+    stop: AtomicBool,
+    state: Mutex<Held<Session>>,
+    wanted: AtomicBool,
+    ranker: Mutex<Option<Arc<Ranker>>>,
+    loading: Mutex<()>,
+}
+
+static JOB: RankJob = RankJob {
+    running: AtomicBool::new(false),
+    stop: AtomicBool::new(false),
+    state: Mutex::new(Held::new()),
+    wanted: AtomicBool::new(false),
+    ranker: Mutex::new(None),
+    loading: Mutex::new(()),
+};
+
+impl RankJob {
+    /// The model, loaded when it is not. One load at a time: whoever asks while it loads
+    /// waits for that load and is given its model. `stop` ends the embedding of the
+    /// sentences (the first time ever only: they are kept beside the model).
+    fn ranker(&self, stop: &AtomicBool) -> Result<Arc<Ranker>, String> {
+        let held = || lock(&self.ranker).clone();
+        if let Some(ranker) = held() {
+            return Ok(ranker);
+        }
+        let _loading = lock(&self.loading);
+        if let Some(ranker) = held() {
+            return Ok(ranker);
+        }
+        let embedder = Embedder::open(&models_root()).map_err(text)?;
+        let prompts = Prompts::load(&embedder, &|| stop.load(Ordering::Relaxed)).map_err(text)?;
+        let ranker = Arc::new(Ranker { embedder, prompts });
+        // Kept only where it will be asked for again: the screen closed while it loaded
+        // has let it go already.
+        let mut slot = lock(&self.ranker);
+        if self.needed() {
+            *slot = Some(ranker.clone());
+        }
+        Ok(ranker)
+    }
+
+    fn needed(&self) -> bool {
+        self.wanted.load(Ordering::SeqCst) || self.running.load(Ordering::SeqCst)
+    }
+
+    /// Lets the model go, unless the screen is open or a run goes on: when the screen
+    /// closes, and when a run ends.
+    fn release(&self) {
+        let gone = {
+            let mut slot = lock(&self.ranker);
+            if self.needed() { None } else { slot.take() }
+        };
+        drop(gone);
+    }
+
+    /// Changes the state of `s`'s run, and tells the window when `s` is the session open.
+    fn report(&self, app: &AppHandle, s: &Arc<Session>, change: impl FnOnce(&mut RankState)) {
+        let state = lock(&self.state).change(s, change);
+        if is_current(app, s) {
+            let _ = app.emit("ranking", state);
+        }
+    }
+}
+
+/// Ends a run: lowers `running` and lets the model go if no one needs it, a panic included.
+struct Ends;
+
+impl Drop for Ends {
+    fn drop(&mut self) {
+        JOB.running.store(false, Ordering::SeqCst);
+        JOB.release();
+    }
+}
+
+/// What looks at photos: the local model, or a test's stand-in.
+trait Eye {
+    /// Gets ready to look, when the first photo needs it. `false`: stopped meanwhile. An
+    /// error ends the look.
+    fn open(&mut self) -> Result<bool, String>;
+    /// The embedding of the photo at `row`, once [`Eye::open`]. An error is that photo's
+    /// alone: the look goes on.
+    fn embed(&mut self, row: u64) -> Result<Vec<f32>, String>;
+    /// What an embedding comes to, once [`Eye::open`].
+    fn score(&self, embedding: &[f32]) -> Aesthetic;
+}
+
+/// The local model looking at the photos of `s`.
+struct ModelEye<'a> {
+    s: &'a Session,
+    stop: &'a AtomicBool,
+    /// Make a preview or thumbnail for a photo that has none. Not in a run over every
+    /// group: that would render the catalog as a side effect, with no way to stop it.
+    make: bool,
+    ranker: Option<Arc<Ranker>>,
+}
+
+impl Eye for ModelEye<'_> {
+    fn open(&mut self) -> Result<bool, String> {
+        if self.ranker.is_none() {
+            match JOB.ranker(self.stop) {
+                Ok(ranker) => self.ranker = Some(ranker),
+                // Stopped while the sentences were embedded: no failure.
+                Err(_) if self.stop.load(Ordering::Relaxed) => return Ok(false),
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(true)
+    }
+
+    fn embed(&mut self, row: u64) -> Result<Vec<f32>, String> {
+        let ranker = self.ranker.as_ref().ok_or("the local model is not loaded")?;
+        let id = self.s.library.photo_id(row).ok_or("the photo is gone from the library")?;
+        let picture = if self.make {
+            pixels(self.s, &id, AiImage::Thumb, LOOK_EDGE)
+        } else {
+            pixels_at_hand(self.s, &id, LOOK_EDGE)
+        };
+        let seen = picture
+            .map_err(|e| format!("{e:#}"))
+            .and_then(|found| found.ok_or_else(|| "it has no thumbnail or preview yet".to_owned()))
+            .and_then(|picture| ranker.embedder.image(&picture).map_err(text));
+        if let Err(why) = &seen {
+            self.s.log.event(&format!("Best of: the local model could not look at {}: {why}", id.ext), &[]);
+        }
+        seen
+    }
+
+    fn score(&self, embedding: &[f32]) -> Aesthetic {
+        self.ranker.as_ref().map_or_else(Aesthetic::default, |ranker| aesthetic::score(embedding, &ranker.prompts))
+    }
+}
+
+/// What a look at some photos came to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Looked {
+    /// Photos that could not be looked at.
+    failed: usize,
+    /// Stopped before every photo was looked at.
+    stopped: bool,
+}
+
+/// Has `eye` look at the photos at `rows` it has not seen yet (or saw rendered otherwise),
+/// and keeps what it saw. A view scored another way is scored again from its embedding,
+/// without looking again; where every photo has its view, `eye` is not even opened. A
+/// photo not measured is not looked at: nothing would say which render the view is of, so
+/// it could not be kept. `stop` ends it between photos, with what was seen so far kept.
+fn look_at(library: &Library, rows: &[u64], stop: &AtomicBool, eye: &mut dyn Eye) -> Result<Looked, String> {
+    let have = library.views(rows).map_err(text)?;
     let mut new = Vec::new();
-    let mut failed = 0;
+    let mut looked = Looked::default();
     for &row in rows {
         if stop.load(Ordering::Relaxed) {
+            looked.stopped = true;
             break;
         }
-        let embedding = match have.get(&row) {
+        let stored = match have.get(&row) {
             Some(view) if view.version == aesthetic::VERSION => continue,
-            Some(view) => view.embedding.clone(),
-            None => {
-                let picture = s.library.photo_id(row).and_then(|id| pixels(s, &id, AiImage::Thumb, LOOK_EDGE).ok()?);
-                match picture.map(|p| ranker.embedder.image(&p)) {
-                    Some(Ok(embedding)) => embedding,
-                    _ => {
-                        failed += 1;
-                        continue;
-                    }
-                }
+            Some(view) => Some(view.embedding.clone()),
+            None if library.look(row).is_none() => {
+                looked.failed += 1;
+                continue;
+            }
+            None => None,
+        };
+        if !eye.open()? {
+            looked.stopped = true;
+            break;
+        }
+        let embedding = match stored.map_or_else(|| eye.embed(row), Ok) {
+            Ok(embedding) => embedding,
+            Err(_) => {
+                looked.failed += 1;
+                continue;
             }
         };
-        let seen = aesthetic::score(&embedding, &ranker.prompts);
-        new.push((row, aesthetic::VERSION, embedding, [seen.composition, seen.moment, seen.mood, seen.technical]));
+        let scores = eye.score(&embedding).as_array();
+        new.push(NewView { row, version: aesthetic::VERSION, embedding, scores });
     }
-    s.library.put_views(new).map_err(text)?;
-    Ok(failed)
+    let made = new.len();
+    // One measured again meanwhile is not kept either.
+    looked.failed += made - library.put_views(new).map_err(text)?;
+    Ok(looked)
 }
 
 /// Has the local model look at one group's photos, and gives the group in its new order.
 #[tauri::command]
 pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
     let s = app.session()?;
+    JOB.wanted.store(true, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         // One group, asked for by hand: a run stopped before does not stop it.
         let go = AtomicBool::new(false);
         let rows = group_rows(&s.library, &filter, &id)?;
-        look_at(&s, &*ranker(&go)?, &rows, &go)?;
+        let mut eye = ModelEye { s: &s, stop: &go, make: true, ranker: None };
+        look_at(&s.library, &rows, &go, &mut eye)?;
         group_view(&s.library, &filter, &id)
     })
     .await
     .map_err(text)?
 }
 
-/// How far looking at every group has got.
-#[derive(Clone, Debug, Default, Serialize)]
-pub(crate) struct RankState {
-    running: bool,
-    /// Groups looked at, of how many.
-    done: usize,
-    total: usize,
-    /// Photos that could not be looked at.
-    failed: usize,
-    /// Why the last run ended early.
-    error: Option<String>,
-}
-
-// One run at a time, whatever the catalog open: the model is one.
-static RANKING: AtomicBool = AtomicBool::new(false);
-static RANK_STOP: AtomicBool = AtomicBool::new(false);
-static RANK_STATE: Mutex<RankState> =
-    Mutex::new(RankState { running: false, done: 0, total: 0, failed: 0, error: None });
-
-fn report_rank(app: &AppHandle, change: impl FnOnce(&mut RankState)) {
-    let state = {
-        let mut state = RANK_STATE.lock().unwrap_or_else(|e| e.into_inner());
-        change(&mut state);
-        state.clone()
-    };
-    let _ = app.emit("ranking", state);
-}
-
 fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
-    let groups = s.library.groups_sorted(filter, series, GroupSort::Oldest, false, 0, usize::MAX).map_err(text)?.groups;
-    report_rank(app, |state| *state = RankState { running: true, total: groups.len(), ..RankState::default() });
-    let ranker = ranker(&RANK_STOP)?;
-    for group in groups {
-        if RANK_STOP.load(Ordering::Relaxed) || !is_current(app, s) {
+    // The groups the screen goes through, in its order.
+    let groups = s.library.group_ids(filter, series).map_err(text)?;
+    JOB.report(app, s, |state| state.total = groups.len());
+    let mut eye = ModelEye { s, stop: &JOB.stop, make: false, ranker: None };
+    for (id, _) in groups {
+        if JOB.stop.load(Ordering::Relaxed) || !is_current(app, s) {
             break;
         }
-        let rows = group_rows(&s.library, filter, &group.id)?;
-        let failed = look_at(s, &ranker, &rows, &RANK_STOP)?;
-        report_rank(app, |state| {
+        let rows = group_rows(&s.library, filter, &id)?;
+        let looked = look_at(&s.library, &rows, &JOB.stop, &mut eye)?;
+        // Stopped in the middle of a group: what was seen of it is kept, but it is not done.
+        if looked.stopped {
+            break;
+        }
+        JOB.report(app, s, |state| {
             state.done += 1;
-            state.failed += failed;
+            state.failed += looked.failed;
+            state.group = Some(id);
         });
     }
     Ok(())
@@ -300,16 +487,25 @@ fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool)
 
 /// Has the local model look at every series (or duplicate group) among the photos `filter`
 /// selects, in the background, unless a run is under way. Each group's views are kept as
-/// they come, so a run stopped keeps what it saw.
+/// they come, so a run stopped keeps what it saw. Only pictures there already are looked
+/// at: a photo with no thumbnail or preview yet is counted as failed, not rendered.
 #[tauri::command]
 pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) -> Result<(), String> {
     let s = app.state::<App>().session()?;
-    if RANKING.swap(true, Ordering::SeqCst) {
-        return Ok(());
+    JOB.wanted.store(true, Ordering::SeqCst);
+    if JOB.running.swap(true, Ordering::SeqCst) {
+        // This catalog's run: its progress is what the screen shows. One of a catalog
+        // closed since ends after the photo it is on.
+        return if lock(&JOB.state).is_of(&s) {
+            Ok(())
+        } else {
+            Err("The local model is still looking at another catalog's photos: try again in a moment".into())
+        };
     }
-    RANK_STOP.store(false, Ordering::SeqCst);
+    JOB.stop.store(false, Ordering::SeqCst);
+    JOB.report(&app, &s, |state| *state = RankState { running: true, ..RankState::default() });
     std::thread::spawn(move || {
-        let _done = Lowers(&RANKING);
+        let ends = Ends;
         let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_ranking(&app, &s, &filter, series)));
         let error = match run {
             Ok(Ok(())) => None,
@@ -319,31 +515,43 @@ pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) 
         if let Some(e) = &error {
             s.log.event(&format!("Ranking alike photos failed: {e}"), &[]);
         }
-        report_rank(&app, |state| {
+        // Before the window hears of the end: a run started on hearing it finds none going.
+        drop(ends);
+        JOB.report(&app, &s, |state| {
             state.running = false;
             state.error = error;
         });
-        let _ = app.emit("ranking-done", ());
+        if is_current(&app, &s) {
+            let _ = app.emit("ranking-done", ());
+        }
     });
     Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn stop_ranking() {
-    RANK_STOP.store(true, Ordering::SeqCst);
+    JOB.stop.store(true, Ordering::SeqCst);
 }
 
+/// How far the run over this catalog's groups has got: asked by the choosing screen when
+/// it opens, which is also what says the model is wanted again.
 #[tauri::command]
-pub(crate) fn ranking_state() -> RankState {
-    RANK_STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+pub(crate) fn ranking_state(app: State<'_, App>) -> RankState {
+    JOB.wanted.store(true, Ordering::SeqCst);
+    app.session().map(|s| lock(&JOB.state).read(&s)).unwrap_or_default()
 }
 
-/// The choosing is over: the local model is let go (unless a run still needs it).
+/// The choosing is over: the local model is let go, unless a run still needs it (it is
+/// let go when that ends). Off the window's thread: the model is hundreds of megabytes
+/// to free.
 #[tauri::command]
-pub(crate) fn cull_done() {
-    if !RANKING.load(Ordering::SeqCst) {
-        *RANKER.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
+pub(crate) async fn cull_done() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        JOB.wanted.store(false, Ordering::SeqCst);
+        JOB.release();
+    })
+    .await
+    .map_err(text)
 }
 
 /// One group (`dup:<row>`, `series:<row>`) among the photos `filter` selects: its photos in
@@ -553,12 +761,125 @@ mod tests {
 
     #[test]
     fn the_best_picture_is_named_for_what_sets_it_apart() {
-        let flat = aesthetic_of([0.5, 0.5, 0.5, 0.5]);
-        let moody = aesthetic_of([0.5, 0.55, 0.8, 0.5]);
-        let sharp = aesthetic_of([0.5, 0.5, 0.5, 0.7]);
-        assert_eq!(leading(&moody, &[flat, moody, sharp]), "mood");
-        assert_eq!(leading(&sharp, &[flat, moody, sharp]), "technically");
-        assert_eq!(leading(&flat, &[flat, flat]), "picture", "nothing sets it apart");
+        let flat = Aesthetic::from([0.5, 0.5, 0.5, 0.5]);
+        let moody = Aesthetic::from([0.5, 0.55, 0.8, 0.5]);
+        let sharp = Aesthetic::from([0.5, 0.5, 0.5, 0.7]);
+        assert_eq!(leading(&moody, &[flat, moody, sharp]), Some("mood"));
+        assert_eq!(leading(&sharp, &[flat, moody, sharp]), Some("technically"));
+        assert_eq!(leading(&flat, &[flat, flat]), None, "nothing sets it apart");
+        // A few hundredths on one axis is noise, not a reason: 0.03 above the mean of the two.
+        let a_hair = Aesthetic::from([0.56, 0.5, 0.5, 0.5]);
+        assert_eq!(leading(&a_hair, &[flat, a_hair]), None);
+        let clearly = Aesthetic::from([0.62, 0.5, 0.5, 0.5]);
+        assert_eq!(leading(&clearly, &[flat, clearly]), Some("composition"));
+    }
+
+    #[test]
+    fn a_run_is_told_of_only_to_its_own_catalog() {
+        let (one, other) = (Arc::new(1u8), Arc::new(2u8));
+        let mut held: Held<u8> = Held::new();
+        assert_eq!(held.read(&one), RankState::default());
+        held.change(&one, |state| *state = RankState { running: true, total: 9, done: 4, ..RankState::default() });
+        held.change(&one, |state| state.error = Some("the disk is full".into()));
+        assert_eq!((held.read(&one).done, held.read(&one).error.is_some()), (4, true));
+        // Another catalog opened: nothing of the first one's run, its error least of all.
+        assert!(!held.is_of(&other));
+        assert_eq!(held.read(&other), RankState::default());
+        // A run of the other starts from nothing.
+        let state = held.change(&other, |state| state.total = 2);
+        assert_eq!(state, RankState { total: 2, ..RankState::default() });
+        assert_eq!(held.read(&one), RankState::default());
+    }
+
+    /// Looks without a model: a photo's embedding is its row, and those in `blind` cannot
+    /// be looked at. `stops` after that many photos, if at all.
+    #[derive(Default)]
+    struct FakeEye {
+        opened: usize,
+        embedded: Vec<u64>,
+        blind: Vec<u64>,
+        stops: Option<(usize, Arc<AtomicBool>)>,
+    }
+
+    impl Eye for FakeEye {
+        fn open(&mut self) -> Result<bool, String> {
+            self.opened += 1;
+            Ok(true)
+        }
+
+        fn embed(&mut self, row: u64) -> Result<Vec<f32>, String> {
+            if self.blind.contains(&row) {
+                return Err("no picture".into());
+            }
+            self.embedded.push(row);
+            if let Some((after, stop)) = &self.stops
+                && self.embedded.len() >= *after
+            {
+                stop.store(true, Ordering::SeqCst);
+            }
+            Ok(vec![row as f32])
+        }
+
+        fn score(&self, embedding: &[f32]) -> Aesthetic {
+            Aesthetic::from([embedding[0] / 10.0; 4])
+        }
+    }
+
+    #[test]
+    fn a_look_keeps_what_was_seen_and_counts_what_was_not() {
+        let (_dir, library, rows) = burst();
+        let [one, two, three, _] = rows;
+        let go = AtomicBool::new(false);
+        // 2 cannot be read; 4 was never measured, so no view of it could be kept: it is not
+        // even looked at, and both are counted.
+        let mut eye = FakeEye { blind: vec![two], ..FakeEye::default() };
+        let looked = look_at(&library, &rows, &go, &mut eye).unwrap();
+        assert_eq!(looked, Looked { failed: 2, stopped: false });
+        assert_eq!(eye.embedded, [one, three]);
+        let views = library.views(&rows).unwrap();
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[&three].scores, [three as f32 / 10.0; 4]);
+
+        // Looked at again: only what is missing is tried, and the group says one is unseen.
+        let mut eye = FakeEye::default();
+        assert_eq!(look_at(&library, &[one, two, three], &go, &mut eye).unwrap(), Looked::default());
+        assert_eq!(eye.embedded, [two]);
+        // Everything seen: the model is not asked for at all.
+        let mut eye = FakeEye::default();
+        assert_eq!(look_at(&library, &[one, two, three], &go, &mut eye).unwrap(), Looked::default());
+        assert_eq!((eye.opened, eye.embedded.len()), (0, 0));
+    }
+
+    #[test]
+    fn a_look_stopped_midway_says_so_and_keeps_its_part() {
+        let (_dir, library, rows) = burst();
+        let [one, two, three, _] = rows;
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut eye = FakeEye { stops: Some((1, stop.clone())), ..FakeEye::default() };
+        let looked = look_at(&library, &[one, two, three], &stop, &mut eye).unwrap();
+        assert_eq!(looked, Looked { failed: 0, stopped: true }, "not a group done");
+        assert_eq!(library.views(&rows).unwrap().keys().copied().collect::<Vec<_>>(), [one]);
+        // Stopped before it began: nothing is opened.
+        let mut eye = FakeEye::default();
+        assert!(look_at(&library, &[two, three], &stop, &mut eye).unwrap().stopped);
+        assert_eq!(eye.opened, 0);
+    }
+
+    #[test]
+    fn a_group_says_how_many_of_its_photos_the_model_has_not_seen() {
+        let (_dir, library, rows) = burst();
+        let [one, two, three, _] = rows;
+        let filter = Filter::default();
+        let id = library.look(one).unwrap().series.unwrap();
+        assert_eq!(group_view(&library, &filter, &id).unwrap().unseen, 3);
+        let go = AtomicBool::new(false);
+        let mut eye = FakeEye { blind: vec![two], ..FakeEye::default() };
+        look_at(&library, &[one, two, three], &go, &mut eye).unwrap();
+        let view = group_view(&library, &filter, &id).unwrap();
+        assert_eq!((view.unseen, view.judge), (1, Judge::Sharpness), "one unseen: the views do not count yet");
+        look_at(&library, &[one, two, three], &go, &mut FakeEye::default()).unwrap();
+        let view = group_view(&library, &filter, &id).unwrap();
+        assert_eq!((view.unseen, view.judge), (0, Judge::Local));
     }
 
     #[test]

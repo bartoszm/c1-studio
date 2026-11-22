@@ -900,6 +900,27 @@ pub(crate) fn pixels(
     }
 }
 
+/// [`pixels`] from what is there already, nothing made: the photo's thumbnail (the
+/// source's, or one made here before), else its preview. For work over a whole catalog,
+/// where making what is missing would render the catalog as a side effect.
+pub(crate) fn pixels_at_hand(s: &Session, id: &PhotoId, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+    let thumb = || s.thumbs.get(s.source.as_ref(), id);
+    let preview = || s.source.image(id, ImageTier::Preview).map_err(anyhow::Error::from);
+    let places: [&dyn Fn() -> anyhow::Result<Option<ImageRef>>; 2] = [&thumb, &preview];
+    let mut why: Option<anyhow::Error> = None;
+    for find in places {
+        let fitted = find().and_then(|image| Ok(image.map(|r| c1image::load_fitted(&r, long_edge)).transpose()?));
+        match fitted {
+            Ok(Some(pixels)) => return Ok(Some(pixels)),
+            Ok(None) => {}
+            Err(e) => {
+                why.get_or_insert(e);
+            }
+        }
+    }
+    why.map_or(Ok(None), Err)
+}
+
 /// Describes (or locates) these photos in the background, a few at a time, unless a run
 /// is under way. Each answer is stored as it comes, so a run stopped or crashed keeps
 /// what it got.

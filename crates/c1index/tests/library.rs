@@ -1440,13 +1440,20 @@ fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
         (key(2), (1, 1), look(600, 400, [90; 3], 200.0, 2)),
     ])
     .unwrap();
-    // Photo 3 is not measured: there is no render to say the view is of.
-    lib.put_views(vec![
-        (one, 1, vec![1.0, 0.0], [0.1, 0.2, 0.3, 0.4]),
-        (two, 1, vec![0.0, 1.0], [0.5; 4]),
-        (three, 1, vec![0.5, 0.5], [0.9; 4]),
-    ])
-    .unwrap();
+    let view = |row, version, embedding: [f32; 2], scores| c1index::cull::NewView {
+        row,
+        version,
+        embedding: embedding.into(),
+        scores,
+    };
+    // Photo 3 is not measured: there is no render to say the view is of, and the caller
+    // hears that one was left out.
+    let kept = lib.put_views(vec![
+        view(one, 1, [1.0, 0.0], [0.1, 0.2, 0.3, 0.4]),
+        view(two, 1, [0.0, 1.0], [0.5; 4]),
+        view(three, 1, [0.5, 0.5], [0.9; 4]),
+    ]);
+    assert_eq!(kept.unwrap(), 2);
     let views = lib.views(&[one, two, three]).unwrap();
     assert_eq!(views.len(), 2);
     assert_eq!((views[&one].scores, views[&one].embedding.as_slice()), ([0.1, 0.2, 0.3, 0.4], [1.0, 0.0].as_slice()));
@@ -1455,7 +1462,7 @@ fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
     let views = lib.views(&[one, two]).unwrap();
     assert_eq!(views.keys().copied().collect::<Vec<_>>(), [two]);
     // Looked at again, it is seen again; and the views outlive the library being closed.
-    lib.put_views(vec![(one, 2, vec![0.6, 0.8], [0.7; 4])]).unwrap();
+    assert_eq!(lib.put_views(vec![view(one, 2, [0.6, 0.8], [0.7; 4])]).unwrap(), 1);
     let dir = lib.dir().to_owned();
     drop(lib);
     let lib = Library::open(&dir).unwrap();
