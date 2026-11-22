@@ -683,10 +683,11 @@ export const groups = (
   sort: GroupSort = "Matched",
   reverse = false,
 ) => invoke<GroupPage>("groups", { filter, series, sort, reverse, offset, limit });
-/** Every duplicate group's (or series') id among the photos the filter selects, oldest first:
- *  the order they are gone through when choosing the best of each. */
-export const groupIds = async (filter: Filter, series: boolean): Promise<string[]> =>
-  (await groups(filter, series, 0, 1_000_000, "Oldest")).groups.map((g) => g.id);
+/** Every duplicate group (or series) among the photos the filter selects, oldest first: the
+ *  order they are gone through when choosing the best of each. `picked`: one of its photos
+ *  is picked already as the one to keep. */
+export const cullGroups = (filter: Filter, series: boolean) =>
+  invoke<{ id: string; picked: boolean }[]>("cull_groups", { filter, series });
 
 /** What the order of a group's photos rests on: a model that compared them, the local
  *  model's view of each, or what was measured alone. */
@@ -716,9 +717,10 @@ export type CullGroup = { id: string; photos: CullPhoto[]; order: number[]; judg
 /** What becomes of the photos of a group that are not kept, and what the kept ones are marked with. */
 export type Rest = "Trash" | "Hide" | "Nothing" | { Rating: number } | { Color: Color };
 export type Mark = "Nothing" | { Rating: number } | { Color: Color };
-/** A pick as made (`on`) or as taken back: what `cullRevert` turns round. `skipped`: rows
- *  left alone, variants of an image that is kept. */
-export type CullStep = { on: boolean; ops: [number, Op][]; binned: number[]; hidden: number[]; kept: number[]; skipped: number[] };
+/** A pick as made (`on`) or as taken back: what `cullRevert` turns round. `unkept`: rows
+ *  picked before whose pick this one took back. `skipped`: rows left alone, variants of an
+ *  image that is kept. */
+export type CullStep = { on: boolean; ops: [number, Op][]; binned: number[]; hidden: number[]; kept: number[]; unkept: number[]; skipped: number[] };
 export const cullGroup = (filter: Filter, id: string) => invoke<CullGroup>("cull_group", { filter, id });
 /** Keeps `keep` and deals with `rest`, as one step. */
 export const cullApply = (keep: number[], rest: number[], action: Rest, mark: Mark) =>

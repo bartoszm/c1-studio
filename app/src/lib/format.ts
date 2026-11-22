@@ -1,8 +1,10 @@
 // How photo facts read in the UI.
 
-import type { LogEvent, Op, Origin, Photo, Wording } from "./api";
+import type { Color, LogEvent, Op, Origin, Photo, Wording } from "./api";
 import { parsePoint } from "./coords";
 
+/** The colour tags, in the order of their keys (6 to 9 and the rest) and of every menu. */
+export const COLOR_NAMES: Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 export const COLORS: Record<string, string> = {
   red: "#d9534f", orange: "#e8913a", yellow: "#e8d23a", green: "#5cb85c",
   blue: "#4a90d9", pink: "#e87ab8", purple: "#9b6bd6", none: "transparent",

@@ -12,7 +12,7 @@
   // at a time. The group's photos are compared side by side (four at a time of a big one,
   // all of them in the strip below), the one to keep is suggested, and Enter keeps the
   // active photo and deals with the rest as the settings say.
-  let { groups, at, series, filter, version, blocked, busy, done, removes, message, failed, onclose, onat, onseries, onactive, onkeep, onsettings }: {
+  let { groups, at, series, filter, version, blocked, busy, done, removes, message, failed, onclose, onat, onstale, onseries, onactive, onkeep, onsettings }: {
     /** Open Settings › AI, where the local model is downloaded. */
     onsettings: () => void;
     /** The groups' ids, in the order they are gone through. */
@@ -38,6 +38,9 @@
     failed?: boolean;
     onclose: () => void;
     onat: (at: number) => void;
+    /** The group shown has no photos left under the filter: the groups may be named
+     *  otherwise by now, and are to be listed again. `row`: a photo that was in it. */
+    onstale: (row: number | undefined) => void;
     onseries: (series: boolean) => void;
     /** The photo edits land on, by row. */
     onactive: (row: number | undefined) => void;
@@ -55,6 +58,8 @@
   /** The photos side by side: all of a small group, four of a big one. */
   let shown = $state<number[]>([]);
 
+  /** `view` is the group shown, not still the one before it while the next is read. */
+  let current = $derived(view !== null && view.id === id);
   let rows = $derived(view?.photos.map((p) => p.row) ?? []);
   let byRow = $derived(new Map(view?.photos.map((p) => [p.row, p]) ?? []));
   let best = $derived(view?.order[0]);
@@ -62,7 +67,23 @@
   let rank = $derived(new Map(view?.order.map((row, i) => [row, i + 1]) ?? []));
 
   let asked = 0;
-  /** Reads the group. `same`: after an edit, so the active photo and the marks stay. */
+  /** The next group, read while this one is looked at: good until an edit (`version`). */
+  const ahead = new Map<string, api.CullGroup>();
+  /** Groups found empty and reported, so that one is reported once. */
+  const reported = new Set<string>();
+  /** Shows a group as read. `same`: the one shown already, after an edit, so the active
+   *  photo and the marks stay. */
+  function show(next: api.CullGroup, same: boolean) {
+    const now = next.photos.map((p) => p.row);
+    if (!same) marked.clear();
+    for (const row of [...marked]) if (!now.includes(row)) marked.delete(row);
+    if (!same || active === undefined || !now.includes(active)) active = next.order[0];
+    shown = shownRows(now, active, same ? shown : []);
+    view = next;
+    error = null;
+  }
+  /** Reads the group. `same`: after an edit. The group before stays on screen until this
+   *  one is there (no empty screen between two groups), but takes no pick and no edit. */
   async function read(same: boolean) {
     const mine = ++asked;
     const group = id;
@@ -70,37 +91,47 @@
       view = null;
       return;
     }
+    const ready = same ? undefined : ahead.get(group);
+    if (ready) {
+      ahead.delete(group);
+      return show(ready, false);
+    }
     try {
       const next = await api.cullGroup($state.snapshot(filter) as Filter, group);
       if (mine !== asked) return;
-      const now = next.photos.map((p) => p.row);
-      if (!same) marked.clear();
-      for (const row of [...marked]) if (!now.includes(row)) marked.delete(row);
-      if (!same || active === undefined || !now.includes(active)) active = next.order[0];
-      shown = shownRows(now, active, same ? shown : []);
-      view = next;
-      error = null;
+      const was = view?.id === group;
+      if (!next.photos.length && !reported.has(group)) {
+        reported.add(group);
+        onstale(was ? active : undefined);
+      }
+      show(next, same && was);
     } catch (e) {
-      if (mine === asked) error = String(e);
+      if (mine !== asked) return;
+      if (view?.id !== group) view = null;
+      error = String(e);
     }
   }
+  let seen = untrack(() => version);
   $effect(() => {
     void id;
     untrack(() => {
-      view = null;
+      // An edit that came with the change of group: what was read ahead is of before it.
+      if (version !== seen) ahead.clear();
+      seen = version;
       read(false);
     });
   });
-  let seen = untrack(() => version);
   $effect(() => {
     const now = version;
     untrack(() => {
       if (now === seen) return;
       seen = now;
+      ahead.clear();
       read(true);
     });
   });
-  $effect(() => onactive(active));
+  // While the next group is read, the photo of the one before takes no edit.
+  $effect(() => onactive(current ? active : undefined));
 
   /** The local model is looking at this group. */
   let looking = $state(false);
@@ -115,10 +146,11 @@
       const next = await api.rankGroup($state.snapshot(filter) as Filter, group);
       // The answer is of the group asked about: another may be shown by now.
       if (id === group) {
-        const was = best;
-        view = next;
+        const same = view?.id === group;
+        const follows = active === best;
+        show(next, same);
         // The active photo follows the suggestion while it was on it.
-        if (active === was) setActive(next.order[0]);
+        if (same && follows) setActive(next.order[0]);
       }
       error = null;
     } catch (e) {
@@ -163,7 +195,7 @@
     else marked.add(row);
   }
   function keep() {
-    if (busy || !view || id === undefined || active === undefined) return;
+    if (busy || !view || !current || id === undefined || active === undefined) return;
     const kept = keepers(rows, active, marked);
     if (!kept.length) return;
     onkeep(id, kept, restOf(rows, kept));
@@ -187,12 +219,29 @@
     return true;
   }
 
-  // The next group's photos are fetched while this one is looked at.
+  // The next group is read, and the photos it will show side by side fetched, while this one
+  // is looked at: once the group shown has stayed a moment, so that going through many with
+  // a key held down reads none of them ahead.
   $effect(() => {
     const next = groups[at + 1];
-    if (next === undefined) return;
+    const edit = version;
+    if (next === undefined || ahead.has(next)) return;
     const f = $state.snapshot(filter) as Filter;
-    api.cullGroup(f, next).then((g) => { for (const p of g.photos.slice(0, 4)) new Image().src = api.largeUrl(p.row); }).catch(() => {});
+    // Gone on from, or edited since: what comes back then is not kept (a group read before a
+    // pick from it would show the photos the pick sent away).
+    let left = false;
+    const timer = setTimeout(() => {
+      api.cullGroup(f, next).then((g) => {
+        if (left || edit !== seen || !g.photos.length) return;
+        ahead.clear();
+        ahead.set(next, g);
+        for (const row of shownRows(g.photos.map((p) => p.row), g.order[0])) new Image().src = api.largeUrl(row);
+      }).catch(() => {});
+    }, AHEAD_MS);
+    return () => {
+      left = true;
+      clearTimeout(timer);
+    };
   });
 
   let strip: HTMLElement | undefined = $state();
@@ -203,6 +252,8 @@
     strip?.querySelector(`[data-row="${row}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
 
+  /** How long a group is shown before the next one is read ahead. */
+  const AHEAD_MS = 150;
   const kind = $derived(series ? "series" : "duplicate group");
   const judged = $derived.by(() => {
     if (!view || best === undefined) return "";
@@ -234,8 +285,8 @@
 
 {#snippet badge(row: number)}
   {@const p = byRow.get(row)}
-  {#if row === best}<span class="best" title={p?.reasons.join(", ")}>suggested</span>{/if}
-  {#if marked.has(row)}<span class="keep">keep</span>{:else if p?.kept}<span class="keep was" title="Picked before as the one to keep">kept</span>{/if}
+  {#if row === best}<span class="badge best" title={p?.reasons.join(", ")}>suggested</span>{/if}
+  {#if marked.has(row)}<span class="badge keep">keep</span>{:else if p?.kept}<span class="badge keep was" title="Picked before as the one to keep">kept</span>{/if}
   {#if p && row !== best && p.reasons.length}<span class="why">{p.reasons.join(", ")}</span>{/if}
   {#if p?.aesthetic}
     {@const a = p.aesthetic}
@@ -255,14 +306,14 @@
       <button title="Previous group (↑)" aria-label="Previous group" disabled={at <= 0} onclick={() => go(-1)}>‹</button>
       {#if groups.length}
         <strong>{kind} {(at + 1).toLocaleString()} of {groups.length.toLocaleString()}</strong>
-        {#if view}<span class="muted">· {view.photos.length} photo{view.photos.length === 1 ? "" : "s"}</span>{/if}
+        {#if view && current}<span class="muted">· {view.photos.length} photo{view.photos.length === 1 ? "" : "s"}</span>{/if}
         {#if id !== undefined && done.includes(id)}<span class="done">✓ picked</span>{/if}
       {:else}
         <strong>No {series ? "series" : "duplicates"} among these photos</strong>
       {/if}
       <button title="Next group, leaving this one as it is (↓)" aria-label="Next group" disabled={at >= groups.length - 1} onclick={() => go(1)}>›</button>
     </span>
-    {#if view}<span class="judge" title={JUDGES[view.judge]}>{judged}</span>{/if}
+    {#if view && current}<span class="judge" title={JUDGES[view.judge]}>{judged}</span>{/if}
     <span class="end">
       <span class="model">
         {#if view && !view.model}
@@ -296,7 +347,7 @@
           {/each}
         </select>
       </label>
-      <button class="primary" disabled={busy || !view || active === undefined} title="Keep the active photo and the ones marked, deal with the rest, go to the next group (Enter)" onclick={keep}>
+      <button class="primary" disabled={busy || !view || !current || active === undefined} title="Keep the active photo and the ones marked, deal with the rest, go to the next group (Enter)" onclick={keep}>
         Keep {marked.size + (active !== undefined && !marked.has(active) ? 1 : 0) || ""}
       </button>
       <button class="close" title="Close (Esc)" aria-label="Close" onclick={onclose}>×</button>
@@ -304,7 +355,7 @@
   </div>
 
   {#if view && shown.length}
-    {#key id}
+    {#key view.id}
       <Compare
         rows={shown}
         active={Math.max(0, active === undefined ? 0 : shown.indexOf(active))}
@@ -434,8 +485,10 @@
   .tick.was { opacity: 0.6; }
   .bar-score { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--star); }
 
-  .cull :global(.caption .best) { padding: 0 6px; font-size: 11px; color: #111; background: var(--star); border-radius: 3px; }
-  .cull :global(.caption .keep) { padding: 0 6px; font-size: 11px; color: #111; background: var(--queued); border-radius: 3px; }
-  .cull :global(.caption .keep.was) { opacity: 0.6; }
-  .cull :global(.caption .why) { color: var(--muted); font-size: 12px; }
+  /* What this screen says of a photo in the comparison's caption: its own, styled here. */
+  .badge { padding: 0 6px; font-size: 11px; color: #111; border-radius: 3px; }
+  .badge.best { background: var(--star); }
+  .badge.keep { background: var(--queued); }
+  .badge.was { opacity: 0.6; }
+  .why { color: var(--muted); font-size: 12px; }
 </style>
