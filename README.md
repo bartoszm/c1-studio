@@ -4,6 +4,13 @@
 Browse, search and tidy 100,000 photos in milliseconds, then send your edits back to
 Capture One when you choose.
 
+**New in 0.11.0:** [keywords from a model on your own computer](docs/FEATURES.md#describe-photos-with-ai)
+(SigLIP 2: free, no account, no photo leaves the machine). Several keywords typed at once,
+the [keyword tree](docs/FEATURES.md#the-keyword-tree) sorted by use, find boxes for albums,
+folders and places, stars and colour tags on the tiles, an *Undo* for every edit, a fuller
+photo menu and every key listed under `?`. Truer previews, and muted colour photos no
+longer count as black & white.
+
 **New in 0.10.0:** [filters](docs/FEATURES.md#filters-only-add-leave-out-or) that read
 as a sentence: a click shows only a value, Ctrl+click adds one, Alt+click leaves one out
 (*Poland except Kraków*), Shift+click makes sections alternatives (*Kraków or black &

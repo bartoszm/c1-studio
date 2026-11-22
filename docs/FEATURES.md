@@ -3,6 +3,8 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
+New in 0.11.0: [keywords from a model on your own computer](#describe-photos-with-ai),
+[several keywords at once](#edit-then-write) and [the keyword tree by use](#the-keyword-tree).
 New in 0.10.0: [filters: only, add, leave out, or](#filters-only-add-leave-out-or) and
 [search by camera, lens, exposure, file and shape](#find-anything-instantly). New in 0.9.0:
 [find where photos were taken](#find-where-photos-were-taken). New in 0.8.0: [compare photos](#compare-photos), [a composition grid](#a-composition-grid)
@@ -84,7 +86,8 @@ source menu, choose whether the app offers catalogs, folders or both.
 
 A resizable grid, a details panel with everything about the photo, and a full-screen
 viewer, showing each photo as Capture One renders it: its thumbnails and previews, with
-your edits and crop.
+your edits and crop. Stars and colour tags show on the tiles; right-click photos to rate,
+tag, keyword, add to an album or trash them; `?` lists every key.
 
 ![Picking a photo, the viewer, and resizing the tiles](media/features/browse.gif)
 
@@ -318,6 +321,11 @@ each is. Tick what fits and accept it; it becomes edits in the queue like any of
 what the photo already has is replaced only when you tick it. Gemini can take contact
 sheets of 36 photos in one call for a quick first pass, and **Details** shows each call as
 it goes, down to the sheet that was sent.
+
+*New in 0.11.0:* keywords from a model on your own computer. SigLIP 2, downloaded once,
+scores every keyword in the catalog against each photo in about a quarter of a second,
+with no account, no cost and no photo leaving the machine. It offers keywords only, each
+with its score.
 
 ![Describing four photos with Claude, the cards, and one accepted into the edit queue](media/features/ai.gif)
 
