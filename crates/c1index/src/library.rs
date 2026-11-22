@@ -328,6 +328,8 @@ pub struct Library {
     history: history::Cache,
     /// What a vision model suggested for photos, until accepted or rejected (stage 5).
     suggestions: SuggestionBook,
+    /// What photos look like to the local model: what it learns keywords from.
+    embeddings: crate::embeddings::Embeddings,
     /// Set when the library is being closed, or its opening was stopped: a sync under way
     /// ends without saving anything. Shared with the [`OpenControl`] it was opened with.
     stop: Arc<AtomicBool>,
@@ -439,6 +441,7 @@ impl Library {
         let cull_book = CullBook::open(&dir.join("cull.redb"), ctl)?;
         let kept = RwLock::new(cull_book.keepers()?);
         let suggestions = SuggestionBook::open(&dir.join("ai.redb"), ctl)?;
+        let embeddings = crate::embeddings::Embeddings::open(&dir.join("embeddings.redb"), ctl)?;
         let coarse = ctl.timed("coarse places", || {
             // A photo moved since it was given its place's position is placed for real: its
             // mark goes. (One with no position keeps it: an undo can be redone.)
@@ -533,6 +536,7 @@ impl Library {
             kept,
             history: history::Cache::default(),
             suggestions,
+            embeddings,
             stop: ctl.flag(),
         };
         // Groups as worked out now: the index is told of any that differ from last time.
@@ -2546,6 +2550,11 @@ impl Library {
             rows.push(r);
         }
         Ok((rows, offline, marks))
+    }
+
+    /// What photos look like to the local model.
+    pub fn embeddings(&self) -> &crate::embeddings::Embeddings {
+        &self.embeddings
     }
 
     pub fn photo_id(&self, row: u64) -> Option<PhotoId> {

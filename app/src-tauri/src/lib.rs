@@ -1,7 +1,7 @@
 //! The desktop app: the library behind Tauri commands, and pixels behind the `c1img:`
 //! protocol (`c1img://localhost/thumb/<row>`, `.../preview/<row>`, `.../large/<row>`).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock, TryLockError};
@@ -64,6 +64,11 @@ struct Session {
     /// Shared with the run's provider, so a call under way ends on Stop.
     describe_stop: Arc<AtomicBool>,
     describe: Mutex<ai::DescribeState>,
+    /// The local model looking at the photos keyworded by hand, to learn from them: one
+    /// pass at a time, stopped when asked or when another source opens.
+    learning: AtomicBool,
+    learn_stop: AtomicBool,
+    learn: Mutex<ai::LearnState>,
     /// The contact sheets of the run's latest calls, by call number, to look at on demand.
     describe_sheets: Mutex<std::collections::VecDeque<(usize, Vec<u8>)>>,
     /// Thumbnails made here for photos the source has none for, and the run that makes
@@ -450,6 +455,9 @@ fn open(spec: &SourceSpec, ctl: &OpenControl) -> anyhow::Result<Session> {
         describing: AtomicBool::new(false),
         describe_stop: Arc::default(),
         describe: Mutex::new(ai::DescribeState::default()),
+        learning: AtomicBool::new(false),
+        learn_stop: AtomicBool::new(false),
+        learn: Mutex::new(ai::LearnState::default()),
         describe_sheets: Mutex::default(),
         thumbs: Thumbs::new(dir.join("thumbs")),
         filling: AtomicBool::new(false),
@@ -2034,22 +2042,12 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), 
     }
     let albums: Vec<CollectionChange> = collections.iter().map(|(_, _, c)| c.clone()).collect();
     let plan = s.source.plan_after(&ok, &albums, &changes).map_err(text)?;
-    let pick = |list: &[Change]| -> Vec<PendingEdit> {
-        ready.iter().filter(|p| list.contains(&p.pending.change)).cloned().collect()
-    };
-    let blocked = plan
-        .conflicts
-        .iter()
-        .filter_map(|c| {
-            let p = ready.iter().find(|p| p.pending.change == c.change)?;
-            Some((p.clone(), c.current.clone()))
-        })
-        .collect();
+    let Matched { apply, unchanged, blocked } = match_plan(&ready, &plan);
     let out = WritePlan {
         status: s.source.write_status(),
         compatibility: s.source.info().compatibility,
-        apply: pick(&plan.apply),
-        unchanged: pick(&plan.no_ops),
+        apply,
+        unchanged,
         conflicts,
         blocked,
         remaps: remaps.iter().map(|(seq, r)| (*seq, r.label.clone())).collect(),
@@ -2062,6 +2060,47 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), 
         collections: collections.iter().map(|(seq, _, _)| *seq).collect(),
     };
     Ok((out, plan, carried))
+}
+
+/// The queued edits a plan was made from, sorted the way the plan sorted their changes.
+struct Matched {
+    apply: Vec<PendingEdit>,
+    unchanged: Vec<PendingEdit>,
+    /// With why each cannot be written.
+    blocked: Vec<(PendingEdit, String)>,
+}
+
+/// Finds the queued edit behind each change of `plan`. The queue is indexed by photo once
+/// and a change is compared only with its own photo's few edits: with an edit queued for
+/// every photo of a large catalog, scanning the queue for each change took minutes.
+/// (Not by the queue key: a keyword op naming several keywords has none.)
+fn match_plan(ready: &[PendingEdit], plan: &c1model::ApplyPlan) -> Matched {
+    let mut by_photo: HashMap<&PhotoId, Vec<usize>> = HashMap::new();
+    for (i, p) in ready.iter().enumerate() {
+        by_photo.entry(&p.pending.change.photo).or_default().push(i);
+    }
+    // The queued edits holding exactly `change`.
+    let queued = |change: &Change| -> Vec<usize> {
+        let edits = by_photo.get(&change.photo).map(Vec::as_slice).unwrap_or_default();
+        edits.iter().copied().filter(|&i| ready[i].pending.change == *change).collect()
+    };
+    // Queue order, as the dialog lists them.
+    let pick = |list: &[Change]| {
+        let mut taken = vec![false; ready.len()];
+        for i in list.iter().flat_map(queued) {
+            taken[i] = true;
+        }
+        ready.iter().zip(taken).filter(|(_, t)| *t).map(|(p, _)| p.clone()).collect()
+    };
+    Matched {
+        apply: pick(&plan.apply),
+        unchanged: pick(&plan.no_ops),
+        blocked: plan
+            .conflicts
+            .iter()
+            .filter_map(|c| Some((ready[*queued(&c.change).first()?].clone(), c.current.clone())))
+            .collect(),
+    }
 }
 
 #[tauri::command]
@@ -2836,6 +2875,7 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
         if let Ok(old) = &current.session {
             old.analysis_stop.store(true, Ordering::SeqCst);
             old.fill_stop.store(true, Ordering::SeqCst);
+            old.learn_stop.store(true, Ordering::SeqCst);
             old.library.stop();
         }
         *current = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
@@ -2996,6 +3036,9 @@ pub fn run() {
             ai::set_ai_key,
             ai::ai_model_download,
             ai::ai_model_download_stop,
+            ai::ai_learn,
+            ai::ai_learn_stop,
+            ai::ai_learn_state,
             ai::ai_prompt,
             ai::ai_estimate,
             ai::start_describe,
@@ -3378,5 +3421,82 @@ mod tests {
         let Op::SetPlace { value, .. } = op_for(&edit, &photo(1, &[], Some("Oslo"))).unwrap() else { panic!() };
         assert_eq!((value.country_code.as_deref(), value.city), (Some("PL"), None));
         assert!(op_for(&Edit::Geo(Some([91.0, 0.0])), &photo(1, &[], None)).is_err());
+    }
+
+    fn queued(photo: &str, op: Op) -> PendingEdit {
+        let change = Change { photo: PhotoId::new(&SourceId("t".into()), photo), op };
+        PendingEdit {
+            key: format!("{photo}/{:?}", change.op),
+            row: None,
+            name: None,
+            pending: c1index::Pending { change, at: 0, theirs: None },
+        }
+    }
+
+    fn rating(value: u8) -> Op {
+        Op::SetRating { base: None, value: Some(value) }
+    }
+
+    fn keys(edits: &[PendingEdit]) -> Vec<&str> {
+        edits.iter().map(|p| p.key.as_str()).collect()
+    }
+
+    #[test]
+    fn match_plan_keeps_queue_order_and_matches_whole_changes() {
+        let ready = vec![
+            queued("1", rating(1)),
+            queued("2", rating(2)),
+            queued("2", Op::SetColor { base: None, value: None }),
+            queued("3", rating(3)),
+        ];
+        let change = |i: usize| ready[i].pending.change.clone();
+        let plan = c1model::ApplyPlan {
+            // Out of queue order, and one change the queue does not hold: same photo, other value.
+            apply: vec![change(2), change(0), queued("2", rating(5)).pending.change],
+            no_ops: vec![change(1)],
+            conflicts: vec![
+                c1model::Conflict { change: change(3), current: "deleted".into() },
+                c1model::Conflict { change: queued("4", rating(4)).pending.change, current: "gone".into() },
+            ],
+            ..Default::default()
+        };
+        let m = match_plan(&ready, &plan);
+        assert_eq!(keys(&m.apply), [&ready[0].key, &ready[2].key]);
+        assert_eq!(keys(&m.unchanged), [&ready[1].key]);
+        assert_eq!(m.blocked.len(), 1);
+        assert_eq!((m.blocked[0].0.key.as_str(), m.blocked[0].1.as_str()), (ready[3].key.as_str(), "deleted"));
+    }
+
+    /// Three edits on each of 40,000 photos (the author, a rating and a colour on all of
+    /// them), planned in reverse: scanning the queue for each change took minutes, this
+    /// must take a moment. The bound is loose enough for a slow debug build.
+    #[test]
+    fn match_plan_handles_edits_on_every_photo() {
+        let ops = |i: usize| {
+            let author = Iptc { creator: Some(format!("author {i}")), ..Default::default() };
+            [
+                rating(1),
+                Op::SetColor { base: None, value: Some(ColorLabel::Red) },
+                Op::SetIptc { base: Iptc::default(), value: author },
+            ]
+        };
+        let ready: Vec<_> = (0..40_000).flat_map(|i| ops(i).map(|op| queued(&i.to_string(), op))).collect();
+        let mut changes: Vec<_> = ready.iter().map(|p| p.pending.change.clone()).collect();
+        changes.reverse();
+        let mut plan = c1model::ApplyPlan::default();
+        for (i, change) in changes.into_iter().enumerate() {
+            match i % 3 {
+                0 => plan.apply.push(change),
+                1 => plan.no_ops.push(change),
+                _ => plan.conflicts.push(c1model::Conflict { change, current: "x".into() }),
+            }
+        }
+        let started = Instant::now();
+        let m = match_plan(&ready, &plan);
+        assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+        assert_eq!((m.apply.len(), m.unchanged.len(), m.blocked.len()), (40_000, 40_000, 40_000));
+        // In queue order, though planned in reverse.
+        let at: HashMap<&str, usize> = ready.iter().enumerate().map(|(i, p)| (p.key.as_str(), i)).collect();
+        assert!(m.apply.windows(2).all(|w| at[w[0].key.as_str()] < at[w[1].key.as_str()]));
     }
 }

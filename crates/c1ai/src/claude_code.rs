@@ -383,8 +383,12 @@ mod tests {
         assert_eq!(after("--model"), "claude-opus-5-5");
         assert_eq!(serde_json::from_str::<Value>(&after("--json-schema")).unwrap(), crate::schema(&brief));
         assert!(std::fs::read_to_string(after("--system-prompt-file")).unwrap().contains("street"));
-        let message =
-            ClaudeCode::message(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into(), progress: None });
+        let message = ClaudeCode::message(&PhotoRequest {
+            key: String::new(),
+            jpeg: vec![1, 2, 3],
+            context: "DSCF0001.RAF".into(),
+            progress: None,
+        });
         let message: Value = serde_json::from_str(message.trim_end()).unwrap();
         assert_eq!(message["message"]["content"][0]["source"]["data"], "AQID");
         assert_eq!(message["message"]["content"][1]["text"], "DSCF0001.RAF");
@@ -396,7 +400,9 @@ mod tests {
         let cli = ClaudeCode::new(missing, Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
         let file = cli.system.0.clone();
         assert!(file.is_file());
-        let failed = cli.describe(&PhotoRequest { jpeg: vec![1], context: String::new(), progress: None }).unwrap_err();
+        let failed = cli
+            .describe(&PhotoRequest { key: String::new(), jpeg: vec![1], context: String::new(), progress: None })
+            .unwrap_err();
         assert!(matches!(failed.error, AiError::Cli(_)) && failed.error.stops_run() && failed.record.is_none());
         drop(cli);
         assert!(!file.exists());
