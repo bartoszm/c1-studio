@@ -20,6 +20,7 @@ use ort::session::builder::GraphOptimizationLevel;
 use ort::value::{Tensor, TensorElementType, ValueType};
 use tokenizers::Tokenizer;
 
+use crate::alike::Examples;
 use crate::claude::Options;
 use crate::models::SIGLIP2;
 use crate::{AiError, Brief, Failed, PhotoRequest, RawAnswer, Reply, RunRecord, Step, Vocabulary, tell, validate};
@@ -30,23 +31,41 @@ pub const TEMPLATE: &str = "This is a photo of {}.";
 /// Keywords suggested for a photo, at most: the likeliest.
 pub const MAX_KEYWORDS: usize = 8;
 
-/// A keyword scoring at least this (%) is suggested, unless the settings say otherwise.
-/// The model is sparing with a plain word: on a photo of the sea, "sea" scores 1 to 2,
-/// where a sentence describing the photo scores over 90, and a word that does not fit
-/// stays under 0.3.
-pub const DEFAULT_THRESHOLD: f32 = 1.0;
+/// A keyword the model scores at least this (%) by itself is suggested, unless the
+/// settings say otherwise. The model is sparing with a plain word: on a photo of the sea,
+/// "sea" scores 1 to 2, where a sentence describing the photo scores over 90, and a word
+/// that does not fit stays under 0.3. Under 3, what it suggests is mostly noise.
+pub const DEFAULT_THRESHOLD: f32 = 3.0;
 
 /// The least and the most a threshold can be (%).
 pub const THRESHOLDS: (f32, f32) = (0.1, 99.0);
 
 /// Bumped when the way keywords are scored changes: photos tagged by another version are
 /// tagged again when asked.
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+
+/// The least a keyword must have to be suggested, in percent: `score` from the model by
+/// itself, or `share` of the say of the photos that look alike ([`crate::alike`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Least {
+    pub score: f32,
+    pub share: f32,
+}
+
+impl Default for Least {
+    fn default() -> Self {
+        Least { score: DEFAULT_THRESHOLD, share: crate::alike::DEFAULT_SHARE }
+    }
+}
+
+/// Hears of each photo's embedding as it is worked out, by the photo's key: kept, a photo
+/// keyworded later teaches without being looked at again.
+pub type Keep = Box<dyn Fn(&str, &[f32]) + Send + Sync>;
 
 /// The side of the square the image tower takes, the length of an embedding, and the
 /// tokens the text tower takes.
 const SIZE: u32 = 224;
-const DIM: usize = 768;
+pub const DIM: usize = 768;
 const CONTEXT: usize = 64;
 
 /// The model's learned scale and bias, which turn a cosine into a probability: read from
@@ -56,13 +75,15 @@ pub(crate) const LOGIT_SCALE: f32 = 112.669;
 const LOGIT_BIAS: f32 = -16.771_725;
 
 /// Says whether a stored suggestion was made the same way: by this version, with this
-/// template and threshold.
-pub fn prompt_hash(threshold: f32) -> u64 {
-    xxhash_rust::xxh3::xxh3_64(format!("siglip|{VERSION}|{TEMPLATE}|{threshold:.1}|{MAX_KEYWORDS}").as_bytes())
+/// template and these thresholds. The photos it learned from are not part of it: they
+/// grow with every keyword given, and a photo is not tagged again for that unless asked.
+pub fn prompt_hash(least: &Least) -> u64 {
+    let how = format!("siglip|{VERSION}|{TEMPLATE}|{:.1}|{:.0}|{MAX_KEYWORDS}", least.score, least.share);
+    xxhash_rust::xxh3::xxh3_64(how.as_bytes())
 }
 
 /// Text as the model was trained on it: lowercase, no ASCII punctuation, single spaces.
-fn canonical(text: &str) -> String {
+pub fn canonical(text: &str) -> String {
     let cleaned: String = text
         .chars()
         .filter_map(|c| match c {
@@ -79,16 +100,16 @@ fn phrase(name: &str) -> String {
     canonical(&TEMPLATE.replace("{}", name))
 }
 
-/// A JPEG as the image tower takes it: squashed to the square, each channel in -1..1,
-/// channel by channel.
-fn pixels(jpeg: &[u8]) -> Result<Vec<f32>, AiError> {
-    let image =
-        image::load_from_memory(jpeg).map_err(|e| AiError::BadReply(format!("the image could not be read: {e}")))?;
-    Ok(pixels_of(&image.to_rgb8()))
+/// A JPEG's pixels.
+pub fn decode(jpeg: &[u8]) -> Result<image::RgbImage, AiError> {
+    image::load_from_memory(jpeg)
+        .map(|image| image.to_rgb8())
+        .map_err(|e| AiError::BadReply(format!("the image could not be read: {e}")))
 }
 
-/// [`pixels`] of a picture already read.
-fn pixels_of(image: &image::RgbImage) -> Vec<f32> {
+/// An image as the image tower takes it: squashed to the square, each channel in -1..1,
+/// channel by channel.
+fn tensor(image: &image::RgbImage) -> Vec<f32> {
     let small = image::imageops::resize(image, SIZE, SIZE, image::imageops::FilterType::CatmullRom);
     let plane = (SIZE * SIZE) as usize;
     let mut out = vec![0f32; 3 * plane];
@@ -107,19 +128,54 @@ fn normalise(v: &mut [f32]) {
     }
 }
 
-/// How likely a text goes with an image, 0..1, from their embeddings (each of length 1).
-fn probability(image: &[f32], text: &[f32]) -> f32 {
+/// How well a text goes with an image, from their embeddings (each of length 1): the
+/// model's logit, which [`likely`] turns into a probability.
+pub fn logit(image: &[f32], text: &[f32]) -> f32 {
     let cosine: f32 = image.iter().zip(text).map(|(a, b)| a * b).sum();
-    1.0 / (1.0 + (-(cosine * LOGIT_SCALE + LOGIT_BIAS)).exp())
+    cosine * LOGIT_SCALE + LOGIT_BIAS
 }
 
-/// Of the scored names, those at least `threshold` likely, likeliest first, at most
-/// [`MAX_KEYWORDS`].
-fn pick(mut scored: Vec<(String, f32)>, threshold: f32) -> Vec<(String, f32)> {
-    scored.retain(|(_, p)| *p >= threshold);
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    scored.truncate(MAX_KEYWORDS);
-    scored
+/// A logit as a probability, 0..1.
+pub fn likely(logit: f32) -> f32 {
+    1.0 / (1.0 + (-logit).exp())
+}
+
+/// How likely a text goes with an image, 0..1, from their embeddings (each of length 1).
+fn probability(image: &[f32], text: &[f32]) -> f32 {
+    likely(logit(image, text))
+}
+
+/// A keyword to suggest, by its pipe path: the share of the look-alikes' say it has and
+/// how likely the model finds it by itself, each 0..1.
+#[derive(Clone, Debug, PartialEq)]
+struct Picked {
+    path: String,
+    share: f32,
+    score: f32,
+}
+
+/// The keywords to suggest, at most [`MAX_KEYWORDS`]: those the look-alikes give at least
+/// `least.share` of their say, the biggest share first, then those the model finds at
+/// least `least.score` likely by itself, likeliest first. `shares` and `scores` hold
+/// every keyword's, by path.
+fn pick(shares: &HashMap<String, f32>, scores: &HashMap<String, f32>, least: &Least) -> Vec<Picked> {
+    let of = |path: &String| Picked {
+        path: path.clone(),
+        share: shares.get(path).copied().unwrap_or(0.0),
+        score: scores.get(path).copied().unwrap_or(0.0),
+    };
+    let mut alike: Vec<Picked> =
+        shares.iter().filter(|(_, share)| **share >= least.share).map(|(p, _)| of(p)).collect();
+    alike.sort_by(|a, b| b.share.total_cmp(&a.share).then_with(|| a.path.cmp(&b.path)));
+    let mut own: Vec<Picked> = scores
+        .iter()
+        .filter(|(path, score)| **score >= least.score && !alike.iter().any(|a| &a.path == *path))
+        .map(|(p, _)| of(p))
+        .collect();
+    own.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
+    alike.extend(own);
+    alike.truncate(MAX_KEYWORDS);
+    alike
 }
 
 fn local(e: impl std::fmt::Display) -> AiError {
@@ -279,84 +335,66 @@ fn padded(ids: &[u32], eos: u32, pad: u32) -> Vec<u32> {
     tokens
 }
 
-/// Half the cores for a tower: the window stays quick.
-fn threads() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| n.get() / 2).max(1)
-}
-
-/// The embeddings of `phrases`, each as the model reads it ([`canonical`]): [`DIM`]
-/// numbers per phrase, in their order. Those worked out before come from the cache beside
-/// the model in `dir`; the rest are put through the text tower and kept there.
-fn text_embeddings(dir: &Path, phrases: &[String], stopped: &dyn Fn() -> bool) -> Result<Vec<f32>, AiError> {
-    let mut cache = TextCache::open(dir.join("text-cache-v1.bin"));
-    let mut missing: Vec<&String> = phrases.iter().filter(|p| !cache.known.contains_key(&TextCache::key(p))).collect();
-    missing.sort();
-    missing.dedup();
-    if !missing.is_empty() {
-        // The text tower is over a gigabyte in memory: let go once the phrases are done.
-        let mut tower = TextTower::open(dir, threads())?;
-        let mut new = Vec::with_capacity(missing.len());
-        let embedded = missing.iter().try_for_each(|phrase| {
-            if stopped() {
-                return Err(AiError::Stopped);
-            }
-            new.push((TextCache::key(phrase), tower.embed(phrase)?));
-            Ok(())
-        });
-        // What was embedded before a stop is kept: the next run starts from there.
-        cache.add(new)?;
-        embedded?;
-    }
-    let mut texts = Vec::with_capacity(phrases.len() * DIM);
-    for phrase in phrases {
-        texts.extend_from_slice(&cache.known[&TextCache::key(phrase)]);
-    }
-    Ok(texts)
-}
-
-/// The model's two towers: a picture's embedding, and the embeddings of sentences to hold
-/// it against. The image tower is loaded on opening; one picture at a time goes through
-/// it, on several threads of its own. The keywords' run ([`Siglip`]) puts its photos
-/// through one of these too.
+/// The model's two towers, each loaded when first needed. A text embedded once is kept
+/// beside the model (`text-cache-v1.bin`) for the runs after.
 pub struct Embedder {
     dir: PathBuf,
-    image: Mutex<Session>,
+    threads: usize,
+    image: Option<Session>,
+    cache: TextCache,
 }
 
 impl Embedder {
-    /// `root` is the folder models are kept in.
+    /// `root` is the folder models are kept in. Loads nothing yet.
     pub fn open(root: &Path) -> Result<Self, AiError> {
         if !SIGLIP2.installed(root) {
             return Err(AiError::Local("the local model is not downloaded: get it in Settings > AI".into()));
         }
-        Self::at(SIGLIP2.dir(root))
+        let dir = SIGLIP2.dir(root);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get() / 2).max(1);
+        Ok(Embedder { cache: TextCache::open(dir.join("text-cache-v1.bin")), dir, threads, image: None })
     }
 
-    /// On the model kept in `dir`.
-    fn at(dir: PathBuf) -> Result<Self, AiError> {
-        let image = Mutex::new(session(&dir, "visual/model.onnx", threads())?);
-        Ok(Embedder { dir, image })
-    }
-
-    /// The picture's embedding: [`DIM`] numbers, of length 1.
-    pub fn image(&self, picture: &image::RgbImage) -> Result<Vec<f32>, AiError> {
-        self.embed(pixels_of(picture))
-    }
-
-    /// The embedding of a picture given as the tower takes it ([`pixels_of`]).
-    fn embed(&self, input: Vec<f32>) -> Result<Vec<f32>, AiError> {
+    /// An image's embedding: [`DIM`] numbers, of length 1.
+    pub fn image(&mut self, image: &image::RgbImage) -> Result<Vec<f32>, AiError> {
+        if self.image.is_none() {
+            self.image = Some(session(&self.dir, "visual/model.onnx", self.threads)?);
+        }
+        let session = self.image.as_mut().expect("loaded above");
         let side = SIZE as usize;
-        let tensor = Tensor::from_array(([1usize, 3, side, side], input)).map_err(local)?;
-        let mut session = self.image.lock().unwrap_or_else(|e| e.into_inner());
-        let outputs = session.run(ort::inputs![tensor]).map_err(local)?;
+        let input = Tensor::from_array(([1usize, 3, side, side], tensor(image))).map_err(local)?;
+        let outputs = session.run(ort::inputs![input]).map_err(local)?;
         embedding(&outputs)
     }
 
-    /// The embeddings of whole sentences (not wrapped in [`TEMPLATE`]), one per sentence.
-    pub fn texts(&self, sentences: &[&str], stopped: &dyn Fn() -> bool) -> Result<Vec<Vec<f32>>, AiError> {
-        let phrases: Vec<String> = sentences.iter().map(|s| canonical(s)).collect();
-        let flat = text_embeddings(&self.dir, &phrases, stopped)?;
-        Ok(flat.as_chunks::<DIM>().0.iter().map(|chunk| chunk.to_vec()).collect())
+    /// The embeddings of texts, [`DIM`] numbers each, in their order. A text is read as
+    /// the model was trained on it ([`canonical`]). `stopped` is asked between texts
+    /// not embedded before; what was done by then is kept.
+    pub fn texts(&mut self, texts: &[String], stopped: &dyn Fn() -> bool) -> Result<Vec<f32>, AiError> {
+        let texts: Vec<String> = texts.iter().map(|t| canonical(t)).collect();
+        let mut missing: Vec<&String> =
+            texts.iter().filter(|t| !self.cache.known.contains_key(&TextCache::key(t))).collect();
+        missing.sort();
+        missing.dedup();
+        if !missing.is_empty() {
+            // The text tower is over a gigabyte in memory: let go once the texts are done.
+            let mut tower = TextTower::open(&self.dir, self.threads)?;
+            let mut new = Vec::with_capacity(missing.len());
+            let embedded = missing.iter().try_for_each(|text| {
+                if stopped() {
+                    return Err(AiError::Stopped);
+                }
+                new.push((TextCache::key(text), tower.embed(text)?));
+                Ok(())
+            });
+            self.cache.add(new)?;
+            embedded?;
+        }
+        let mut out = Vec::with_capacity(texts.len() * DIM);
+        for text in &texts {
+            out.extend_from_slice(&self.cache.known[&TextCache::key(text)]);
+        }
+        Ok(out)
     }
 }
 
@@ -365,20 +403,24 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
-/// The model once loaded: the image tower and every keyword's embedding.
+/// The model once loaded, with every keyword's embedding.
 struct Loaded {
-    image: Embedder,
+    embedder: Embedder,
     /// [`DIM`] numbers per name, in the names' order.
     texts: Vec<f32>,
 }
 
 pub struct Siglip {
-    dir: PathBuf,
+    /// The folder models are kept in.
+    root: PathBuf,
     options: Options,
     /// The keywords offered, by name.
     names: Vec<String>,
     vocabulary: Vocabulary,
-    threshold: f32,
+    /// As shares of 1.
+    least: Least,
+    examples: Examples,
+    keep: Option<Keep>,
     prompt: u64,
     /// Loaded when the first photo comes; one photo at a time goes through it, on several
     /// threads of its own.
@@ -386,14 +428,17 @@ pub struct Siglip {
 }
 
 impl Siglip {
-    /// `root` is the folder models are kept in; `threshold` the least a keyword must
-    /// score to be suggested, in percent. Loads nothing yet.
+    /// `root` is the folder models are kept in; `least` what a keyword must have to be
+    /// suggested, in percent; `examples` the photos keyworded by hand to learn from, if
+    /// any; `keep` hears of each photo's embedding. Loads nothing yet.
     pub fn new(
         root: &Path,
         options: Options,
         brief: &Brief,
         vocabulary: Vocabulary,
-        threshold: f32,
+        least: Least,
+        examples: Examples,
+        keep: Option<Keep>,
     ) -> Result<Self, AiError> {
         if !SIGLIP2.installed(root) {
             return Err(AiError::Local("the local model is not downloaded: get it in Settings > AI".into()));
@@ -407,25 +452,32 @@ impl Siglip {
             ));
         }
         Ok(Siglip {
-            dir: SIGLIP2.dir(root),
+            root: root.to_path_buf(),
             options,
             names: brief.vocabulary.clone(),
             vocabulary,
-            threshold: threshold.clamp(0.0, THRESHOLDS.1) / 100.0,
-            prompt: prompt_hash(threshold),
+            prompt: prompt_hash(&least),
+            least: Least {
+                score: least.score.clamp(0.0, THRESHOLDS.1) / 100.0,
+                share: least.share.clamp(0.0, crate::alike::SHARES.1) / 100.0,
+            },
+            examples,
+            keep,
             loaded: Mutex::new(None),
         })
     }
 
     fn load(&self) -> Result<Loaded, AiError> {
+        let mut embedder = Embedder::open(&self.root)?;
         let phrases: Vec<String> = self.names.iter().map(|n| phrase(n)).collect();
-        let texts = text_embeddings(&self.dir, &phrases, &|| self.options.stopped())?;
-        Ok(Loaded { image: Embedder::at(self.dir.clone())?, texts })
+        let texts = embedder.texts(&phrases, &|| self.options.stopped())?;
+        Ok(Loaded { embedder, texts })
     }
 
-    /// Every keyword offered with how likely it goes with the photo, in the names' order.
-    fn scores(&self, photo: &PhotoRequest) -> Result<Vec<(String, f32)>, AiError> {
-        let input = pixels(&photo.jpeg)?;
+    /// The photo's embedding, and every keyword offered with how likely the model finds
+    /// it by itself, in the names' order.
+    fn scores(&self, photo: &PhotoRequest) -> Result<Scored, AiError> {
+        let pixels = decode(&photo.jpeg)?;
         let mut loaded = self.loaded.lock().unwrap_or_else(|e| e.into_inner());
         if self.options.stopped() {
             return Err(AiError::Stopped);
@@ -433,16 +485,31 @@ impl Siglip {
         if loaded.is_none() {
             *loaded = Some(self.load()?);
         }
-        let model = loaded.as_ref().expect("loaded above");
+        let model = loaded.as_mut().expect("loaded above");
         tell(&photo.progress, Step::Sent { attempt: 1 });
-        let image = model.image.embed(input)?;
-        Ok(self
+        let image = model.embedder.image(&pixels)?;
+        let scores = self
             .names
             .iter()
             .zip(model.texts.as_chunks::<DIM>().0)
             .map(|(n, t)| (n.clone(), probability(&image, t)))
-            .collect())
+            .collect();
+        Ok((image, scores))
     }
+
+    /// The keyword at this path is one the run offers: the look-alikes may carry keywords
+    /// it leaves out.
+    fn offered(&self, path: &str) -> bool {
+        self.vocabulary.path(leaf(path)) == Some(path)
+    }
+}
+
+/// A photo's embedding, and names with how likely the model finds each.
+type Scored = (Vec<f32>, Vec<(String, f32)>);
+
+/// The last level of a pipe path: the keyword's name.
+fn leaf(path: &str) -> &str {
+    path.rsplit('|').next().unwrap_or(path)
 }
 
 impl crate::VisionProvider for Siglip {
@@ -460,29 +527,45 @@ impl crate::VisionProvider for Siglip {
 
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
         let started = Instant::now();
-        let picked = pick(self.scores(photo)?, self.threshold);
+        let (image, scored) = self.scores(photo)?;
+        if let Some(keep) = self.keep.as_ref().filter(|_| !photo.key.is_empty()) {
+            keep(&photo.key, &image);
+        }
+        // Names sharing a path keep the likeliest one's score.
+        let mut scores: HashMap<String, f32> = HashMap::new();
+        for (name, score) in scored {
+            if let Some(path) = self.vocabulary.path(&name) {
+                let best = scores.entry(path.to_string()).or_default();
+                *best = best.max(score);
+            }
+        }
+        let shares: HashMap<String, f32> = self
+            .examples
+            .votes(&image, &photo.key)
+            .into_iter()
+            .filter(|(path, _)| self.offered(path))
+            .map(|(path, share)| (path.to_string(), share))
+            .collect();
+        let picked = pick(&shares, &scores, &self.least);
         let raw = RawAnswer {
-            keywords: picked.iter().map(|(name, _)| name.clone()).collect(),
-            confidence: picked.first().map_or(0.0, |(_, p)| *p as f64),
+            keywords: picked.iter().map(|p| leaf(&p.path).to_string()).collect(),
+            confidence: picked.first().map_or(0.0, |p| p.share.max(p.score) as f64),
             ..RawAnswer::default()
         };
         let (mut suggestion, warnings) = validate(&raw, &self.vocabulary);
-        // Names sharing a path keep the likeliest one's score.
-        suggestion.keyword_scores = suggestion
-            .keywords
+        let of = |path: &String| picked.iter().find(|p| &p.path == path);
+        suggestion.keyword_scores = suggestion.keywords.iter().map(|k| of(k).map_or(0.0, |p| p.score)).collect();
+        suggestion.keyword_shares = suggestion.keywords.iter().map(|k| of(k).map_or(0.0, |p| p.share)).collect();
+        let said: Vec<String> = picked
             .iter()
-            .map(|path| {
-                let of_path = picked.iter().filter(|(name, _)| self.vocabulary.path(name) == Some(path.as_str()));
-                of_path.map(|(_, p)| *p).fold(0.0, f32::max)
-            })
+            .map(|p| format!("{} {:.0}% alike, {:.1}% model", leaf(&p.path), p.share * 100.0, p.score * 100.0))
             .collect();
-        let said: Vec<String> = picked.iter().map(|(name, p)| format!("{name} {:.1}%", p * 100.0)).collect();
         let record = RunRecord {
             provider: "local".into(),
             model: SIGLIP2.id.into(),
             prompt: self.prompt,
             millis: started.elapsed().as_millis() as u64,
-            raw: said.join(", "),
+            raw: said.join("; "),
             ..RunRecord::default()
         };
         Ok(Reply { suggestion, warnings, record })
@@ -518,10 +601,10 @@ mod tests {
         image::DynamicImage::ImageRgb8(white)
             .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
             .unwrap();
-        let input = pixels(&jpeg).unwrap();
+        let input = tensor(&decode(&jpeg).unwrap());
         assert_eq!(input.len(), 3 * 224 * 224);
         assert!(input.iter().all(|x| (x - 1.0).abs() < 0.05), "white is 1");
-        assert!(matches!(pixels(b"not a jpeg"), Err(AiError::BadReply(_))), "this photo's failure, not the run's");
+        assert!(matches!(decode(b"not a jpeg"), Err(AiError::BadReply(_))), "this photo's failure, not the run's");
     }
 
     #[test]
@@ -546,16 +629,24 @@ mod tests {
     }
 
     #[test]
-    fn the_likeliest_keywords_over_the_threshold_are_picked() {
-        let mut scored: Vec<(String, f32)> = (0..12).map(|i| (format!("k{i:02}"), 0.2 + i as f32 * 0.05)).collect();
-        scored.push(("low".into(), 0.05));
-        scored.push(("tie".into(), 0.2 + 10.0 * 0.05));
-        let picked = pick(scored, 0.1);
-        assert_eq!(picked.len(), MAX_KEYWORDS);
-        assert_eq!(picked[0].0, "k11");
-        assert_eq!((picked[1].0.as_str(), picked[2].0.as_str()), ("k10", "tie"), "equal ones by name");
-        assert!(picked.iter().all(|(name, _)| name != "low"));
-        assert!(pick(vec![("a".into(), 0.09)], 0.1).is_empty());
+    fn look_alikes_keywords_come_first_then_the_models_own() {
+        let map = |pairs: &[(&str, f32)]| -> HashMap<String, f32> {
+            pairs.iter().map(|(path, n)| (path.to_string(), *n)).collect()
+        };
+        let shares = map(&[("nature|sea", 0.8), ("blue", 0.3), ("boat", 0.1)]);
+        let scores = map(&[("nature|sea", 0.02), ("boat", 0.2), ("gull", 0.05), ("street", 0.01)]);
+        let least = Least { score: 0.03, share: 0.25 };
+        let picked = pick(&shares, &scores, &least);
+        let paths: Vec<&str> = picked.iter().map(|p| p.path.as_str()).collect();
+        assert_eq!(paths, ["nature|sea", "blue", "boat", "gull"]);
+        assert_eq!(picked[0], Picked { path: "nature|sea".into(), share: 0.8, score: 0.02 });
+        assert_eq!((picked[2].share, picked[2].score), (0.1, 0.2), "by the model, its small share shown too");
+        assert_eq!(picked[1].score, 0.0, "a keyword the model was not asked about");
+
+        let many: HashMap<String, f32> = (0..12).map(|i| (format!("k{i:02}"), 0.5 + i as f32 * 0.01)).collect();
+        let picked = pick(&many, &HashMap::new(), &least);
+        assert_eq!((picked.len(), picked[0].path.as_str()), (MAX_KEYWORDS, "k11"));
+        assert!(pick(&map(&[("a", 0.2)]), &map(&[("a", 0.02)]), &least).is_empty());
     }
 
     #[test]
@@ -577,15 +668,25 @@ mod tests {
 
     #[test]
     fn the_threshold_is_part_of_how_a_photo_was_tagged() {
-        assert_ne!(prompt_hash(1.0), prompt_hash(1.5));
-        assert_eq!(prompt_hash(1.0), prompt_hash(1.04), "told apart by the tenth");
+        let least = |score: f32, share: f32| Least { score, share };
+        assert_ne!(prompt_hash(&least(1.0, 25.0)), prompt_hash(&least(1.5, 25.0)));
+        assert_eq!(prompt_hash(&least(1.0, 25.0)), prompt_hash(&least(1.04, 25.0)), "by the tenth");
+        assert_ne!(prompt_hash(&least(1.0, 25.0)), prompt_hash(&least(1.0, 30.0)));
     }
 
     #[test]
     fn it_needs_the_model_keywords_and_a_describing_run() {
         let root = tempfile::tempdir().unwrap();
         let brief = Brief { vocabulary: vec!["street".into()], ..Default::default() };
-        let missing = Siglip::new(root.path(), Options::default(), &brief, Vocabulary::default(), 1.0);
+        let missing = Siglip::new(
+            root.path(),
+            Options::default(),
+            &brief,
+            Vocabulary::default(),
+            Least::default(),
+            Examples::new(DIM),
+            None,
+        );
         assert!(matches!(missing, Err(AiError::Local(m)) if m.contains("not downloaded")));
     }
 
@@ -598,18 +699,29 @@ mod tests {
         let names = ["street", "dog", "ulica", "mountains", "plain white"];
         let brief = Brief { vocabulary: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
         let vocabulary = Vocabulary::new(names.iter().map(|n| (*n, 1)));
-        let siglip = Siglip::new(&root, Options::default(), &brief, vocabulary, 0.0).unwrap();
+        let least = Least { score: 0.0, share: 25.0 };
+        let mut examples = Examples::new(DIM);
+        let mut alike = vec![0.0; DIM];
+        alike[0] = 1.0;
+        examples.add("other", &alike, ["dog"]);
+        let kept = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let sink = kept.clone();
+        let keep: Keep = Box::new(move |key, embedding| sink.lock().unwrap().push((key.to_string(), embedding.len())));
+        let siglip = Siglip::new(&root, Options::default(), &brief, vocabulary, least, examples, Some(keep)).unwrap();
         let white = image::RgbImage::from_pixel(224, 224, image::Rgb([255, 255, 255]));
         let mut jpeg = Vec::new();
         image::DynamicImage::ImageRgb8(white)
             .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
             .unwrap();
-        let photo = PhotoRequest { jpeg, context: String::new(), progress: None };
-        let scores = siglip.scores(&photo).unwrap();
+        let photo = PhotoRequest { key: "white".into(), jpeg, context: String::new(), progress: None };
+        let (_, scores) = siglip.scores(&photo).unwrap();
         println!("{scores:?}");
         let best = scores.iter().max_by(|a, b| a.1.total_cmp(&b.1)).unwrap();
         assert_eq!(best.0, "plain white");
         let reply = siglip.describe(&photo).unwrap();
         assert_eq!(reply.suggestion.keywords.len(), reply.suggestion.keyword_scores.len());
+        assert_eq!(reply.suggestion.keywords.len(), reply.suggestion.keyword_shares.len());
+        assert_eq!(reply.suggestion.keywords[0], "dog", "the one look-alike has all the say: {:?}", reply.record.raw);
+        assert_eq!(*kept.lock().unwrap(), [("white".to_string(), DIM)]);
     }
 }

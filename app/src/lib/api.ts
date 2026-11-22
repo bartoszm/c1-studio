@@ -913,8 +913,10 @@ export type AiSettings = {
   left_out: LeftOut;
   /** How photos are located. */
   locate: LocateSettings;
-  /** The local model suggests a keyword scoring at least this (%, to a tenth). */
+  /** The local model suggests a keyword it scores at least this (%, to a tenth) by itself, */
   local_threshold: number;
+  /** ... or one with at least this share (%) of the say of the look-alike photos keyworded already. */
+  local_share: number;
 };
 export type LocateSettings = {
   /** Photos with a position taken this many minutes either side are told of as clues. */
@@ -945,6 +947,18 @@ export type AiLocal = {
   /** Bytes there so far, while downloading. */
   done: number;
   /** Why the last download ended early. */
+  error: string | null;
+};
+/** How far the local model has got with the photos keyworded by hand, which it learns from. */
+export type AiLearn = {
+  running: boolean;
+  /** Photos looked at in this pass, of `total` it set out to. */
+  done: number; total: number;
+  /** Photos with no image to look at. */
+  failed: number;
+  /** Keyworded photos it has looked at, of `keyworded` in the library. */
+  examples: number; keyworded: number;
+  /** Why the last pass ended early. */
   error: string | null;
 };
 export type AiView = {
@@ -1022,6 +1036,9 @@ export type Suggestion = {
   keywords: string[];
   /** The local model's score for each of `keywords`, 0..1, in their order; empty otherwise. */
   keyword_scores?: number[];
+  /** For each of `keywords`, 0..1: the share of the say of the look-alike photos keyworded
+   *  already (the local model); empty otherwise. */
+  keyword_shares?: number[];
   /** Keywords the catalog lacks. */
   keywords_new: string[];
   rating: number | null;
@@ -1104,6 +1121,10 @@ export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
 /** Fetches the local model in the background ("model-download" events, an AiLocal each). */
 export const aiModelDownload = () => invoke<AiLocal>("ai_model_download");
 export const aiModelDownloadStop = () => invoke<AiLocal>("ai_model_download_stop");
+/** Has the local model look at the keyworded photos in the background ("learn" events, an AiLearn each). */
+export const aiLearn = () => invoke<AiLearn>("ai_learn");
+export const aiLearnStop = () => invoke<void>("ai_learn_stop");
+export const aiLearnState = () => invoke<AiLearn>("ai_learn_state");
 export const aiPrompt = (task: AiTask = "describe") => invoke<AiPrompt>("ai_prompt", { task });
 export const aiEstimate = (rows: number[], again: boolean, task: AiTask = "describe") =>
   invoke<AiEstimate>("ai_estimate", { rows, again, task });
