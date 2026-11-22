@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use c1ai::siglip::{DIM, Embedder, likely, logit};
+use c1ai::siglip::{DIM, Embedder, logit};
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -454,7 +454,5 @@ fn score(test: &Path, reference: &Path, keywords: &Path) -> Fallible<()> {
             }
         }
     }
-    // What the model's own probability is worth, for the record.
-    let _ = likely;
     Ok(())
 }

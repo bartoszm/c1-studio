@@ -494,31 +494,77 @@ fn learn(s: &Session, report: &dyn Fn(LearnState)) -> anyhow::Result<()> {
     let mut embedder = Embedder::open(&models_root())?;
     let mut batch = Vec::new();
     let mut told = std::time::Instant::now();
-    for id in todo {
-        if s.learn_stop.load(Ordering::SeqCst) {
-            break;
-        }
-        match pixels(s, id, AiImage::Thumb, LEARN_EDGE) {
-            Ok(Some(image)) => {
-                batch.push((id.key(), embedder.image(&image)?));
-                state.examples += 1;
+    let pass = || -> anyhow::Result<()> {
+        for id in todo {
+            if s.learn_stop.load(Ordering::SeqCst) {
+                break;
             }
-            _ => state.failed += 1,
+            match pixels(s, id, AiImage::Thumb, LEARN_EDGE) {
+                Ok(Some(image)) => {
+                    batch.push((id.key(), embedder.image(&image)?));
+                    state.examples += 1;
+                }
+                Ok(None) => state.failed += 1,
+                Err(e) => {
+                    // The first is told of: the rest most likely fail the same way.
+                    if state.failed == 0 {
+                        s.log.event(&format!("Learning: no image of {} to look at: {e:#}", id.key()), &[]);
+                    }
+                    state.failed += 1;
+                }
+            }
+            state.done += 1;
+            // Kept as it goes: a pass stopped or cut short goes on from where it was.
+            if batch.len() >= LEARN_BATCH {
+                store.put(&batch)?;
+                batch.clear();
+            }
+            if told.elapsed().as_millis() >= 500 {
+                told = std::time::Instant::now();
+                report(state.clone());
+            }
         }
-        state.done += 1;
-        // Kept as it goes: a pass stopped or cut short goes on from where it was.
-        if batch.len() >= 50 {
-            store.put(&batch)?;
-            batch.clear();
-        }
-        if told.elapsed().as_millis() >= 500 {
-            told = std::time::Instant::now();
-            report(state.clone());
+        Ok(())
+    };
+    // What a pass that failed had looked at is kept too.
+    let outcome = pass();
+    let kept = store.put(&batch);
+    report(state);
+    outcome.and(kept)
+}
+
+/// Embeddings written at a time: a write is flushed to disk, which costs.
+const LEARN_BATCH: usize = 50;
+
+/// The embeddings of the photos a run describes, written a batch at a time and, the
+/// last ones, when the run's provider goes.
+struct Kept {
+    session: Arc<Session>,
+    batch: Mutex<Vec<(String, Vec<f32>)>>,
+}
+
+impl Kept {
+    fn add(&self, key: &str, numbers: &[f32]) {
+        let mut batch = lock(&self.batch);
+        batch.push((key.to_string(), numbers.to_vec()));
+        if batch.len() >= LEARN_BATCH {
+            self.flush(&mut batch);
         }
     }
-    store.put(&batch)?;
-    report(state);
-    Ok(())
+
+    fn flush(&self, batch: &mut Vec<(String, Vec<f32>)>) {
+        if let Err(e) = self.session.library.embeddings().put(batch) {
+            self.session.log.event(&format!("Embeddings could not be kept: {e:#}"), &[]);
+        }
+        batch.clear();
+    }
+}
+
+impl Drop for Kept {
+    fn drop(&mut self) {
+        let mut batch = std::mem::take(&mut *lock(&self.batch));
+        self.flush(&mut batch);
+    }
 }
 
 /// Where learning stands: the pass under way, or what a pass would find to do.
@@ -547,11 +593,14 @@ pub(crate) async fn ai_learn(app: AppHandle) -> Result<LearnState, String> {
     if !SIGLIP2.installed(&models_root()) {
         return Err("Download the model first".into());
     }
-    if s.describing.load(Ordering::SeqCst) {
-        return Err("An AI run is under way: learn once it is done".into());
-    }
     if s.learning.swap(true, Ordering::SeqCst) {
         return Err("The model is learning already".into());
+    }
+    // Said before asking, as a run does the other way round: the two can refuse each
+    // other, never both start.
+    if s.describing.load(Ordering::SeqCst) {
+        s.learning.store(false, Ordering::SeqCst);
+        return Err("An AI run is under way: learn once it is done".into());
     }
     s.learn_stop.store(false, Ordering::SeqCst);
     let starting = LearnState { running: true, ..lock(&s.learn).clone() };
@@ -849,10 +898,8 @@ fn provider(s: &Arc<Session>, settings: &AiSettings, task: Task) -> Result<Box<d
             let examples = examples(s).map_err(text)?;
             // Each photo's embedding is kept: keyworded later, it teaches without being
             // looked at again.
-            let session = s.clone();
-            let keep: siglip::Keep = Box::new(move |key, numbers| {
-                let _ = session.library.embeddings().put(&[(key.to_string(), numbers.to_vec())]);
-            });
+            let kept = Kept { session: s.clone(), batch: Mutex::new(Vec::new()) };
+            let keep: siglip::Keep = Box::new(move |key, numbers| kept.add(key, numbers));
             let (root, least) = (models_root(), settings.least());
             Box::new(Siglip::new(&root, options, &brief, vocabulary, least, examples, Some(keep)).map_err(text)?)
         }
@@ -1093,7 +1140,10 @@ pub(crate) async fn start_describe(
     if s.describing.swap(true, Ordering::SeqCst) {
         return Err("An AI run is under way already".into());
     }
-    let started = (|| {
+    // Off the async workers: the local model's provider reads every example.
+    let session = s.clone();
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        let s = session;
         let settings = load_settings(&s);
         let Planned { todo, scenes, .. } = plan(&s, &rows, again, task)?;
         Ok::<_, String>((
@@ -1104,7 +1154,9 @@ pub(crate) async fn start_describe(
             settings.image,
             (settings.locate.window_minutes, settings.locate.group_max),
         ))
-    })();
+    })
+    .await
+    .unwrap_or_else(|e| Err(text(e)));
     let (provider, todo, scenes, parallel, image, (window, scene_max)) = match started {
         Ok(started) => started,
         Err(e) => {
