@@ -77,6 +77,9 @@ test("the keys keep, mark, and move between photos and groups", () => {
   assert.deepEqual(cullKey(key("k"), false), { kind: "mark" });
   assert.deepEqual(cullKey(key("K"), false), { kind: "mark" });
   assert.deepEqual(cullKey(key("g"), false), { kind: "best" });
+  assert.deepEqual(cullKey(key("r"), false), { kind: "rank", all: false });
+  assert.deepEqual(cullKey(key("R", { shiftKey: true }), false), { kind: "rank", all: true });
+  assert.equal(cullKey(key("r", { repeat: true }), false), null);
   assert.deepEqual(cullKey(key("ArrowDown"), false), { kind: "group", delta: 1 });
   assert.deepEqual(cullKey(key("ArrowUp"), false), { kind: "group", delta: -1 });
   assert.deepEqual(cullKey(key("ArrowLeft"), false), { kind: "photo", delta: -1 });

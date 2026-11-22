@@ -3,14 +3,23 @@
 //! the rest — as one step that can be taken back.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
+use c1ai::aesthetic::{self, Aesthetic, Prompts};
+use c1ai::models::SIGLIP2;
+use c1ai::siglip::Embedder;
 use c1analysis::{Candidate, Judge};
-use c1index::{Filter, Library, QueryOptions, Sort};
+use c1index::{Filter, GroupSort, Library, QueryOptions, Sort};
 use c1model::{ColorLabel, Op, Removal};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{App, Session, text};
+use crate::ai::{AiImage, models_root, pixels};
+use crate::{App, Lowers, Session, is_current, text};
+
+/// The long edge of the picture the local model is given: it squashes it to 224 itself.
+const LOOK_EDGE: u32 = 448;
 
 /// A photo of a group, with what the order goes by.
 #[derive(Serialize)]
@@ -24,6 +33,8 @@ pub(crate) struct CullPhoto {
     kept: bool,
     sharpness: f32,
     focus: &'static str,
+    /// How the local model saw it, once it has looked.
+    aesthetic: Option<Aesthetic>,
     /// 0 to 1, next to the others of its group.
     score: f32,
     reasons: Vec<String>,
@@ -39,14 +50,46 @@ pub(crate) struct CullGroupView {
     judge: Judge,
     /// The two best are too close to call.
     close: bool,
+    /// The local model is downloaded: it can be asked to look.
+    model: bool,
+}
+
+/// The rows of a group among the photos `filter` selects, oldest first: every frame that
+/// matches, stacked or not.
+fn group_rows(library: &Library, filter: &Filter, id: &str) -> Result<Vec<u64>, String> {
+    let narrowed = Filter { group: Some(id.to_owned()), stacked: false, ..filter.clone() };
+    Ok(library.query(&narrowed, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows)
+}
+
+fn aesthetic_of(scores: [f32; 4]) -> Aesthetic {
+    let [composition, moment, mood, technical] = scores;
+    Aesthetic { composition, moment, mood, technical }
+}
+
+/// What ranking calls the frame the model likes best.
+const BEST_PICTURE: &str = "best picture";
+
+/// The way `seen` stands out most from the group's `views`: the axis on which it is
+/// furthest above their mean.
+fn leading(seen: &Aesthetic, views: &[Aesthetic]) -> &'static str {
+    let axes = |a: &Aesthetic| [a.composition, a.moment, a.mood, a.technical];
+    let n = views.len().max(1) as f32;
+    let mut best = ("picture", 0.0);
+    for (i, axis) in aesthetic::AXES.iter().enumerate() {
+        let above = axes(seen)[i] - views.iter().map(|v| axes(v)[i]).sum::<f32>() / n;
+        if above > best.1 {
+            best = (if axis.name == "technical" { "technically" } else { axis.name }, above);
+        }
+    }
+    best.0
 }
 
 fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupView, String> {
-    // Every frame of the group that matches, stacked or not.
-    let narrowed = Filter { group: Some(id.to_owned()), stacked: false, ..filter.clone() };
-    let rows =
-        library.query(&narrowed, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows;
+    let rows = group_rows(library, filter, id)?;
     let kept: HashSet<u64> = library.kept_of(&rows).into_iter().collect();
+    // Only views scored the way photos are scored now: older ones wait to be scored again.
+    let views = library.views(&rows).map_err(text)?;
+    let seen = |row: u64| views.get(&row).filter(|v| v.version == aesthetic::VERSION).map(|v| aesthetic_of(v.scores));
     let classes = library.class_settings();
     let mut photos = Vec::with_capacity(rows.len());
     let mut candidates = Vec::with_capacity(rows.len());
@@ -60,7 +103,7 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
             shadows: a.shadows,
             rating: photo.rating,
             edited: photo.edit.edited,
-            aesthetic: None,
+            aesthetic: seen(row).map(|s| s.overall()),
             verdict: None,
         });
         photos.push(CullPhoto {
@@ -72,6 +115,7 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
             kept: kept.contains(&row),
             sharpness: a.sharpness,
             focus: a.focus(&classes),
+            aesthetic: seen(row),
             score: 0.0,
             reasons: Vec::new(),
         });
@@ -81,13 +125,181 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
         photo.score = entry.score;
         photo.reasons = entry.reasons;
     }
+    // The best picture by the model's view is best in some way: said by name.
+    let views: Vec<Aesthetic> = photos.iter().filter_map(|p| p.aesthetic).collect();
+    for photo in &mut photos {
+        if let (Some(seen), Some(reason)) = (photo.aesthetic, photo.reasons.iter_mut().find(|r| *r == BEST_PICTURE)) {
+            *reason = format!("best {}", leading(&seen, &views));
+        }
+    }
     Ok(CullGroupView {
         id: id.to_owned(),
         order: ranked.order.iter().map(|&i| photos[i].row).collect(),
         photos,
         judge: ranked.judge,
         close: ranked.close,
+        model: SIGLIP2.installed(&models_root()),
     })
+}
+
+/// The local model as ranking uses it: the image tower and the sentences photos are held
+/// against. Loaded when first asked for, and let go when the choosing ends.
+struct Ranker {
+    embedder: Embedder,
+    prompts: Prompts,
+}
+
+static RANKER: Mutex<Option<Arc<Ranker>>> = Mutex::new(None);
+
+fn ranker() -> Result<Arc<Ranker>, String> {
+    let mut held = RANKER.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ranker) = &*held {
+        return Ok(ranker.clone());
+    }
+    let embedder = Embedder::open(&models_root()).map_err(text)?;
+    let prompts = Prompts::load(&embedder, &|| RANK_STOP.load(Ordering::Relaxed)).map_err(text)?;
+    let ranker = Arc::new(Ranker { embedder, prompts });
+    *held = Some(ranker.clone());
+    Ok(ranker)
+}
+
+/// Has the local model look at the photos at `rows` it has not seen yet (or saw rendered
+/// otherwise), and keeps what it saw. A view scored another way is scored again from its
+/// embedding, without the model. Returns how many photos could not be looked at.
+fn look_at(s: &Session, ranker: &Ranker, rows: &[u64]) -> Result<usize, String> {
+    let have = s.library.views(rows).map_err(text)?;
+    let mut new = Vec::new();
+    let mut failed = 0;
+    for &row in rows {
+        if RANK_STOP.load(Ordering::Relaxed) {
+            break;
+        }
+        let embedding = match have.get(&row) {
+            Some(view) if view.version == aesthetic::VERSION => continue,
+            Some(view) => view.embedding.clone(),
+            None => {
+                let picture = s.library.photo_id(row).and_then(|id| pixels(s, &id, AiImage::Thumb, LOOK_EDGE).ok()?);
+                match picture.map(|p| ranker.embedder.image(&p)) {
+                    Some(Ok(embedding)) => embedding,
+                    _ => {
+                        failed += 1;
+                        continue;
+                    }
+                }
+            }
+        };
+        let seen = aesthetic::score(&embedding, &ranker.prompts);
+        new.push((row, aesthetic::VERSION, embedding, [seen.composition, seen.moment, seen.mood, seen.technical]));
+    }
+    s.library.put_views(new).map_err(text)?;
+    Ok(failed)
+}
+
+/// Has the local model look at one group's photos, and gives the group in its new order.
+#[tauri::command]
+pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let rows = group_rows(&s.library, &filter, &id)?;
+        look_at(&s, &*ranker()?, &rows)?;
+        group_view(&s.library, &filter, &id)
+    })
+    .await
+    .map_err(text)?
+}
+
+/// How far looking at every group has got.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct RankState {
+    running: bool,
+    /// Groups looked at, of how many.
+    done: usize,
+    total: usize,
+    /// Photos that could not be looked at.
+    failed: usize,
+    /// Why the last run ended early.
+    error: Option<String>,
+}
+
+// One run at a time, whatever the catalog open: the model is one.
+static RANKING: AtomicBool = AtomicBool::new(false);
+static RANK_STOP: AtomicBool = AtomicBool::new(false);
+static RANK_STATE: Mutex<RankState> =
+    Mutex::new(RankState { running: false, done: 0, total: 0, failed: 0, error: None });
+
+fn report_rank(app: &AppHandle, change: impl FnOnce(&mut RankState)) {
+    let state = {
+        let mut state = RANK_STATE.lock().unwrap_or_else(|e| e.into_inner());
+        change(&mut state);
+        state.clone()
+    };
+    let _ = app.emit("ranking", state);
+}
+
+fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
+    let groups = s.library.groups_sorted(filter, series, GroupSort::Oldest, false, 0, usize::MAX).map_err(text)?.groups;
+    report_rank(app, |state| *state = RankState { running: true, total: groups.len(), ..RankState::default() });
+    let ranker = ranker()?;
+    for group in groups {
+        if RANK_STOP.load(Ordering::Relaxed) || !is_current(app, s) {
+            break;
+        }
+        let rows = group_rows(&s.library, filter, &group.id)?;
+        let failed = look_at(s, &ranker, &rows)?;
+        report_rank(app, |state| {
+            state.done += 1;
+            state.failed += failed;
+        });
+    }
+    Ok(())
+}
+
+/// Has the local model look at every series (or duplicate group) among the photos `filter`
+/// selects, in the background, unless a run is under way. Each group's views are kept as
+/// they come, so a run stopped keeps what it saw.
+#[tauri::command]
+pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) -> Result<(), String> {
+    let s = app.state::<App>().session()?;
+    if RANKING.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    RANK_STOP.store(false, Ordering::SeqCst);
+    std::thread::spawn(move || {
+        let _done = Lowers(&RANKING);
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_ranking(&app, &s, &filter, series)));
+        let error = match run {
+            Ok(Ok(())) => None,
+            Ok(Err(e)) => Some(e),
+            Err(_) => Some("looking at the photos crashed".to_owned()),
+        };
+        if let Some(e) = &error {
+            s.log.event(&format!("Ranking alike photos failed: {e}"), &[]);
+        }
+        report_rank(&app, |state| {
+            state.running = false;
+            state.error = error;
+        });
+        let _ = app.emit("ranking-done", ());
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn stop_ranking() {
+    RANK_STOP.store(true, Ordering::SeqCst);
+}
+
+#[tauri::command]
+pub(crate) fn ranking_state() -> RankState {
+    RANK_STATE.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The choosing is over: the local model is let go (unless a run still needs it).
+#[tauri::command]
+pub(crate) fn cull_done() {
+    if !RANKING.load(Ordering::SeqCst) {
+        *RANKER.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 }
 
 /// One group (`dup:<row>`, `series:<row>`) among the photos `filter` selects: its photos in
@@ -228,6 +440,16 @@ pub(crate) async fn cull_revert(app: State<'_, App>, step: CullStep) -> Result<C
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_best_picture_is_named_for_what_sets_it_apart() {
+        let flat = aesthetic_of([0.5, 0.5, 0.5, 0.5]);
+        let moody = aesthetic_of([0.5, 0.55, 0.8, 0.5]);
+        let sharp = aesthetic_of([0.5, 0.5, 0.5, 0.7]);
+        assert_eq!(leading(&moody, &[flat, moody, sharp]), "mood");
+        assert_eq!(leading(&sharp, &[flat, moody, sharp]), "technically");
+        assert_eq!(leading(&flat, &[flat, flat]), "picture", "nothing sets it apart");
+    }
 
     #[test]
     fn a_variant_of_a_kept_image_is_spared_the_trash() {

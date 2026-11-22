@@ -889,6 +889,46 @@ impl Library {
         Ok(changed.into_iter().map(|(row, _)| row).collect())
     }
 
+    /// How the local model saw each of these photos, by row: only views of the render the
+    /// analysis measured (a photo rendered again since is looked at again).
+    pub fn views(&self, rows: &[u64]) -> anyhow::Result<HashMap<u64, crate::cull::View>> {
+        let named: Vec<(u64, String, (u64, u64))> = {
+            let keys = self.keys.read().unwrap();
+            let seen = self.seen.read().unwrap();
+            rows.iter()
+                .filter_map(|&row| {
+                    let key = keys.get(row as usize)?.as_ref()?;
+                    Some((row, key.clone(), seen.get(key)?.stamp))
+                })
+                .collect()
+        };
+        let mut stored = self.cull_book.views(named.iter().map(|(_, key, _)| key.as_str()))?;
+        Ok(named
+            .into_iter()
+            .filter_map(|(row, key, stamp)| {
+                stored.remove(&key).filter(|view| view.stamp == stamp).map(|view| (row, view))
+            })
+            .collect())
+    }
+
+    /// Keeps the local model's views of photos, by row, each stamped with the render the
+    /// analysis measured. A photo not measured has no stamp and is left out.
+    pub fn put_views(&self, views: Vec<(u64, u32, Vec<f32>, [f32; 4])>) -> anyhow::Result<()> {
+        let records: Vec<(String, crate::cull::View)> = {
+            let keys = self.keys.read().unwrap();
+            let seen = self.seen.read().unwrap();
+            views
+                .into_iter()
+                .filter_map(|(row, version, embedding, scores)| {
+                    let key = keys.get(row as usize)?.as_ref()?;
+                    let stamp = seen.get(key)?.stamp;
+                    Some((key.clone(), crate::cull::View { version, stamp, embedding, scores }))
+                })
+                .collect()
+        };
+        self.cull_book.put_views(&records)
+    }
+
     /// Of these photos, the ones picked as the ones to keep.
     pub fn kept_of(&self, rows: &[u64]) -> Vec<u64> {
         let keys = self.keys.read().unwrap();

@@ -792,6 +792,19 @@ it opens on the kind used last, or the other when there are none of it.
   frame already edited. A blurry frame never wins over one that is not. The caption says
   why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
   the two best are too close to call.
+- **Look** (`r`) has the local model look at the group, so composition, moment and mood
+  count too; **Look at all** (Shift+R) does every group in the background, oldest first,
+  until it is done or stopped (the button counts the groups). It needs the local model
+  from *Settings › AI* (about 1.5 GB, run on this computer: no photo leaves it); without
+  it the bar offers *Get the local model…*. The model holds each photo against pairs of
+  sentences (a well or a badly composed photograph; taken at the right moment, or too
+  early or late; a strong mood, or dull; sharp, or blurry) and scores it 0 to 100 on each,
+  above 50 the better side. Where the frames of a group differ by it, that is half the
+  suggestion and sharpness the other half; the caption names what sets the best frame
+  apart (*best composition*, *best moment*, *best mood*) and lists the four scores. Frames
+  it scores alike are still decided by sharpness. The scores tell the frames of one group
+  apart; they do not rate photos, and say little between different pictures. What the
+  model saw is kept, so a photo is looked at once (again after it is rendered anew).
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
@@ -1113,13 +1126,14 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | ↑ ↓ (cull) | Previous, next group, leaving this one as it is |
 | ← → Tab (cull) | Previous, next photo of the group |
 | `g` (cull) | Go to the suggested photo |
+| `r`, Shift+R (cull) | Have the local model look at this group; at every group, in the background |
 
 Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups (`library\cull.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups and what the local model saw of photos (`library\cull.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
   and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
   the background and what failed (AI runs, and why a photo was placed nowhere, included) is

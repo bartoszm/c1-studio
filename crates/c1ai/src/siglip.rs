@@ -52,7 +52,7 @@ const CONTEXT: usize = 64;
 /// The model's learned scale and bias, which turn a cosine into a probability: read from
 /// `logit_scale` (4.7244534, before `exp`) and `logit_bias` of google/siglip2-base-patch16-224,
 /// the checkpoint the ONNX export was made from; the export holds the towers only.
-const LOGIT_SCALE: f32 = 112.669;
+pub(crate) const LOGIT_SCALE: f32 = 112.669;
 const LOGIT_BIAS: f32 = -16.771_725;
 
 /// Says whether a stored suggestion was made the same way: by this version, with this
@@ -84,7 +84,12 @@ fn phrase(name: &str) -> String {
 fn pixels(jpeg: &[u8]) -> Result<Vec<f32>, AiError> {
     let image =
         image::load_from_memory(jpeg).map_err(|e| AiError::BadReply(format!("the image could not be read: {e}")))?;
-    let small = image::imageops::resize(&image.to_rgb8(), SIZE, SIZE, image::imageops::FilterType::CatmullRom);
+    Ok(pixels_of(&image.to_rgb8()))
+}
+
+/// [`pixels`] of a picture already read.
+fn pixels_of(image: &image::RgbImage) -> Vec<f32> {
+    let small = image::imageops::resize(image, SIZE, SIZE, image::imageops::FilterType::CatmullRom);
     let plane = (SIZE * SIZE) as usize;
     let mut out = vec![0f32; 3 * plane];
     for (i, pixel) in small.pixels().enumerate() {
@@ -92,7 +97,7 @@ fn pixels(jpeg: &[u8]) -> Result<Vec<f32>, AiError> {
             out[channel * plane + i] = pixel.0[channel] as f32 / 127.5 - 1.0;
         }
     }
-    Ok(out)
+    out
 }
 
 fn normalise(v: &mut [f32]) {
@@ -274,6 +279,83 @@ fn padded(ids: &[u32], eos: u32, pad: u32) -> Vec<u32> {
     tokens
 }
 
+/// Half the cores for a tower: the window stays quick.
+fn threads() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| n.get() / 2).max(1)
+}
+
+/// The embeddings of `phrases`, each as the model reads it ([`canonical`]): [`DIM`]
+/// numbers per phrase, in their order. Those worked out before come from the cache beside
+/// the model in `dir`; the rest are put through the text tower and kept there.
+fn text_embeddings(dir: &Path, phrases: &[String], stopped: &dyn Fn() -> bool) -> Result<Vec<f32>, AiError> {
+    let mut cache = TextCache::open(dir.join("text-cache-v1.bin"));
+    let mut missing: Vec<&String> = phrases.iter().filter(|p| !cache.known.contains_key(&TextCache::key(p))).collect();
+    missing.sort();
+    missing.dedup();
+    if !missing.is_empty() {
+        // The text tower is over a gigabyte in memory: let go once the phrases are done.
+        let mut tower = TextTower::open(dir, threads())?;
+        let mut new = Vec::with_capacity(missing.len());
+        let embedded = missing.iter().try_for_each(|phrase| {
+            if stopped() {
+                return Err(AiError::Stopped);
+            }
+            new.push((TextCache::key(phrase), tower.embed(phrase)?));
+            Ok(())
+        });
+        // What was embedded before a stop is kept: the next run starts from there.
+        cache.add(new)?;
+        embedded?;
+    }
+    let mut texts = Vec::with_capacity(phrases.len() * DIM);
+    for phrase in phrases {
+        texts.extend_from_slice(&cache.known[&TextCache::key(phrase)]);
+    }
+    Ok(texts)
+}
+
+/// The model's two towers for other uses than keywords: a picture's embedding, and the
+/// embeddings of sentences to hold it against. The image tower is loaded on opening; one
+/// picture at a time goes through it, on several threads of its own.
+pub struct Embedder {
+    dir: PathBuf,
+    image: Mutex<Session>,
+}
+
+impl Embedder {
+    /// `root` is the folder models are kept in.
+    pub fn open(root: &Path) -> Result<Self, AiError> {
+        if !SIGLIP2.installed(root) {
+            return Err(AiError::Local("the local model is not downloaded: get it in Settings > AI".into()));
+        }
+        let dir = SIGLIP2.dir(root);
+        let image = Mutex::new(session(&dir, "visual/model.onnx", threads())?);
+        Ok(Embedder { dir, image })
+    }
+
+    /// The picture's embedding: [`DIM`] numbers, of length 1.
+    pub fn image(&self, picture: &image::RgbImage) -> Result<Vec<f32>, AiError> {
+        let input = pixels_of(picture);
+        let side = SIZE as usize;
+        let tensor = Tensor::from_array(([1usize, 3, side, side], input)).map_err(local)?;
+        let mut session = self.image.lock().unwrap_or_else(|e| e.into_inner());
+        let outputs = session.run(ort::inputs![tensor]).map_err(local)?;
+        embedding(&outputs)
+    }
+
+    /// The embeddings of whole sentences (not wrapped in [`TEMPLATE`]), one per sentence.
+    pub fn texts(&self, sentences: &[&str], stopped: &dyn Fn() -> bool) -> Result<Vec<Vec<f32>>, AiError> {
+        let phrases: Vec<String> = sentences.iter().map(|s| canonical(s)).collect();
+        let flat = text_embeddings(&self.dir, &phrases, stopped)?;
+        Ok(flat.as_chunks::<DIM>().0.iter().map(|chunk| chunk.to_vec()).collect())
+    }
+}
+
+/// The cosine of two embeddings of length 1.
+pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
 /// The model once loaded: the image tower and every keyword's embedding.
 struct Loaded {
     image: Session,
@@ -326,38 +408,10 @@ impl Siglip {
         })
     }
 
-    fn threads() -> usize {
-        std::thread::available_parallelism().map_or(1, |n| n.get() / 2).max(1)
-    }
-
     fn load(&self) -> Result<Loaded, AiError> {
-        let threads = Self::threads();
-        let mut cache = TextCache::open(self.dir.join("text-cache-v1.bin"));
         let phrases: Vec<String> = self.names.iter().map(|n| phrase(n)).collect();
-        let mut missing: Vec<&String> =
-            phrases.iter().filter(|p| !cache.known.contains_key(&TextCache::key(p))).collect();
-        missing.sort();
-        missing.dedup();
-        if !missing.is_empty() {
-            // The text tower is over a gigabyte in memory: let go once the keywords are done.
-            let mut tower = TextTower::open(&self.dir, threads)?;
-            let mut new = Vec::with_capacity(missing.len());
-            let embedded = missing.iter().try_for_each(|phrase| {
-                if self.options.stopped() {
-                    return Err(AiError::Stopped);
-                }
-                new.push((TextCache::key(phrase), tower.embed(phrase)?));
-                Ok(())
-            });
-            // What was embedded before a stop is kept: the next run starts from there.
-            cache.add(new)?;
-            embedded?;
-        }
-        let mut texts = Vec::with_capacity(phrases.len() * DIM);
-        for phrase in &phrases {
-            texts.extend_from_slice(&cache.known[&TextCache::key(phrase)]);
-        }
-        Ok(Loaded { image: session(&self.dir, "visual/model.onnx", threads)?, texts })
+        let texts = text_embeddings(&self.dir, &phrases, &|| self.options.stopped())?;
+        Ok(Loaded { image: session(&self.dir, "visual/model.onnx", threads())?, texts })
     }
 
     /// Every keyword offered with how likely it goes with the photo, in the names' order.

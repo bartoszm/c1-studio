@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { untrack } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { SvelteSet } from "svelte/reactivity";
+  import { listen } from "@tauri-apps/api/event";
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
   import Compare from "./Compare.svelte";
@@ -11,7 +12,9 @@
   // at a time. The group's photos are compared side by side (four at a time of a big one,
   // all of them in the strip below), the one to keep is suggested, and Enter keeps the
   // active photo and deals with the rest as the settings say.
-  let { groups, at, series, filter, version, blocked, busy, done, removes, message, failed, onclose, onat, onseries, onactive, onkeep }: {
+  let { groups, at, series, filter, version, blocked, busy, done, removes, message, failed, onclose, onat, onseries, onactive, onkeep, onsettings }: {
+    /** Open Settings › AI, where the local model is downloaded. */
+    onsettings: () => void;
     /** The groups' ids, in the order they are gone through. */
     groups: string[];
     /** Which of them is shown. */
@@ -99,6 +102,56 @@
   });
   $effect(() => onactive(active));
 
+  /** The local model is looking at this group. */
+  let looking = $state(false);
+  /** It is looking at every group, in the background: how far it has got. */
+  let ranking = $state<api.RankState | null>(null);
+  async function rankThis() {
+    const group = id;
+    if (looking || !view || group === undefined) return;
+    if (!view.model) return onsettings();
+    looking = true;
+    try {
+      const next = await api.rankGroup($state.snapshot(filter) as Filter, group);
+      // The answer is of the group asked about: another may be shown by now.
+      if (id === group) {
+        const was = best;
+        view = next;
+        // The active photo follows the suggestion while it was on it.
+        if (active === was) setActive(next.order[0]);
+      }
+      error = null;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      looking = false;
+    }
+  }
+  async function rankAll() {
+    if (view && !view.model) return onsettings();
+    try {
+      if (ranking?.running) await api.stopRanking();
+      else await api.startRanking($state.snapshot(filter) as Filter, series);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  onMount(() => {
+    api.rankingState().then((s) => (ranking = s)).catch(() => {});
+    const heard = [
+      // The group shown may be the one just looked at.
+      listen<api.RankState>("ranking", (e) => {
+        const before = ranking?.done;
+        ranking = e.payload;
+        if (e.payload.done !== before && view?.judge === "sharpness") read(true);
+      }),
+      listen("ranking-done", () => read(true)),
+    ];
+    return () => heard.forEach((h) => h.then((off) => off()));
+  });
+  // The model is let go with the screen (a run in the background keeps it).
+  onDestroy(() => { api.cullDone().catch(() => {}); });
+
   function setActive(row: number | undefined) {
     if (row === undefined) return;
     active = row;
@@ -129,6 +182,7 @@
       case "group": go(action.delta); break;
       case "photo": setActive(stepPhoto(rows, active, action.delta)); break;
       case "best": setActive(best); break;
+      case "rank": if (action.all) rankAll(); else rankThis(); break;
     }
     return true;
   }
@@ -162,7 +216,8 @@
     local: "By the local model's view of each photo, with sharpness and your own marks",
     sharpness: "By sharpness, clipped tones and your own marks (rating, edits)",
   };
-  const restTitle = "What Enter does with the photos of the group you do not keep. More in Settings › Culling.";
+  const pct = (v: number) => Math.round(v * 100);
+  const restTitle ="What Enter does with the photos of the group you do not keep. More in Settings › Culling.";
 </script>
 
 <!-- With nothing to compare, the comparison is not there to pass the keys on: they still
@@ -182,6 +237,12 @@
   {#if row === best}<span class="best" title={p?.reasons.join(", ")}>suggested</span>{/if}
   {#if marked.has(row)}<span class="keep">keep</span>{:else if p?.kept}<span class="keep was" title="Picked before as the one to keep">kept</span>{/if}
   {#if p && row !== best && p.reasons.length}<span class="why">{p.reasons.join(", ")}</span>{/if}
+  {#if p?.aesthetic}
+    {@const a = p.aesthetic}
+    <span class="why" title="How the local model saw this photo, 0 to 100, above 50 the better side. It tells the frames of a group apart; it is no rating.">
+      composition {pct(a.composition)} · moment {pct(a.moment)} · mood {pct(a.mood)} · technical {pct(a.technical)}
+    </span>
+  {/if}
 {/snippet}
 
 <div class="cull">
@@ -203,6 +264,27 @@
     </span>
     {#if view}<span class="judge" title={JUDGES[view.judge]}>{judged}</span>{/if}
     <span class="end">
+      <span class="model">
+        {#if view && !view.model}
+          <button class="link" title="The local model (SigLIP 2, about 1.5 GB, run on this computer) can weigh composition, moment and mood too: get it in Settings › AI" onclick={onsettings}>Get the local model…</button>
+        {:else}
+          <button
+            class="toggle"
+            disabled={looking || !view}
+            title="Have the local model look at this group's photos: composition, moment and mood count beside sharpness, where they tell the frames apart (r)"
+            onclick={rankThis}
+          >{looking ? "Looking…" : "Look"}</button>
+          <button
+            class="toggle"
+            class:on={ranking?.running}
+            title={ranking?.running
+              ? "The local model is looking at every group, in the background: click to stop (Shift+R). What it saw so far is kept."
+              : "Have the local model look at every group here, in the background, oldest first (Shift+R)"}
+            onclick={rankAll}
+          >{ranking?.running ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
+          {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
+        {/if}
+      </span>
       <label class="rest" title={restTitle}>
         The rest:
         <select
@@ -231,7 +313,7 @@
         {message}
         {failed}
         embedded
-        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · 0–5 - + * Delete edit · z zoom · Esc"
+        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · r look · 0–5 - + * Delete edit · z zoom · Esc"
         onkeyfirst={onkey}
         {badge}
         {onclose}
@@ -297,6 +379,8 @@
   .judge { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 200px; }
   .end { display: flex; align-items: center; gap: 10px; margin-left: auto; }
   .rest { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  .model { display: flex; align-items: center; gap: 4px; }
+  .model .failed { color: var(--error); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .close { padding: 0 6px; font-size: 20px; line-height: 1; color: var(--muted); }
   .close:hover { color: var(--text); }
   .empty { align-self: center; justify-self: center; color: var(--muted); }

@@ -1431,6 +1431,39 @@ fn a_pick_stands_for_its_group_when_stacked_until_taken_back() {
 }
 
 #[test]
+fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let (one, two, three) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3));
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [90; 3], 100.0, 1)),
+        (key(2), (1, 1), look(600, 400, [90; 3], 200.0, 2)),
+    ])
+    .unwrap();
+    // Photo 3 is not measured: there is no render to say the view is of.
+    lib.put_views(vec![
+        (one, 1, vec![1.0, 0.0], [0.1, 0.2, 0.3, 0.4]),
+        (two, 1, vec![0.0, 1.0], [0.5; 4]),
+        (three, 1, vec![0.5, 0.5], [0.9; 4]),
+    ])
+    .unwrap();
+    let views = lib.views(&[one, two, three]).unwrap();
+    assert_eq!(views.len(), 2);
+    assert_eq!((views[&one].scores, views[&one].embedding.as_slice()), ([0.1, 0.2, 0.3, 0.4], [1.0, 0.0].as_slice()));
+    // Photo 1 is rendered again (another stamp): what the model saw is of the old render.
+    lib.put_analyses(vec![(key(1), (2, 2), look(600, 400, [90; 3], 150.0, 1))]).unwrap();
+    let views = lib.views(&[one, two]).unwrap();
+    assert_eq!(views.keys().copied().collect::<Vec<_>>(), [two]);
+    // Looked at again, it is seen again; and the views outlive the library being closed.
+    lib.put_views(vec![(one, 2, vec![0.6, 0.8], [0.7; 4])]).unwrap();
+    let dir = lib.dir().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    let views = lib.views(&[one, two]).unwrap();
+    assert_eq!((views[&one].version, views[&two].version), (2, 1));
+}
+
+#[test]
 fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
     let (_d, lib, source) = setup();
     for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {

@@ -81,6 +81,17 @@ export default {
     check("Ctrl+Z brings the group back, and shows it", undone.photos.length === rows.length && undone.photos.every((p) => !p.kept) && /series 1 of/.test((await d.evaluate(BAR)) ?? ""), { photos: undone.photos.length, bar: await d.evaluate(BAR) });
     check("…with every photo it had", JSON.stringify(await stacked(first)) === JSON.stringify(wasStacked), { now: await stacked(first), wasStacked });
 
+    // With the local model downloaded (Settings > AI): r has it look at the group shown.
+    if (before.model) {
+      await key("r");
+      await until(`/composition \\d+/.test(document.querySelector(".cull .caption")?.innerText ?? "")`, 120000);
+      const looked = await group(first);
+      check("r has the local model look at every photo of the group", looked.photos.every((p) => p.aesthetic), { judge: looked.judge, order: looked.order });
+      check("…and the suggestion follows what it saw", (await d.evaluate(SUGGESTED)) === looked.order[0], { suggested: await d.evaluate(SUGGESTED), order: looked.order });
+    } else {
+      console.log(JSON.stringify({ step: "the local model is not downloaded: r is not checked", ok: true }));
+    }
+
     await key("Escape");
     check("Esc closes it", !(await d.evaluate(OPEN)), await d.evaluate(OPEN));
     void second;

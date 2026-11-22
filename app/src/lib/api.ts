@@ -691,6 +691,9 @@ export const groupIds = async (filter: Filter, series: boolean): Promise<string[
 /** What the order of a group's photos rests on: a model that compared them, the local
  *  model's view of each, or what was measured alone. */
 export type Judge = "cloud" | "local" | "sharpness";
+/** The local model's view of a photo: each 0 to 1, above a half the better side. It tells the
+ *  frames of a group apart; it is no rating. */
+export type Aesthetic = { composition: number; moment: number; mood: number; technical: number };
 /** A photo of a group, with what the order goes by. `kept`: picked before as the one to keep. */
 export type CullPhoto = {
   row: number;
@@ -701,13 +704,15 @@ export type CullPhoto = {
   kept: boolean;
   sharpness: number;
   focus: string;
+  /** How the local model saw it, once it has looked. */
+  aesthetic: Aesthetic | null;
   /** 0 to 1, next to the others of its group. */
   score: number;
   reasons: string[];
 };
 /** A group's photos the filter selects, oldest first, and their rows in order of which to
- *  keep. `close`: the two best are too close to call. */
-export type CullGroup = { id: string; photos: CullPhoto[]; order: number[]; judge: Judge; close: boolean };
+ *  keep. `close`: the two best are too close to call. `model`: the local model is downloaded. */
+export type CullGroup = { id: string; photos: CullPhoto[]; order: number[]; judge: Judge; close: boolean; model: boolean };
 /** What becomes of the photos of a group that are not kept, and what the kept ones are marked with. */
 export type Rest = "Trash" | "Hide" | "Nothing" | { Rating: number } | { Color: Color };
 export type Mark = "Nothing" | { Rating: number } | { Color: Color };
@@ -720,6 +725,17 @@ export const cullApply = (keep: number[], rest: number[], action: Rest, mark: Ma
   invoke<CullStep>("cull_apply", { keep, rest, action, mark });
 /** Takes a pick back, or makes it again: returns the step that turns it round once more. */
 export const cullRevert = (step: CullStep) => invoke<CullStep>("cull_revert", { step });
+/** Has the local model look at one group's photos; the group in its new order. */
+export const rankGroup = (filter: Filter, id: string) => invoke<CullGroup>("rank_group", { filter, id });
+/** How far looking at every group has got: groups done of how many, photos that failed. */
+export type RankState = { running: boolean; done: number; total: number; failed: number; error: string | null };
+/** Has the local model look at every series (or duplicate group) under the filter, in the
+ *  background: `ranking` events carry a RankState, `ranking-done` ends it. */
+export const startRanking = (filter: Filter, series: boolean) => invoke<void>("start_ranking", { filter, series });
+export const stopRanking = () => invoke<void>("stop_ranking");
+export const rankingState = () => invoke<RankState>("ranking_state");
+/** The choosing is over: the local model is let go. */
+export const cullDone = () => invoke<void>("cull_done");
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
 /** Where home is: never part of a trip. No city: the whole country, so only trips abroad. */
