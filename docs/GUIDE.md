@@ -802,11 +802,21 @@ you have not picked from yet: closed and opened again, it goes on where it was l
   sentences (a well or a badly composed photograph; taken at the right moment, or too
   early or late; a strong mood, or dull; sharp, or blurry) and scores it 0 to 100 on each,
   above 50 the better side. Where the frames of a group differ by it, that is half the
-  suggestion and sharpness the other half; the caption names what sets the best frame
-  apart (*best composition*, *best moment*, *best mood*) and lists the four scores. Frames
-  it scores alike are still decided by sharpness. The scores tell the frames of one group
-  apart; they do not rate photos, and say little between different pictures. What the
-  model saw is kept, so a photo is looked at once (again after it is rendered anew).
+  suggestion and sharpness the other half, and the caption lists the four scores. The
+  scores are rough (the model reads a small picture): the caption names one (*best
+  composition*, *best moment*, *best mood*) only where the best frame is at least 5 points
+  above the group's average on it, and says *best picture* otherwise. Frames it scores
+  alike are still decided by sharpness. The scores tell the frames of one group apart;
+  they do not rate photos, and say little between different pictures. What the model saw
+  is kept, so a photo is looked at once (again after it is rendered anew).
+- The model's view counts only once it has seen every photo of the group. *Look at all*
+  looks at the thumbnails and previews there are and makes none: a photo with neither is
+  counted (*3 failed* beside the button) and its group stays decided by sharpness, with
+  *1 photo not looked at* in the bar. *Look* on that group makes what is missing. Why a
+  photo could not be looked at is in `events.log` in the catalog's folder. *Stop* ends
+  the run after the photo it is on; the group it was in is not counted, and what was
+  seen of it is kept. The model is held in memory while this screen is open or a run goes
+  on, and let go after.
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then

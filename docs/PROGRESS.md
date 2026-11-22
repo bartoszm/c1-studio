@@ -1864,22 +1864,30 @@ Tests: `rank` (7), `cull` book, `a_pick_stands_for_its_group_when_stacked_until_
 *Look* (`r`) and *Look at all* (Shift+R) put the group's photos through SigLIP 2.
 
 - **`c1ai::siglip::Embedder`**: the image tower alone (`image(&RgbImage)`), and sentences
-  through the text tower with the keywords' cache (`texts`). `Siglip` (keywords) is as it
-  was; its text embedding moved into `text_embeddings`, shared by both.
+  through the text tower with the keywords' cache (`texts`). `Siglip` (keywords) puts its
+  photos through an `Embedder` of its own; its text embedding moved into
+  `text_embeddings`, shared by both. The 24 sentences are embedded in one call, so the
+  text tower loads once at most.
 - **`c1ai::aesthetic`**: four axes (composition, moment, mood, technical), three sentences
   each way. Per axis, `sigmoid(scale × (mean cos to the good − mean cos to the bad))` with
   the model's own scale (112.7); the bias falls out of the difference. `overall` weighs
-  them 0.3, 0.3, 0.25, 0.15.
+  them 0.3, 0.3, 0.25, 0.15. `Aesthetic::as_array` / `From<[f32; 4]>` are the one place
+  that ties a field to its place in `AXES`.
 - **Kept in `cull.redb`** (table `views`): version, the analysis' stamp of the render,
   the 768 numbers and the four scores, 3 KB a photo, only for photos looked at. A view of
   another render is dropped (`Library::views`); one of another scoring version is scored
   again from its embedding, without the model.
 - **`rank_group`**, and the run `start_ranking` / `stop_ranking` / `ranking_state` with
   `ranking` events: one at a time, groups oldest first, stopped when another catalog
-  opens. The model is loaded when first asked for and let go when the screen closes.
+  opens. One `RankJob` (app `cull.rs`) holds the run's flags, its state with the session
+  it is of (another catalog is told of no run), and the model: loaded by the first photo
+  that needs it, outside the slot's lock, and let go when the screen is closed and no run
+  goes on. The run reads thumbnails and previews there are (`pixels_at_hand`) and makes
+  none; a look by hand makes them. A photo that cannot be looked at is logged and counted,
+  and `CullGroupView.unseen` says how many of a group have no view.
 - **In the rank** the view is half the score when every frame has one and they differ by
   0.04; the caption says *best composition / moment / mood* by the axis the frame is
-  furthest above its group on.
+  furthest above its group's mean on, when that is 0.05 at least, else *best picture*.
 
 Measured on the fuji copy (105,844 photos, 3,822 series), debug build, no graphics card:
 the first group took 5.1 s with the model's load (6 frames), a group seen before 76 ms,
@@ -1889,8 +1897,9 @@ line and stay with sharpness. Looked at by eye in two (a street performer with a
 put the frame facing the camera first and the one bent away last; a man walking into a
 shaft of light over two men standing) the order was one a person would give. Frames of
 one series are 0.88 to 0.99 alike by cosine, so that is not used to tell them apart.
-Not done: sharing one image tower between a local Describe run and this (each loads its
-own).
+Not done: sharing one loaded image tower between a local Describe run and this (the code
+is one, but each loads its own); more than one picture per run of the tower (the export's
+batch axis is not checked).
 
 Next slice: *Ask AI*, the group's frames to Claude or Gemini for an order with a reason
 per frame.
