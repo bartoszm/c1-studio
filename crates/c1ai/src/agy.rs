@@ -156,6 +156,31 @@ impl Agy {
         }
     }
 
+    /// agy for a question about one image ([`Agy::ask_image`]): `system` and the answer's
+    /// shape `schema` stand for the description prompt.
+    pub fn asking(program: PathBuf, options: Options, system: &str, schema: &Value) -> Self {
+        Agy {
+            program,
+            options,
+            system: system.to_string(),
+            schema: schema.to_string(),
+            prompt: 0,
+            sheets: false,
+            vocabulary: Vocabulary::default(),
+        }
+    }
+
+    /// One question about the image in `jpeg`, answered in the shape the instance was made
+    /// with. Returns the answer and the call's record (counted against the plan: no cost).
+    pub fn ask_image(&self, text: &str, jpeg: &[u8]) -> Result<(Value, RunRecord), AiError> {
+        let prompt = |image: &Path| {
+            format!("{}\n\nRead the image at {}.\n{text}\n\n{}", self.system, image.display(), self.shape())
+        };
+        let (envelope, _, millis) = self.call_again(&prompt, jpeg, &None)?;
+        let answer = extract_json(&envelope.response).ok_or_else(|| no_json(&envelope.response))?;
+        Ok((answer, self.record(&envelope.usage, millis, envelope.response.clone())))
+    }
+
     fn args(&self, prompt: &str, dir: &Path) -> Vec<String> {
         let mut args: Vec<String> =
             vec!["--print".into(), prompt.into(), "--add-dir".into(), dir.display().to_string()];

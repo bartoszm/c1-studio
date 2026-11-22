@@ -805,6 +805,21 @@ it opens on the kind used last, or the other when there are none of it.
   it scores alike are still decided by sharpness. The scores tell the frames of one group
   apart; they do not rate photos, and say little between different pictures. What the
   model saw is kept, so a photo is looked at once (again after it is rendered anew).
+- **Ask AI** (`a`) shows the group's frames together to the model *Settings › AI* has
+  chosen (Claude with an API key or on a plan, or Gemini) and asks which to keep. It
+  answers with an order, a reason of a few words per frame (*eyes closed*, *best gesture,
+  slightly soft*) and a line on how clear the choice is; its order is then the
+  suggestion, the reasons are in the captions, and the bar says who suggested. You still
+  choose: Enter keeps the active photo. Claude is sent each frame as an image of its own,
+  1024 px on the long side; Gemini one sheet with the frames numbered. At most 16 frames
+  are sent: of a bigger group the 16 best so far, and the others follow in the order.
+  **Ask about all…** (Shift+A) counts the groups not asked about yet and says how many
+  calls and photos that is, and what it costs with an API key (nothing more on a plan or
+  with Gemini, which count against their limits); Enter starts it, Esc does not. It runs
+  in the background, oldest group first, until done or stopped; three groups in a row
+  with no answer, or an error no group would fare better with (no key, a limit reached),
+  end it. An answer is kept until the group's photos change (one trashed, one added), so
+  a group is asked about once. The local model cannot be asked: it compares nothing.
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
@@ -1127,13 +1142,14 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | ← → Tab (cull) | Previous, next photo of the group |
 | `g` (cull) | Go to the suggested photo |
 | `r`, Shift+R (cull) | Have the local model look at this group; at every group, in the background |
+| `a`, Shift+A (cull) | Ask AI (Claude or Gemini) which frame of this group to keep; of every group, after saying what it takes |
 
 Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups and what the local model saw of photos (`library\cull.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups, what the local model saw of photos and what a model said of a group (`library\cull.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
   and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
   the background and what failed (AI runs, and why a photo was placed nowhere, included) is

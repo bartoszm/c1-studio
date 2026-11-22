@@ -1464,6 +1464,33 @@ fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
 }
 
 #[test]
+fn a_models_verdict_on_a_group_holds_while_the_group_has_the_same_photos() {
+    let (_d, lib, _source) = setup();
+    let (one, two, three) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3));
+    assert!(lib.verdict(&[one, two, three]).unwrap().is_none(), "not asked yet");
+    // Shown 2 then 3 of the three (as a group over the most a question holds would be),
+    // the model keeps the second frame shown.
+    let said = c1index::cull::Verdict {
+        version: 1,
+        at: 7,
+        provider: "claude".into(),
+        model: "m".into(),
+        order: vec![1, 0],
+        reasons: vec!["eyes closed".into(), "the gesture".into()],
+        note: "clear".into(),
+        ..Default::default()
+    };
+    lib.put_verdict(&[one, two, three], &[two, three], said).unwrap();
+    let (verdict, places) = lib.verdict(&[three, one, two]).unwrap().unwrap();
+    assert_eq!((verdict.provider.as_str(), verdict.sent.len(), verdict.note.as_str()), ("claude", 2, "clear"));
+    assert_eq!(places.get(&three), Some(&(0, "the gesture".to_owned())));
+    assert_eq!(places.get(&two), Some(&(1, "eyes closed".to_owned())));
+    assert_eq!(places.get(&one), None, "not shown to the model");
+    // A photo fewer (trashed, say) is another group: asked about again.
+    assert!(lib.verdict(&[two, three]).unwrap().is_none());
+}
+
+#[test]
 fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
     let (_d, lib, source) = setup();
     for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {

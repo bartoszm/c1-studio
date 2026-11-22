@@ -2,24 +2,32 @@
 //! in order of which to keep, and the pick itself — the photos kept, and what becomes of
 //! the rest — as one step that can be taken back.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use c1ai::aesthetic::{self, Aesthetic, Prompts};
+use c1ai::agy::{self, Agy};
+use c1ai::claude::{self, Claude};
+use c1ai::claude_code::{self, ClaudeCode};
+use c1ai::keys::{self, ANTHROPIC};
 use c1ai::models::SIGLIP2;
+use c1ai::pick::{self, PickAsk};
 use c1ai::siglip::Embedder;
+use c1ai::{AiError, Brief, Vocabulary};
 use c1analysis::{Candidate, Judge};
 use c1index::{Filter, GroupSort, Library, QueryOptions, Sort};
 use c1model::{ColorLabel, Op, Removal};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::ai::{AiImage, models_root, pixels};
+use crate::ai::{Access, AiImage, load_settings, models_root, on_plan, pixels};
 use crate::{App, Lowers, Session, is_current, text};
 
 /// The long edge of the picture the local model is given: it squashes it to 224 itself.
 const LOOK_EDGE: u32 = 448;
+/// A run asking about every group ends after this many groups in a row got no answer.
+const ASK_FAILURES: usize = 3;
 
 /// A photo of a group, with what the order goes by.
 #[derive(Serialize)]
@@ -52,6 +60,20 @@ pub(crate) struct CullGroupView {
     close: bool,
     /// The local model is downloaded: it can be asked to look.
     model: bool,
+    /// What a model that compared the frames said, if one was asked.
+    verdict: Option<VerdictView>,
+}
+
+/// A model's word on a group, for the bar.
+#[derive(Serialize)]
+pub(crate) struct VerdictView {
+    /// `claude`, `claude-code`, `gemini`.
+    provider: String,
+    model: String,
+    /// How clear the choice is, in its words.
+    note: String,
+    /// How many of the group's frames it was shown.
+    sent: usize,
 }
 
 /// The rows of a group among the photos `filter` selects, oldest first: every frame that
@@ -90,6 +112,11 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
     // Only views scored the way photos are scored now: older ones wait to be scored again.
     let views = library.views(&rows).map_err(text)?;
     let seen = |row: u64| views.get(&row).filter(|v| v.version == aesthetic::VERSION).map(|v| aesthetic_of(v.scores));
+    // A model's answer to the question as it is asked now, about these very photos.
+    let (verdict, places) = match library.verdict(&rows).map_err(text)? {
+        Some((verdict, places)) if verdict.version == pick::VERSION => (Some(verdict), places),
+        _ => (None, Default::default()),
+    };
     let classes = library.class_settings();
     let mut photos = Vec::with_capacity(rows.len());
     let mut candidates = Vec::with_capacity(rows.len());
@@ -104,7 +131,7 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
             rating: photo.rating,
             edited: photo.edit.edited,
             aesthetic: seen(row).map(|s| s.overall()),
-            verdict: None,
+            verdict: places.get(&row).cloned(),
         });
         photos.push(CullPhoto {
             row,
@@ -139,7 +166,199 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
         judge: ranked.judge,
         close: ranked.close,
         model: SIGLIP2.installed(&models_root()),
+        verdict: verdict.map(|v| VerdictView {
+            sent: v.sent.len(),
+            provider: v.provider,
+            model: v.model,
+            note: v.note,
+        }),
     })
+}
+
+/// The frames of a group a model is shown: all of them, or of a group bigger than a
+/// question holds the best by what is known so far, in the order taken.
+fn frames_to_ask(view: &CullGroupView) -> Vec<u64> {
+    let best: HashSet<u64> = view.order.iter().copied().take(pick::MAX_FRAMES).collect();
+    view.photos.iter().map(|p| p.row).filter(|row| best.contains(row)).collect()
+}
+
+/// Asks the model the AI settings choose which frame of a group to keep, and keeps its
+/// answer. Claude gets each frame as an image of its own; Gemini, which takes one file,
+/// gets them on one sheet. `stop` ends a call under way.
+fn ask_about(s: &Session, filter: &Filter, id: &str, stop: &Arc<AtomicBool>) -> Result<(), AiError> {
+    let local = |e: String| AiError::Local(e);
+    let view = group_view(&s.library, filter, id).map_err(local)?;
+    let rows: Vec<u64> = view.photos.iter().map(|p| p.row).collect();
+    let sent = frames_to_ask(&view);
+    if sent.len() < 2 {
+        return Err(AiError::Local("there is one photo here: nothing to compare".into()));
+    }
+    let mut pictures = Vec::with_capacity(sent.len());
+    for &row in &sent {
+        let id = s.library.photo_id(row).ok_or_else(|| AiError::Local("a photo of the group is gone".into()))?;
+        let picture =
+            pixels(s, &id, AiImage::Preview, claude::FRAME_EDGE).map_err(|e| AiError::Local(format!("{e:#}")))?;
+        pictures.push(picture.ok_or_else(|| AiError::Local("a photo of the group has no image to send".into()))?);
+    }
+    let settings = load_settings(s);
+    let options = claude::Options {
+        model: settings.model.clone(),
+        effort: settings.effort.clone(),
+        attempts: 3,
+        stop: stop.clone(),
+    };
+    let (system, schema) = (pick::system(), pick::schema());
+    let ask =
+        PickAsk { frames: sent.len(), series: id.starts_with("series:"), sheet: settings.access == Access::Gemini };
+    let message = pick::message(&ask);
+    let jpegs = || pictures.iter().map(|p| c1image::encode_jpeg(p, 88)).collect::<Vec<_>>();
+    let (answer, record) = match settings.access {
+        Access::Local => {
+            return Err(AiError::Local(
+                "the local model cannot compare frames (that is Look): choose Claude or Gemini in Settings > AI".into(),
+            ));
+        }
+        Access::Api => {
+            let key = keys::get(&ANTHROPIC)?.ok_or(AiError::NoKey)?;
+            Claude::new(key, options, &Brief::default(), Vocabulary::default())?.ask_images(
+                &system,
+                &message,
+                &jpegs(),
+                &schema,
+            )?
+        }
+        Access::Plan => {
+            let program = claude_code::find().ok_or_else(|| {
+                AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into())
+            })?;
+            if !on_plan(&claude_code::status(&program)?) {
+                return Err(AiError::Cli(
+                    "Claude Code is not signed in with a Claude plan: run `claude auth login`".into(),
+                ));
+            }
+            ClaudeCode::asking(program, options, &system, schema)?.ask_images(&message, &jpegs())?
+        }
+        Access::Gemini => {
+            let program = agy::find()
+                .ok_or_else(|| AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()))?;
+            let options = claude::Options { model: settings.gemini_model.clone(), ..options };
+            let sheet = c1image::encode_jpeg(&c1image::frames_sheet(&pictures), 88);
+            Agy::asking(program, options, &system, &schema).ask_image(&message, &sheet)?
+        }
+    };
+    // Counted with the rest of what the models were asked, under the first frame.
+    let _ = s.library.record_call(sent[0], &record);
+    let said = pick::read(&answer, sent.len())?;
+    let verdict = c1index::cull::Verdict {
+        version: pick::VERSION,
+        at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
+        provider: record.provider.clone(),
+        model: record.model.clone(),
+        sent: Vec::new(),
+        order: said.order.iter().map(|&i| i as u32).collect(),
+        reasons: said.reasons,
+        note: said.note,
+    };
+    s.library.put_verdict(&rows, &sent, verdict).map_err(|e| AiError::Local(format!("{e:#}")))
+}
+
+/// Asks a model (Claude or Gemini, as the AI settings say) which frame of one group to
+/// keep, and gives the group in the order it said, with its reasons.
+#[tauri::command]
+pub(crate) async fn ask_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        ask_about(&s, &filter, &id, &Arc::default()).map_err(text)?;
+        group_view(&s.library, &filter, &id)
+    })
+    .await
+    .map_err(text)?
+}
+
+/// What asking a model about every group would come to.
+#[derive(Serialize)]
+pub(crate) struct AskEstimate {
+    /// Groups not asked about yet (as they are now), and the frames that would be sent.
+    groups: usize,
+    photos: usize,
+    /// Groups left out: asked about already.
+    skipped: usize,
+    /// US dollars, with an API key; nothing on a plan or with Gemini.
+    cost: f64,
+    plan: bool,
+    /// `Claude`, `Gemini`; `Local` cannot be asked.
+    via: &'static str,
+    model: String,
+}
+
+/// A group by id, with its rows.
+type Unasked = (String, Vec<u64>);
+
+/// The groups among the photos `filter` selects a model has not been asked about, and how
+/// many it has.
+fn unasked(s: &Session, filter: &Filter, series: bool) -> Result<(Vec<Unasked>, usize), String> {
+    let groups = s.library.groups_sorted(filter, series, GroupSort::Oldest, false, 0, usize::MAX).map_err(text)?.groups;
+    let total = groups.len();
+    // Every group's rows from one read of the filter's photos, oldest first, as
+    // [`group_rows`] gives them one group at a time: a read per group takes a minute over
+    // a few thousand groups.
+    let all = Filter {
+        duplicates: filter.duplicates || !series,
+        series: filter.series || series,
+        stacked: false,
+        ..filter.clone()
+    };
+    let rows = s.library.query(&all, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows;
+    let mut members: HashMap<String, Vec<u64>> = HashMap::new();
+    for row in rows {
+        let Some(look) = s.library.look(row) else { continue };
+        if let Some(id) = if series { look.series } else { look.duplicates } {
+            members.entry(id).or_default().push(row);
+        }
+    }
+    let mut todo = Vec::new();
+    for group in groups {
+        let Some(rows) = members.remove(&group.id) else { continue };
+        let asked = s.library.verdict(&rows).map_err(text)?.is_some_and(|(v, _)| v.version == pick::VERSION);
+        if !asked && rows.len() > 1 {
+            todo.push((group.id, rows));
+        }
+    }
+    let skipped = total - todo.len();
+    Ok((todo, skipped))
+}
+
+/// What asking about every series (or duplicate group) under `filter` would take.
+#[tauri::command]
+pub(crate) async fn ask_estimate(app: State<'_, App>, filter: Filter, series: bool) -> Result<AskEstimate, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_settings(&s);
+        let (todo, skipped) = unasked(&s, &filter, series)?;
+        let photos: usize = todo.iter().map(|(_, rows)| rows.len().min(pick::MAX_FRAMES)).sum();
+        let model = claude::model(&settings.model);
+        let (via, name, cost) = match settings.access {
+            Access::Local => ("Local", SIGLIP2.name.to_string(), 0.0),
+            Access::Gemini => ("Gemini", settings.gemini_model.clone(), 0.0),
+            Access::Plan => ("Claude", model.map_or(settings.model.clone(), |m| m.name.to_string()), 0.0),
+            Access::Api => (
+                "Claude",
+                model.map_or(settings.model.clone(), |m| m.name.to_string()),
+                model.map_or(0.0, |m| claude::estimate_frames(&m, todo.len(), photos)),
+            ),
+        };
+        Ok(AskEstimate {
+            groups: todo.len(),
+            photos,
+            skipped,
+            cost,
+            plan: settings.access != Access::Api,
+            via,
+            model: name,
+        })
+    })
+    .await
+    .map_err(text)?
 }
 
 /// The local model as ranking uses it: the image tower and the sentences photos are held
@@ -211,24 +430,27 @@ pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) 
     .map_err(text)?
 }
 
-/// How far looking at every group has got.
+/// How far looking at every group, or asking about it, has got.
 #[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct RankState {
     running: bool,
-    /// Groups looked at, of how many.
+    /// A model is asked to compare each group's frames; else the local model looks at each photo.
+    cloud: bool,
+    /// Groups looked at (or asked about), of how many.
     done: usize,
     total: usize,
-    /// Photos that could not be looked at.
+    /// Photos that could not be looked at; groups that got no answer.
     failed: usize,
     /// Why the last run ended early.
     error: Option<String>,
 }
 
-// One run at a time, whatever the catalog open: the model is one.
+// One run at a time, whatever the catalog open: the local model is one, and two runs
+// asking a model would only race for its limits.
 static RANKING: AtomicBool = AtomicBool::new(false);
-static RANK_STOP: AtomicBool = AtomicBool::new(false);
+static RANK_STOP: LazyLock<Arc<AtomicBool>> = LazyLock::new(Arc::default);
 static RANK_STATE: Mutex<RankState> =
-    Mutex::new(RankState { running: false, done: 0, total: 0, failed: 0, error: None });
+    Mutex::new(RankState { running: false, cloud: false, done: 0, total: 0, failed: 0, error: None });
 
 fn report_rank(app: &AppHandle, change: impl FnOnce(&mut RankState)) {
     let state = {
@@ -237,6 +459,37 @@ fn report_rank(app: &AppHandle, change: impl FnOnce(&mut RankState)) {
         state.clone()
     };
     let _ = app.emit("ranking", state);
+}
+
+/// Asks a model about every group not asked about yet, oldest first. A group that gets no
+/// answer is counted and passed over; an error no other group would fare better with (no
+/// key, a limit reached), or [`ASK_FAILURES`] groups failing in a row, ends the run.
+fn run_asking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
+    let (todo, _) = unasked(s, filter, series)?;
+    report_rank(app, |state| {
+        *state = RankState { running: true, cloud: true, total: todo.len(), ..RankState::default() }
+    });
+    let mut in_a_row = 0;
+    for (id, _) in todo {
+        if RANK_STOP.load(Ordering::Relaxed) || !is_current(app, s) {
+            break;
+        }
+        match ask_about(s, filter, &id, &RANK_STOP) {
+            Ok(()) => in_a_row = 0,
+            Err(AiError::Stopped) => break,
+            Err(e) if e.stops_run() => return Err(e.to_string()),
+            Err(e) => {
+                in_a_row += 1;
+                s.log.event(&format!("Asking which frame of {id} to keep failed: {e}"), &[]);
+                report_rank(app, |state| state.failed += 1);
+                if in_a_row >= ASK_FAILURES {
+                    return Err(format!("{ASK_FAILURES} groups in a row got no answer; the last: {e}"));
+                }
+            }
+        }
+        report_rank(app, |state| state.done += 1);
+    }
+    Ok(())
 }
 
 fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
@@ -258,10 +511,11 @@ fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool)
 }
 
 /// Has the local model look at every series (or duplicate group) among the photos `filter`
-/// selects, in the background, unless a run is under way. Each group's views are kept as
-/// they come, so a run stopped keeps what it saw.
+/// selects, in the background, unless a run is under way; with `cloud`, asks the model the
+/// AI settings choose about each group instead. What comes is kept group by group, so a
+/// run stopped keeps what it got.
 #[tauri::command]
-pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) -> Result<(), String> {
+pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool, cloud: bool) -> Result<(), String> {
     let s = app.state::<App>().session()?;
     if RANKING.swap(true, Ordering::SeqCst) {
         return Ok(());
@@ -269,7 +523,9 @@ pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) 
     RANK_STOP.store(false, Ordering::SeqCst);
     std::thread::spawn(move || {
         let _done = Lowers(&RANKING);
-        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_ranking(&app, &s, &filter, series)));
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if cloud { run_asking(&app, &s, &filter, series) } else { run_ranking(&app, &s, &filter, series) }
+        }));
         let error = match run {
             Ok(Ok(())) => None,
             Ok(Err(e)) => Some(e),

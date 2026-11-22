@@ -31,6 +31,39 @@ pub struct View {
     pub scores: [f32; 4],
 }
 
+/// A group's photo keys, sorted and joined → postcard [`Verdict`]: a group that gains or
+/// loses a photo is another group, and is asked about again.
+const VERDICTS: TableDefinition<&str, &[u8]> = TableDefinition::new("verdicts");
+
+/// What a model that compared a group's frames said.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Verdict {
+    /// The version of the question (`c1ai::pick::VERSION`): another's is asked again.
+    pub version: u32,
+    /// When it was asked, epoch ms.
+    pub at: i64,
+    pub provider: String,
+    pub model: String,
+    /// The frames shown, by photo key, in the order shown: at most 16 of a bigger group.
+    pub sent: Vec<String>,
+    /// Indexes into `sent`, the one to keep first.
+    pub order: Vec<u32>,
+    /// Why, per frame of `sent`; empty where none was given.
+    pub reasons: Vec<String>,
+    /// How clear the choice is, in the model's words.
+    pub note: String,
+}
+
+/// Per row of a group, its place in a model's order (0 is the one to keep) and why.
+pub type Places = HashMap<u64, (usize, String)>;
+
+/// The key a group's verdict is kept under.
+pub fn group_key(keys: &[String]) -> String {
+    let mut sorted: Vec<&str> = keys.iter().map(String::as_str).collect();
+    sorted.sort_unstable();
+    sorted.join("\n")
+}
+
 pub struct CullBook {
     db: Database,
 }
@@ -41,8 +74,24 @@ impl CullBook {
         let tx = db.begin_write()?;
         tx.open_table(KEEPERS)?;
         tx.open_table(VIEWS)?;
+        tx.open_table(VERDICTS)?;
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    /// What a model said of the group with these photos ([`group_key`]), if it was asked.
+    pub fn verdict(&self, group: &str) -> anyhow::Result<Option<Verdict>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(VERDICTS)?;
+        // One that no longer reads is asked again.
+        Ok(table.get(group)?.and_then(|bytes| postcard::from_bytes::<Verdict>(bytes.value()).ok()))
+    }
+
+    pub fn put_verdict(&self, group: &str, verdict: &Verdict) -> anyhow::Result<()> {
+        let tx = self.db.begin_write()?;
+        tx.open_table(VERDICTS)?.insert(group, postcard::to_stdvec(verdict)?.as_slice())?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// The model's view of each of these photos it has looked at, by key.
@@ -121,6 +170,27 @@ mod tests {
         drop(book);
         let book = CullBook::open(&path, &Default::default()).unwrap();
         assert_eq!(book.keepers().unwrap(), HashSet::from(["b".to_owned()]));
+    }
+
+    #[test]
+    fn a_verdict_is_kept_for_the_group_as_it_was_asked_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = CullBook::open(&dir.path().join("cull.redb"), &Default::default()).unwrap();
+        let group = |keys: &[&str]| group_key(&keys.iter().map(|k| k.to_string()).collect::<Vec<_>>());
+        let verdict = Verdict {
+            version: 1,
+            at: 5,
+            provider: "claude".into(),
+            model: "m".into(),
+            sent: vec!["b".into(), "a".into()],
+            order: vec![1, 0],
+            reasons: vec!["eyes closed".into(), String::new()],
+            note: "clear".into(),
+        };
+        book.put_verdict(&group(&["b", "a"]), &verdict).unwrap();
+        assert_eq!(book.verdict(&group(&["a", "b"])).unwrap(), Some(verdict), "whatever the order");
+        assert_eq!(book.verdict(&group(&["a", "b", "c"])).unwrap(), None, "a photo more is another group");
+        assert_eq!(book.verdict(&group(&["a"])).unwrap(), None);
     }
 
     #[test]

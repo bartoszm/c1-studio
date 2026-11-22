@@ -712,7 +712,18 @@ export type CullPhoto = {
 };
 /** A group's photos the filter selects, oldest first, and their rows in order of which to
  *  keep. `close`: the two best are too close to call. `model`: the local model is downloaded. */
-export type CullGroup = { id: string; photos: CullPhoto[]; order: number[]; judge: Judge; close: boolean; model: boolean };
+/** What a model that compared a group's frames said: who, how clear the choice is in its
+ *  words, and how many of the frames it was shown (16 at most). */
+export type CullVerdict = { provider: string; model: string; note: string; sent: number };
+export type CullGroup = {
+  id: string;
+  photos: CullPhoto[];
+  order: number[];
+  judge: Judge;
+  close: boolean;
+  model: boolean;
+  verdict: CullVerdict | null;
+};
 /** What becomes of the photos of a group that are not kept, and what the kept ones are marked with. */
 export type Rest = "Trash" | "Hide" | "Nothing" | { Rating: number } | { Color: Color };
 export type Mark = "Nothing" | { Rating: number } | { Color: Color };
@@ -728,10 +739,19 @@ export const cullRevert = (step: CullStep) => invoke<CullStep>("cull_revert", { 
 /** Has the local model look at one group's photos; the group in its new order. */
 export const rankGroup = (filter: Filter, id: string) => invoke<CullGroup>("rank_group", { filter, id });
 /** How far looking at every group has got: groups done of how many, photos that failed. */
-export type RankState = { running: boolean; done: number; total: number; failed: number; error: string | null };
+export type RankState = { running: boolean; cloud: boolean; done: number; total: number; failed: number; error: string | null };
 /** Has the local model look at every series (or duplicate group) under the filter, in the
- *  background: `ranking` events carry a RankState, `ranking-done` ends it. */
-export const startRanking = (filter: Filter, series: boolean) => invoke<void>("start_ranking", { filter, series });
+ *  background: `ranking` events carry a RankState, `ranking-done` ends it. With `cloud`, a
+ *  model is asked about each group instead. */
+export const startRanking = (filter: Filter, series: boolean, cloud = false) =>
+  invoke<void>("start_ranking", { filter, series, cloud });
+/** Asks the model the AI settings choose which frame of one group to keep; the group in the
+ *  order it said, with its reasons. */
+export const askGroup = (filter: Filter, id: string) => invoke<CullGroup>("ask_group", { filter, id });
+/** What asking about every group would take: groups not asked yet, frames sent, groups
+ *  left out (asked already), and the cost in US dollars with an API key. */
+export type AskEstimate = { groups: number; photos: number; skipped: number; cost: number; plan: boolean; via: string; model: string };
+export const askEstimate = (filter: Filter, series: boolean) => invoke<AskEstimate>("ask_estimate", { filter, series });
 export const stopRanking = () => invoke<void>("stop_ranking");
 export const rankingState = () => invoke<RankState>("ranking_state");
 /** The choosing is over: the local model is let go. */

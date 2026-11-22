@@ -1892,8 +1892,37 @@ one series are 0.88 to 0.99 alike by cosine, so that is not used to tell them ap
 Not done: sharing one image tower between a local Describe run and this (each loads its
 own).
 
-Next slice: *Ask AI*, the group's frames to Claude or Gemini for an order with a reason
-per frame.
+### Choosing the best: asking a model (third slice)
+
+*Ask AI* (`a`) and *Ask about all…* (Shift+A): the model the AI settings choose sees a
+group's frames together and orders them.
+
+- **`c1ai::pick`**: the system prompt (compare the frames with each other; moment, then
+  composition, mood and light, then the technical side), the message, the schema
+  (`order`, `frames[{frame, reason}]`, `note`) and `read`, which drops numbers that name
+  no frame and repeats, and lets frames the order leaves out follow.
+- **How it is sent.** `Claude::ask_images` and `ClaudeCode::ask_images` send each frame as
+  an image block after its number ("Frame 1:"), 1024 px, which shows far more of a face
+  than a cell of a sheet; `VisionProvider` is untouched. agy takes one file:
+  `Agy::asking(..).ask_image` with `c1image::frames_sheet` (up to 4 × 4 on 2000 px;
+  `scene_sheet` now shares `sheet_of`). The local model is refused with a sentence.
+- **Kept in `cull.redb`** (table `verdicts`) under the group's sorted photo keys, so a
+  group that gains or loses a photo is another group. `Library::verdict` gives each row
+  its place and reason; `rank` already put a verdict first. At most 16 frames go: of a
+  bigger group the 16 best so far, in the order taken.
+- **The run** is `start_ranking(.., cloud: true)`: the same one-at-a-time job and events
+  as the local run, `RankState.cloud` telling them apart. A group with no answer is
+  counted and passed; `stops_run` errors, or three failures in a row, end it. Calls are
+  recorded (`record_call`, under the first frame) so the AI tab's totals count them.
+- **`ask_estimate`** counts the groups not asked about from one read of the filter's
+  photos (a read per group took 86 s over 3,822 groups in a debug build; this takes
+  0.3 s) and prices them with `claude::estimate_frames` (950 tokens in and 70 out per
+  frame, 450 in and 250 out per call): about $100 for the fuji copy's 3,822 series
+  (14,226 frames) on Opus, 4 cents for a group of six.
+
+Not checked: no call to a model was made from the test instance (it would send photos
+through the stored API key). The requests are covered by unit tests of their shape, and
+`which_of_two_frames_live` (ignored) asks Claude Code about two made-up pictures.
 
 ### Next
 

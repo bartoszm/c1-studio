@@ -92,6 +92,16 @@ export default {
       console.log(JSON.stringify({ step: "the local model is not downloaded: r is not checked", ok: true }));
     }
 
+    // Asking AI about every group says what it takes first. Answered with Esc: no call is made.
+    const ASK = `document.querySelector(".cull .ask")?.innerText ?? null`;
+    await d.key("A", { modifiers: 8 });
+    await until(`${ASK} !== null`, 120000);
+    const asked = (await d.evaluate(ASK)) ?? "";
+    check("Shift+A says what asking AI about every group takes", /\d call|asked about already|Claude or Gemini/.test(asked), asked);
+    await key("Escape");
+    const running = (await d.invoke("ranking_state")).running;
+    check("Esc answers no: nothing is asked, and the screen stays", (await d.evaluate(ASK)) === null && (await d.evaluate(OPEN)) && !running, { running });
+
     await key("Escape");
     check("Esc closes it", !(await d.evaluate(OPEN)), await d.evaluate(OPEN));
     void second;

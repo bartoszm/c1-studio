@@ -16,6 +16,7 @@ pub mod claude;
 pub mod claude_code;
 pub mod keys;
 pub mod models;
+pub mod pick;
 mod prompt;
 pub mod refine;
 #[cfg(feature = "local")]

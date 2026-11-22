@@ -123,7 +123,9 @@ export type CullAction =
   | { kind: "photo"; delta: 1 | -1 }
   | { kind: "best" }
   /** Have the local model look: at this group, or at all of them. */
-  | { kind: "rank"; all: boolean };
+  | { kind: "rank"; all: boolean }
+  /** Ask a model (Claude or Gemini) to compare the frames: of this group, or of all. */
+  | { kind: "ask"; all: boolean };
 
 /** What a key does while culling, or nothing (the comparison under it has its own keys):
  *  typed into a field, handled already, or a dialog or menu is open (`blocked`). A held
@@ -144,6 +146,7 @@ export function cullKey(
   if (key === "k") return { kind: "mark" };
   if (key === "g") return { kind: "best" };
   if (key === "r") return { kind: "rank", all: !!e.shiftKey };
+  if (key === "a") return { kind: "ask", all: !!e.shiftKey };
   return null;
 }
 

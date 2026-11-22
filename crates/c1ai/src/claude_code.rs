@@ -147,6 +147,21 @@ impl ClaudeCode {
         format!("{message}\n")
     }
 
+    /// The message for a question about pictures: each announced by its number ("Frame
+    /// 1:"), then the text.
+    fn question_images(text: &str, jpegs: &[Vec<u8>]) -> String {
+        let mut content = Vec::with_capacity(jpegs.len() * 2 + 1);
+        for (i, jpeg) in jpegs.iter().enumerate() {
+            let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+            content.push(json!({"type": "text", "text": format!("Frame {}:", i + 1)}));
+            content
+                .push(json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}));
+        }
+        content.push(json!({"type": "text", "text": text}));
+        let message = json!({"type": "user", "message": {"role": "user", "content": content}});
+        format!("{message}\n")
+    }
+
     /// Runs a message, trying it once more after a pause on errors that may pass (Claude
     /// Code retries rate limits and overload itself; this is for the rest).
     fn send(&self, message: &str, progress: &Option<Progress>) -> Result<(Value, u64), AiError> {
@@ -173,7 +188,16 @@ impl ClaudeCode {
     /// ([`ClaudeCode::asking`]). Returns the answer and the call's record (counted against
     /// the plan: no cost).
     pub fn ask(&self, text: &str) -> Result<(Value, RunRecord), AiError> {
-        let (result, millis) = self.send(&Self::question(text), &None)?;
+        self.asked(&Self::question(text))
+    }
+
+    /// [`ClaudeCode::ask`] about pictures, sent in order before the text.
+    pub fn ask_images(&self, text: &str, jpegs: &[Vec<u8>]) -> Result<(Value, RunRecord), AiError> {
+        self.asked(&Self::question_images(text, jpegs))
+    }
+
+    fn asked(&self, message: &str) -> Result<(Value, RunRecord), AiError> {
+        let (result, millis) = self.send(message, &None)?;
         let answer = structured(&result)?.clone();
         let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
         let record = RunRecord {
@@ -417,6 +441,49 @@ mod tests {
         let file = cli.system.0.clone();
         drop(cli);
         assert!(!file.exists(), "the prompt's file goes with it");
+    }
+
+    #[test]
+    fn a_question_about_pictures_sends_them_numbered_before_the_text() {
+        let message: Value =
+            serde_json::from_str(ClaudeCode::question_images("Which?", &[vec![1, 2, 3], vec![4, 5, 6]]).trim_end())
+                .unwrap();
+        let content = message["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 5);
+        assert_eq!(
+            (&content[0]["text"], &content[2]["text"], &content[4]["text"]),
+            (&json!("Frame 1:"), &json!("Frame 2:"), &json!("Which?"))
+        );
+        assert_eq!(content[1]["source"]["data"], "AQID");
+        assert_eq!(content[3]["type"], "image");
+    }
+
+    /// With Claude Code installed and signed in with a plan (one small call, counted
+    /// against it; two made-up pictures, no photo of anyone's):
+    /// `cargo test -p c1ai -- --ignored frames_live`.
+    #[cfg(feature = "local")]
+    #[test]
+    #[ignore = "asks Claude Code: needs it installed and signed in"]
+    fn which_of_two_frames_live() {
+        let picture = |soft: bool| {
+            let sharp = image::RgbImage::from_fn(320, 213, |x, y| {
+                if (x / 16 + y / 16) % 2 == 0 { image::Rgb([230, 230, 230]) } else { image::Rgb([30, 60, 120]) }
+            });
+            let shown = if soft { image::imageops::blur(&sharp, 6.0) } else { sharp };
+            let mut jpeg = Vec::new();
+            image::DynamicImage::ImageRgb8(shown)
+                .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+                .unwrap();
+            jpeg
+        };
+        let program = find().expect("Claude Code");
+        let ask = crate::pick::PickAsk { frames: 2, series: true, sheet: false };
+        let cli =
+            ClaudeCode::asking(program, Options::default(), &crate::pick::system(), crate::pick::schema()).unwrap();
+        let (answer, record) = cli.ask_images(&crate::pick::message(&ask), &[picture(true), picture(false)]).unwrap();
+        println!("{answer}\n{record:?}");
+        let verdict = crate::pick::read(&answer, 2).unwrap();
+        assert_eq!(verdict.order, [1, 0], "the sharp frame, sent second, is the one to keep");
     }
 
     #[test]

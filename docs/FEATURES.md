@@ -238,7 +238,9 @@ filter when its sharpest does not.
 
 **Best of…** (or `b`) goes through the series and duplicate groups among the photos shown,
 one at a time. The group's photos are side by side, with the comparison's zoom and modes,
-and one is suggested: a higher rating first, then the sharpest. Enter keeps the active
+and one is suggested: a higher rating first, then the sharpest. *Look* has the local model
+weigh composition, moment and mood; *Ask AI* has Claude or Gemini compare the frames and
+say what sets each apart. Enter keeps the active
 photo and deals with the rest (to the trash, hidden, rated or tagged: your choice), then
 shows the next group. Each pick is one Ctrl+Z, and a photo you keep stands for its group
 when Stack is on.

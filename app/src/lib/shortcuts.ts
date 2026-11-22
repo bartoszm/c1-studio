@@ -49,6 +49,7 @@ export const SHORTCUTS: Shortcut[] = [
   { keys: "← · → · Tab", what: "Previous, next photo of the group", where: "Cull" },
   { keys: "g", what: "Go to the suggested photo", where: "Cull" },
   { keys: "r · Shift+R", what: "Have the local model look at this group; at every group, in the background", where: "Cull" },
+  { keys: "a · Shift+A", what: "Ask AI (Claude or Gemini) which frame of this group to keep; of every group, after saying what it takes", where: "Cull" },
 ];
 
 export const PLACES: Place[] = ["Photos", "Anywhere", "Viewer", "Compare", "Cull"];

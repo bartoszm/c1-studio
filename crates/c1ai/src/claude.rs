@@ -62,6 +62,27 @@ pub fn estimate(model: &Model, photos: usize, preview: bool) -> f64 {
     per_photo * photos as f64 / 1e6
 }
 
+/// Tokens a question about frames takes, roughly: a frame at [`FRAME_EDGE`] with its
+/// label, the instructions with each call, and the answer (a line per frame, the order
+/// and a note per call) with a little thinking.
+const FRAME_INPUT: f64 = 950.0;
+const ASK_INPUT: f64 = 450.0;
+const FRAME_OUTPUT: f64 = 70.0;
+const ASK_OUTPUT: f64 = 250.0;
+
+/// The long edge of a frame sent for comparing with others: enough to read a face, at
+/// under half a preview's tokens.
+pub const FRAME_EDGE: u32 = 1024;
+
+/// What `calls` questions about `frames` frames in all ([`Claude::ask_images`], each frame
+/// at [`FRAME_EDGE`]) would cost with `model`, in US dollars.
+pub fn estimate_frames(model: &Model, calls: usize, frames: usize) -> f64 {
+    let (calls, frames) = (calls as f64, frames as f64);
+    let input = FRAME_INPUT * frames + ASK_INPUT * calls;
+    let output = FRAME_OUTPUT * frames + ASK_OUTPUT * calls;
+    (input * model.input + output * model.output) / 1e6
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default)]
 pub(crate) struct Usage {
@@ -173,6 +194,22 @@ impl Claude {
         }))
     }
 
+    /// [`Claude::ask_body`] with pictures before the text, each announced by its number
+    /// ("Frame 1:"), so the answer can name them.
+    fn ask_images_body(&self, system: &str, text: &str, jpegs: &[Vec<u8>], schema: &Value) -> Value {
+        let mut content = Vec::with_capacity(jpegs.len() * 2 + 1);
+        for (i, jpeg) in jpegs.iter().enumerate() {
+            let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+            content.push(json!({"type": "text", "text": format!("Frame {}:", i + 1)}));
+            content
+                .push(json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}));
+        }
+        content.push(json!({"type": "text", "text": text}));
+        let mut body = self.ask_body(system, text, schema);
+        body["messages"] = json!([{"role": "user", "content": content}]);
+        body
+    }
+
     /// Sends a request, trying again after a pause (the server's `retry-after` when it gives
     /// one) on rate limits, overload and network errors, up to `attempts` times; a stop ends
     /// the wait at once.
@@ -243,9 +280,26 @@ impl Claude {
     /// (prompt 0: no description prompt), so what it cost is counted with the rest.
     pub fn ask(&self, system: &str, text: &str, schema: &Value) -> Result<(Value, RunRecord), AiError> {
         let (message, millis) = self.send(&self.ask_body(system, text, schema), &None)?;
+        self.answered(&message, millis)
+    }
+
+    /// [`Claude::ask`] about pictures, sent in order before the text.
+    pub fn ask_images(
+        &self,
+        system: &str,
+        text: &str,
+        jpegs: &[Vec<u8>],
+        schema: &Value,
+    ) -> Result<(Value, RunRecord), AiError> {
+        let (message, millis) = self.send(&self.ask_images_body(system, text, jpegs, schema), &None)?;
+        self.answered(&message, millis)
+    }
+
+    /// The answer in a question's response, and the call's record.
+    fn answered(&self, message: &Value, millis: u64) -> Result<(Value, RunRecord), AiError> {
         let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
         let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
-        let raw = answer_text(&message)?;
+        let raw = answer_text(message)?;
         let answer = serde_json::from_str(&raw).map_err(|e| AiError::BadReply(e.to_string()))?;
         let record = RunRecord {
             provider: "claude".to_string(),
@@ -382,6 +436,31 @@ mod tests {
         let haiku = Options { model: "claude-haiku-5-5".into(), ..Options::default() };
         let claude = Claude::new("k".into(), haiku, &Brief::default(), Vocabulary::default()).unwrap();
         assert!(claude.ask_body("s", "t", &schema).get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn frames_to_compare_cost_less_than_previews_to_describe() {
+        let opus = model("claude-opus-5-5").unwrap();
+        // One burst of four: four frames in, a short answer out.
+        let one = estimate_frames(&opus, 1, 4);
+        assert!((one - ((950.0 * 4.0 + 450.0) * 4.0 + (70.0 * 4.0 + 250.0) * 20.0) / 1e6).abs() < 1e-12);
+        assert!(one < estimate(&opus, 4, true), "{one}");
+        assert_eq!(estimate_frames(&opus, 0, 0), 0.0);
+    }
+
+    #[test]
+    fn a_question_about_pictures_sends_them_numbered_before_the_text() {
+        let claude = Claude::new("k".into(), Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
+        let schema = json!({"type": "object"});
+        let body = claude.ask_images_body("Compare.", "Which?", &[vec![1, 2, 3], vec![4, 5, 6]], &schema);
+        let content = body["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 5);
+        assert_eq!(content[0]["text"], "Frame 1:");
+        assert_eq!(content[1]["source"]["data"], "AQID");
+        assert_eq!(content[2]["text"], "Frame 2:");
+        assert_eq!(content[3]["source"]["media_type"], "image/jpeg");
+        assert_eq!(content[4]["text"], "Which?");
+        assert_eq!((&body["system"], &body["output_config"]["format"]["schema"]), (&json!("Compare."), &schema));
     }
 
     #[test]

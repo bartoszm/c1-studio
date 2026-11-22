@@ -929,6 +929,42 @@ impl Library {
         self.cull_book.put_views(&records)
     }
 
+    /// What a model that compared the frames of the group at `rows` said, if it was asked
+    /// about exactly these photos: the verdict, and per row its place in the model's order
+    /// (0 is the one to keep) with the reason given. A row not shown to it has no place.
+    pub fn verdict(&self, rows: &[u64]) -> anyhow::Result<Option<(crate::cull::Verdict, crate::cull::Places)>> {
+        let named: Vec<(u64, String)> = {
+            let keys = self.keys.read().unwrap();
+            rows.iter().filter_map(|&row| Some((row, keys.get(row as usize)?.clone()?))).collect()
+        };
+        let group = crate::cull::group_key(&named.iter().map(|(_, key)| key.clone()).collect::<Vec<_>>());
+        let Some(verdict) = self.cull_book.verdict(&group)? else { return Ok(None) };
+        let mut places = HashMap::new();
+        for (place, &frame) in verdict.order.iter().enumerate() {
+            let Some(key) = verdict.sent.get(frame as usize) else { continue };
+            if let Some((row, _)) = named.iter().find(|(_, k)| k == key) {
+                places.insert(*row, (place, verdict.reasons.get(frame as usize).cloned().unwrap_or_default()));
+            }
+        }
+        Ok(Some((verdict, places)))
+    }
+
+    /// Keeps what a model said of the group at `rows`, having been shown `sent` of them in
+    /// that order: `verdict.order` and `verdict.reasons` are by index into `sent`
+    /// (`verdict.sent` is filled in here).
+    pub fn put_verdict(&self, rows: &[u64], sent: &[u64], mut verdict: crate::cull::Verdict) -> anyhow::Result<()> {
+        let (group, shown) = {
+            let keys = self.keys.read().unwrap();
+            let key = |row: &u64| keys.get(*row as usize).and_then(|k| k.clone());
+            let all: Vec<String> = rows.iter().filter_map(key).collect();
+            let shown: Vec<String> = sent.iter().filter_map(key).collect();
+            (crate::cull::group_key(&all), shown)
+        };
+        anyhow::ensure!(shown.len() == sent.len(), "a photo shown to the model is gone");
+        verdict.sent = shown;
+        self.cull_book.put_verdict(&group, &verdict)
+    }
+
     /// Of these photos, the ones picked as the ones to keep.
     pub fn kept_of(&self, rows: &[u64]) -> Vec<u64> {
         let keys = self.keys.read().unwrap();

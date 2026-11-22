@@ -136,6 +136,53 @@
       error = String(e);
     }
   }
+
+  /** A model (Claude or Gemini) is comparing this group's frames. */
+  let asking = $state(false);
+  async function askThis() {
+    const group = id;
+    if (asking || !view || group === undefined) return;
+    asking = true;
+    try {
+      const next = await api.askGroup($state.snapshot(filter) as Filter, group);
+      if (id === group) {
+        const was = best;
+        view = next;
+        if (active === was) setActive(next.order[0]);
+      }
+      error = null;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      asking = false;
+    }
+  }
+  /** What asking about every group would take, shown before it starts. */
+  let askPlan = $state<api.AskEstimate | null>(null);
+  /** The groups not asked about yet are being counted, for `askPlan`. */
+  let counting = $state(false);
+  async function askAll() {
+    if (counting) return;
+    try {
+      if (ranking?.running) return await api.stopRanking();
+      counting = true;
+      askPlan = await api.askEstimate($state.snapshot(filter) as Filter, series);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      counting = false;
+    }
+  }
+  async function askAllGo() {
+    askPlan = null;
+    try {
+      await api.startRanking($state.snapshot(filter) as Filter, series, true);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  const money = (v: number) => (v < 0.01 ? "under $0.01" : `about $${v < 10 ? v.toFixed(2) : Math.round(v).toLocaleString()}`);
+  const PROVIDERS: Record<string, string> = { claude: "Claude", "claude-code": "Claude", gemini: "Gemini" };
   onMount(() => {
     api.rankingState().then((s) => (ranking = s)).catch(() => {});
     const heard = [
@@ -143,7 +190,7 @@
       listen<api.RankState>("ranking", (e) => {
         const before = ranking?.done;
         ranking = e.payload;
-        if (e.payload.done !== before && view?.judge === "sharpness") read(true);
+        if (e.payload.done !== before && view && (e.payload.cloud ? view.judge !== "cloud" : view.judge === "sharpness")) read(true);
       }),
       listen("ranking-done", () => read(true)),
     ];
@@ -173,6 +220,14 @@
   /** Our keys come before the comparison's: the arrows move through the whole group, not
    *  only the photos side by side. */
   function onkey(e: KeyboardEvent): boolean {
+    // The question about asking every group takes the keys until it is answered.
+    if (askPlan && !blocked && !e.defaultPrevented) {
+      if (e.key === "Enter" && askPlan.groups && askPlan.via !== "Local") askAllGo();
+      else if (e.key === "Escape") askPlan = null;
+      else if (e.key !== "Enter") return false;
+      e.preventDefault();
+      return true;
+    }
     const action = cullKey(e, blocked);
     if (!action) return false;
     e.preventDefault();
@@ -183,6 +238,7 @@
       case "photo": setActive(stepPhoto(rows, active, action.delta)); break;
       case "best": setActive(best); break;
       case "rank": if (action.all) rankAll(); else rankThis(); break;
+      case "ask": if (action.all) askAll(); else askThis(); break;
     }
     return true;
   }
@@ -209,10 +265,15 @@
     const p = byRow.get(best);
     if (!p) return "";
     const why = p.reasons.length ? `: ${p.reasons.join(", ")}` : "";
+    if (view.verdict) {
+      const v = view.verdict;
+      const of = v.sent < view.photos.length ? ` (${v.sent} of the ${view.photos.length} frames)` : "";
+      return `${PROVIDERS[v.provider] ?? v.provider} suggests ${p.name}${why}${of}${v.note ? ` · ${v.note}` : ""}`;
+    }
     return view.close ? `Too close to call; ${p.name} by a hair${why}` : `Suggested: ${p.name}${why}`;
   });
   const JUDGES: Record<api.Judge, string> = {
-    cloud: "A model compared these photos",
+    cloud: "A model was shown these frames together and put them in order; frames it was not shown follow. Your own pick is still yours: Enter keeps the active photo.",
     local: "By the local model's view of each photo, with sharpness and your own marks",
     sharpness: "By sharpness, clipped tones and your own marks (rating, edits)",
   };
@@ -236,7 +297,7 @@
   {@const p = byRow.get(row)}
   {#if row === best}<span class="best" title={p?.reasons.join(", ")}>suggested</span>{/if}
   {#if marked.has(row)}<span class="keep">keep</span>{:else if p?.kept}<span class="keep was" title="Picked before as the one to keep">kept</span>{/if}
-  {#if p && row !== best && p.reasons.length}<span class="why">{p.reasons.join(", ")}</span>{/if}
+  {#if p?.reasons.length}<span class="why">{p.reasons.join(", ")}</span>{/if}
   {#if p?.aesthetic}
     {@const a = p.aesthetic}
     <span class="why" title="How the local model saw this photo, 0 to 100, above 50 the better side. It tells the frames of a group apart; it is no rating.">
@@ -276,14 +337,30 @@
           >{looking ? "Looking…" : "Look"}</button>
           <button
             class="toggle"
-            class:on={ranking?.running}
-            title={ranking?.running
+            class:on={ranking?.running && !ranking.cloud}
+            disabled={ranking?.running && ranking.cloud}
+            title={ranking?.running && !ranking.cloud
               ? "The local model is looking at every group, in the background: click to stop (Shift+R). What it saw so far is kept."
               : "Have the local model look at every group here, in the background, oldest first (Shift+R)"}
             onclick={rankAll}
-          >{ranking?.running ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
-          {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
+          >{ranking?.running && !ranking.cloud ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
         {/if}
+        <button
+          class="toggle"
+          disabled={asking || !view || view.photos.length < 2}
+          title="Ask AI (Claude or Gemini, as Settings › AI say) to compare this group's frames: it puts them in order and says in a few words what sets each apart: an expression, a gesture, the framing (a). One call; at most 16 frames."
+          onclick={askThis}
+        >{asking ? "Asking…" : "Ask AI"}</button>
+        <button
+          class="toggle"
+          class:on={ranking?.running && ranking.cloud}
+          disabled={counting || (ranking?.running && !ranking.cloud)}
+          title={ranking?.running && ranking.cloud
+            ? "AI is being asked about every group, in the background: click to stop (Shift+A). The answers so far are kept."
+            : "Ask AI about every group here not asked about yet, in the background: says first how many calls that is, and what it costs (Shift+A)"}
+          onclick={askAll}
+        >{ranking?.running && ranking.cloud ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : counting ? "Counting…" : "Ask about all…"}</button>
+        {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
       </span>
       <label class="rest" title={restTitle}>
         The rest:
@@ -303,6 +380,27 @@
     </span>
   </div>
 
+  {#if askPlan}
+    {@const p = askPlan}
+    <div class="ask" role="alertdialog" aria-label="Ask AI about every group">
+      {#if p.via === "Local"}
+        <span>Asking AI takes Claude or Gemini: the local model cannot compare frames (that is <em>Look</em>).</span>
+        <button onclick={() => { askPlan = null; onsettings(); }}>Settings › AI…</button>
+      {:else if !p.groups}
+        <span>Every group here has been asked about already{p.skipped ? ` (${p.skipped.toLocaleString()})` : ""}.</span>
+      {:else}
+        <span>
+          Ask {p.via} ({p.model}) about {p.groups.toLocaleString()} group{p.groups === 1 ? "" : "s"}: {p.groups.toLocaleString()} call{p.groups === 1 ? "" : "s"},
+          {p.photos.toLocaleString()} photos sent, {p.plan ? `counted against your ${p.via === "Gemini" ? "Google account's quota" : "Claude plan"}` : money(p.cost)}.
+          {#if p.skipped}{p.skipped.toLocaleString()} asked about already are left out.{/if}
+          It runs in the background and can be stopped; answers are kept as they come.
+        </span>
+        <button class="primary" onclick={askAllGo}>Ask (Enter)</button>
+      {/if}
+      <button onclick={() => (askPlan = null)}>{p.groups && p.via !== "Local" ? "Cancel (Esc)" : "Close (Esc)"}</button>
+    </div>
+  {/if}
+
   {#if view && shown.length}
     {#key id}
       <Compare
@@ -313,7 +411,7 @@
         {message}
         {failed}
         embedded
-        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · r look · 0–5 - + * Delete edit · z zoom · Esc"
+        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · r look · a ask AI · 0–5 - + * Delete edit · z zoom · Esc"
         onkeyfirst={onkey}
         {badge}
         {onclose}
@@ -360,6 +458,23 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: #111;
+  }
+  /* Over the photos, under the bar: the rows stay the bar, the photos, the strip. */
+  .ask {
+    position: absolute;
+    top: 44px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: min(900px, 90vw);
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 50%);
   }
   .bar {
     display: flex;

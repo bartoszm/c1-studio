@@ -58,11 +58,11 @@ pub(crate) enum AiImage {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct AiSettings {
-    access: Access,
-    model: String,
+    pub(crate) access: Access,
+    pub(crate) model: String,
     language: Language,
     /// `low`, `medium`, `high`.
-    effort: String,
+    pub(crate) effort: String,
     /// Photos described at once.
     parallel: usize,
     /// What a description holds.
@@ -78,7 +78,7 @@ pub(crate) struct AiSettings {
     /// where the photo has none.
     place_tick: u8,
     /// The Gemini model agy is asked for.
-    gemini_model: String,
+    pub(crate) gemini_model: String,
     /// Gemini gets contact sheets of up to 36 photos rather than one photo per call.
     sheets: bool,
     /// The image sent of each photo, alone or on a sheet.
@@ -151,7 +151,7 @@ fn settings_path(s: &Session) -> PathBuf {
     s.settings_path.with_file_name("ai.json")
 }
 
-fn load_settings(s: &Session) -> AiSettings {
+pub(crate) fn load_settings(s: &Session) -> AiSettings {
     std::fs::read(settings_path(s)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
@@ -444,7 +444,7 @@ pub(crate) struct AiView {
 /// Whether Claude Code runs on a Claude plan: signed in through claude.ai. Signed in with
 /// an API key or a cloud provider it is billed per token, which plan access would show
 /// as free, so it does not count.
-fn on_plan(status: &claude_code::Status) -> bool {
+pub(crate) fn on_plan(status: &claude_code::Status) -> bool {
     status.logged_in && status.auth_method.as_deref() == Some("claude.ai")
 }
 
