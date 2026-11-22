@@ -63,6 +63,11 @@ struct Session {
     /// Shared with the run's provider, so a call under way ends on Stop.
     describe_stop: Arc<AtomicBool>,
     describe: Mutex<ai::DescribeState>,
+    /// The local model looking at the photos keyworded by hand, to learn from them: one
+    /// pass at a time, stopped when asked or when another source opens.
+    learning: AtomicBool,
+    learn_stop: AtomicBool,
+    learn: Mutex<ai::LearnState>,
     /// The contact sheets of the run's latest calls, by call number, to look at on demand.
     describe_sheets: Mutex<std::collections::VecDeque<(usize, Vec<u8>)>>,
     /// Thumbnails made here for photos the source has none for, and the run that makes
@@ -449,6 +454,9 @@ fn open(spec: &SourceSpec, ctl: &OpenControl) -> anyhow::Result<Session> {
         describing: AtomicBool::new(false),
         describe_stop: Arc::default(),
         describe: Mutex::new(ai::DescribeState::default()),
+        learning: AtomicBool::new(false),
+        learn_stop: AtomicBool::new(false),
+        learn: Mutex::new(ai::LearnState::default()),
         describe_sheets: Mutex::default(),
         thumbs: Thumbs::new(dir.join("thumbs")),
         filling: AtomicBool::new(false),
@@ -2860,6 +2868,7 @@ async fn open_source(app: AppHandle, spec: SourceSpec) -> Result<(), String> {
         if let Ok(old) = &current.session {
             old.analysis_stop.store(true, Ordering::SeqCst);
             old.fill_stop.store(true, Ordering::SeqCst);
+            old.learn_stop.store(true, Ordering::SeqCst);
             old.library.stop();
         }
         *current = Current { spec: Some(spec.clone()), session: Ok(Arc::new(opened)) };
@@ -3016,6 +3025,9 @@ pub fn run() {
             ai::set_ai_key,
             ai::ai_model_download,
             ai::ai_model_download_stop,
+            ai::ai_learn,
+            ai::ai_learn_stop,
+            ai::ai_learn_state,
             ai::ai_prompt,
             ai::ai_estimate,
             ai::start_describe,

@@ -5,6 +5,7 @@ pub mod ai;
 pub mod analyse;
 pub mod db;
 pub mod edits;
+pub mod embeddings;
 pub mod facets;
 pub mod filter;
 pub mod geo;
