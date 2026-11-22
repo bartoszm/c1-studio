@@ -52,6 +52,26 @@
     }
   }
   let local = $derived(view?.settings.access === "local");
+  // The photos keyworded by hand, which the local model learns keywords from: how many
+  // it has looked at, and the pass that looks at the rest.
+  let learn = $state<api.AiLearn | null>(null);
+  $effect(() => {
+    if (!local || !view?.local?.installed) return;
+    untrack(() => void api.aiLearnState().then((state) => (learn = state)).catch((e) => (error = String(e))));
+  });
+  onMount(() => {
+    const heard = listen<api.AiLearn>("learn", (e) => (learn = e.payload));
+    return () => void heard.then((off) => off());
+  });
+  async function teach(stop = false) {
+    error = "";
+    try {
+      if (stop) await api.aiLearnStop();
+      else learn = await api.aiLearn();
+    } catch (e) {
+      error = String(e);
+    }
+  }
   const save = (change: Partial<api.AiSettings>) => view && run(() => api.setAiSettings({ ...view!.settings, ...change }));
   const saveKey = (key: string) => run(() => api.setAiKey(key)).then(() => (keyInput = ""));
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
@@ -167,19 +187,57 @@
         {#if view.local?.error}<span class="warn">{view.local.error}</span>{/if}
         <small class="muted">
           {view.local?.name ?? "SigLIP 2"} (Google, Apache-2.0), fetched once from huggingface.co and kept in
-          <code>{view.local?.folder}</code> for every {source.noun}. It scores each of the {source.noun}'s keywords against the photo
-          and suggests the likely ones: no captions, no ratings, no new keywords. Photos never leave this computer.
+          <code>{view.local?.folder}</code> for every {source.noun}. It suggests keywords from the {source.noun}'s own:
+          no captions, no ratings, no new keywords. Photos never leave this computer.
         </small>
       </div>
 
-      <label for="ai-local-threshold">Suggest</label>
+      <span class="label">Your keywords</span>
+      <div>
+        {#if !view.local?.installed}
+          <span class="muted">Once the model is downloaded, it can learn from the photos you have keyworded.</span>
+        {:else if !learn}
+          <span class="muted">Counting…</span>
+        {:else if learn.running}
+          <span>Looking at keyworded photos: {learn.done.toLocaleString()} of {learn.total.toLocaleString()}</span>
+          <progress max={learn.total} value={learn.done}></progress>
+          <button class="small-btn" onclick={() => teach(true)}>Stop</button>
+        {:else}
+          <span class:warn={learn.keyworded > 0 && learn.examples === 0}>
+            Learned from {learn.examples.toLocaleString()} of {learn.keyworded.toLocaleString()} keyworded photos.
+          </span>
+          {#if learn.examples < learn.keyworded}
+            <button class="small-btn" disabled={busy} onclick={() => teach()}>Learn from the rest</button>
+          {/if}
+        {/if}
+        {#if learn?.failed}<span class="muted">{learn.failed.toLocaleString()} had no image to look at.</span>{/if}
+        {#if learn?.error}<span class="warn">{learn.error}</span>{/if}
+        <small class="muted">
+          The model suggests the keywords you gave to photos that look like the one at hand: far more often right than its own
+          guesses, and the only way it comes to know your names, places and private words. It looks at each keyworded photo once,
+          about four a second; it can be stopped and goes on from where it was. Photos keyworded later are picked up by pressing
+          this again.
+        </small>
+      </div>
+
+      <label for="ai-local-share">Suggest</label>
+      <div>
+        <input id="ai-local-share" type="number" min="5" max="100" step="5" value={view.settings.local_share} disabled={busy} onchange={(e) => save({ local_share: Number(e.currentTarget.value) })} />
+        <span class="muted">% or more of the look-alike photos have the keyword</span>
+        <small class="muted">
+          Of the 30 keyworded photos most like it, the closer counting for more. At 25, about six suggestions in ten are right;
+          higher suggests fewer and surer ones.
+        </small>
+      </div>
+
+      <label for="ai-local-threshold">Or</label>
       <div>
         <input id="ai-local-threshold" type="number" min="0.1" max="99" step="0.1" value={view.settings.local_threshold} disabled={busy} onchange={(e) => save({ local_threshold: Number(e.currentTarget.value) })} />
-        <span class="muted">keywords scoring this % or more, the eight best at most</span>
+        <span class="muted">% or more is the model's own score for the keyword; eight suggestions at most</span>
         <small class="muted">
-          The model is sparing with single words: a keyword that fits often scores 1 to 5, one that does not stays under 0.3. Lower
-          suggests more keywords and more wrong ones. Names of people and events mean nothing to it: leave them out under
-          Keywords offered. The first run works out every keyword once, about a minute for 600.
+          What the model makes of a keyword's name alone, for keywords few photos have yet. It is sparing with single words and
+          often wrong under 3. Names of people and events mean nothing to it. The first run works out every keyword once, about
+          a minute for 600.
         </small>
       </div>
     {:else if view.settings.access === "gemini"}

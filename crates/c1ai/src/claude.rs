@@ -500,7 +500,12 @@ mod tests {
     fn the_request_caches_the_instructions_and_asks_for_the_schema() {
         let brief = Brief { vocabulary: vec!["street".into()], ..Default::default() };
         let claude = Claude::new("k".into(), Options::default(), &brief, Vocabulary::default()).unwrap();
-        let body = claude.body(&PhotoRequest { jpeg: vec![1, 2, 3], context: "DSCF0001.RAF".into(), progress: None });
+        let body = claude.body(&PhotoRequest {
+            key: String::new(),
+            jpeg: vec![1, 2, 3],
+            context: "DSCF0001.RAF".into(),
+            progress: None,
+        });
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["messages"][0]["content"][0]["source"]["data"], "AQID");
@@ -509,7 +514,7 @@ mod tests {
         let claude = Claude::new("k".into(), haiku, &brief, Vocabulary::default()).unwrap();
         assert!(
             claude
-                .body(&PhotoRequest { jpeg: vec![], context: String::new(), progress: None })
+                .body(&PhotoRequest { key: String::new(), jpeg: vec![], context: String::new(), progress: None })
                 .get("fallbacks")
                 .is_none()
         );

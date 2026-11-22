@@ -435,7 +435,8 @@ pub(crate) async fn ask_estimate(app: State<'_, App>, filter: Filter, series: bo
 /// The local model as ranking uses it: the image tower and the sentences photos are held
 /// against.
 struct Ranker {
-    embedder: Embedder,
+    /// One picture at a time goes through the image tower.
+    embedder: Mutex<Embedder>,
     prompts: Prompts,
 }
 
@@ -535,9 +536,9 @@ impl RankJob {
         if let Some(ranker) = held() {
             return Ok(ranker);
         }
-        let embedder = Embedder::open(&models_root()).map_err(text)?;
-        let prompts = Prompts::load(&embedder, &|| stop.load(Ordering::Relaxed)).map_err(text)?;
-        let ranker = Arc::new(Ranker { embedder, prompts });
+        let mut embedder = Embedder::open(&models_root()).map_err(text)?;
+        let prompts = Prompts::load(&mut embedder, &|| stop.load(Ordering::Relaxed)).map_err(text)?;
+        let ranker = Arc::new(Ranker { embedder: Mutex::new(embedder), prompts });
         // Kept only where it will be asked for again: the screen closed while it loaded
         // has let it go already.
         let mut slot = lock(&self.ranker);
@@ -646,7 +647,9 @@ impl Eye for ModelEye<'_> {
         let seen = picture
             .map_err(|e| format!("{e:#}"))
             .and_then(|found| found.ok_or_else(|| "it has no thumbnail or preview yet".to_owned()))
-            .and_then(|picture| ranker.embedder.image(&picture).map_err(text));
+            .and_then(|picture| {
+                ranker.embedder.lock().unwrap_or_else(|e| e.into_inner()).image(&picture).map_err(text)
+            });
         if let Err(why) = &seen {
             self.s.log.event(&format!("Best of: the local model could not look at {}: {why}", id.ext), &[]);
         }

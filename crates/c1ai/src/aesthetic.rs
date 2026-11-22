@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::AiError;
-use crate::siglip::{Embedder, LOGIT_SCALE, cosine};
+use crate::siglip::{DIM, Embedder, LOGIT_SCALE, cosine};
 
 /// Bumped when the sentences or the sums change: scores of another version are worked out
 /// again from the stored embeddings.
@@ -120,8 +120,10 @@ pub struct Prompts {
 impl Prompts {
     /// Embeds the sentences (once: they are kept beside the model). All of them are asked
     /// for at once, so the text tower, over a gigabyte in memory, is loaded once at most.
-    pub fn load(embedder: &Embedder, stopped: &dyn Fn() -> bool) -> Result<Self, AiError> {
-        let embedded = embedder.texts(&sentences(), stopped)?;
+    pub fn load(embedder: &mut Embedder, stopped: &dyn Fn() -> bool) -> Result<Self, AiError> {
+        let asked: Vec<String> = sentences().iter().map(|s| s.to_string()).collect();
+        let flat = embedder.texts(&asked, stopped)?;
+        let embedded = flat.as_chunks::<DIM>().0.iter().map(|one| one.to_vec()).collect();
         Self::split(embedded).ok_or_else(|| AiError::Local("the model did not embed every sentence".into()))
     }
 
@@ -243,8 +245,8 @@ mod tests {
     fn the_model_scores_the_frames_of_bursts() {
         let root = PathBuf::from(std::env::var("C1_MODELS").expect("C1_MODELS"));
         let bursts = PathBuf::from(std::env::var("C1_BURSTS").expect("C1_BURSTS"));
-        let embedder = Embedder::open(&root).unwrap();
-        let prompts = Prompts::load(&embedder, &|| false).unwrap();
+        let mut embedder = Embedder::open(&root).unwrap();
+        let prompts = Prompts::load(&mut embedder, &|| false).unwrap();
         let mut groups: Vec<PathBuf> = std::fs::read_dir(&bursts).unwrap().map(|e| e.unwrap().path()).collect();
         groups.sort();
         for group in groups.iter().filter(|g| g.is_dir()) {

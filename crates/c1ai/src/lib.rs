@@ -12,6 +12,7 @@
 #[cfg(feature = "local")]
 pub mod aesthetic;
 pub mod agy;
+pub mod alike;
 pub mod claude;
 pub mod claude_code;
 pub mod keys;
@@ -38,6 +39,9 @@ pub const PROMPT_VERSION: u32 = 3;
 /// One photo to describe: a JPEG of it and one line of what the catalog already knows
 /// (file name, date, camera, place), which helps the model and costs a few tokens.
 pub struct PhotoRequest {
+    /// The photo's key in the library, empty when it is of none: a provider that learns
+    /// from the library's photos leaves the photo itself out by it.
+    pub key: String,
     pub jpeg: Vec<u8>,
     pub context: String,
     /// Told when the call goes out and before it is tried again.
@@ -129,6 +133,9 @@ pub struct Suggestion {
     /// The score of each of `keywords`, 0..1, in their order, when the model scores
     /// keywords one by one (the local model); empty when it does not.
     pub keyword_scores: Vec<f32>,
+    /// For each of `keywords`, 0..1, the share of the say of the photos that look alike
+    /// and are keyworded already ([`alike`]); empty when the provider asks none.
+    pub keyword_shares: Vec<f32>,
     /// Keywords the catalog does not have yet.
     pub keywords_new: Vec<String>,
     /// 1..=5.
@@ -625,6 +632,7 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
         subject: text(&raw.subject),
         keywords,
         keyword_scores: Vec::new(),
+        keyword_shares: Vec::new(),
         keywords_new: new,
         rating: score(raw.rating),
         quality: score(raw.quality),

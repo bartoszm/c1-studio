@@ -896,13 +896,22 @@ accept a suggestion and write it.
   *Download* fetches it once from huggingface.co (about 1.5 GB), into
   `%LOCALAPPDATA%\c1studio\models` (`~/.local/share/c1studio/models` on Linux), for every
   catalog. It needs no graphics card: about a quarter of a second per photo on a laptop.
-  The first run works out every keyword once (about a minute for 600) and keeps the result.
-  Each keyword is scored against the photo, and the eight best scoring at least *Suggest*
-  (1 % unless you change it) are offered, with the score on the review card. The model is
-  sparing with single words: a keyword that fits often scores 1 to 5 %, one that does not
-  stays under 0.3 %. Keywords in Polish work as well as English ones. Names of people and
-  of events mean nothing to it, and it guesses at city names: leave those out under
-  *Keywords offered*.
+  It suggests keywords in two ways, the first by far the better:
+  - **From the photos you keyworded.** *Your keywords › Learn from the rest* has the model
+    look once at every keyworded photo (about four a second; it can be stopped and goes on
+    from where it was). A photo then gets the keywords of the 30 keyworded photos most like
+    it, the closer counting for more: a keyword is suggested when at least *Suggest* (25 %
+    unless you change it) of them have it. This is how it comes to know your names, places
+    and private words. On a catalog keyworded over years, about six such suggestions in ten
+    are right. Press it again after keywording more photos.
+  - **From a keyword's name alone,** for keywords few photos have yet: each is scored
+    against the photo, and those scoring at least *Or* (3 % unless you change it) are
+    suggested too. The model is sparing with single words and often wrong under 3 %; names
+    of people and events mean nothing to it. Polish names work as well as English ones. The
+    first run works out every keyword once (about a minute for 600) and keeps the result.
+
+  Eight keywords at most are suggested. The review card shows *40% alike* for a keyword
+  from look-alike photos, and a bare score for one from its name alone.
 
 **Photo sent:** Capture One's thumbnail (its own render of your edits, about 450 pixels; the
 default) or the preview (up to 1568 pixels, more detail, but its colours are matched by the
