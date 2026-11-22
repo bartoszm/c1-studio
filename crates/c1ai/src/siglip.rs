@@ -71,7 +71,7 @@ const CONTEXT: usize = 64;
 /// The model's learned scale and bias, which turn a cosine into a probability: read from
 /// `logit_scale` (4.7244534, before `exp`) and `logit_bias` of google/siglip2-base-patch16-224,
 /// the checkpoint the ONNX export was made from; the export holds the towers only.
-const LOGIT_SCALE: f32 = 112.669;
+pub(crate) const LOGIT_SCALE: f32 = 112.669;
 const LOGIT_BIAS: f32 = -16.771_725;
 
 /// Says whether a stored suggestion was made the same way: by this version, with this
@@ -396,6 +396,11 @@ impl Embedder {
         }
         Ok(out)
     }
+}
+
+/// The cosine of two embeddings of length 1.
+pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// The model once loaded, with every keyword's embedding.

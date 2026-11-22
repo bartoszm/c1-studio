@@ -9,6 +9,8 @@
 //! `agy`. [`siglip::Siglip`] calls no one: a small model run on this computer scores the
 //! catalog's keywords against the photo.
 
+#[cfg(feature = "local")]
+pub mod aesthetic;
 pub mod agy;
 pub mod alike;
 pub mod claude;

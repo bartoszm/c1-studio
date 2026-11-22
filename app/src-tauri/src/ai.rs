@@ -355,7 +355,7 @@ pub(crate) struct LocalView {
 }
 
 /// The folder models are kept in, shared by every catalog.
-fn models_root() -> PathBuf {
+pub(crate) fn models_root() -> PathBuf {
     c1model::provider::data_root().join("models")
 }
 
@@ -1091,7 +1091,12 @@ fn request(
 /// for Capture One its render of the edits (the colours of a preview read from its cache
 /// can be off); a missing preview is made if need be. An image that cannot be found, made
 /// or loaded gives way to the next; the first such error is returned if none will do.
-fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+pub(crate) fn pixels(
+    s: &Session,
+    id: &PhotoId,
+    image: AiImage,
+    long_edge: u32,
+) -> anyhow::Result<Option<c1image::RgbImage>> {
     let mut why: Option<anyhow::Error> = None;
     let mut fitted = |image: anyhow::Result<Option<ImageRef>>| match image
         .and_then(|image| image.map(|r| c1image::load_fitted(&r, long_edge)).transpose().map_err(Into::into))
@@ -1123,6 +1128,27 @@ fn pixels(s: &Session, id: &PhotoId, image: AiImage, long_edge: u32) -> anyhow::
         Some(e) => Err(e),
         None => Ok(None),
     }
+}
+
+/// [`pixels`] from what is there already, nothing made: the photo's thumbnail (the
+/// source's, or one made here before), else its preview. For work over a whole catalog,
+/// where making what is missing would render the catalog as a side effect.
+pub(crate) fn pixels_at_hand(s: &Session, id: &PhotoId, long_edge: u32) -> anyhow::Result<Option<c1image::RgbImage>> {
+    let thumb = || s.thumbs.get(s.source.as_ref(), id);
+    let preview = || s.source.image(id, ImageTier::Preview).map_err(anyhow::Error::from);
+    let places: [&dyn Fn() -> anyhow::Result<Option<ImageRef>>; 2] = [&thumb, &preview];
+    let mut why: Option<anyhow::Error> = None;
+    for find in places {
+        let fitted = find().and_then(|image| Ok(image.map(|r| c1image::load_fitted(&r, long_edge)).transpose()?));
+        match fitted {
+            Ok(Some(pixels)) => return Ok(Some(pixels)),
+            Ok(None) => {}
+            Err(e) => {
+                why.get_or_insert(e);
+            }
+        }
+    }
+    why.map_or(Ok(None), Err)
 }
 
 /// Describes (or locates) these photos in the background, a few at a time, unless a run

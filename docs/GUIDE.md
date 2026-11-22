@@ -794,6 +794,29 @@ you have not picked from yet: closed and opened again, it goes on where it was l
   why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
   the two best are too close to call. In a group you picked from before, the photo you
   kept then is the one suggested (*picked before*), whatever was measured.
+- **Look** (`r`) has the local model look at the group, so composition, moment and mood
+  count too; **Look at all** (Shift+R) does every group in the background, oldest first,
+  until it is done or stopped (the button counts the groups). It needs the local model
+  from *Settings › AI* (about 1.5 GB, run on this computer: no photo leaves it); without
+  it the bar offers *Get the local model…*. The model holds each photo against pairs of
+  sentences (a well or a badly composed photograph; taken at the right moment, or too
+  early or late; a strong mood, or dull; sharp, or blurry) and scores it 0 to 100 on each,
+  above 50 the better side. Where the frames of a group differ by it, that is half the
+  suggestion and sharpness the other half, and the caption lists the four scores. The
+  scores are rough (the model reads a small picture): the caption names one (*best
+  composition*, *best moment*, *best mood*) only where the best frame is at least 5 points
+  above the group's average on it, and says *best picture* otherwise. Frames it scores
+  alike are still decided by sharpness. The scores tell the frames of one group apart;
+  they do not rate photos, and say little between different pictures. What the model saw
+  is kept, so a photo is looked at once (again after it is rendered anew).
+- The model's view counts only once it has seen every photo of the group. *Look at all*
+  looks at the thumbnails and previews there are and makes none: a photo with neither is
+  counted (*3 failed* beside the button) and its group stays decided by sharpness, with
+  *1 photo not looked at* in the bar. *Look* on that group makes what is missing. Why a
+  photo could not be looked at is in `events.log` in the catalog's folder. *Stop* ends
+  the run after the photo it is on; the group it was in is not counted, and what was
+  seen of it is kept. The model is held in memory while this screen is open or a run goes
+  on, and let go after.
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
@@ -1131,13 +1154,14 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | ↑ ↓ (cull) | Previous, next group, leaving this one as it is |
 | ← → Tab (cull) | Previous, next photo of the group |
 | `g` (cull) | Go to the suggested photo |
+| `r`, Shift+R (cull) | Have the local model look at this group; at every group, in the background |
 
 Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups (`library\cull.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups and what the local model saw of photos (`library\cull.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
   and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
   the background and what failed (AI runs, and why a photo was placed nowhere, included) is

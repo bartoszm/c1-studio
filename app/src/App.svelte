@@ -4157,6 +4157,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
     onseries={(series) => openCull(series)}
     onactive={(row) => { if (culling) culling.row = row; }}
     onkeep={cullKeep}
+    onsettings={() => { settingsTab = "ai"; showSettings = true; }}
   />
 {/if}
 
