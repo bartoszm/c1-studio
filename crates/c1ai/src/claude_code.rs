@@ -10,7 +10,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -147,17 +146,9 @@ impl ClaudeCode {
         format!("{message}\n")
     }
 
-    /// The message for a question about pictures: each announced by its number ("Frame
-    /// 1:"), then the text.
+    /// The message for a question about pictures ([`crate::frames_content`]).
     fn question_images(text: &str, jpegs: &[Vec<u8>]) -> String {
-        let mut content = Vec::with_capacity(jpegs.len() * 2 + 1);
-        for (i, jpeg) in jpegs.iter().enumerate() {
-            let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
-            content.push(json!({"type": "text", "text": format!("Frame {}:", i + 1)}));
-            content
-                .push(json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}));
-        }
-        content.push(json!({"type": "text", "text": text}));
+        let content = crate::frames_content(text, jpegs);
         let message = json!({"type": "user", "message": {"role": "user", "content": content}});
         format!("{message}\n")
     }
@@ -186,47 +177,49 @@ impl ClaudeCode {
 
     /// One question without a photo, answered in the shape the instance was made with
     /// ([`ClaudeCode::asking`]). Returns the answer and the call's record (counted against
-    /// the plan: no cost).
-    pub fn ask(&self, text: &str) -> Result<(Value, RunRecord), AiError> {
-        self.asked(&Self::question(text))
+    /// the plan: no cost); a call that ran and gave no answer to use fails with its record.
+    pub fn ask(&self, text: &str) -> Result<(Value, RunRecord), Failed> {
+        let (result, millis) = self.send(&Self::question(text), &None)?;
+        self.asked(&result, millis)
     }
 
     /// [`ClaudeCode::ask`] about pictures, sent in order before the text.
-    pub fn ask_images(&self, text: &str, jpegs: &[Vec<u8>]) -> Result<(Value, RunRecord), AiError> {
-        self.asked(&Self::question_images(text, jpegs))
+    pub fn ask_images(&self, text: &str, jpegs: &[Vec<u8>]) -> Result<(Value, RunRecord), Failed> {
+        let (result, millis) = self.send(&Self::question_images(text, jpegs), &None)?;
+        self.asked(&result, millis)
     }
 
-    fn asked(&self, message: &str) -> Result<(Value, RunRecord), AiError> {
-        let (result, millis) = self.send(message, &None)?;
-        let answer = structured(&result)?.clone();
+    /// The record of the call `result` ends, with `raw` as what the model said.
+    fn record(&self, result: &Value, millis: u64, raw: String) -> RunRecord {
         let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
-        let record = RunRecord {
+        RunRecord {
             provider: "claude-code".to_string(),
             model: self.model.id.to_string(),
-            prompt: 0,
+            prompt: self.prompt,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_write_tokens: usage.cache_creation_input_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
+            // Counted against the plan, not billed.
             cost: 0.0,
             millis,
-            raw: answer.to_string(),
-        };
-        Ok((answer, record))
+            raw,
+        }
+    }
+
+    /// The answer in a question's final `result` event, and the call's record.
+    fn asked(&self, result: &Value, millis: u64) -> Result<(Value, RunRecord), Failed> {
+        match structured(result) {
+            Ok(answer) => Ok((answer.clone(), self.record(result, millis, answer.to_string()))),
+            Err(error) => {
+                Err(Failed { error, record: Some(Box::new(self.record(result, millis, result.to_string()))) })
+            }
+        }
     }
 
     fn message(photo: &PhotoRequest) -> String {
-        let data = base64::engine::general_purpose::STANDARD.encode(&photo.jpeg);
-        let message = json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
-                    {"type": "text", "text": photo.context}
-                ]
-            }
-        });
+        let content = json!([crate::image_block(&photo.jpeg), {"type": "text", "text": photo.context}]);
+        let message = json!({"type": "user", "message": {"role": "user", "content": content}});
         format!("{message}\n")
     }
 
@@ -344,20 +337,7 @@ impl VisionProvider for ClaudeCode {
 
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
         let (result, millis) = self.send(&Self::message(photo), &photo.progress).map_err(Failed::from)?;
-        let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
-        let record = |raw: String| RunRecord {
-            provider: "claude-code".to_string(),
-            model: self.model.id.to_string(),
-            prompt: self.prompt,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_write_tokens: usage.cache_creation_input_tokens,
-            cache_read_tokens: usage.cache_read_input_tokens,
-            // Counted against the plan, not billed.
-            cost: 0.0,
-            millis,
-            raw,
-        };
+        let record = |raw: String| self.record(&result, millis, raw);
         let (raw, answer) =
             read(&result).map_err(|error| Failed { error, record: Some(Box::new(record(result.to_string()))) })?;
         let (suggestion, warnings) = validate(&answer, &self.vocabulary);
@@ -444,18 +424,23 @@ mod tests {
     }
 
     #[test]
-    fn a_question_about_pictures_sends_them_numbered_before_the_text() {
-        let message: Value =
-            serde_json::from_str(ClaudeCode::question_images("Which?", &[vec![1, 2, 3], vec![4, 5, 6]]).trim_end())
-                .unwrap();
-        let content = message["message"]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 5);
-        assert_eq!(
-            (&content[0]["text"], &content[2]["text"], &content[4]["text"]),
-            (&json!("Frame 1:"), &json!("Frame 2:"), &json!("Which?"))
-        );
-        assert_eq!(content[1]["source"]["data"], "AQID");
-        assert_eq!(content[3]["type"], "image");
+    fn a_question_about_pictures_is_one_user_message_and_a_failed_one_keeps_its_record() {
+        let jpegs = [vec![1, 2, 3], vec![4, 5, 6]];
+        let message: Value = serde_json::from_str(ClaudeCode::question_images("Which?", &jpegs).trim_end()).unwrap();
+        assert_eq!(message["type"], "user");
+        assert_eq!(message["message"], json!({"role": "user", "content": crate::frames_content("Which?", &jpegs)}));
+
+        let cli = ClaudeCode::asking("claude".into(), Options::default(), "Compare.", json!({})).unwrap();
+        let usage = json!({"input_tokens": 9, "output_tokens": 700});
+        // It ran and was cut off: counted against the plan all the same.
+        let cut = json!({"type": "result", "is_error": false, "stop_reason": "max_tokens", "usage": usage});
+        let failed = cli.asked(&cut, 40).unwrap_err();
+        let record = failed.record.expect("the call ran");
+        assert!(matches!(failed.error, AiError::Truncated));
+        assert_eq!((record.output_tokens, record.millis, record.provider.as_str()), (700, 40, "claude-code"));
+        let good = json!({"type": "result", "is_error": false, "usage": usage, "structured_output": {"order": [1]}});
+        let (answer, record) = cli.asked(&good, 40).unwrap();
+        assert_eq!((answer, record.output_tokens, record.prompt), (json!({"order": [1]}), 700, 0));
     }
 
     /// With Claude Code installed and signed in with a plan (one small call, counted

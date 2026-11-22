@@ -14,7 +14,7 @@ use c1ai::keys::{self, ANTHROPIC};
 use c1ai::models::SIGLIP2;
 use c1ai::pick::{self, PickAsk};
 use c1ai::siglip::Embedder;
-use c1ai::{AiError, Brief, Vocabulary};
+use c1ai::{AiError, Failed, RunRecord};
 use c1analysis::{Candidate, Judge};
 use c1index::cull::NewView;
 use c1index::{Filter, GroupSort, Library, QueryOptions, Sort};
@@ -230,6 +230,14 @@ fn frames_to_ask(view: &CullGroupView) -> Vec<u64> {
     view.photos.iter().map(|p| p.row).filter(|row| best.contains(row)).collect()
 }
 
+/// Counts a call about the group `id` with the rest of what the models were asked. One
+/// that cannot be counted is logged: the answer is not lost for it.
+fn count_call(s: &Session, id: &str, record: &RunRecord) {
+    if let Err(e) = s.library.record_ask(id, record) {
+        s.log.event(&format!("Best of: the call about {id} could not be counted: {e:#}"), &[]);
+    }
+}
+
 /// Asks the model the AI settings choose which frame of a group to keep, and keeps its
 /// answer. Claude gets each frame as an image of its own; Gemini, which takes one file,
 /// gets them on one sheet. `stop` ends a call under way.
@@ -260,42 +268,52 @@ fn ask_about(s: &Session, filter: &Filter, id: &str, stop: &Arc<AtomicBool>) -> 
         PickAsk { frames: sent.len(), series: id.starts_with("series:"), sheet: settings.access == Access::Gemini };
     let message = pick::message(&ask);
     let jpegs = || pictures.iter().map(|p| c1image::encode_jpeg(p, 88)).collect::<Vec<_>>();
-    let (answer, record) = match settings.access {
-        Access::Local => {
-            return Err(AiError::Local(
-                "the local model cannot compare frames (that is Look): choose Claude or Gemini in Settings > AI".into(),
-            ));
-        }
-        Access::Api => {
-            let key = keys::get(&ANTHROPIC)?.ok_or(AiError::NoKey)?;
-            Claude::new(key, options, &Brief::default(), Vocabulary::default())?.ask_images(
-                &system,
-                &message,
-                &jpegs(),
-                &schema,
-            )?
-        }
-        Access::Plan => {
-            let program = claude_code::find().ok_or_else(|| {
-                AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into())
-            })?;
-            if !on_plan(&claude_code::status(&program)?) {
-                return Err(AiError::Cli(
-                    "Claude Code is not signed in with a Claude plan: run `claude auth login`".into(),
-                ));
+    let asked = (|| -> Result<_, Failed> {
+        Ok(match settings.access {
+            Access::Local => {
+                return Err(AiError::Local(
+                    "the local model cannot compare frames (that is Look): choose Claude or Gemini in Settings > AI"
+                        .into(),
+                )
+                .into());
             }
-            ClaudeCode::asking(program, options, &system, schema)?.ask_images(&message, &jpegs())?
-        }
-        Access::Gemini => {
-            let program = agy::find()
-                .ok_or_else(|| AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()))?;
-            let options = claude::Options { model: settings.gemini_model.clone(), ..options };
-            let sheet = c1image::encode_jpeg(&c1image::frames_sheet(&pictures), 88);
-            Agy::asking(program, options, &system, &schema).ask_image(&message, &sheet)?
+            Access::Api => {
+                let key = keys::get(&ANTHROPIC)?.ok_or(AiError::NoKey)?;
+                Claude::asking(key, options)?.ask_images(&system, &message, &jpegs(), &schema)?
+            }
+            Access::Plan => {
+                let program = claude_code::find().ok_or_else(|| {
+                    AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into())
+                })?;
+                if !on_plan(&claude_code::status(&program)?) {
+                    return Err(AiError::Cli(
+                        "Claude Code is not signed in with a Claude plan: run `claude auth login`".into(),
+                    )
+                    .into());
+                }
+                ClaudeCode::asking(program, options, &system, schema)?.ask_images(&message, &jpegs())?
+            }
+            Access::Gemini => {
+                let program = agy::find()
+                    .ok_or_else(|| AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()))?;
+                let options = claude::Options { model: settings.gemini_model.clone(), ..options };
+                let sheet = c1image::encode_jpeg(&c1image::frames_sheet(&pictures), 88);
+                Agy::asking(program, options, &system, &schema).ask_image(&message, &sheet)?
+            }
+        })
+    })();
+    // Counted with the rest of what the models were asked, an answer that could not be
+    // used too: it was paid for all the same.
+    let (answer, record) = match asked {
+        Ok(answered) => answered,
+        Err(failed) => {
+            if let Some(record) = &failed.record {
+                count_call(s, id, record);
+            }
+            return Err(failed.error);
         }
     };
-    // Counted with the rest of what the models were asked, under the first frame.
-    let _ = s.library.record_call(sent[0], &record);
+    count_call(s, id, &record);
     let said = pick::read(&answer, sent.len())?;
     let verdict = c1index::cull::Verdict {
         version: pick::VERSION,

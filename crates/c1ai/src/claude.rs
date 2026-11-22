@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -64,7 +63,8 @@ pub fn estimate(model: &Model, photos: usize, preview: bool) -> f64 {
 
 /// Tokens a question about frames takes, roughly: a frame at [`FRAME_EDGE`] with its
 /// label, the instructions with each call, and the answer (a line per frame, the order
-/// and a note per call) with a little thinking.
+/// and a note per call) with a little thinking, as at effort `low`: thinking is billed as
+/// output, and a higher effort takes more of it than these count.
 const FRAME_INPUT: f64 = 950.0;
 const ASK_INPUT: f64 = 450.0;
 const FRAME_OUTPUT: f64 = 70.0;
@@ -75,7 +75,8 @@ const ASK_OUTPUT: f64 = 250.0;
 pub const FRAME_EDGE: u32 = 1024;
 
 /// What `calls` questions about `frames` frames in all ([`Claude::ask_images`], each frame
-/// at [`FRAME_EDGE`]) would cost with `model`, in US dollars.
+/// at [`FRAME_EDGE`]) would cost with `model` at effort `low`, in US dollars: the least
+/// they come to at a higher effort.
 pub fn estimate_frames(model: &Model, calls: usize, frames: usize) -> f64 {
     let (calls, frames) = (calls as f64, frames as f64);
     let input = FRAME_INPUT * frames + ASK_INPUT * calls;
@@ -139,21 +140,29 @@ pub struct Claude {
 
 impl Claude {
     pub fn new(key: String, options: Options, brief: &Brief, vocabulary: Vocabulary) -> Result<Self, AiError> {
+        let mut claude = Claude::asking(key, options)?;
+        claude.system = crate::system_prompt(brief);
+        claude.schema = crate::schema(brief);
+        claude.prompt = crate::prompt_hash(brief);
+        claude.vocabulary = vocabulary;
+        Ok(claude)
+    }
+
+    /// Claude for questions ([`Claude::ask`], [`Claude::ask_images`]), each with its own
+    /// prompt and shape: no description prompt is made.
+    pub fn asking(key: String, options: Options) -> Result<Self, AiError> {
         let model =
             model(&options.model).ok_or_else(|| AiError::BadReply(format!("unknown model {}", options.model)))?;
-        let system = crate::system_prompt(brief);
-        let schema = crate::schema(brief);
-        let prompt = crate::prompt_hash(brief);
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))
             .http_status_as_error(false)
             .build()
             .into();
-        Ok(Claude { key, model, options, system, schema, prompt, vocabulary, agent })
+        let (system, schema, vocabulary) = (String::new(), Value::Null, Vocabulary::default());
+        Ok(Claude { key, model, options, system, schema, prompt: 0, vocabulary, agent })
     }
 
     fn body(&self, photo: &PhotoRequest) -> Value {
-        let data = base64::engine::general_purpose::STANDARD.encode(&photo.jpeg);
         let body = json!({
             "model": self.model.id,
             "max_tokens": 16000,
@@ -164,10 +173,7 @@ impl Claude {
             },
             "messages": [{
                 "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
-                    {"type": "text", "text": photo.context}
-                ]
+                "content": [crate::image_block(&photo.jpeg), {"type": "text", "text": photo.context}]
             }]
         });
         self.with_fallbacks(body)
@@ -194,19 +200,10 @@ impl Claude {
         }))
     }
 
-    /// [`Claude::ask_body`] with pictures before the text, each announced by its number
-    /// ("Frame 1:"), so the answer can name them.
+    /// [`Claude::ask_body`] with pictures before the text ([`crate::frames_content`]).
     fn ask_images_body(&self, system: &str, text: &str, jpegs: &[Vec<u8>], schema: &Value) -> Value {
-        let mut content = Vec::with_capacity(jpegs.len() * 2 + 1);
-        for (i, jpeg) in jpegs.iter().enumerate() {
-            let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
-            content.push(json!({"type": "text", "text": format!("Frame {}:", i + 1)}));
-            content
-                .push(json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}}));
-        }
-        content.push(json!({"type": "text", "text": text}));
         let mut body = self.ask_body(system, text, schema);
-        body["messages"] = json!([{"role": "user", "content": content}]);
+        body["messages"] = json!([{"role": "user", "content": crate::frames_content(text, jpegs)}]);
         body
     }
 
@@ -277,8 +274,10 @@ impl Claude {
 
     /// One question without a photo: `text` under `system`, answered in the shape `schema`
     /// gives, tried again as a photo's call is. Returns the answer and the call's record
-    /// (prompt 0: no description prompt), so what it cost is counted with the rest.
-    pub fn ask(&self, system: &str, text: &str, schema: &Value) -> Result<(Value, RunRecord), AiError> {
+    /// (prompt 0: no description prompt), so what it cost is counted with the rest; an
+    /// answer paid for that could not be used (declined, cut off, unreadable) fails with
+    /// its record.
+    pub fn ask(&self, system: &str, text: &str, schema: &Value) -> Result<(Value, RunRecord), Failed> {
         let (message, millis) = self.send(&self.ask_body(system, text, schema), &None)?;
         self.answered(&message, millis)
     }
@@ -290,21 +289,21 @@ impl Claude {
         text: &str,
         jpegs: &[Vec<u8>],
         schema: &Value,
-    ) -> Result<(Value, RunRecord), AiError> {
+    ) -> Result<(Value, RunRecord), Failed> {
         let (message, millis) = self.send(&self.ask_images_body(system, text, jpegs, schema), &None)?;
         self.answered(&message, millis)
     }
 
-    /// The answer in a question's response, and the call's record.
-    fn answered(&self, message: &Value, millis: u64) -> Result<(Value, RunRecord), AiError> {
+    /// The record of the call `message` answered, made with the prompt of hash `prompt`,
+    /// with `raw` as what the model said.
+    fn record(&self, message: &Value, prompt: u64, millis: u64, raw: String) -> RunRecord {
         let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
+        // A declined photo answered by the fallback model is billed at that model's price.
         let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
-        let raw = answer_text(message)?;
-        let answer = serde_json::from_str(&raw).map_err(|e| AiError::BadReply(e.to_string()))?;
-        let record = RunRecord {
+        RunRecord {
             provider: "claude".to_string(),
             model: served.id.to_string(),
-            prompt: 0,
+            prompt,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_write_tokens: usage.cache_creation_input_tokens,
@@ -312,8 +311,20 @@ impl Claude {
             cost: cost(&served, &usage),
             millis,
             raw,
-        };
-        Ok((answer, record))
+        }
+    }
+
+    /// The answer in a question's response, and the call's record. A refusal, a cut or an
+    /// unreadable answer was paid for: it fails with its record, as a photo's does.
+    fn answered(&self, message: &Value, millis: u64) -> Result<(Value, RunRecord), Failed> {
+        let read = answer_text(message)
+            .and_then(|raw| Ok((serde_json::from_str(&raw).map_err(|e| AiError::BadReply(e.to_string()))?, raw)));
+        match read {
+            Ok((answer, raw)) => Ok((answer, self.record(message, 0, millis, raw))),
+            Err(error) => {
+                Err(Failed { error, record: Some(Box::new(self.record(message, 0, millis, message.to_string()))) })
+            }
+        }
     }
 }
 
@@ -358,21 +369,7 @@ impl VisionProvider for Claude {
 
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
         let (message, millis) = self.send(&self.body(photo), &photo.progress).map_err(Failed::from)?;
-        let usage: Usage = serde_json::from_value(message["usage"].clone()).unwrap_or_default();
-        // A declined photo answered by the fallback model is billed at that model's price.
-        let served = message["model"].as_str().and_then(model).unwrap_or(self.model);
-        let record = |raw: String| RunRecord {
-            provider: "claude".to_string(),
-            model: served.id.to_string(),
-            prompt: self.prompt,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_write_tokens: usage.cache_creation_input_tokens,
-            cache_read_tokens: usage.cache_read_input_tokens,
-            cost: cost(&served, &usage),
-            millis,
-            raw,
-        };
+        let record = |raw: String| self.record(&message, self.prompt, millis, raw);
         // A refusal or a cut answer was paid for: it is recorded with the error.
         let (raw, answer) =
             read(&message).map_err(|error| Failed { error, record: Some(Box::new(record(message.to_string()))) })?;
@@ -426,7 +423,7 @@ mod tests {
 
     #[test]
     fn a_question_goes_without_a_photo_in_the_schema_asked() {
-        let claude = Claude::new("k".into(), Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
+        let claude = Claude::asking("k".into(), Options::default()).unwrap();
         let schema = json!({"type": "object"});
         let body = claude.ask_body("Refine.", "Corrections:", &schema);
         assert_eq!(body["system"], "Refine.");
@@ -443,24 +440,51 @@ mod tests {
         let opus = model("claude-opus-5-5").unwrap();
         // One burst of four: four frames in, a short answer out.
         let one = estimate_frames(&opus, 1, 4);
-        assert!((one - ((950.0 * 4.0 + 450.0) * 4.0 + (70.0 * 4.0 + 250.0) * 20.0) / 1e6).abs() < 1e-12);
-        assert!(one < estimate(&opus, 4, true), "{one}");
+        assert!(one > 0.0 && one < estimate(&opus, 4, true), "{one}");
         assert_eq!(estimate_frames(&opus, 0, 0), 0.0);
+        // More frames, or more calls for the same frames, cost more; twice of both, twice.
+        assert!(estimate_frames(&opus, 1, 5) > one);
+        assert!(estimate_frames(&opus, 2, 4) > one);
+        assert!((estimate_frames(&opus, 2, 8) - 2.0 * one).abs() < 1e-12);
+        // And it follows the model's price.
+        let twice = Model { input: opus.input * 2.0, output: opus.output * 2.0, ..opus };
+        assert!((estimate_frames(&twice, 1, 4) - 2.0 * one).abs() < 1e-12);
     }
 
     #[test]
-    fn a_question_about_pictures_sends_them_numbered_before_the_text() {
-        let claude = Claude::new("k".into(), Options::default(), &Brief::default(), Vocabulary::default()).unwrap();
+    fn a_question_about_pictures_sends_them_in_the_schema_asked() {
+        let claude = Claude::asking("k".into(), Options::default()).unwrap();
         let schema = json!({"type": "object"});
-        let body = claude.ask_images_body("Compare.", "Which?", &[vec![1, 2, 3], vec![4, 5, 6]], &schema);
-        let content = body["messages"][0]["content"].as_array().unwrap();
-        assert_eq!(content.len(), 5);
-        assert_eq!(content[0]["text"], "Frame 1:");
-        assert_eq!(content[1]["source"]["data"], "AQID");
-        assert_eq!(content[2]["text"], "Frame 2:");
-        assert_eq!(content[3]["source"]["media_type"], "image/jpeg");
-        assert_eq!(content[4]["text"], "Which?");
+        let jpegs = [vec![1, 2, 3], vec![4, 5, 6]];
+        let body = claude.ask_images_body("Compare.", "Which?", &jpegs, &schema);
+        assert_eq!(body["messages"], json!([{"role": "user", "content": crate::frames_content("Which?", &jpegs)}]));
         assert_eq!((&body["system"], &body["output_config"]["format"]["schema"]), (&json!("Compare."), &schema));
+    }
+
+    #[test]
+    fn an_answer_paid_for_that_cannot_be_used_fails_with_its_record() {
+        let claude = Claude::asking("k".into(), Options::default()).unwrap();
+        let usage = json!({"input_tokens": 4000, "output_tokens": 16000});
+        let answer = |stop: &str, text: &str| {
+            json!({
+                "model": "claude-opus-5-5",
+                "stop_reason": stop,
+                "usage": usage,
+                "content": [{"type": "text", "text": text}]
+            })
+        };
+        let paid = (4000.0 * 4.0 + 16000.0 * 20.0) / 1e6;
+        let cut = claude.answered(&answer("max_tokens", "{\"ord"), 900).unwrap_err();
+        let record = cut.record.expect("a cut answer is billed");
+        assert!(matches!(cut.error, AiError::Truncated));
+        assert_eq!((record.input_tokens, record.output_tokens, record.millis, record.prompt), (4000, 16000, 900, 0));
+        assert!((record.cost - paid).abs() < 1e-12);
+        let refused = claude.answered(&answer("refusal", ""), 1).unwrap_err();
+        assert!(matches!(refused.error, AiError::Refused(_)) && refused.record.is_some());
+        let prose = claude.answered(&answer("end_turn", "I would keep the second."), 1).unwrap_err();
+        assert!(matches!(prose.error, AiError::BadReply(_)) && prose.record.is_some_and(|r| r.cost > 0.0));
+        let (said, record) = claude.answered(&answer("end_turn", "{\"order\": [2, 1]}"), 1).unwrap();
+        assert_eq!((said, record.raw.as_str()), (json!({"order": [2, 1]}), "{\"order\": [2, 1]}"));
     }
 
     #[test]
@@ -468,7 +492,8 @@ mod tests {
         let options = Options::default();
         options.stop.store(true, Ordering::SeqCst);
         let claude = Claude::new("k".into(), options, &Brief::default(), Vocabulary::default()).unwrap();
-        assert!(matches!(claude.ask("s", "t", &json!({})), Err(AiError::Stopped)));
+        let stopped = claude.ask("s", "t", &json!({})).unwrap_err();
+        assert!(matches!(stopped.error, AiError::Stopped) && stopped.record.is_none(), "nothing was sent");
     }
 
     #[test]

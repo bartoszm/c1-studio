@@ -426,6 +426,25 @@ impl From<AiError> for Failed {
     }
 }
 
+/// A JPEG as an image block of a Claude message.
+pub(crate) fn image_block(jpeg: &[u8]) -> serde_json::Value {
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(jpeg);
+    serde_json::json!({"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}})
+}
+
+/// The content of a Claude message asking about pictures: each announced by its number
+/// ("Frame 1:"), so the answer can name them, then the text.
+pub(crate) fn frames_content(text: &str, jpegs: &[Vec<u8>]) -> Vec<serde_json::Value> {
+    let mut content = Vec::with_capacity(jpegs.len() * 2 + 1);
+    for (i, jpeg) in jpegs.iter().enumerate() {
+        content.push(serde_json::json!({"type": "text", "text": format!("Frame {}:", i + 1)}));
+        content.push(image_block(jpeg));
+    }
+    content.push(serde_json::json!({"type": "text", "text": text}));
+    content
+}
+
 pub trait VisionProvider: Send + Sync {
     /// `claude`, `gemini`.
     fn id(&self) -> &str;
@@ -833,5 +852,18 @@ mod tests {
         );
         assert_eq!(with_said("no JSON answer", " \n "), "no JSON answer");
         assert_eq!(with_said("no JSON answer", ""), "no JSON answer");
+    }
+
+    #[test]
+    fn a_question_about_pictures_has_them_numbered_before_the_text() {
+        let content = frames_content("Which?", &[vec![1, 2, 3], vec![4, 5, 6]]);
+        assert_eq!(content.len(), 5);
+        assert_eq!(content[0], serde_json::json!({"type": "text", "text": "Frame 1:"}));
+        assert_eq!(content[1], image_block(&[1, 2, 3]));
+        let source = serde_json::json!({"type": "base64", "media_type": "image/jpeg", "data": "AQID"});
+        assert_eq!(content[1], serde_json::json!({"type": "image", "source": source}));
+        assert_eq!(content[2]["text"], "Frame 2:");
+        assert_eq!(content[3]["type"], "image");
+        assert_eq!(content[4], serde_json::json!({"type": "text", "text": "Which?"}));
     }
 }

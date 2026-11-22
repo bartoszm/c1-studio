@@ -171,14 +171,25 @@ impl Agy {
     }
 
     /// One question about the image in `jpeg`, answered in the shape the instance was made
-    /// with. Returns the answer and the call's record (counted against the plan: no cost).
-    pub fn ask_image(&self, text: &str, jpeg: &[u8]) -> Result<(Value, RunRecord), AiError> {
+    /// with. Returns the answer and the call's record (counted against the plan: no cost);
+    /// a call answered with no JSON fails with its record.
+    pub fn ask_image(&self, text: &str, jpeg: &[u8]) -> Result<(Value, RunRecord), Failed> {
         let prompt = |image: &Path| {
             format!("{}\n\nRead the image at {}.\n{text}\n\n{}", self.system, image.display(), self.shape())
         };
-        let (envelope, _, millis) = self.call_again(&prompt, jpeg, &None)?;
-        let answer = extract_json(&envelope.response).ok_or_else(|| no_json(&envelope.response))?;
-        Ok((answer, self.record(&envelope.usage, millis, envelope.response.clone())))
+        let (envelope, stdout, millis) = self.call_again(&prompt, jpeg, &None)?;
+        self.asked(&envelope, stdout, millis)
+    }
+
+    /// The answer in a question's envelope (`stdout` is all agy printed), and the call's record.
+    fn asked(&self, envelope: &Envelope, stdout: String, millis: u64) -> Result<(Value, RunRecord), Failed> {
+        match extract_json(&envelope.response) {
+            Some(answer) => Ok((answer, self.record(&envelope.usage, millis, envelope.response.clone()))),
+            None => Err(Failed {
+                error: no_json(&envelope.response),
+                record: Some(Box::new(self.record(&envelope.usage, millis, stdout))),
+            }),
+        }
     }
 
     fn args(&self, prompt: &str, dir: &Path) -> Vec<String> {
@@ -502,6 +513,20 @@ impl VisionProvider for Agy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_question_answered_without_json_fails_with_its_record() {
+        let agy = Agy::asking("agy".into(), Options::default(), "Compare.", &serde_json::json!({}));
+        let usage = Usage { input_tokens: 3000, output_tokens: 80, cache_read_tokens: 0 };
+        let prose = Envelope { status: "SUCCESS".into(), response: "The second one.".into(), error: None, usage };
+        let failed = agy.asked(&prose, "all it printed".into(), 70).unwrap_err();
+        let record = failed.record.expect("the call ran");
+        assert!(matches!(failed.error, AiError::BadReply(_)));
+        assert_eq!((record.input_tokens, record.millis, record.raw.as_str()), (3000, 70, "all it printed"));
+        let good = Envelope { response: "```json\n{\"order\": [2, 1]}\n```".into(), ..prose };
+        let (answer, record) = agy.asked(&good, String::new(), 70).unwrap();
+        assert_eq!((answer["order"][0].as_u64(), record.provider.as_str(), record.cost), (Some(2), "gemini", 0.0));
+    }
 
     #[test]
     fn json_is_found_however_it_is_wrapped() {

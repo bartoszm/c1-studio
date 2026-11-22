@@ -1700,13 +1700,12 @@ pub(crate) async fn refine_lessons(
         };
         // Gemini describes, but refining is Claude's: the key if there is one, else the plan.
         let key = keys::get(&ANTHROPIC).map_err(text)?;
-        let (answer, record) = match (settings.access, key) {
+        let asked = match (settings.access, key) {
             // The local model reads no instructions: there is nothing for lessons to change.
             (Access::Local, _) => return Err("The local model follows no prompt: there is nothing to refine".into()),
             (Access::Api, None) => return Err(AiError::NoKey.to_string()),
             (Access::Api | Access::Gemini, Some(key)) => {
-                let claude = Claude::new(key, options, &Brief::default(), Vocabulary::default()).map_err(text)?;
-                claude.ask(&system, &message, &schema).map_err(text)?
+                Claude::asking(key, options).map_err(text)?.ask(&system, &message, &schema)
             }
             (Access::Plan | Access::Gemini, _) => {
                 let program = claude_code::find().ok_or_else(|| {
@@ -1716,7 +1715,17 @@ pub(crate) async fn refine_lessons(
                 if !on_plan(&claude_code::status(&program).map_err(text)?) {
                     return Err("Refining the prompt asks Claude: Claude Code is not signed in with a Claude plan".into());
                 }
-                ClaudeCode::asking(program, options, &system, schema).map_err(text)?.ask(&message).map_err(text)?
+                ClaudeCode::asking(program, options, &system, schema).map_err(text)?.ask(&message)
+            }
+        };
+        // An answer that could not be used was paid for all the same.
+        let (answer, record) = match asked {
+            Ok(answered) => answered,
+            Err(failed) => {
+                if let Some(record) = &failed.record {
+                    s.library.record_refine(record).map_err(text)?;
+                }
+                return Err(failed.to_string());
             }
         };
         s.library.record_refine(&record).map_err(text)?;
