@@ -76,6 +76,8 @@ pub const AXES: [Axis; 4] = [
 const WEIGHTS: [f32; 4] = [0.3, 0.3, 0.25, 0.15];
 
 /// A photo's score on each of [`AXES`], 0 to 1: above a half, closer to the good sentences.
+/// The fields are the axes by name; [`Aesthetic::as_array`] and `From<[f32; 4]>` are the
+/// one place that says which place in the order of [`AXES`] each has.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Aesthetic {
     pub composition: f32,
@@ -84,10 +86,26 @@ pub struct Aesthetic {
     pub technical: f32,
 }
 
+impl From<[f32; 4]> for Aesthetic {
+    /// From the scores in the order of [`AXES`].
+    fn from([composition, moment, mood, technical]: [f32; 4]) -> Self {
+        Aesthetic { composition, moment, mood, technical }
+    }
+}
+
 impl Aesthetic {
+    /// The scores in the order of [`AXES`].
+    pub fn as_array(&self) -> [f32; 4] {
+        [self.composition, self.moment, self.mood, self.technical]
+    }
+
+    /// Each score with the name of its axis, in the order of [`AXES`].
+    pub fn named(&self) -> impl Iterator<Item = (&'static str, f32)> {
+        AXES.iter().map(|axis| axis.name).zip(self.as_array())
+    }
+
     pub fn overall(&self) -> f32 {
-        let axes = [self.composition, self.moment, self.mood, self.technical];
-        axes.iter().zip(WEIGHTS).map(|(score, weight)| score * weight).sum()
+        self.as_array().iter().zip(WEIGHTS).map(|(score, weight)| score * weight).sum()
     }
 }
 
@@ -100,19 +118,36 @@ pub struct Prompts {
 }
 
 impl Prompts {
-    /// Embeds the sentences (once: they are kept beside the model).
+    /// Embeds the sentences (once: they are kept beside the model). All of them are asked
+    /// for at once, so the text tower, over a gigabyte in memory, is loaded once at most.
     pub fn load(embedder: &Embedder, stopped: &dyn Fn() -> bool) -> Result<Self, AiError> {
-        let mut axes = Vec::with_capacity(AXES.len());
-        for axis in &AXES {
-            axes.push((embedder.texts(axis.good, stopped)?, embedder.texts(axis.bad, stopped)?));
+        let embedded = embedder.texts(&sentences(), stopped)?;
+        Self::split(embedded).ok_or_else(|| AiError::Local("the model did not embed every sentence".into()))
+    }
+
+    /// The embeddings of [`sentences`], in their order, put back per axis. `None` when
+    /// they are not one per sentence.
+    fn split(embedded: Vec<Vec<f32>>) -> Option<Self> {
+        if embedded.len() != sentences().len() {
+            return None;
         }
-        Ok(Prompts { axes })
+        let mut rest = embedded.into_iter();
+        let axes = AXES
+            .iter()
+            .map(|axis| (rest.by_ref().take(axis.good.len()).collect(), rest.by_ref().take(axis.bad.len()).collect()))
+            .collect();
+        Some(Prompts { axes })
     }
 
     /// From embeddings worked out elsewhere, per axis in the order of [`AXES`].
     pub fn from_embeddings(axes: Vec<Sides>) -> Self {
         Prompts { axes }
     }
+}
+
+/// Every sentence of [`AXES`]: per axis the good ones, then the bad ones.
+fn sentences() -> Vec<&'static str> {
+    AXES.iter().flat_map(|axis| axis.good.iter().chain(axis.bad).copied()).collect()
 }
 
 fn mean_cosine(image: &[f32], texts: &[Vec<f32>]) -> f32 {
@@ -126,12 +161,13 @@ fn mean_cosine(image: &[f32], texts: &[Vec<f32>]) -> f32 {
 /// sentences than to the bad, through the model's own scale: its bias falls out of the
 /// difference, so the score is a half where the two are as near.
 pub fn score(image: &[f32], prompts: &Prompts) -> Aesthetic {
-    let axis = |i: usize| {
-        let Some((good, bad)) = prompts.axes.get(i) else { return 0.5 };
+    // An axis with no sentences says nothing: a half.
+    let mut scores = [0.5; AXES.len()];
+    for (score, (good, bad)) in scores.iter_mut().zip(&prompts.axes) {
         let apart = mean_cosine(image, good) - mean_cosine(image, bad);
-        1.0 / (1.0 + (-apart * LOGIT_SCALE).exp())
-    };
-    Aesthetic { composition: axis(0), moment: axis(1), mood: axis(2), technical: axis(3) }
+        *score = 1.0 / (1.0 + (-apart * LOGIT_SCALE).exp());
+    }
+    scores.into()
 }
 
 #[cfg(test)]
@@ -165,6 +201,37 @@ mod tests {
         let s = score(&unit(1.0, 0.0), &prompts);
         assert!(s.composition > 0.99);
         assert_eq!((s.moment, s.mood, s.technical), (0.5, 0.5, 0.5));
+    }
+
+    #[test]
+    fn the_scores_keep_the_order_of_the_axes() {
+        let scores = [0.1, 0.2, 0.3, 0.4];
+        let seen = Aesthetic::from(scores);
+        assert_eq!((seen.composition, seen.moment, seen.mood, seen.technical), (0.1, 0.2, 0.3, 0.4));
+        assert_eq!(seen.as_array(), scores);
+        let named: Vec<(&str, f32)> = seen.named().collect();
+        assert_eq!(named, [("composition", 0.1), ("moment", 0.2), ("mood", 0.3), ("technical", 0.4)]);
+    }
+
+    #[test]
+    fn the_sentences_embedded_at_once_go_back_to_their_axes() {
+        // Each sentence's embedding says which sentence it is.
+        let all = sentences();
+        assert_eq!(all.len(), AXES.iter().map(|a| a.good.len() + a.bad.len()).sum::<usize>());
+        let embedded: Vec<Vec<f32>> = (0..all.len()).map(|i| vec![i as f32]).collect();
+        let prompts = Prompts::split(embedded.clone()).unwrap();
+        assert_eq!(prompts.axes.len(), AXES.len());
+        let mut at = 0;
+        for (axis, (good, bad)) in AXES.iter().zip(&prompts.axes) {
+            assert_eq!((good.len(), bad.len()), (axis.good.len(), axis.bad.len()), "{}", axis.name);
+            for (sentence, embedding) in axis.good.iter().chain(axis.bad).zip(good.iter().chain(bad)) {
+                assert_eq!((all[at], embedding), (*sentence, &embedded[at]));
+                at += 1;
+            }
+        }
+        let mut short = embedded;
+        short.pop();
+        assert!(Prompts::split(short).is_none(), "one short");
     }
 
     /// With the model downloaded (`C1_MODELS` names the folder models are kept in) and
