@@ -3,7 +3,8 @@
 What C1 Studio does, one feature at a time, each with a short recording of the app on a
 real catalog of 100,000 photos. The [user guide](GUIDE.md) has the details.
 
-New in 0.11.0: [keywords from a model on your own computer](#describe-photos-with-ai),
+New in 0.11.0: [choose the best of a burst](#choose-the-best-of-a-burst),
+[keywords from a model on your own computer](#describe-photos-with-ai),
 [several keywords at once](#edit-then-write) and [the keyword tree by use](#the-keyword-tree).
 New in 0.10.0: [filters: only, add, leave out, or](#filters-only-add-leave-out-or) and
 [search by camera, lens, exposure, file and shape](#find-anything-instantly). New in 0.9.0:
@@ -337,9 +338,10 @@ sheets of 36 photos in one call for a quick first pass, and **Details** shows ea
 it goes, down to the sheet that was sent.
 
 *New in 0.11.0:* keywords from a model on your own computer. SigLIP 2, downloaded once,
-scores every keyword in the catalog against each photo in about a quarter of a second,
-with no account, no cost and no photo leaving the machine. It offers keywords only, each
-with its score.
+looks at each photo in about a quarter of a second, with no account, no cost and no photo
+leaving the machine. It offers keywords only. *Learn from the rest* has it look once at the
+photos you keyworded by hand; a photo is then offered the keywords of the keyworded photos
+most like it, so it comes to know your names, places and private words.
 
 ![Describing four photos with Claude, the cards, and one accepted into the edit queue](media/features/ai.gif)
 
