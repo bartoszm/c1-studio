@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CULL_DEFAULTS, cullKey, cullSettings, describePick, keeperMark, keepers, restAction, restLabel, restOf, shownRows, stepGroup, stepPhoto,
+  CULL_DEFAULTS, afterPick, afterTurn, cullKey, cullSettings, describePick, firstUnpicked, keeperMark, keepers, placeAfter, restAction, restLabel,
+  restOf, shownRows, stepGroup, stepPhoto,
 } from "../src/lib/cull";
 
 const key = (k: string, more: Record<string, unknown> = {}) => ({ key: k, target: null, defaultPrevented: false, ...more });
@@ -100,4 +101,44 @@ test("a pick is said in a line", () => {
     describePick(1, 2, "Trash", { binned: [5], hidden: [], skipped: [6] }),
     "Kept 1 photo, 1 to the trash, 1 left: a variant of a photo kept",
   );
+  // What was done is said, not what was asked: no trash here, so the rest was hidden.
+  assert.equal(describePick(1, 2, "Trash", { ...none, hidden: [4, 5] }), "Kept 1 photo, 2 hidden");
+  // Variants that went with their image, without being in the group.
+  assert.equal(describePick(1, 2, "Trash", { ...none, binned: [1, 2, 7] }), "Kept 1 photo, 3 to the trash (1 of them a variant not shown here)");
+  assert.equal(
+    describePick(1, 3, "Trash", { binned: [1, 2, 7, 8], hidden: [], skipped: [6] }),
+    "Kept 1 photo, 4 to the trash (2 of them variants not shown here), 1 left: a variant of a photo kept",
+  );
+});
+
+test("going through the groups starts at the first with no pick", () => {
+  const list = (...picked: boolean[]) => picked.map((p) => ({ picked: p }));
+  assert.equal(firstUnpicked(list(false, false)), 0);
+  assert.equal(firstUnpicked(list(true, true, false, true, false)), 2);
+  assert.equal(firstUnpicked(list(true, true)), 0, "all picked from: from the first again");
+  assert.equal(firstUnpicked([]), 0);
+});
+
+test("a pick shows the next group, unless another was gone to meanwhile", () => {
+  const groups = ["a", "b", "c"];
+  assert.deepEqual(afterPick({ groups, at: 0, done: [] }, "a"), { at: 1, done: ["a"] });
+  assert.deepEqual(afterPick({ groups, at: 2, done: ["a"] }, "c"), { at: 2, done: ["a", "c"] }, "the last one stays");
+  // Gone on to c while the pick from a was made: c stays.
+  assert.deepEqual(afterPick({ groups, at: 2, done: [] }, "a"), { at: 2, done: ["a"] });
+  assert.deepEqual(afterPick({ groups, at: 1, done: ["b"] }, "b"), { at: 2, done: ["b"] }, "picked again: done once");
+});
+
+test("a pick taken back or made again shows its group", () => {
+  const groups = ["a", "b", "c"];
+  assert.deepEqual(afterTurn({ groups, at: 2, done: ["a", "b"] }, "a", false), { at: 0, done: ["b"] });
+  assert.deepEqual(afterTurn({ groups, at: 2, done: ["b"] }, "a", true), { at: 0, done: ["b", "a"] });
+  // A group no longer among them (they were listed again): the place stays.
+  assert.deepEqual(afterTurn({ groups, at: 2, done: ["b"] }, "gone", true), { at: 2, done: ["b"] });
+});
+
+test("groups listed again keep the place of the one shown", () => {
+  assert.equal(placeAfter(["a", "x", "c"], "x", 0), 1, "found by the id its photo has now");
+  assert.equal(placeAfter(["a", "c"], "gone", 1), 1, "not among them: the same place");
+  assert.equal(placeAfter(["a", "c"], undefined, 5), 1, "as far as the list goes");
+  assert.equal(placeAfter([], undefined, 3), 0);
 });

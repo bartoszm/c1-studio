@@ -68,7 +68,7 @@
   import Compare from "./Compare.svelte";
   import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
   import Cull from "./Cull.svelte";
-  import { describePick, keeperMark, restAction, stepGroup } from "./lib/cull";
+  import { afterPick, afterTurn, describePick, firstUnpicked, keeperMark, placeAfter, restAction } from "./lib/cull";
   import WriteDialog from "./WriteDialog.svelte";
 
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
@@ -1316,7 +1316,7 @@
 
   /** Copy… from `from` (the photo right-clicked), else the active or focused photo. */
   async function openCopy(from?: number) {
-    const row = from ?? (comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow);
+    const row = from ?? (culling ? culling.row : comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow);
     if (row === undefined) return;
     copying = await api.photo(row);
   }
@@ -1324,7 +1324,7 @@
   async function openSync() {
     const row = selected === null ? undefined : focusRow;
     // Comparing, edits reach the active photo alone: there is no rest to copy into.
-    if (comparing || row === undefined || picked.size < 2) return;
+    if (comparing || culling || row === undefined || picked.size < 2) return;
     const from = await api.photo(row);
     if (from) syncing = { from, row };
   }
@@ -1538,9 +1538,8 @@
         const back: Undone = { cull: await api.cullRevert(last.cull), what: last.what, group: last.group };
         redoStack.push(back);
         editError = null;
-        await binChanged();
+        await cullTurned(last.group, false);
         note(`Undone: ${last.what}`, redoOf(back));
-        cullBack(last.group, false);
         return;
       }
       if ("hidden" in last) {
@@ -1591,9 +1590,8 @@
         const again: Done = { cull: await api.cullRevert(last.cull), what: last.what, group: last.group };
         undoStack.push(again);
         editError = null;
-        await binChanged();
+        await cullTurned(last.group, true);
         note(`Redone: ${last.what}`, undoOf(again));
-        cullBack(last.group, true);
         return;
       }
       if ("hidden" in last) {
@@ -2274,23 +2272,28 @@
 
   /** `b` or *Best of…*: the series (or the duplicate groups) among the photos shown, one at
    *  a time, to keep the best of each. `series` not said: the kind gone through last, or the
-   *  other when there are none of it. `start`: the group to begin at. */
+   *  other when there are none of it. `start`: the group to begin at; not said, the first
+   *  with no pick yet. */
   let cullAsked = 0;
+  /** Picks were made while the grid was covered: it is read again when the choosing closes. */
+  let cullStale = false;
   async function openCull(series?: boolean, start?: string) {
     const mine = ++cullAsked;
     const f = compiled($state.snapshot(filter));
     try {
       let kind = series ?? readChoice("cullKind", ["series", "duplicates"] as const, "series") === "series";
-      let ids = await api.groupIds(f, kind);
-      if (!ids.length && series === undefined) {
-        const other = await api.groupIds(f, !kind);
-        if (other.length) [kind, ids] = [!kind, other];
+      let list = await api.cullGroups(f, kind);
+      if (!list.length && series === undefined) {
+        const other = await api.cullGroups(f, !kind);
+        if (other.length) [kind, list] = [!kind, other];
       }
       if (mine !== cullAsked) return;
+      const ids = list.map((g) => g.id);
       if (!ids.length && !culling) return note("No series or duplicates among these photos (the Analysis tab finds them once the photos are measured)");
       viewing = false;
       comparing = null;
-      culling = { series: kind, groups: ids, at: Math.max(0, start === undefined ? 0 : ids.indexOf(start)), filter: f, done: [] };
+      const at = start === undefined ? firstUnpicked(list) : Math.max(0, ids.indexOf(start));
+      culling = { series: kind, groups: ids, at, filter: f, done: list.filter((g) => g.picked).map((g) => g.id) };
       try { localStorage.setItem("cullKind", kind ? "series" : "duplicates"); } catch { /* not remembered */ }
     } catch (e) {
       editError = String(e);
@@ -2309,23 +2312,71 @@
         undoStack.push(entry);
         redoStack = [];
         editError = null;
-        await binChanged();
-        const last = !!culling && culling.groups.indexOf(group) === culling.groups.length - 1;
+        const c = culling;
+        if (!c) {
+          await binChanged();
+          return note(what, undoOf(entry));
+        }
+        const last = c.groups.indexOf(group) === c.groups.length - 1;
+        // The next group is shown at once, or the one gone to meanwhile is left alone. The
+        // grid under this is read when the choosing closes, not after every pick.
+        const next = afterPick(c, group);
+        const moved = next.at !== c.at;
+        c.done = next.done;
+        c.at = next.at;
+        // The group left need not be read again; one that stays, or a variant that went to
+        // the trash with its image without being in the group, has to be.
+        cullChanged(!moved || step.binned.some((row) => !rest.includes(row)));
         note(last ? `${what}. That was the last group` : what, undoOf(entry));
-        cullBack(group, true);
-        if (culling && culling.groups[culling.at] === group) culling.at = stepGroup(culling.at, culling.groups.length, 1);
       } catch (e) {
         editError = String(e);
       }
     });
   }
-  /** A pick made (`picked`) or taken back: the group is shown again, and marked as it is. */
-  function cullBack(group: string, picked: boolean) {
-    if (!culling) return;
-    const i = culling.groups.indexOf(group);
-    if (i < 0) return;
-    culling.at = i;
-    culling.done = picked ? [...new Set([...culling.done, group])] : culling.done.filter((g) => g !== group);
+  /** A pick changed photos while the grid is covered: the grid waits for the choosing to
+   *  close. `reread`: the group shown is among what changed. */
+  function cullChanged(reread: boolean) {
+    cullStale = true;
+    if (reread) version++;
+    api.status().then((s) => (status = s)).catch(() => {});
+  }
+  /** A pick from `group` taken back, or made again (`picked`): the group is shown again, and
+   *  marked as it is. With the choosing closed, the grid follows as after any edit. */
+  async function cullTurned(group: string, picked: boolean) {
+    const c = culling;
+    if (!c) return binChanged();
+    const next = afterTurn(c, group, picked);
+    c.at = next.at;
+    c.done = next.done;
+    cullChanged(true);
+  }
+  /** The group shown has no photos left: the groups were worked out again since they were
+   *  listed (a sync, new measures, other class settings) and are named otherwise, or its
+   *  photos went. They are listed again, and the one `row` is in now is shown; without it,
+   *  the one at the same place. */
+  async function cullRegrouped(row?: number) {
+    const c = culling;
+    if (!c) return;
+    const mine = ++cullAsked;
+    try {
+      const list = await api.cullGroups($state.snapshot(c.filter) as Filter, c.series);
+      const look = row === undefined ? null : await api.look(row);
+      if (mine !== cullAsked || culling !== c) return;
+      const ids = list.map((g) => g.id);
+      const picked = list.filter((g) => g.picked).map((g) => g.id);
+      c.groups = ids;
+      c.at = placeAfter(ids, (c.series ? look?.series : look?.duplicates)?.[0], c.at);
+      c.done = [...new Set([...c.done.filter((g) => ids.includes(g)), ...picked])];
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+  /** Leaves the choosing: the grid shows what the picks left. */
+  function closeCull() {
+    culling = null;
+    if (!cullStale) return;
+    cullStale = false;
+    binChanged();
   }
 
   /** The History tab shown or not; hidden, it is left, and a pick from it goes. */
@@ -4100,8 +4151,9 @@ Pick those among the photos shown, then have ${source.word} build their previews
     removes={status?.removes}
     message={busy ?? editError ?? editNote}
     failed={!busy && !!editError}
-    onclose={() => (culling = null)}
+    onclose={closeCull}
     onat={(i) => { if (culling) culling.at = i; }}
+    onstale={cullRegrouped}
     onseries={(series) => openCull(series)}
     onactive={(row) => { if (culling) culling.row = row; }}
     onkeep={cullKeep}

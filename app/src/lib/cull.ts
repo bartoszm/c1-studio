@@ -108,6 +108,38 @@ export function shownRows(rows: number[], active: number | undefined, shown: num
 export const stepGroup = (at: number, total: number, delta: number): number =>
   Math.min(Math.max(at + delta, 0), Math.max(total - 1, 0));
 
+/** Where choosing the best is: the groups gone through, the one shown, the ones picked from. */
+export type CullPlace = { groups: string[]; at: number; done: string[] };
+
+/** The group to begin at: the first with no pick yet, so that going through them again
+ *  takes up where it was left; the first of all when every one has a pick. */
+export function firstUnpicked(list: { picked: boolean }[]): number {
+  return Math.max(0, list.findIndex((g) => !g.picked));
+}
+
+/** After a pick from `group`: it is done, and the next one is shown, unless another group
+ *  was gone to while the pick was made, which stays. */
+export function afterPick(c: CullPlace, group: string): Pick<CullPlace, "at" | "done"> {
+  const done = c.done.includes(group) ? c.done : [...c.done, group];
+  return { at: c.groups[c.at] === group ? stepGroup(c.at, c.groups.length, 1) : c.at, done };
+}
+
+/** After a pick from `group` was taken back, or made again (`picked`): the group is shown,
+ *  where it is still among the ones gone through, and marked as it is now. */
+export function afterTurn(c: CullPlace, group: string, picked: boolean): Pick<CullPlace, "at" | "done"> {
+  const i = c.groups.indexOf(group);
+  const rest = c.done.filter((g) => g !== group);
+  return { at: i < 0 ? c.at : i, done: picked && i >= 0 ? [...rest, group] : rest };
+}
+
+/** The place among the groups listed again (`ids`: they were worked out again, and may be
+ *  named otherwise) of the group shown, known by the id a photo of it has now; without one,
+ *  the place it had, as far as the list goes. */
+export const placeAfter = (ids: string[], id: string | undefined, at: number): number => {
+  const i = id === undefined ? -1 : ids.indexOf(id);
+  return i >= 0 ? i : stepGroup(at, ids.length, 0);
+};
+
 /** The photo `delta` after the active one, round the group. */
 export function stepPhoto(rows: number[], active: number | undefined, delta: number): number | undefined {
   if (!rows.length) return undefined;
@@ -146,14 +178,19 @@ export function cullKey(
 
 const photos = (n: number) => `${n.toLocaleString()} photo${n === 1 ? "" : "s"}`;
 
-/** What a pick did, for the footer: `Kept 1 photo, 3 to the trash`. */
+/** What a pick did, for the footer: `Kept 1 photo, 3 to the trash`. The trash and the hiding
+ *  are told from what was done (`step`), not what was asked: a source with no trash has the
+ *  rest hidden. Variants that went with their image without being in the group are said. */
 export function describePick(kept: number, rest: number, action: Rest, step: Pick<CullStep, "binned" | "hidden" | "skipped">): string {
   const parts = [`Kept ${photos(kept)}`];
-  if (action === "Trash") {
-    if (step.binned.length) parts.push(`${step.binned.length.toLocaleString()} to the trash`);
-  } else if (action === "Hide") {
+  if (step.binned.length || step.hidden.length) {
+    if (step.binned.length) {
+      const beyond = step.binned.length - (rest - step.skipped.length);
+      const more = beyond > 0 ? ` (${beyond.toLocaleString()} of them ${beyond === 1 ? "a variant" : "variants"} not shown here)` : "";
+      parts.push(`${step.binned.length.toLocaleString()} to the trash${more}`);
+    }
     if (step.hidden.length) parts.push(`${step.hidden.length.toLocaleString()} hidden`);
-  } else if (action !== "Nothing" && rest) {
+  } else if (action !== "Nothing" && action !== "Trash" && action !== "Hide" && rest) {
     parts.push("Rating" in action ? `${rest.toLocaleString()} rated ${"★".repeat(action.Rating)}` : `${rest.toLocaleString()} tagged ${action.Color.toLowerCase()}`);
   }
   if (step.skipped.length) {
