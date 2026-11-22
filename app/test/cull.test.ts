@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  CULL_DEFAULTS, afterPick, afterTurn, cullKey, cullSettings, describePick, firstUnpicked, keeperMark, keepers, placeAfter, restAction, restLabel,
-  restOf, shownRows, stepGroup, stepPhoto,
+  CULL_DEFAULTS, afterPick, afterTurn, cullKey, cullSettings, describePick, firstUnpicked, keeperMark, keepers, lookedAt, placeAfter, restAction,
+  restLabel, restOf, shownRows, stepGroup, stepPhoto, unseenNote,
 } from "../src/lib/cull";
 
 const key = (k: string, more: Record<string, unknown> = {}) => ({ key: k, target: null, defaultPrevented: false, ...more });
@@ -144,4 +144,20 @@ test("groups listed again keep the place of the one shown", () => {
   assert.equal(placeAfter(["a", "c"], "gone", 1), 1, "not among them: the same place");
   assert.equal(placeAfter(["a", "c"], undefined, 5), 1, "as far as the list goes");
   assert.equal(placeAfter([], undefined, 3), 0);
+});
+
+test("a run's progress has the group shown read again only when it is the one looked at", () => {
+  const before = { done: 4 };
+  assert.equal(lookedAt(before, { done: 5, group: "series:7" }, "series:7"), true);
+  assert.equal(lookedAt(before, { done: 5, group: "series:9" }, "series:7"), false, "another group: nothing to read");
+  assert.equal(lookedAt(before, { done: 4, group: "series:7" }, "series:7"), false, "the same event again");
+  assert.equal(lookedAt(null, { done: 1, group: "series:7" }, "series:7"), true);
+  assert.equal(lookedAt(null, { done: 0, group: null }, undefined), false, "no group shown");
+});
+
+test("photos the model could not look at are named once it has looked", () => {
+  assert.equal(unseenNote(0, 5, true), "");
+  assert.equal(unseenNote(5, 5, false), "", "never looked at: every group starts so");
+  assert.equal(unseenNote(5, 5, true), "5 photos not looked at", "asked to look, and none could be");
+  assert.equal(unseenNote(1, 5, false), "1 photo not looked at", "a run left one out");
 });

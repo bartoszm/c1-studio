@@ -5,7 +5,7 @@
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
   import Compare from "./Compare.svelte";
-  import { REST_CHOICES, cullKey, keepers, restLabel, restOf, shownRows, stepGroup, stepPhoto, type RestChoice } from "./lib/cull";
+  import { REST_CHOICES, cullKey, keepers, lookedAt, restLabel, restOf, shownRows, stepGroup, stepPhoto, unseenNote, type RestChoice } from "./lib/cull";
   import { settings } from "./lib/settings.svelte";
 
   // Choosing the best of alike photos: the duplicate groups or series under the filter, one
@@ -137,6 +137,10 @@
   let looking = $state(false);
   /** It is looking at every group, in the background: how far it has got. */
   let ranking = $state<api.RankState | null>(null);
+  /** The group it was last asked to look at by hand. */
+  let lookedGroup = $state<string | undefined>(undefined);
+  /** The photos of the group shown it could not look at, in words. */
+  let unseen = $derived(view && current ? unseenNote(view.unseen, view.photos.length, lookedGroup === view.id) : "");
   async function rankThis() {
     const group = id;
     if (looking || !view || group === undefined) return;
@@ -145,6 +149,8 @@
     try {
       const next = await api.rankGroup($state.snapshot(filter) as Filter, group);
       // The answer is of the group asked about: another may be shown by now.
+      ahead.delete(group);
+      lookedGroup = group;
       if (id === group) {
         const same = view?.id === group;
         const follows = active === best;
@@ -171,18 +177,30 @@
   onMount(() => {
     api.rankingState().then((s) => (ranking = s)).catch(() => {});
     const heard = [
-      // The group shown may be the one just looked at.
+      // The event names the group just looked at: only when that is the one shown is it
+      // read again, not for every group of a long run. One read ahead is of before the look.
       listen<api.RankState>("ranking", (e) => {
-        const before = ranking?.done;
+        const before = ranking;
         ranking = e.payload;
-        if (e.payload.done !== before && view?.judge === "sharpness") read(true);
+        if (e.payload.group !== null) ahead.delete(e.payload.group);
+        if (lookedAt(before, e.payload, id)) read(true);
       }),
-      listen("ranking-done", () => read(true)),
+      // A run stopped in the middle of the group shown has looked at a part of it.
+      listen("ranking-done", () => { if (view?.unseen) read(true); }),
     ];
     return () => heard.forEach((h) => h.then((off) => off()));
   });
-  // The model is let go with the screen (a run in the background keeps it).
+  // The model is let go with the screen (a run in the background keeps it until it ends).
   onDestroy(() => { api.cullDone().catch(() => {}); });
+  // Back from Settings, where the model is downloaded: it may be there now.
+  let covered = untrack(() => blocked);
+  $effect(() => {
+    const now = blocked;
+    untrack(() => {
+      if (covered && !now && view && !view.model) read(true);
+      covered = now;
+    });
+  });
 
   function setActive(row: number | undefined) {
     if (row === undefined) return;
@@ -334,6 +352,12 @@
             onclick={rankAll}
           >{ranking?.running ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
           {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
+          {#if ranking?.failed}
+            <span class="unseen" title="Photos Look at all could not look at: they have no thumbnail or preview yet (it makes none), or could not be read. Their groups are still decided by sharpness; Look on a group makes what is missing. events.log in the catalog's folder says why of each.">{ranking.failed.toLocaleString()} failed</span>
+          {/if}
+          {#if unseen}
+            <span class="unseen" title="The local model could not look at every photo of this group (no picture of it could be read): its view of the others does not count until it has seen them all. events.log in the catalog's folder says why.">{unseen}</span>
+          {/if}
         {/if}
       </span>
       <label class="rest" title={restTitle}>
@@ -432,6 +456,7 @@
   .rest { display: flex; align-items: center; gap: 6px; color: var(--muted); }
   .model { display: flex; align-items: center; gap: 4px; }
   .model .failed { color: var(--error); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model .unseen { color: var(--muted); white-space: nowrap; }
   .close { padding: 0 6px; font-size: 20px; line-height: 1; color: var(--muted); }
   .close:hover { color: var(--text); }
   .empty { align-self: center; justify-self: center; color: var(--muted); }

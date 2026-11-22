@@ -1,7 +1,7 @@
 // Choosing the best of alike photos, one duplicate group or series at a time: what
 // becomes of the photos not kept, which of a big group are side by side, and the keys.
 
-import type { Color, CullStep, Mark, Removal, Rest } from "./api";
+import type { Color, CullStep, Mark, RankState, Removal, Rest } from "./api";
 import { COMPARE_MAX } from "./compare";
 import { COLOR_NAMES } from "./format";
 import { typingIn } from "./keys";
@@ -141,6 +141,19 @@ export const placeAfter = (ids: string[], id: string | undefined, at: number): n
 };
 
 /** The photo `delta` after the active one, round the group. */
+/** Whether a `ranking` event (`now`, after `before`) says the group `shown` was the one
+ *  just looked at: only then is it read again, not for every group of a long run. */
+export const lookedAt = (before: Pick<RankState, "done"> | null, now: Pick<RankState, "done" | "group">, shown: string | undefined): boolean =>
+  shown !== undefined && now.group === shown && now.done !== before?.done;
+
+/** What the bar says of the `unseen` photos, of a group of `photos`, the local model has
+ *  no view of: nothing while it has not looked at the group at all (`looked`: it was just
+ *  asked to), since that is every group before its first look. */
+export function unseenNote(unseen: number, photos: number, looked: boolean): string {
+  if (unseen <= 0 || (unseen >= photos && !looked)) return "";
+  return `${unseen.toLocaleString()} photo${unseen === 1 ? "" : "s"} not looked at`;
+}
+
 export function stepPhoto(rows: number[], active: number | undefined, delta: number): number | undefined {
   if (!rows.length) return undefined;
   const at = active === undefined ? -1 : rows.indexOf(active);

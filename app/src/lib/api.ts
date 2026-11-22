@@ -712,8 +712,10 @@ export type CullPhoto = {
   reasons: string[];
 };
 /** A group's photos the filter selects, oldest first, and their rows in order of which to
- *  keep. `close`: the two best are too close to call. `model`: the local model is downloaded. */
-export type CullGroup = { id: string; photos: CullPhoto[]; order: number[]; judge: Judge; close: boolean; model: boolean };
+ *  keep. `close`: the two best are too close to call. `model`: the local model is downloaded.
+ *  `unseen`: how many of the photos the local model has no view of; while there is one, its
+ *  view of the others does not count. */
+export type CullGroup = { id: string; photos: CullPhoto[]; order: number[]; judge: Judge; close: boolean; model: boolean; unseen: number };
 /** What becomes of the photos of a group that are not kept, and what the kept ones are marked with. */
 export type Rest = "Trash" | "Hide" | "Nothing" | { Rating: number } | { Color: Color };
 export type Mark = "Nothing" | { Rating: number } | { Color: Color };
@@ -729,14 +731,15 @@ export const cullApply = (keep: number[], rest: number[], action: Rest, mark: Ma
 export const cullRevert = (step: CullStep) => invoke<CullStep>("cull_revert", { step });
 /** Has the local model look at one group's photos; the group in its new order. */
 export const rankGroup = (filter: Filter, id: string) => invoke<CullGroup>("rank_group", { filter, id });
-/** How far looking at every group has got: groups done of how many, photos that failed. */
-export type RankState = { running: boolean; done: number; total: number; failed: number; error: string | null };
+/** How far looking at every group of this catalog has got: groups done of how many, photos
+ *  that failed, and the group looked at last. */
+export type RankState = { running: boolean; done: number; total: number; failed: number; group: string | null; error: string | null };
 /** Has the local model look at every series (or duplicate group) under the filter, in the
  *  background: `ranking` events carry a RankState, `ranking-done` ends it. */
 export const startRanking = (filter: Filter, series: boolean) => invoke<void>("start_ranking", { filter, series });
 export const stopRanking = () => invoke<void>("stop_ranking");
 export const rankingState = () => invoke<RankState>("ranking_state");
-/** The choosing is over: the local model is let go. */
+/** The choosing is over: the local model is let go (after the run in the background, if one goes on). */
 export const cullDone = () => invoke<void>("cull_done");
 export const smartCounts = (filter: Filter) => invoke<[string, number][]>("smart_counts", { filter });
 
