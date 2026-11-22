@@ -25,6 +25,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 mod ai;
+mod cull;
 mod events;
 mod folders;
 mod sources;
@@ -2928,6 +2929,9 @@ pub fn run() {
             gpx_plan,
             gpx_apply,
             groups,
+            cull::cull_group,
+            cull::cull_apply,
+            cull::cull_revert,
             set_hidden,
             hidden_rows,
             no_preview_count,

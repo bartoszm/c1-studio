@@ -21,7 +21,7 @@ test("every shortcut is in a place the list shows", () => {
 test("the guide's Keyboard section lists the same keys", () => {
   const guide = readFileSync(new URL("../../docs/GUIDE.md", import.meta.url), "utf8");
   const section = guide.slice(guide.indexOf("## Keyboard"), guide.indexOf("\n## ", guide.indexOf("## Keyboard") + 1));
-  const keys = (text: string) => text.replaceAll("`", "").split(/[\s,;()]+/).filter((k) => k && !["or", "viewer", "compare"].includes(k));
+  const keys = (text: string) => text.replaceAll("`", "").split(/[\s,;()]+/).filter((k) => k && !["or", "viewer", "compare", "cull"].includes(k));
   const listed = new Set(
     section
       .split("\n")

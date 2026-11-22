@@ -23,6 +23,7 @@ use tantivy::{
 };
 
 use crate::ai::{Status, SuggestionBook, Task};
+use crate::cull::CullBook;
 use crate::db::{OpenControl, Stopped};
 use crate::edits::{
     self, Before, Edits, Event, Origin, Pending, QueuedCollection, QueuedRemap, What, now_ms, pending_key,
@@ -305,6 +306,10 @@ pub struct Library {
     /// Photos the user deleted, in the app's trash, by photo key (also in `bin_book`).
     bin_book: MarkBook,
     binned: RwLock<HashSet<String>>,
+    /// Photos the user picked as the ones to keep of their group, by photo key (also in
+    /// `cull_book`): they stand for the group when it is stacked.
+    cull_book: CullBook,
+    kept: RwLock<HashSet<String>>,
     /// What the History tab's picks and the log's days came to, for the log as last read.
     history: history::Cache,
     /// What a vision model suggested for photos, until accepted or rejected (stage 5).
@@ -417,6 +422,8 @@ impl Library {
         let hidden = RwLock::new(hidden_book.all()?);
         let bin_book = MarkBook::bin(&dir.join("bin.redb"), ctl)?;
         let binned = RwLock::new(bin_book.all()?);
+        let cull_book = CullBook::open(&dir.join("cull.redb"), ctl)?;
+        let kept = RwLock::new(cull_book.keepers()?);
         let suggestions = SuggestionBook::open(&dir.join("ai.redb"), ctl)?;
         let coarse = ctl.timed("coarse places", || {
             // A photo moved since it was given its place's position is placed for real: its
@@ -507,6 +514,8 @@ impl Library {
             hidden,
             bin_book,
             binned,
+            cull_book,
+            kept,
             history: history::Cache::default(),
             suggestions,
             stop: ctl.flag(),
@@ -780,6 +789,7 @@ impl Library {
             return Ok(HashMap::new());
         }
         let binned = self.binned.read().unwrap().clone();
+        let kept = self.kept.read().unwrap().clone();
         for (at, (row, key)) in self.store.keys()?.into_iter().enumerate() {
             // Worked out again at the next open, and seconds on a big library.
             if at % 1024 == 0 && self.stopped() {
@@ -808,10 +818,12 @@ impl Library {
         for (prefix, list) in [("dup", &groups.duplicates), ("series", &groups.series)] {
             for group in list {
                 let name = format!("{prefix}:{}", group.iter().map(|&i| members[i].0).min().unwrap_or(0));
-                // The sharpest stays on show (the lowest row among equals).
+                // The sharpest stays on show (the lowest row among equals), unless the user
+                // picked what to keep: then the picks do.
                 let keep = group.iter().copied().max_by(|&a, &b| {
                     sharpness[a].total_cmp(&sharpness[b]).then_with(|| members[b].0.cmp(&members[a].0))
                 });
+                let picked = group.iter().any(|&i| kept.contains(&members[i].1));
                 for &i in group {
                     let slot = wanted.entry(members[i].1.clone()).or_default();
                     if prefix == "dup" {
@@ -819,7 +831,7 @@ impl Library {
                     } else {
                         slot.1 = Some(name.clone());
                     }
-                    slot.2 |= Some(i) != keep;
+                    slot.2 |= if picked { !kept.contains(&members[i].1) } else { Some(i) != keep };
                 }
             }
         }
@@ -841,6 +853,124 @@ impl Library {
             }
         }
         Ok(changed)
+    }
+
+    /// Picks these photos as the ones to keep of their groups (`true`), or takes the pick
+    /// back (`false`), and stacks their groups again: a group with picks shows those when
+    /// stacked, not its sharpest. A mark of C1 Studio's own. Returns the rows whose pick
+    /// changed, for undo.
+    pub fn set_kept(&self, rows: &[u64], kept: bool) -> anyhow::Result<Vec<u64>> {
+        let _writing = self.writing.lock().unwrap();
+        let mut changed: Vec<(u64, String)> = Vec::new();
+        {
+            let marked = self.kept.read().unwrap();
+            let keys = self.keys.read().unwrap();
+            for &row in rows {
+                let Some(Some(key)) = keys.get(row as usize) else { continue };
+                if marked.contains(key) != kept && !changed.iter().any(|(r, _)| *r == row) {
+                    changed.push((row, key.clone()));
+                }
+            }
+        }
+        if !changed.is_empty() {
+            let keys: Vec<String> = changed.iter().map(|(_, k)| k.clone()).collect();
+            self.cull_book.set_keepers(&keys, kept, now_ms())?;
+            let mut marked = self.kept.write().unwrap();
+            for key in keys {
+                if kept {
+                    marked.insert(key);
+                } else {
+                    marked.remove(&key);
+                }
+            }
+        }
+        // Also when no pick changed: the photos around these may have gone to the trash.
+        self.restack_held(rows)?;
+        Ok(changed.into_iter().map(|(row, _)| row).collect())
+    }
+
+    /// Of these photos, the ones picked as the ones to keep.
+    pub fn kept_of(&self, rows: &[u64]) -> Vec<u64> {
+        let keys = self.keys.read().unwrap();
+        let kept = self.kept.read().unwrap();
+        rows.iter()
+            .copied()
+            .filter(|&r| keys.get(r as usize).and_then(|k| k.as_ref()).is_some_and(|k| kept.contains(k)))
+            .collect()
+    }
+
+    /// Works out again which photos of the groups `rows` are in stay on show when stacked,
+    /// and re-indexes those that changed: after a pick, or after photos of a group went to
+    /// the trash. The groups themselves stay as they were worked out ([`Library::regroup`]);
+    /// a photo in the trash stands for no group.
+    pub fn restack(&self, rows: &[u64]) -> anyhow::Result<()> {
+        let _writing = self.writing.lock().unwrap();
+        self.restack_held(rows)
+    }
+
+    /// [`Library::restack`], called with `writing` held.
+    fn restack_held(&self, rows: &[u64]) -> anyhow::Result<()> {
+        fn groups(look: &Look) -> impl Iterator<Item = &String> {
+            look.duplicates.iter().chain(look.series.iter())
+        }
+        let mut changed = Vec::new();
+        {
+            let keys = self.keys.read().unwrap();
+            let kept = self.kept.read().unwrap();
+            let binned = self.binned.read().unwrap();
+            let mut seen = self.seen.write().unwrap();
+            let mut touched: HashSet<String> = HashSet::new();
+            for &row in rows {
+                if let Some(Some(key)) = keys.get(row as usize)
+                    && let Some(look) = seen.get(key)
+                {
+                    touched.extend(groups(look).cloned());
+                }
+            }
+            if touched.is_empty() {
+                return Ok(());
+            }
+            // A photo can be in a duplicate group and a series, and is stacked away if
+            // either says so: the other groups of these groups' photos are worked out too.
+            let mut near = touched.clone();
+            for look in seen.values() {
+                if groups(look).any(|g| touched.contains(g)) {
+                    near.extend(groups(look).cloned());
+                }
+            }
+            // Per group, its photos not in the trash: row, key, sharpness, whether a pick.
+            let mut members: HashMap<String, Vec<(usize, String, f32, bool)>> = HashMap::new();
+            for (row, key) in keys.iter().enumerate() {
+                let Some(key) = key else { continue };
+                let Some(look) = seen.get(key) else { continue };
+                if binned.contains(key) {
+                    continue;
+                }
+                for group in groups(look).filter(|g| near.contains(*g)) {
+                    let member = (row, key.clone(), look.analysis.sharpness, kept.contains(key));
+                    members.entry(group.clone()).or_default().push(member);
+                }
+            }
+            let mut away: HashMap<String, bool> = HashMap::new();
+            for list in members.values() {
+                let picked = list.iter().any(|m| m.3);
+                let sharpest = list.iter().max_by(|a, b| a.2.total_cmp(&b.2).then_with(|| b.0.cmp(&a.0))).map(|m| m.0);
+                for m in list {
+                    *away.entry(m.1.clone()).or_default() |= if picked { !m.3 } else { Some(m.0) != sharpest };
+                }
+            }
+            for (key, stacked) in away {
+                // Only the photos of the groups asked about had all their groups worked out.
+                if let Some(look) = seen.get_mut(&key)
+                    && look.stacked != stacked
+                    && groups(look).any(|g| touched.contains(g))
+                {
+                    look.stacked = stacked;
+                    changed.push(key);
+                }
+            }
+        }
+        self.reindex_keys(&changed)
     }
 
     /// Hides (`true`) these photos from every view, or shows them again (`false`). A mark of

@@ -1381,6 +1381,56 @@ fn stacking_under_a_filter_hides_only_frames_whose_sharpest_matches_and_follows_
 }
 
 #[test]
+fn a_pick_stands_for_its_group_when_stacked_until_taken_back() {
+    let (_d, lib, source) = setup();
+    let id = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap();
+    let h = 0x0f0f_3c3c_5a5a_a5a5u64;
+    let c = [90, 90, 90];
+    // A burst of three, seconds apart (1, 3, 5): 3 is the sharpest.
+    lib.put_analyses(vec![
+        (id(1).key(), (1, 1), look(600, 400, c, 100.0, h)),
+        (id(3).key(), (1, 1), look(600, 400, c, 900.0, h ^ 0b11)),
+        (id(5).key(), (1, 1), look(600, 400, c, 300.0, h ^ 0b1111)),
+    ])
+    .unwrap();
+    let at = source.photo(&id(1)).unwrap().captured_at.unwrap();
+    for (k, n) in [3, 5].into_iter().enumerate() {
+        source.edit_externally(&id(n), |p| p.captured_at = Some(at + 2000 * (k as i64 + 1)));
+    }
+    lib.sync(&source).unwrap();
+    let burst = Filter { analysed: Some(true), stacked: true, ..Filter::default() };
+    assert_eq!(ids(&lib, &burst), [3]);
+
+    // The user keeps 5, not the sharpest: it shows at once, and after the groups are worked
+    // out again.
+    let five = row_of(&lib, 5);
+    assert_eq!(lib.set_kept(&[five], true).unwrap(), [five]);
+    assert_eq!(ids(&lib, &burst), [5]);
+    assert!(lib.set_kept(&[five], true).unwrap().is_empty(), "already picked");
+    assert_eq!(lib.kept_of(&[row_of(&lib, 1), five]), [five]);
+    assert_eq!(lib.regroup().unwrap(), 0, "the groups agree with the pick");
+    assert_eq!(ids(&lib, &burst), [5]);
+    // Two picks both show.
+    lib.set_kept(&[row_of(&lib, 1)], true).unwrap();
+    assert_eq!(ids(&lib, &burst), [1, 5]);
+    // The picks outlive the library being closed.
+    let dir = lib.dir().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    assert_eq!(ids(&lib, &burst), [1, 5]);
+    // Taken back, the sharpest stands for the burst again.
+    let rows = [row_of(&lib, 1), row_of(&lib, 5)];
+    assert_eq!(lib.set_kept(&rows, false).unwrap(), rows);
+    assert_eq!(ids(&lib, &burst), [3]);
+
+    // The sharpest goes to the trash with no pick made: the next sharpest shows once the
+    // group is stacked again.
+    lib.set_binned(&[row_of(&lib, 3)], true, false).unwrap();
+    lib.set_kept(&[row_of(&lib, 5)], false).unwrap();
+    assert_eq!(ids(&lib, &burst), [5]);
+}
+
+#[test]
 fn colour_labels_sort_both_ways_with_unlabelled_photos_last() {
     let (_d, lib, source) = setup();
     for (n, label) in [(6, c1model::ColorLabel::Blue), (8, c1model::ColorLabel::Purple)] {

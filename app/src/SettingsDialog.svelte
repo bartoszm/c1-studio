@@ -5,6 +5,20 @@
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
   import { SESSION_GAP_MAX, sessionGap } from "./lib/around";
+  import { COLOURS, KEEPER_CHOICES, REST_CHOICES, type KeeperChoice, type RestChoice } from "./lib/cull";
+
+  const REST_WORDS: Record<RestChoice, string> = {
+    trash: "go to the trash",
+    hide: "are hidden",
+    rating: "get the rating",
+    colour: "get the colour tag",
+    nothing: "stay as they are",
+  };
+  const KEEPER_WORDS: Record<KeeperChoice, string> = {
+    nothing: "stay as they are",
+    rating: "get the rating",
+    colour: "get the colour tag",
+  };
   import ClassSettings from "./ClassSettings.svelte";
   import AiProviderSettings from "./AiProviderSettings.svelte";
 
@@ -49,6 +63,7 @@
     { key: "sidebar", label: "Sidebar" },
     { key: "map", label: "Map & places" },
     { key: "analysis", label: "Analysis" },
+    { key: "cull", label: "Culling" },
     { key: "history", label: "History" },
     { key: "ai", label: "AI" },
   ] as const;
@@ -220,6 +235,61 @@
 
     <div role="tabpanel" id="panel-analysis" aria-labelledby="tab-analysis" hidden={tab !== "analysis"}>
       <ClassSettings onapplied={onclasses} />
+    </div>
+
+    <div role="tabpanel" id="panel-cull" aria-labelledby="tab-cull" hidden={tab !== "cull"}>
+    <h3>Choosing the best of alike photos</h3>
+    <p class="muted small">
+      <em>Best of…</em> in the header (or <kbd>b</kbd>) goes through the series and duplicate groups among the photos shown, one
+      group at a time. Enter keeps the active photo, and the ones marked with <kbd>k</kbd>; this is what happens to the others
+      of the group, and to the ones kept. Every pick is one step to undo.
+    </p>
+    <div class="option">
+      <span>
+        The photos not kept
+        <select bind:value={settings.cull.rest} aria-label="The photos not kept">
+          {#each REST_CHOICES as choice (choice)}
+            <option value={choice}>{REST_WORDS[choice]}</option>
+          {/each}
+        </select>
+        {#if settings.cull.rest === "rating"}
+          <select bind:value={settings.cull.restRating} aria-label="Rating for the photos not kept">
+            {#each [1, 2, 3, 4, 5] as n (n)}<option value={n}>{"★".repeat(n)}</option>{/each}
+          </select>
+        {:else if settings.cull.rest === "colour"}
+          <select bind:value={settings.cull.restColour} aria-label="Colour tag for the photos not kept">
+            {#each COLOURS as c (c)}<option value={c}>{c.toLowerCase()}</option>{/each}
+          </select>
+        {/if}
+        <small class="muted">
+          The trash is the app's own: nothing is deleted until you empty it. Where a trashed image takes all its variants along
+          (Capture One), a variant of a photo you keep is left alone. A source with no trash hides them instead. A rating or a
+          colour tag is queued like any other edit.
+        </small>
+      </span>
+    </div>
+    <div class="option">
+      <span>
+        The photos kept
+        <select bind:value={settings.cull.keeper} aria-label="The photos kept">
+          {#each KEEPER_CHOICES as choice (choice)}
+            <option value={choice}>{KEEPER_WORDS[choice]}</option>
+          {/each}
+        </select>
+        {#if settings.cull.keeper === "rating"}
+          <select bind:value={settings.cull.keeperRating} aria-label="Rating for the photos kept">
+            {#each [1, 2, 3, 4, 5] as n (n)}<option value={n}>{"★".repeat(n)}</option>{/each}
+          </select>
+        {:else if settings.cull.keeper === "colour"}
+          <select bind:value={settings.cull.keeperColour} aria-label="Colour tag for the photos kept">
+            {#each COLOURS as c (c)}<option value={c}>{c.toLowerCase()}</option>{/each}
+          </select>
+        {/if}
+        <small class="muted">
+          Whatever is chosen here, a photo you keep stands for its group when <em>Stack</em> is on, in place of the sharpest.
+        </small>
+      </span>
+    </div>
     </div>
 
     <div role="tabpanel" id="panel-history" aria-labelledby="tab-history" hidden={tab !== "history"}>

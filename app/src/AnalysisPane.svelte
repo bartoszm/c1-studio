@@ -9,8 +9,10 @@
 
   type Key = "shape" | "hues" | "light" | "focus";
   let {
-    filter, facets, total, analysis, version, stack, allOf, picked, ontoggle, onflag, ongroup, onshow, onstack, onclasses, onallof,
+    filter, facets, total, analysis, version, stack, allOf, picked, ontoggle, onflag, ongroup, oncull, onshow, onstack, onclasses, onallof,
   }: {
+    /** Go through the series (`true`) or the duplicate groups, to keep the best of each. */
+    oncull: (series: boolean) => void;
     /** Cards asking for every pick rather than any. */
     allOf: AllOf;
     /** The picks as made (`filter` is as asked, with an "all" card's picks combined). */
@@ -188,6 +190,7 @@
       counts={{ duplicates: flag("duplicate"), series: flag("series") }}
       onflag={onflag}
       {ongroup}
+      {oncull}
       {onclasses}
     />
   {/if}

@@ -741,7 +741,8 @@ switch: *all* asks for photos that are red **and** blue. The filter bar says so 
 colour: red and blue*). A card goes back to *any* when it is down to one pick.
 
 **Stack** (on the Look tab, and in the header) shows one photo per duplicate group or
-series in the grid: its sharpest. With a filter on, a frame is hidden only when the
+series in the grid: its sharpest, or the photos you kept of it (see
+[Choosing the best of alike photos](#choosing-the-best-of-alike-photos)). With a filter on, a frame is hidden only when the
 sharpest frame of its group matches the filter too, so a burst never disappears; the
 counts follow. Picking a group shows all of its photos. Stack and *Variants* (see
 [Browsing](#browsing)) work together: stacking goes first, then each image shows by the
@@ -774,6 +775,39 @@ burst a link to the others (*Looks like 1 other photo: show them*, *One of a ser
 show it*). The link and a group's card on the Alike tab show the group's photos within
 the other filters, which stay; drop a filter's chip to see the whole group. A photo not
 measured yet says so.
+
+### Choosing the best of alike photos
+
+**Best of…** in the header, `b` in the grid, or *Choose the best of each…* on the Alike
+tab goes through the series (or the duplicate groups) among the photos the filter shows,
+oldest first, one group at a time. *Series* and *Duplicates* in its bar switch the kind;
+it opens on the kind used last, or the other when there are none of it.
+
+- The group's photos are side by side, as in [Compare](#browsing): the wheel zooms every
+  pane together, `z` is 1:1, and two photos can be split, overlaid or blinked. A group of
+  more than four shows four at a time; the strip below has them all, oldest first, each
+  with its place in the suggested order.
+- One photo is **suggested** and starts as the active one. A higher rating wins; then
+  the sharpest, marked down for clipped highlights and shadows, and up a little for a
+  frame already edited. A blurry frame never wins over one that is not. The caption says
+  why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
+  the two best are too close to call.
+- ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
+  rating, colour tag, hide and Delete keys act on the active photo.
+- **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
+  shows the next group. `k` (or a double-click in the strip) marks a photo to be kept
+  too. ↑ ↓ go to the previous and next group and leave this one as it is.
+- *The rest* in the bar says what happens to the photos not kept: to the trash (as
+  delivered), hidden, a rating, a colour tag, or nothing. **Settings › Culling** has the
+  same choice, which rating or colour, and whether the photos kept get a rating or a tag
+  too. The trash is the app's own: nothing is deleted until you empty it.
+- Each pick is one step: Ctrl+Z takes it back whole and shows the group again.
+- "The rest" are the group's photos the filter shows: a frame the filter leaves out is
+  not touched. Where trashing an image takes all its variants (Capture One), a variant of
+  a photo you keep is left alone, and the footer says so.
+
+A photo you keep stands for its group when Stack is on, in place of the sharpest, until
+the pick is undone.
 
 ## Describing photos with AI
 
@@ -1058,6 +1092,7 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | `t`, Shift+T | Show the focused photo's shoot; pick it among the photos shown |
 | `v` | Show every variant of the focused photo's image |
 | `c` | Compare the picked photos |
+| `b` | Choose the best of each series or duplicate group among the photos shown |
 | `i` | Show or hide the details panel |
 | `h` | Hide the picked photos from every view; with hidden photos shown, unhide them |
 | `0`–`5` | Rating (0 clears) |
@@ -1073,13 +1108,18 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | Ctrl+Z; Ctrl+Y or Ctrl+Shift+Z | Undo; redo |
 | Ctrl+wheel, Ctrl+plus, Ctrl+minus, Ctrl+0 | Bigger, smaller, default tiles |
 | Wheel, `z` (compare) | Zoom; 1:1 and back |
+| Enter (cull) | Keep the active photo (and the ones marked), deal with the rest, go to the next group |
+| `k` (cull) | Mark the active photo to keep it too, or unmark it |
+| ↑ ↓ (cull) | Previous, next group, leaving this one as it is |
+| ← → Tab (cull) | Previous, next photo of the group |
+| `g` (cull) | Go to the suggested photo |
 
 Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups (`library\cull.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
   and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
   the background and what failed (AI runs, and why a photo was placed nowhere, included) is
