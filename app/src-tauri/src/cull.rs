@@ -151,13 +151,13 @@ struct Ranker {
 
 static RANKER: Mutex<Option<Arc<Ranker>>> = Mutex::new(None);
 
-fn ranker() -> Result<Arc<Ranker>, String> {
+fn ranker(stop: &AtomicBool) -> Result<Arc<Ranker>, String> {
     let mut held = RANKER.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ranker) = &*held {
         return Ok(ranker.clone());
     }
     let embedder = Embedder::open(&models_root()).map_err(text)?;
-    let prompts = Prompts::load(&embedder, &|| RANK_STOP.load(Ordering::Relaxed)).map_err(text)?;
+    let prompts = Prompts::load(&embedder, &|| stop.load(Ordering::Relaxed)).map_err(text)?;
     let ranker = Arc::new(Ranker { embedder, prompts });
     *held = Some(ranker.clone());
     Ok(ranker)
@@ -165,13 +165,14 @@ fn ranker() -> Result<Arc<Ranker>, String> {
 
 /// Has the local model look at the photos at `rows` it has not seen yet (or saw rendered
 /// otherwise), and keeps what it saw. A view scored another way is scored again from its
-/// embedding, without the model. Returns how many photos could not be looked at.
-fn look_at(s: &Session, ranker: &Ranker, rows: &[u64]) -> Result<usize, String> {
+/// embedding, without the model. `stop` ends it between photos. Returns how many photos
+/// could not be looked at.
+fn look_at(s: &Session, ranker: &Ranker, rows: &[u64], stop: &AtomicBool) -> Result<usize, String> {
     let have = s.library.views(rows).map_err(text)?;
     let mut new = Vec::new();
     let mut failed = 0;
     for &row in rows {
-        if RANK_STOP.load(Ordering::Relaxed) {
+        if stop.load(Ordering::Relaxed) {
             break;
         }
         let embedding = match have.get(&row) {
@@ -200,8 +201,10 @@ fn look_at(s: &Session, ranker: &Ranker, rows: &[u64]) -> Result<usize, String> 
 pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
     let s = app.session()?;
     tauri::async_runtime::spawn_blocking(move || {
+        // One group, asked for by hand: a run stopped before does not stop it.
+        let go = AtomicBool::new(false);
         let rows = group_rows(&s.library, &filter, &id)?;
-        look_at(&s, &*ranker()?, &rows)?;
+        look_at(&s, &*ranker(&go)?, &rows, &go)?;
         group_view(&s.library, &filter, &id)
     })
     .await
@@ -239,13 +242,13 @@ fn report_rank(app: &AppHandle, change: impl FnOnce(&mut RankState)) {
 fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
     let groups = s.library.groups_sorted(filter, series, GroupSort::Oldest, false, 0, usize::MAX).map_err(text)?.groups;
     report_rank(app, |state| *state = RankState { running: true, total: groups.len(), ..RankState::default() });
-    let ranker = ranker()?;
+    let ranker = ranker(&RANK_STOP)?;
     for group in groups {
         if RANK_STOP.load(Ordering::Relaxed) || !is_current(app, s) {
             break;
         }
         let rows = group_rows(&s.library, filter, &group.id)?;
-        let failed = look_at(s, &ranker, &rows)?;
+        let failed = look_at(s, &ranker, &rows, &RANK_STOP)?;
         report_rank(app, |state| {
             state.done += 1;
             state.failed += failed;
