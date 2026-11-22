@@ -261,8 +261,8 @@
   /** A photo focused that the map does not move to: one picked on it (it is under the
    *  pointer), or kept while the map moved. Only for that change of focus. */
   let holdMap: number | null = null;
-  /** A photo picked on the map: picked in the grid too, scrolled to; one the grid does not
-   *  show is only in the panel. */
+  /** A photo picked on the map, or shown from the AI tab: picked in the grid too, scrolled
+   *  to; one the grid does not show is only in the panel. */
   async function mapSelect(row: number) {
     const mine = generation;
     const i = await api.position(asking($state.snapshot(filter)), { sort: sortBy }, row).catch(() => null);
@@ -3435,7 +3435,7 @@
       settingsOpen={showSettings}
       keywords={keywordList}
       onsettings={() => { settingsTab = "ai"; showSettings = true; }}
-      onselect={(row) => { picked.clear(); selected = null; mapRow = row; }}
+      onselect={mapSelect}
       onaccepted={aiAccepted}
       onerror={(m) => (editError = m)}
       onmap={aiOnMap}

@@ -5,15 +5,19 @@
 //! [`Suggestion`] and a [`RunRecord`] of what it cost. Nothing here writes anywhere; the
 //! library keeps suggestions until the user accepts them into the edit queue.
 //! [`claude::Claude`] calls the Claude API with a key; [`claude_code::ClaudeCode`] asks
-//! the same of Claude Code signed in with a Claude plan. Gemini through `agy` follows
-//! behind the same trait.
+//! the same of Claude Code signed in with a Claude plan; [`agy::Agy`] asks Gemini through
+//! `agy`. [`siglip::Siglip`] calls no one: a small model run on this computer scores the
+//! catalog's keywords against the photo.
 
 pub mod agy;
 pub mod claude;
 pub mod claude_code;
 pub mod keys;
+pub mod models;
 mod prompt;
 pub mod refine;
+#[cfg(feature = "local")]
+pub mod siglip;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -119,6 +123,9 @@ pub struct Suggestion {
     pub subject: Option<String>,
     /// Keywords the catalog already has, as pipe paths (`places|Poland|Kraków`).
     pub keywords: Vec<String>,
+    /// The score of each of `keywords`, 0..1, in their order, when the model scores
+    /// keywords one by one (the local model); empty when it does not.
+    pub keyword_scores: Vec<f32>,
     /// Keywords the catalog does not have yet.
     pub keywords_new: Vec<String>,
     /// 1..=5.
@@ -366,6 +373,9 @@ pub enum AiError {
     Cli(String),
     #[error("the plan's usage limit is reached: {0}")]
     Limit(String),
+    /// The model run on this computer: its files, loading it, running it.
+    #[error("{0}")]
+    Local(String),
     #[error("stopped")]
     Stopped,
 }
@@ -384,7 +394,12 @@ impl AiError {
     /// account cannot use): a run stops rather than fail every photo the same way.
     pub fn stops_run(&self) -> bool {
         match self {
-            AiError::NoKey | AiError::BadKey(_) | AiError::Cli(_) | AiError::Limit(_) | AiError::Stopped => true,
+            AiError::NoKey
+            | AiError::BadKey(_)
+            | AiError::Cli(_)
+            | AiError::Limit(_)
+            | AiError::Local(_)
+            | AiError::Stopped => true,
             AiError::Http { status, message, .. } => {
                 *status == 404 || message.to_lowercase().contains("credit balance")
             }
@@ -587,6 +602,7 @@ pub fn validate(raw: &RawAnswer, vocabulary: &Vocabulary) -> (Suggestion, Vec<St
         headline: text(&raw.headline),
         subject: text(&raw.subject),
         keywords,
+        keyword_scores: Vec::new(),
         keywords_new: new,
         rating: score(raw.rating),
         quality: score(raw.quality),

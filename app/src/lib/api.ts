@@ -826,8 +826,9 @@ export const openLog = () => invoke<void>("open_log");
 /** What a run is for: describing photos, or locating them (the place alone, with clues). */
 export type AiTask = "describe" | "locate";
 export type AiLanguage = "en" | "pl" | "both";
-/** The API with a key, or Claude Code signed in with a Claude plan. */
-export type AiAccess = "api" | "plan" | "gemini";
+/** The API with a key, Claude Code signed in with a Claude plan, Gemini through agy, or
+ *  a small model run on this computer (keywords only, nothing sent anywhere). */
+export type AiAccess = "api" | "plan" | "gemini" | "local";
 /** What a description holds (crates/c1ai/src/prompt.rs, `Fields`). */
 export type AiFields = {
   caption: boolean; headline: boolean; subject: boolean; keywords: boolean; keywords_new: boolean;
@@ -854,6 +855,8 @@ export type AiSettings = {
   left_out: LeftOut;
   /** How photos are located. */
   locate: LocateSettings;
+  /** The local model suggests a keyword scoring at least this (%, to a tenth). */
+  local_threshold: number;
 };
 export type LocateSettings = {
   /** Photos with a position taken this many minutes either side are told of as clues. */
@@ -873,6 +876,19 @@ export type AiImage = "thumb" | "preview";
 export type AiModel = { id: string; name: string; input: number; output: number };
 /** Claude Code as a plan run would use it. */
 export type AiPlan = { installed: boolean; loggedIn: boolean; authMethod: string | null; subscriptionType: string | null; error: string | null };
+/** The local model's files, and how a download of them goes. */
+export type AiLocal = {
+  name: string; installed: boolean;
+  /** The whole download, in bytes. */
+  size: number;
+  /** The folder it is kept in. */
+  folder: string;
+  downloading: boolean;
+  /** Bytes there so far, while downloading. */
+  done: number;
+  /** Why the last download ended early. */
+  error: string | null;
+};
 export type AiView = {
   settings: AiSettings;
   models: AiModel[];
@@ -884,7 +900,9 @@ export type AiView = {
   gemini: boolean | null;
   /** Why agy's models could not be listed. */
   gemini_error: string | null;
-  /** A run can start: a key, Claude Code signed in, or agy there. */
+  /** With the local model chosen: its files. */
+  local: AiLocal | null;
+  /** A run can start: a key, Claude Code signed in, agy there, or the local model downloaded. */
   ready: boolean;
   calls: number;
   /** US dollars spent in this library. */
@@ -901,7 +919,7 @@ export type AiEstimate = {
   scenes: number;
   /** One per photo, or per contact sheet. */
   calls: number;
-  via: "Claude" | "Gemini";
+  via: "Claude" | "Gemini" | "Local";
 };
 export type DescribeState = {
   task: AiTask;
@@ -944,6 +962,8 @@ export type Suggestion = {
   subject: string | null;
   /** Pipe paths the catalog has. */
   keywords: string[];
+  /** The local model's score for each of `keywords`, 0..1, in their order; empty otherwise. */
+  keyword_scores?: number[];
   /** Keywords the catalog lacks. */
   keywords_new: string[];
   rating: number | null;
@@ -1023,6 +1043,9 @@ export const aiThresholds = () => invoke<{ place_tick: number; precise: number }
 export const setAiSettings = (settings: AiSettings) => invoke<AiView>("set_ai_settings", { settings });
 /** Stores the key in the system keyring; an empty one removes it. */
 export const setAiKey = (key: string) => invoke<AiView>("set_ai_key", { key });
+/** Fetches the local model in the background ("model-download" events, an AiLocal each). */
+export const aiModelDownload = () => invoke<AiLocal>("ai_model_download");
+export const aiModelDownloadStop = () => invoke<AiLocal>("ai_model_download_stop");
 export const aiPrompt = (task: AiTask = "describe") => invoke<AiPrompt>("ai_prompt", { task });
 export const aiEstimate = (rows: number[], again: boolean, task: AiTask = "describe") =>
   invoke<AiEstimate>("ai_estimate", { rows, again, task });

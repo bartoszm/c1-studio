@@ -254,6 +254,7 @@ crates/c1index/    the library: redb store + tantivy index, filters, facet count
 crates/c1image/    display-ready pixels: thumbnails, white-balanced JPEG-XL previews, raw-embedded JPEGs
 crates/c1analysis/ what photos look like: colour, light, focus, duplicates, series
 crates/c1geo/      places offline: a GeoNames gazetteer (tools/gazetteer builds it), typed coordinates
+crates/c1ai/       photos described by a model: Claude, Gemini, or SigLIP 2 run on this computer
 crates/c1cat/      CLI over the library
 app/               the desktop app: Tauri 2 (app/src-tauri) + Svelte 5 (app/src)
 legacy/c1cat-py/   the original Python c1cat, kept as the oracle for differential tests

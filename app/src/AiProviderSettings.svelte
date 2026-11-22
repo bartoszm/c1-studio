@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
   import { PRECISE_KM } from "./lib/aiPlace";
@@ -33,6 +34,24 @@
       lessons = view?.settings.lessons ?? "";
     }),
   );
+  // The local model's download tells how far it has got; at its end the view is read again.
+  onMount(() => {
+    const heard = listen<api.AiLocal>("model-download", (e) => {
+      if (view) view = { ...view, local: e.payload, ready: view.settings.access === "local" ? e.payload.installed : view.ready };
+    });
+    return () => void heard.then((off) => off());
+  });
+  const megabytes = (bytes: number) => `${Math.round(bytes / (1 << 20)).toLocaleString()} MB`;
+  async function download(stop = false) {
+    error = "";
+    try {
+      const local = await (stop ? api.aiModelDownloadStop() : api.aiModelDownload());
+      if (view) view = { ...view, local };
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  let local = $derived(view?.settings.access === "local");
   const save = (change: Partial<api.AiSettings>) => view && run(() => api.setAiSettings({ ...view!.settings, ...change }));
   const saveKey = (key: string) => run(() => api.setAiKey(key)).then(() => (keyInput = ""));
   const money = (usd: number) => (usd < 0.01 && usd > 0 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
@@ -102,6 +121,7 @@
         <option value="api">Anthropic API key: billed per token</option>
         <option value="plan">Claude plan, through Claude Code</option>
         <option value="gemini">Gemini, through agy (Antigravity CLI)</option>
+        <option value="local">Local model: on this computer, free, keywords only</option>
       </select>
     </div>
 
@@ -129,7 +149,40 @@
       </div>
     {/if}
 
-    {#if view.settings.access === "gemini"}
+    {#if view.settings.access === "local"}
+      <span class="label">Model files</span>
+      <div>
+        {#if !view.local}
+          <span class="muted">Looking…</span>
+        {:else if view.local.downloading}
+          <span>Downloading: {megabytes(view.local.done)} of {megabytes(view.local.size)}</span>
+          <progress max={view.local.size} value={view.local.done}></progress>
+          <button class="small-btn" onclick={() => download(true)}>Stop</button>
+        {:else if view.local.installed}
+          <span>Downloaded ({megabytes(view.local.size)})</span>
+        {:else}
+          <span class="warn">Not downloaded.</span>
+          <button class="small-btn" disabled={busy} onclick={() => download()}>Download {megabytes(view.local.size)}</button>
+        {/if}
+        {#if view.local?.error}<span class="warn">{view.local.error}</span>{/if}
+        <small class="muted">
+          {view.local?.name ?? "SigLIP 2"} (Google, Apache-2.0), fetched once from huggingface.co and kept in
+          <code>{view.local?.folder}</code> for every {source.noun}. It scores each of the {source.noun}'s keywords against the photo
+          and suggests the likely ones: no captions, no ratings, no new keywords. Photos never leave this computer.
+        </small>
+      </div>
+
+      <label for="ai-local-threshold">Suggest</label>
+      <div>
+        <input id="ai-local-threshold" type="number" min="0.1" max="99" step="0.1" value={view.settings.local_threshold} disabled={busy} onchange={(e) => save({ local_threshold: Number(e.currentTarget.value) })} />
+        <span class="muted">keywords scoring this % or more, the eight best at most</span>
+        <small class="muted">
+          The model is sparing with single words: a keyword that fits often scores 1 to 5, one that does not stays under 0.3. Lower
+          suggests more keywords and more wrong ones. Names of people and events mean nothing to it: leave them out under
+          Keywords offered. The first run works out every keyword once, about a minute for 600.
+        </small>
+      </div>
+    {:else if view.settings.access === "gemini"}
       <!-- agy needs no key -->
     {:else if view.settings.access === "plan"}
       <span class="label">Claude Code</span>
@@ -172,8 +225,8 @@
     <div>
       <select
         id="ai-model"
-        value={view.settings.access === "gemini" ? view.settings.gemini_model : view.settings.model}
-        disabled={busy}
+        value={local ? view.models[0]?.id : view.settings.access === "gemini" ? view.settings.gemini_model : view.settings.model}
+        disabled={busy || local}
         onchange={(e) => save(view?.settings.access === "gemini" ? { gemini_model: e.currentTarget.value } : { model: e.currentTarget.value })}
       >
         {#if view.settings.access === "gemini" && !view.models.some((m) => m.id === view?.settings.gemini_model)}
@@ -198,6 +251,7 @@
       </small>
     </div>
 
+    {#if !local}
     <label for="ai-language">Captions</label>
     <div>
       <select id="ai-language" value={view.settings.language} disabled={busy} onchange={(e) => save({ language: e.currentTarget.value as api.AiLanguage })}>
@@ -216,12 +270,15 @@
       </select>
     </div>
 
+    {/if}
+
     <label for="ai-parallel">At once</label>
     <div>
       <input id="ai-parallel" type="number" min="1" max="8" value={view.settings.parallel} disabled={busy} onchange={(e) => save({ parallel: Number(e.currentTarget.value) })} />
       <span class="muted">photos described in parallel</span>
     </div>
 
+    {#if !local}
     <label for="ai-place-tick">Place</label>
     <div>
       <input id="ai-place-tick" type="number" min="1" max="100" value={view.settings.place_tick} disabled={busy} onchange={(e) => save({ place_tick: Number(e.currentTarget.value) })} />
@@ -250,9 +307,11 @@
       <input type="number" min="1" max="9" aria-label="Photos of a scene sent, at most" value={view.settings.locate.group_max} disabled={busy || !view.settings.locate.group} onchange={(e) => save({ locate: { ...view!.settings.locate, group_max: Number(e.currentTarget.value) } })} />
       <span class="muted">of its photos sent, on one sheet</span>
     </div>
+    {/if}
   </div>
   {#if error}<p class="warn">{error}</p>{/if}
 
+  {#if !local}
   <h3 class="next">What a description holds</h3>
   <div class="fields">
     {#each FIELDS as f (f.key)}
@@ -267,7 +326,9 @@
     each suggestion. Changing these settings, or the prompt, lets photos described before be described again.
   </p>
 
-  {#if view.settings.fields.keywords || view.settings.fields.keywords_new}
+  {/if}
+
+  {#if local || view.settings.fields.keywords || view.settings.fields.keywords_new}
     <h3 class="next">
       <button class="disclosure" aria-expanded={showKeywords} onclick={() => (showKeywords = !showKeywords)}>
         {showKeywords ? "▾" : "▸"} Keywords offered
@@ -279,6 +340,7 @@
     {/if}
   {/if}
 
+  {#if !local}
   <h3 class="next">
     <button class="disclosure" aria-expanded={showPrompt} onclick={() => (showPrompt = !showPrompt)}>
       {showPrompt ? "▾" : "▸"} Prompt {own ? "(your own)" : ""}
@@ -314,14 +376,19 @@
       </details>
     {/if}
   {/if}
+  {/if}
 
   <p class="muted small">
     {view.calls.toLocaleString()} call{view.calls === 1 ? "" : "s"} in this library, {money(view.spent)} at API list prices. Photos are
+    {#if local}
+      read on this computer and sent nowhere. These settings belong to this {source.noun}.
+    {:else}
     sent to {view.settings.access === "gemini" ? "Google" : "Anthropic"} as {view.settings.access === "gemini" && view.settings.sheets
       ? `contact sheets of their ${view.settings.image === "thumb" ? "thumbnails" : "previews"}`
       : view.settings.image === "thumb"
         ? "thumbnails"
         : "previews of at most 1568 pixels"}. These settings belong to this {source.noun}.
+    {/if}
   </p>
 {/if}
 
@@ -336,6 +403,7 @@
   select:focus, input:focus, textarea:focus { outline: none; border-color: var(--queued); }
   input[type="password"] { width: 280px; }
   input[type="number"] { width: 56px; }
+  progress { width: 160px; }
   .small-btn { padding: 2px 10px; border: 1px solid var(--line); border-radius: 4px; }
   .small-btn:hover:not(:disabled) { background: var(--hover); }
   .muted { color: var(--muted); }

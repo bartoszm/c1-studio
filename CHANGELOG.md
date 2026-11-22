@@ -4,6 +4,7 @@
 
 ### New
 
+- **Keywords from a model on your own computer.** *Settings › AI › Access › Local model* downloads SigLIP 2 once (about 1.5 GB) and runs it with no account, no cost and no photo leaving the machine: about a quarter of a second per photo without a graphics card. It scores each of the catalog's keywords (Polish ones too) against the photo and offers the best in the AI tab's review, each with its score. Keywords only: captions, ratings, new keywords and Locate still take Claude or Gemini.
 - **The C1 Studio artwork** heads the dialog shown while a library opens.
 - **Several keywords at once.** In the details panel's keyword field, end a keyword with `;` (or Tab) and it waits as a chip; Enter adds them all to the selected photos as one edit, and one Ctrl+Z takes them back. Pasting a list, one per line or split by `;`, makes the chips. A keyword's right-click menu in the sidebar adds it to the selected photos. Ctrl+K opens the details panel when it is closed, instead of doing nothing.
 - **Keywords by use.** Right-click the sidebar's *Keywords* heading to sort the tree by most used, or to hide keywords used fewer than 2, 5 or 10 times in the catalog. A row under the tree counts the hidden ones and shows them again; finding a keyword still finds them, and picked keywords always show.
