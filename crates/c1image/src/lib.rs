@@ -34,7 +34,7 @@ pub use jxl::{ColourFit, Matching, colour_fit, decode_linear, jxl_size, render_p
 pub use look::Look;
 pub use lut::Lut;
 pub use sheet::{
-    CELL as SHEET_CELL, FRAMES_COLUMNS, PER_SHEET, SCENE_COLUMNS, contact_sheet, frames_sheet, scene_sheet,
+    CELL as SHEET_CELL, FRAMES_COLUMNS, PER_SHEET, SCENE_COLUMNS, contact_sheet, frames_cell, frames_sheet, scene_sheet,
 };
 
 #[derive(Debug, thiserror::Error)]

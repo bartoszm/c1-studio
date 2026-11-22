@@ -124,6 +124,13 @@ impl Default for LocateSettings {
     }
 }
 
+impl AiSettings {
+    /// How many calls a run makes at once.
+    pub(crate) fn workers(&self) -> usize {
+        self.parallel.clamp(1, 8)
+    }
+}
+
 impl Default for AiSettings {
     fn default() -> Self {
         AiSettings {
@@ -444,7 +451,7 @@ pub(crate) struct AiView {
 /// Whether Claude Code runs on a Claude plan: signed in through claude.ai. Signed in with
 /// an API key or a cloud provider it is billed per token, which plan access would show
 /// as free, so it does not count.
-pub(crate) fn on_plan(status: &claude_code::Status) -> bool {
+fn on_plan(status: &claude_code::Status) -> bool {
     status.logged_in && status.auth_method.as_deref() == Some("claude.ai")
 }
 
@@ -653,45 +660,117 @@ pub(crate) async fn ai_prompt(app: State<'_, App>, task: Option<Task>) -> Result
 /// Code signed in with a plan, Gemini through agy, or the model run on this computer.
 fn provider(s: &Session, settings: &AiSettings, task: Task) -> Result<Box<dyn VisionProvider>, String> {
     let (brief, vocabulary) = brief(s, settings, task)?;
-    let options = claude::Options {
-        model: settings.model.clone(),
-        effort: settings.effort.clone(),
-        attempts: 4,
-        stop: s.describe_stop.clone(),
-    };
+    let options = options(settings, s.describe_stop.clone());
     Ok(match settings.access {
-        Access::Api => {
-            let key = keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())?;
-            Box::new(Claude::new(key, options, &brief, vocabulary).map_err(text)?)
-        }
+        Access::Api => Box::new(Claude::new(api_key()?, options, &brief, vocabulary).map_err(text)?),
         Access::Gemini => {
-            let program = agy::find().ok_or_else(|| {
-                AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()).to_string()
-            })?;
             let options = claude::Options { model: settings.gemini_model.clone(), ..options };
-            Box::new(Agy::new(program, options, &brief, vocabulary, settings.sheets))
+            Box::new(Agy::new(agy_program()?, options, &brief, vocabulary, settings.sheets))
         }
         Access::Local => {
             Box::new(Siglip::new(&models_root(), options, &brief, vocabulary, settings.local_threshold).map_err(text)?)
         }
-        Access::Plan => {
-            let program = claude_code::find().ok_or_else(|| {
-                AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into())
-                    .to_string()
-            })?;
-            let status = claude_code::status(&program).map_err(text)?;
-            if !on_plan(&status) {
-                return Err(match status.auth_method {
-                    Some(method) if status.logged_in => format!(
-                        "Claude Code is signed in with {method}, billed per token, not a Claude plan: \
-                         run `claude auth login` with your plan, or choose API key access"
-                    ),
-                    _ => "Claude Code is not signed in: run `claude auth login`".into(),
-                });
-            }
-            Box::new(ClaudeCode::new(program, options, &brief, vocabulary).map_err(text)?)
+        Access::Plan => Box::new(ClaudeCode::new(plan_program()?, options, &brief, vocabulary).map_err(text)?),
+    })
+}
+
+/// What a call is made with under these settings; `stop` ends one under way.
+fn options(settings: &AiSettings, stop: Arc<AtomicBool>) -> claude::Options {
+    claude::Options { model: settings.model.clone(), effort: settings.effort.clone(), attempts: 4, stop }
+}
+
+/// The stored API key.
+fn api_key() -> Result<String, String> {
+    keys::get(&ANTHROPIC).map_err(text)?.ok_or_else(|| AiError::NoKey.to_string())
+}
+
+/// agy, where it is installed.
+fn agy_program() -> Result<PathBuf, String> {
+    agy::find()
+        .ok_or_else(|| AiError::Cli("agy is not installed: get the Antigravity CLI and sign in".into()).to_string())
+}
+
+/// Claude Code, installed and signed in with a Claude plan.
+fn plan_program() -> Result<PathBuf, String> {
+    let program = claude_code::find().ok_or_else(|| {
+        AiError::Cli("Claude Code is not installed: get it from claude.com/claude-code and sign in".into()).to_string()
+    })?;
+    let status = claude_code::status(&program).map_err(text)?;
+    if on_plan(&status) {
+        return Ok(program);
+    }
+    Err(match status.auth_method {
+        Some(method) if status.logged_in => format!(
+            "Claude Code is signed in with {method}, billed per token, not a Claude plan: \
+             run `claude auth login` with your plan, or choose API key access"
+        ),
+        _ => "Claude Code is not signed in: run `claude auth login`".into(),
+    })
+}
+
+/// A model to put one question about pictures to, again and again: the one the AI settings
+/// choose, made once for a run (the key read, Claude Code's sign-in checked, its prompt
+/// written), not for each call.
+pub(crate) enum Asker {
+    Claude { claude: Claude, system: String, schema: serde_json::Value },
+    Code(ClaudeCode),
+    Gemini(Agy),
+}
+
+/// The model these settings choose, for questions under `system` answered in the shape
+/// `schema` gives: reached the way [`provider`] reaches it, with the same errors when it
+/// cannot be. `stop` ends a call under way. The local model answers no question.
+pub(crate) fn asker(
+    settings: &AiSettings,
+    stop: Arc<AtomicBool>,
+    system: &str,
+    schema: serde_json::Value,
+) -> Result<Asker, String> {
+    let options = options(settings, stop);
+    Ok(match settings.access {
+        Access::Local => {
+            return Err("The local model cannot compare frames (that is Look): choose Claude or Gemini in \
+                        Settings › AI"
+                .into());
+        }
+        Access::Api => {
+            let claude = Claude::asking(api_key()?, options).map_err(text)?;
+            Asker::Claude { claude, system: system.to_owned(), schema }
+        }
+        Access::Plan => Asker::Code(ClaudeCode::asking(plan_program()?, options, system, schema).map_err(text)?),
+        Access::Gemini => {
+            let options = claude::Options { model: settings.gemini_model.clone(), ..options };
+            Asker::Gemini(Agy::asking(agy_program()?, options, system, &schema))
         }
     })
+}
+
+impl Asker {
+    /// The pictures go on one numbered sheet (agy takes one file), not each as an image
+    /// of its own.
+    pub(crate) fn sheet(&self) -> bool {
+        matches!(self, Asker::Gemini(_))
+    }
+
+    /// The long edge to load each of `frames` pictures at: what is sent of it, no more.
+    pub(crate) fn edge(&self, frames: usize) -> u32 {
+        if self.sheet() { c1image::frames_cell(frames) } else { claude::FRAME_EDGE }
+    }
+
+    /// Asks `message` about `pictures`. Returns the answer and the call's record; a call
+    /// made that gave no answer to use fails with its record.
+    pub(crate) fn ask(
+        &self,
+        message: &str,
+        pictures: &[c1image::RgbImage],
+    ) -> Result<(serde_json::Value, c1ai::RunRecord), Failed> {
+        let jpegs = || pictures.iter().map(|p| c1image::encode_jpeg(p, 88)).collect::<Vec<_>>();
+        match self {
+            Asker::Claude { claude, system, schema } => claude.ask_images(system, message, &jpegs(), schema),
+            Asker::Code(cli) => cli.ask_images(message, &jpegs()),
+            Asker::Gemini(agy) => agy.ask_image(message, &c1image::encode_jpeg(&c1image::frames_sheet(pictures), 88)),
+        }
+    }
 }
 
 /// What a run would do: the photos, the calls (each a photo, a contact sheet or a scene)
@@ -1749,6 +1828,13 @@ pub(crate) async fn set_suggestion_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_local_model_is_asked_no_question() {
+        let settings = AiSettings { access: Access::Local, ..AiSettings::default() };
+        let refused = asker(&settings, Arc::default(), "Compare.", serde_json::json!({})).err().expect("refused");
+        assert!(refused.contains("Look") && refused.contains("Claude or Gemini"), "{refused}");
+    }
 
     #[test]
     fn a_scene_tells_of_a_photo_once_whatever_the_minutes() {
