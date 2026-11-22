@@ -137,6 +137,9 @@
   let looking = $state(false);
   /** It is looking at every group, in the background: how far it has got. */
   let ranking = $state<api.RankState | null>(null);
+  /** Why the last look could not be made (the model would not load, another run goes on):
+   *  said in the bar, since the group stays on screen. */
+  let lookError = $state<string | null>(null);
   /** The group it was last asked to look at by hand. */
   let lookedGroup = $state<string | undefined>(undefined);
   /** The photos of the group shown it could not look at, in words. */
@@ -146,6 +149,7 @@
     if (looking || !view || group === undefined) return;
     if (!view.model) return onsettings();
     looking = true;
+    lookError = null;
     try {
       const next = await api.rankGroup($state.snapshot(filter) as Filter, group);
       // The answer is of the group asked about: another may be shown by now.
@@ -158,20 +162,20 @@
         // The active photo follows the suggestion while it was on it.
         if (same && follows) setActive(next.order[0]);
       }
-      error = null;
     } catch (e) {
-      error = String(e);
+      lookError = String(e);
     } finally {
       looking = false;
     }
   }
   async function rankAll() {
     if (view && !view.model) return onsettings();
+    lookError = null;
     try {
       if (ranking?.running) await api.stopRanking();
       else await api.startRanking($state.snapshot(filter) as Filter, series);
     } catch (e) {
-      error = String(e);
+      lookError = String(e);
     }
   }
   onMount(() => {
@@ -352,6 +356,7 @@
             onclick={rankAll}
           >{ranking?.running ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
           {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
+          {#if lookError}<span class="failed" title={lookError}>{lookError}</span>{/if}
           {#if ranking?.failed}
             <span class="unseen" title="Photos Look at all could not look at: they have no thumbnail or preview yet (it makes none), or could not be read. Their groups are still decided by sharpness; Look on a group makes what is missing. events.log in the catalog's folder says why of each.">{ranking.failed.toLocaleString()} failed</span>
           {/if}

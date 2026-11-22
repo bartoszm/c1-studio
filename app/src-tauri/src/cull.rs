@@ -322,6 +322,26 @@ impl RankJob {
             let _ = app.emit("ranking", state);
         }
     }
+
+    /// The run of `s` is over, with `error` if it ended early. Called with `running`
+    /// lowered, so a run of another catalog may have begun: the state is its own then,
+    /// and is left alone.
+    fn ended(&self, app: &AppHandle, s: &Arc<Session>, error: Option<String>) {
+        let state = {
+            let mut held = lock(&self.state);
+            if !held.is_of(s) {
+                return;
+            }
+            held.change(s, |state| {
+                state.running = false;
+                state.error = error;
+            })
+        };
+        if is_current(app, s) {
+            let _ = app.emit("ranking", state);
+            let _ = app.emit("ranking-done", ());
+        }
+    }
 }
 
 /// Ends a run: lowers `running` and lets the model go if no one needs it, a panic included.
@@ -517,13 +537,7 @@ pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) 
         }
         // Before the window hears of the end: a run started on hearing it finds none going.
         drop(ends);
-        JOB.report(&app, &s, |state| {
-            state.running = false;
-            state.error = error;
-        });
-        if is_current(&app, &s) {
-            let _ = app.emit("ranking-done", ());
-        }
+        JOB.ended(&app, &s, error);
     });
     Ok(())
 }
