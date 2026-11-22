@@ -1828,7 +1828,7 @@ The groups were there (duplicates, series, Stack, Compare for four); what was mi
 going through them and deciding. *Best of…* (`b`) does that: one group at a time, a
 suggestion, Enter keeps and deals with the rest.
 
-- **Ranking: `c1analysis::rank`** (pure). A model's verdict on the whole group first
+- **Ranking: `c1analysis::rank`** (pure; "edited" counts only where some frame is not). A model's verdict on the whole group first
   (not asked for yet), then a higher rating, then a score: sharpness as a log-ratio to
   the group's sharpest (8× less scores nothing), 0.5 off a blurry frame when the group has
   one that is not, up to 0.15 off for clipped tones, 0.1 on for an edited frame. A per-photo

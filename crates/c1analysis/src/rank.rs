@@ -81,6 +81,8 @@ pub fn rank(candidates: &[Candidate], s: &ClassSettings) -> Ranked {
     // Every frame needs a view for it to count, and the views have to differ.
     let by_looks = looks.len() == n && n > 1 && high - low >= AESTHETIC_SPREAD;
     let judged = candidates.iter().any(|c| c.verdict.is_some());
+    // Edited tells frames apart only where some are not (Capture One counts most as edited).
+    let some_unedited = candidates.iter().any(|c| !c.edited);
 
     let mut entries: Vec<Entry> = Vec::with_capacity(n);
     // As worked out, before it is brought into 0 to 1 for showing: what the order goes by.
@@ -108,7 +110,7 @@ pub fn rank(candidates: &[Candidate], s: &ClassSettings) -> Ranked {
             reasons.push("clipped".to_owned());
         }
         score -= clipped;
-        if c.edited {
+        if c.edited && some_unedited {
             score += EDITED_BONUS;
             reasons.push("edited".to_owned());
         }
@@ -237,6 +239,14 @@ mod tests {
         let r = rank(&[frame(4000.0), edited], &d());
         assert_eq!(r.order, [1, 0]);
         assert_eq!(r.entries[1].reasons, ["edited"]);
+        // Every frame edited: it sets none apart.
+        let both = |sharpness| Candidate { edited: true, ..frame(sharpness) };
+        let r = rank(&[both(4000.0), both(3600.0)], &d());
+        assert_eq!(r.order, [0, 1]);
+        assert_eq!(
+            (r.entries[0].reasons.as_slice(), r.entries[1].reasons.len()),
+            (["sharpest".to_owned()].as_slice(), 0)
+        );
     }
 
     #[test]

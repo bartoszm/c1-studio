@@ -1,6 +1,6 @@
 // Choosing the best of alike photos: `b` opens the first series, the arrows move through
 // its photos and the groups, Enter keeps the active photo and trashes the rest (the app's
-// own trash), Stack then shows the photo kept, and Ctrl+Z takes the pick back. Real key
+// own trash), and Ctrl+Z takes the pick back. Real key
 // input; the pick is undone at the end, and nothing is written to the catalog.
 // Needs a library whose photos are measured (the Analysis tab) with at least two series.
 // Expected: every step ok, and "ALL OK" at the end.
@@ -70,7 +70,7 @@ export default {
     const after = await group(first);
     check("Enter keeps the active photo and trashes the rest", after.photos.length === 1 && after.photos[0].row === keep && after.photos[0].kept, after.photos.map((p) => [p.row, p.kept]));
     check("…and shows the next group", /series 2 of/.test((await d.evaluate(BAR)) ?? ""), await d.evaluate(BAR));
-    check("Stack shows the photo kept", JSON.stringify(await stacked(first)) === JSON.stringify([keep]), await stacked(first));
+    check("only the photo kept is left of the group", JSON.stringify(await stacked(first)) === JSON.stringify([keep]), await stacked(first));
     const queued = await d.invoke("pending");
     check("nothing is queued for the source", (queued.edits ?? queued).length === 0, queued);
 
@@ -79,7 +79,7 @@ export default {
     await until(`${FRAMES}.length === ${rows.length}`);
     const undone = await group(first);
     check("Ctrl+Z brings the group back, and shows it", undone.photos.length === rows.length && undone.photos.every((p) => !p.kept) && /series 1 of/.test((await d.evaluate(BAR)) ?? ""), { photos: undone.photos.length, bar: await d.evaluate(BAR) });
-    check("…and Stack shows what it did before", JSON.stringify(await stacked(first)) === JSON.stringify(wasStacked), { now: await stacked(first), wasStacked });
+    check("…with every photo it had", JSON.stringify(await stacked(first)) === JSON.stringify(wasStacked), { now: await stacked(first), wasStacked });
 
     await key("Escape");
     check("Esc closes it", !(await d.evaluate(OPEN)), await d.evaluate(OPEN));
