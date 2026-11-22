@@ -10,7 +10,6 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -147,6 +146,13 @@ impl ClaudeCode {
         format!("{message}\n")
     }
 
+    /// The message for a question about pictures ([`crate::frames_content`]).
+    fn question_images(text: &str, jpegs: &[Vec<u8>]) -> String {
+        let content = crate::frames_content(text, jpegs);
+        let message = json!({"type": "user", "message": {"role": "user", "content": content}});
+        format!("{message}\n")
+    }
+
     /// Runs a message, trying it once more after a pause on errors that may pass (Claude
     /// Code retries rate limits and overload itself; this is for the rest).
     fn send(&self, message: &str, progress: &Option<Progress>) -> Result<(Value, u64), AiError> {
@@ -171,38 +177,49 @@ impl ClaudeCode {
 
     /// One question without a photo, answered in the shape the instance was made with
     /// ([`ClaudeCode::asking`]). Returns the answer and the call's record (counted against
-    /// the plan: no cost).
-    pub fn ask(&self, text: &str) -> Result<(Value, RunRecord), AiError> {
+    /// the plan: no cost); a call that ran and gave no answer to use fails with its record.
+    pub fn ask(&self, text: &str) -> Result<(Value, RunRecord), Failed> {
         let (result, millis) = self.send(&Self::question(text), &None)?;
-        let answer = structured(&result)?.clone();
+        self.asked(&result, millis)
+    }
+
+    /// [`ClaudeCode::ask`] about pictures, sent in order before the text.
+    pub fn ask_images(&self, text: &str, jpegs: &[Vec<u8>]) -> Result<(Value, RunRecord), Failed> {
+        let (result, millis) = self.send(&Self::question_images(text, jpegs), &None)?;
+        self.asked(&result, millis)
+    }
+
+    /// The record of the call `result` ends, with `raw` as what the model said.
+    fn record(&self, result: &Value, millis: u64, raw: String) -> RunRecord {
         let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
-        let record = RunRecord {
+        RunRecord {
             provider: "claude-code".to_string(),
             model: self.model.id.to_string(),
-            prompt: 0,
+            prompt: self.prompt,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_write_tokens: usage.cache_creation_input_tokens,
             cache_read_tokens: usage.cache_read_input_tokens,
+            // Counted against the plan, not billed.
             cost: 0.0,
             millis,
-            raw: answer.to_string(),
-        };
-        Ok((answer, record))
+            raw,
+        }
+    }
+
+    /// The answer in a question's final `result` event, and the call's record.
+    fn asked(&self, result: &Value, millis: u64) -> Result<(Value, RunRecord), Failed> {
+        match structured(result) {
+            Ok(answer) => Ok((answer.clone(), self.record(result, millis, answer.to_string()))),
+            Err(error) => {
+                Err(Failed { error, record: Some(Box::new(self.record(result, millis, result.to_string()))) })
+            }
+        }
     }
 
     fn message(photo: &PhotoRequest) -> String {
-        let data = base64::engine::general_purpose::STANDARD.encode(&photo.jpeg);
-        let message = json!({
-            "type": "user",
-            "message": {
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": data}},
-                    {"type": "text", "text": photo.context}
-                ]
-            }
-        });
+        let content = json!([crate::image_block(&photo.jpeg), {"type": "text", "text": photo.context}]);
+        let message = json!({"type": "user", "message": {"role": "user", "content": content}});
         format!("{message}\n")
     }
 
@@ -320,20 +337,7 @@ impl VisionProvider for ClaudeCode {
 
     fn describe(&self, photo: &PhotoRequest) -> Result<Reply, Failed> {
         let (result, millis) = self.send(&Self::message(photo), &photo.progress).map_err(Failed::from)?;
-        let usage: Usage = serde_json::from_value(result["usage"].clone()).unwrap_or_default();
-        let record = |raw: String| RunRecord {
-            provider: "claude-code".to_string(),
-            model: self.model.id.to_string(),
-            prompt: self.prompt,
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-            cache_write_tokens: usage.cache_creation_input_tokens,
-            cache_read_tokens: usage.cache_read_input_tokens,
-            // Counted against the plan, not billed.
-            cost: 0.0,
-            millis,
-            raw,
-        };
+        let record = |raw: String| self.record(&result, millis, raw);
         let (raw, answer) =
             read(&result).map_err(|error| Failed { error, record: Some(Box::new(record(result.to_string()))) })?;
         let (suggestion, warnings) = validate(&answer, &self.vocabulary);
@@ -423,6 +427,54 @@ mod tests {
         let file = cli.system.0.clone();
         drop(cli);
         assert!(!file.exists(), "the prompt's file goes with it");
+    }
+
+    #[test]
+    fn a_question_about_pictures_is_one_user_message_and_a_failed_one_keeps_its_record() {
+        let jpegs = [vec![1, 2, 3], vec![4, 5, 6]];
+        let message: Value = serde_json::from_str(ClaudeCode::question_images("Which?", &jpegs).trim_end()).unwrap();
+        assert_eq!(message["type"], "user");
+        assert_eq!(message["message"], json!({"role": "user", "content": crate::frames_content("Which?", &jpegs)}));
+
+        let cli = ClaudeCode::asking("claude".into(), Options::default(), "Compare.", json!({})).unwrap();
+        let usage = json!({"input_tokens": 9, "output_tokens": 700});
+        // It ran and was cut off: counted against the plan all the same.
+        let cut = json!({"type": "result", "is_error": false, "stop_reason": "max_tokens", "usage": usage});
+        let failed = cli.asked(&cut, 40).unwrap_err();
+        let record = failed.record.expect("the call ran");
+        assert!(matches!(failed.error, AiError::Truncated));
+        assert_eq!((record.output_tokens, record.millis, record.provider.as_str()), (700, 40, "claude-code"));
+        let good = json!({"type": "result", "is_error": false, "usage": usage, "structured_output": {"order": [1]}});
+        let (answer, record) = cli.asked(&good, 40).unwrap();
+        assert_eq!((answer, record.output_tokens, record.prompt), (json!({"order": [1]}), 700, 0));
+    }
+
+    /// With Claude Code installed and signed in with a plan (one small call, counted
+    /// against it; two made-up pictures, no photo of anyone's):
+    /// `cargo test -p c1ai -- --ignored frames_live`.
+    #[cfg(feature = "local")]
+    #[test]
+    #[ignore = "asks Claude Code: needs it installed and signed in"]
+    fn which_of_two_frames_live() {
+        let picture = |soft: bool| {
+            let sharp = image::RgbImage::from_fn(320, 213, |x, y| {
+                if (x / 16 + y / 16) % 2 == 0 { image::Rgb([230, 230, 230]) } else { image::Rgb([30, 60, 120]) }
+            });
+            let shown = if soft { image::imageops::blur(&sharp, 6.0) } else { sharp };
+            let mut jpeg = Vec::new();
+            image::DynamicImage::ImageRgb8(shown)
+                .write_to(&mut std::io::Cursor::new(&mut jpeg), image::ImageFormat::Jpeg)
+                .unwrap();
+            jpeg
+        };
+        let program = find().expect("Claude Code");
+        let ask = crate::pick::PickAsk { frames: 2, series: true, sheet: false };
+        let cli =
+            ClaudeCode::asking(program, Options::default(), &crate::pick::system(), crate::pick::schema()).unwrap();
+        let (answer, record) = cli.ask_images(&crate::pick::message(&ask), &[picture(true), picture(false)]).unwrap();
+        println!("{answer}\n{record:?}");
+        let verdict = crate::pick::read(&answer, 2).unwrap();
+        assert_eq!(verdict.order, [1, 0], "the sharp frame, sent second, is the one to keep");
     }
 
     #[test]

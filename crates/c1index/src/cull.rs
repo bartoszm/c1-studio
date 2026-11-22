@@ -4,11 +4,13 @@
 //! view is slow to make again, and both outlive the store being rebuilt. Photos are named
 //! by key.
 
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::db::OpenControl;
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use c1ai::pick;
+use redb::{Database, ReadOnlyTable, ReadableDatabase, ReadableTable, Table, TableDefinition, TableHandle};
 use serde::{Deserialize, Serialize};
 
 /// photo key → when it was picked (epoch ms).
@@ -44,6 +46,136 @@ pub struct NewView {
     pub scores: [f32; 4],
 }
 
+/// An answer's number → postcard [`Verdict`].
+const ANSWERS: TableDefinition<u64, &[u8]> = TableDefinition::new("answers");
+/// photo key → the number of the answer the photo was last shown for. An answer is found
+/// from the photos it was about, whatever else is in their group or under the filter by
+/// now: see [`stands`].
+const ASKED: TableDefinition<&str, u64> = TableDefinition::new("asked");
+/// How an earlier build kept answers: under all the keys of the group as the filter showed
+/// it, sorted and joined, so another filter or a frame gone missed the answer. Read once,
+/// into the tables above.
+const BY_GROUP: TableDefinition<&str, &[u8]> = TableDefinition::new("verdicts");
+
+/// What a model that compared a group's frames said, as it is given to be kept:
+/// [`crate::Library::put_verdict`] adds the frames it was shown and the question's version.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NewVerdict {
+    /// When it was asked, epoch ms.
+    pub at: i64,
+    pub provider: String,
+    pub model: String,
+    /// Indexes into the frames shown, the one to keep first.
+    pub order: Vec<u32>,
+    /// Why, per frame shown; empty where none was given.
+    pub reasons: Vec<String>,
+    /// How clear the choice is, in the model's words.
+    pub note: String,
+}
+
+/// What a model that compared a group's frames said.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Verdict {
+    /// The version of the question (`c1ai::pick::VERSION`): another's is asked again.
+    pub version: u32,
+    /// When it was asked, epoch ms.
+    pub at: i64,
+    pub provider: String,
+    pub model: String,
+    /// The frames shown, by photo key, in the order shown: at most 16 of a bigger group.
+    pub sent: Vec<String>,
+    /// Indexes into `sent`, the one to keep first.
+    pub order: Vec<u32>,
+    /// Why, per frame of `sent`; empty where none was given.
+    pub reasons: Vec<String>,
+    /// How clear the choice is, in the model's words.
+    pub note: String,
+}
+
+/// Per row of a group, its place in a model's order (0 is the one to keep) and why.
+pub type Places = HashMap<u64, (usize, String)>;
+
+impl Verdict {
+    /// What a model said (`said`) of the frames `sent`, by photo key in the order shown,
+    /// asked the question as it is now.
+    pub fn new(sent: Vec<String>, said: NewVerdict) -> Self {
+        let NewVerdict { at, provider, model, order, reasons, note } = said;
+        Verdict { version: pick::VERSION, at, provider, model, sent, order, reasons, note }
+    }
+}
+
+/// Whether an answer about `sent` frames still answers for a group of `shown` photos,
+/// `covered` of which it was about. It does while it tells two of them apart at least and
+/// the model saw all there is to see: every photo shown now, or as many frames as a
+/// question holds (of a bigger group the rest follow, as they did when it was asked). So
+/// a filter that shows fewer of the group, or a frame trashed or hidden since, keeps the
+/// answer; a photo the model never saw (one added, a wider filter) has it asked again.
+fn stands(sent: usize, covered: usize, shown: usize) -> bool {
+    covered >= 2 && (covered == shown || sent >= pick::MAX_FRAMES)
+}
+
+/// Answers read in one go, by number: `None` for one that does not read, or answers
+/// another version of the question.
+type Read = HashMap<u64, Option<Verdict>>;
+
+/// The number of the answer that stands for the photos `keys` ([`stands`]): the one about
+/// the most of them, the later of two about as many. It is in `read` afterwards.
+fn standing(
+    answers: &ReadOnlyTable<u64, &'static [u8]>,
+    asked: &ReadOnlyTable<&'static str, u64>,
+    keys: &[&str],
+    read: &mut Read,
+) -> anyhow::Result<Option<u64>> {
+    let mut covered: HashMap<u64, usize> = HashMap::new();
+    for key in keys {
+        if let Some(id) = asked.get(key)? {
+            *covered.entry(id.value()).or_default() += 1;
+        }
+    }
+    let mut by_cover: Vec<(u64, usize)> = covered.into_iter().collect();
+    by_cover.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+    for (id, covered) in by_cover {
+        let verdict = match read.entry(id) {
+            Entry::Occupied(known) => known.into_mut(),
+            Entry::Vacant(new) => {
+                let verdict = answers.get(id)?.and_then(|bytes| postcard::from_bytes::<Verdict>(bytes.value()).ok());
+                new.insert(verdict.filter(|v| v.version == pick::VERSION))
+            }
+        };
+        if verdict.as_ref().is_some_and(|v| stands(v.sent.len(), covered, keys.len())) {
+            return Ok(Some(id));
+        }
+    }
+    Ok(None)
+}
+
+/// Keeps `verdict` and points the frames it was about to it. An answer none of its frames
+/// points to any more (each was asked about again since) goes.
+fn keep(answers: &mut Table<u64, &[u8]>, asked: &mut Table<&str, u64>, verdict: &Verdict) -> anyhow::Result<()> {
+    let id = answers.last()?.map_or(0, |(id, _)| id.value() + 1);
+    answers.insert(id, postcard::to_stdvec(verdict)?.as_slice())?;
+    let mut before: HashSet<u64> = HashSet::new();
+    for key in &verdict.sent {
+        if let Some(old) = asked.insert(key.as_str(), id)? {
+            before.insert(old.value());
+        }
+    }
+    for old in before {
+        let sent = answers
+            .get(old)?
+            .and_then(|bytes| postcard::from_bytes::<Verdict>(bytes.value()).ok())
+            .map_or_else(Vec::new, |v| v.sent);
+        let mut pointed = false;
+        for key in &sent {
+            pointed |= asked.get(key.as_str())?.is_some_and(|id| id.value() == old);
+        }
+        if !pointed {
+            answers.remove(old)?;
+        }
+    }
+    Ok(())
+}
+
 pub struct CullBook {
     db: Database,
 }
@@ -54,8 +186,51 @@ impl CullBook {
         let tx = db.begin_write()?;
         tx.open_table(KEEPERS)?;
         tx.open_table(VIEWS)?;
+        // Answers an earlier build kept under their group: they were paid for, and are
+        // kept under their frames now, oldest first so that a later one wins.
+        let mut by_group: Vec<Verdict> = Vec::new();
+        if tx.list_tables()?.any(|table| table.name() == BY_GROUP.name()) {
+            for entry in tx.open_table(BY_GROUP)?.iter()? {
+                by_group.extend(postcard::from_bytes::<Verdict>(entry?.1.value()).ok());
+            }
+            tx.delete_table(BY_GROUP)?;
+        }
+        by_group.sort_by_key(|v| v.at);
+        {
+            let mut answers = tx.open_table(ANSWERS)?;
+            let mut asked = tx.open_table(ASKED)?;
+            for verdict in &by_group {
+                keep(&mut answers, &mut asked, verdict)?;
+            }
+        }
         tx.commit()?;
         Ok(Self { db })
+    }
+
+    /// What a model said that still answers for the photos `keys`, a group as it is shown
+    /// now ([`stands`]), if it was asked the question as it is asked now.
+    pub fn verdict(&self, keys: &[&str]) -> anyhow::Result<Option<Verdict>> {
+        let tx = self.db.begin_read()?;
+        let (answers, asked) = (tx.open_table(ANSWERS)?, tx.open_table(ASKED)?);
+        let mut read = Read::new();
+        let id = standing(&answers, &asked, keys, &mut read)?;
+        Ok(id.and_then(|id| read.remove(&id).flatten()))
+    }
+
+    /// Per group of `groups` (each its photos' keys), whether an answer stands for it:
+    /// [`CullBook::verdict`] of many groups from one read.
+    pub fn asked(&self, groups: &[Vec<&str>]) -> anyhow::Result<Vec<bool>> {
+        let tx = self.db.begin_read()?;
+        let (answers, asked) = (tx.open_table(ANSWERS)?, tx.open_table(ASKED)?);
+        let mut read = Read::new();
+        groups.iter().map(|keys| Ok(standing(&answers, &asked, keys, &mut read)?.is_some())).collect()
+    }
+
+    pub fn put_verdict(&self, verdict: &Verdict) -> anyhow::Result<()> {
+        let tx = self.db.begin_write()?;
+        keep(&mut tx.open_table(ANSWERS)?, &mut tx.open_table(ASKED)?, verdict)?;
+        tx.commit()?;
+        Ok(())
     }
 
     /// The model's view of each of these photos it has looked at, by key.
@@ -134,6 +309,86 @@ mod tests {
         drop(book);
         let book = CullBook::open(&path, &Default::default()).unwrap();
         assert_eq!(book.keepers().unwrap(), HashSet::from(["b".to_owned()]));
+    }
+
+    /// An answer about the frames `sent`, asked at `at`: the last of them is the one to keep.
+    fn said(sent: &[&str], at: i64) -> Verdict {
+        let order = (0..sent.len() as u32).rev().collect();
+        let said = NewVerdict { at, provider: "claude".into(), model: "m".into(), order, ..NewVerdict::default() };
+        Verdict::new(sent.iter().map(|k| k.to_string()).collect(), said)
+    }
+
+    #[test]
+    fn an_answer_stands_while_the_model_saw_every_photo_shown() {
+        // Three frames asked about: all shown, fewer shown (a filter, one in the trash).
+        assert!(stands(3, 3, 3) && stands(3, 2, 2));
+        assert!(!stands(3, 3, 4), "a photo it never saw: asked again");
+        assert!(!stands(3, 1, 1) && !stands(3, 1, 2), "one frame left of it tells nothing apart");
+        // Shown as many as a question holds, it saw all it could: the rest follow.
+        let most = pick::MAX_FRAMES;
+        assert!(stands(most, most, most + 4) && stands(most, most - 3, most + 1));
+        assert!(!stands(most - 1, most - 1, most + 4));
+    }
+
+    #[test]
+    fn an_answer_is_found_from_the_frames_it_was_about() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cull.redb");
+        let book = CullBook::open(&path, &Default::default()).unwrap();
+        let first = said(&["b", "a", "c"], 5);
+        book.put_verdict(&first).unwrap();
+        assert_eq!(book.verdict(&["a", "b", "c"]).unwrap(), Some(first.clone()), "whatever the order");
+        assert_eq!(book.verdict(&["c", "a"]).unwrap(), Some(first.clone()), "fewer of them shown");
+        assert_eq!(book.verdict(&["a", "b", "c", "d"]).unwrap(), None, "a photo more is asked about again");
+        assert_eq!(book.verdict(&["a"]).unwrap(), None);
+        assert_eq!(book.verdict(&["x", "y"]).unwrap(), None);
+        let groups = [vec!["a", "b"], vec!["a", "d"], vec!["x", "y"], vec!["c", "b", "a"]];
+        assert_eq!(book.asked(&groups).unwrap(), [true, false, false, true]);
+
+        // Asked again with the fourth: that answer is the group's, and the first is gone.
+        let second = said(&["a", "b", "c", "d"], 9);
+        book.put_verdict(&second).unwrap();
+        assert_eq!(book.verdict(&["a", "b", "c", "d"]).unwrap(), Some(second.clone()));
+        assert_eq!(book.verdict(&["a", "b", "c"]).unwrap(), Some(second.clone()));
+        drop(book);
+        let book = CullBook::open(&path, &Default::default()).unwrap();
+        assert_eq!(book.verdict(&["b", "d"]).unwrap(), Some(second));
+        let tx = book.db.begin_read().unwrap();
+        let answers = redb::ReadableTableMetadata::len(&tx.open_table(ANSWERS).unwrap()).unwrap();
+        assert_eq!(answers, 1, "no answer is left with nothing pointing to it");
+    }
+
+    #[test]
+    fn an_answer_to_another_version_of_the_question_does_not_stand() {
+        let dir = tempfile::tempdir().unwrap();
+        let book = CullBook::open(&dir.path().join("cull.redb"), &Default::default()).unwrap();
+        let old = Verdict { version: pick::VERSION + 1, ..said(&["a", "b"], 5) };
+        book.put_verdict(&old).unwrap();
+        assert_eq!(book.verdict(&["a", "b"]).unwrap(), None);
+        assert_eq!(book.asked(&[vec!["a", "b"]]).unwrap(), [false]);
+    }
+
+    #[test]
+    fn answers_kept_under_their_group_by_an_earlier_build_are_found_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cull.redb");
+        let (early, late) = (said(&["a", "b"], 5), said(&["b", "a", "c"], 7));
+        {
+            let db = crate::db::open(&path, "cull", &Default::default()).unwrap();
+            let tx = db.begin_write().unwrap();
+            {
+                let mut table = tx.open_table(BY_GROUP).unwrap();
+                // The later answer comes first by key: the order asked is what counts.
+                table.insert("a\nb\nc", postcard::to_stdvec(&late).unwrap().as_slice()).unwrap();
+                table.insert("a\nb\nz", postcard::to_stdvec(&early).unwrap().as_slice()).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+        let book = CullBook::open(&path, &Default::default()).unwrap();
+        assert_eq!(book.verdict(&["a", "b", "c"]).unwrap(), Some(late.clone()));
+        assert_eq!(book.verdict(&["a", "b"]).unwrap(), Some(late), "the later answer about them");
+        let tx = book.db.begin_read().unwrap();
+        assert!(!tx.list_tables().unwrap().any(|table| table.name() == BY_GROUP.name()), "read once");
     }
 
     #[test]

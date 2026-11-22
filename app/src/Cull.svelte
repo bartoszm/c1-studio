@@ -5,7 +5,7 @@
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
   import Compare from "./Compare.svelte";
-  import { REST_CHOICES, cullKey, keepers, lookedAt, restLabel, restOf, shownRows, stepGroup, stepPhoto, unseenNote, type RestChoice } from "./lib/cull";
+  import { REST_CHOICES, askCost, askPlanKey, askRecipient, cullKey, keepers, lookedAt, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, unseenNote, type RestChoice } from "./lib/cull";
   import { settings } from "./lib/settings.svelte";
 
   // Choosing the best of alike photos: the duplicate groups or series under the filter, one
@@ -137,8 +137,9 @@
   let looking = $state(false);
   /** It is looking at every group, in the background: how far it has got. */
   let ranking = $state<api.RankState | null>(null);
-  /** Why the last look could not be made (the model would not load, another run goes on):
-   *  said in the bar, since the group stays on screen. */
+  /** Why the last look, or the last question to a model, could not be made (the model
+   *  would not load, no key, another run goes on): said in the bar, since the group stays
+   *  on screen. */
   let lookError = $state<string | null>(null);
   /** The group it was last asked to look at by hand. */
   let lookedGroup = $state<string | undefined>(undefined);
@@ -168,16 +169,106 @@
       looking = false;
     }
   }
+  /** Said when a run's button or key is used while the other kind of run goes on. */
+  const OTHER_RUN = {
+    cloud: "AI is being asked about every group: stop that first (Shift+A)",
+    local: "The local model is looking at every group: stop that first (Shift+R)",
+  };
   async function rankAll() {
     if (view && !view.model) return onsettings();
-    lookError = null;
+    const what = runToggle(ranking, false);
+    // Not the run asking a model: this key does not stop what is paid for.
+    lookError = what === "other" ? OTHER_RUN.cloud : null;
     try {
-      if (ranking?.running) await api.stopRanking();
-      else await api.startRanking($state.snapshot(filter) as Filter, series);
+      if (what === "stop") await api.stopRanking();
+      else if (what === "start") await api.startRanking($state.snapshot(filter) as Filter, series);
     } catch (e) {
       lookError = String(e);
     }
   }
+
+  /** A model (Claude or Gemini) is comparing this group's frames. */
+  let asking = $state(false);
+  /** Every group is being asked about: this one is not asked about by hand meanwhile. */
+  let askingAll = $derived(runToggle(ranking, true) === "stop");
+  async function askThis() {
+    const group = id;
+    if (asking || !view || !current || group === undefined || view.photos.length < 2) return;
+    if (askingAll) {
+      lookError = OTHER_RUN.cloud;
+      return;
+    }
+    asking = true;
+    lookError = null;
+    try {
+      const next = await api.askGroup($state.snapshot(filter) as Filter, group);
+      // The answer is of the group asked about: another may be shown by now.
+      ahead.delete(group);
+      if (id === group) {
+        const same = view?.id === group;
+        const follows = active === best;
+        show(next, same);
+        if (same && follows) setActive(next.order[0]);
+      }
+    } catch (e) {
+      lookError = String(e);
+    } finally {
+      asking = false;
+    }
+  }
+  /** What asking about every group would take, shown before it starts. */
+  let askPlan = $state<api.AskEstimate | null>(null);
+  /** The groups not asked about yet are being counted, for `askPlan`. */
+  let counting = $state(false);
+  async function askAll() {
+    if (counting || askPlan) return;
+    const what = runToggle(ranking, true);
+    // Not the local model's run: this key does not stop it.
+    lookError = what === "other" ? OTHER_RUN.local : null;
+    try {
+      if (what === "stop") await api.stopRanking();
+      if (what !== "start") return;
+      counting = true;
+      askPlan = await api.askEstimate($state.snapshot(filter) as Filter, series);
+    } catch (e) {
+      lookError = String(e);
+    } finally {
+      counting = false;
+    }
+  }
+  /** The question can be answered with a yes: there are groups to ask about, and a model to ask. */
+  let askReady = $derived(!!askPlan && askPlan.groups > 0 && !askPlan.unable);
+  async function askAllGo() {
+    if (!askReady) return;
+    askPlan = null;
+    lookError = null;
+    try {
+      await api.startRanking($state.snapshot(filter) as Filter, series, true);
+    } catch (e) {
+      lookError = String(e);
+    }
+  }
+  // The question about asking every group takes every key until it is answered, before
+  // anyone else hears it: the window's other listeners would rate, tag or trash the photo
+  // behind it. A dialog or menu over this screen (`blocked`) has the keys instead.
+  $effect(() => {
+    if (!askPlan) return;
+    const taken = (e: KeyboardEvent) => {
+      if (blocked) return;
+      const onButton = !!(e.target as HTMLElement | null)?.closest?.(".ask button");
+      const what = askPlanKey(e, onButton);
+      e.stopPropagation();
+      if (what === "own") return;
+      // Stopped above, it reaches no one here; a key of the window's own (F12) still works,
+      // but none presses a button of the bar left focused.
+      if (what !== "none" || e.key === "Enter" || e.key === " ") e.preventDefault();
+      if (what === "go") askAllGo();
+      else if (what === "cancel") askPlan = null;
+    };
+    window.addEventListener("keydown", taken, true);
+    return () => window.removeEventListener("keydown", taken, true);
+  });
+  const PROVIDERS: Record<string, string> = { claude: "Claude", "claude-code": "Claude", gemini: "Gemini" };
   onMount(() => {
     api.rankingState().then((s) => (ranking = s)).catch(() => {});
     const heard = [
@@ -237,6 +328,7 @@
       case "photo": setActive(stepPhoto(rows, active, action.delta)); break;
       case "best": setActive(best); break;
       case "rank": if (action.all) rankAll(); else rankThis(); break;
+      case "ask": if (action.all) askAll(); else askThis(); break;
     }
     return true;
   }
@@ -282,10 +374,15 @@
     const p = byRow.get(best);
     if (!p) return "";
     const why = p.reasons.length ? `: ${p.reasons.join(", ")}` : "";
+    if (view.verdict) {
+      const v = view.verdict;
+      const of = v.sent < view.photos.length ? ` (${v.sent} of the ${view.photos.length} frames)` : "";
+      return `${PROVIDERS[v.provider] ?? v.provider} suggests ${p.name}${why}${of}${v.note ? ` · ${v.note}` : ""}`;
+    }
     return view.close ? `Too close to call; ${p.name} by a hair${why}` : `Suggested: ${p.name}${why}`;
   });
   const JUDGES: Record<api.Judge, string> = {
-    cloud: "A model compared these photos",
+    cloud: "A model was shown these frames together and put them in order; frames it was not shown follow. Your own pick is still yours: Enter keeps the active photo.",
     local: "By the local model's view of each photo, with sharpness and your own marks",
     sharpness: "By sharpness, clipped tones and your own marks (rating, edits)",
   };
@@ -349,21 +446,40 @@
           >{looking ? "Looking…" : "Look"}</button>
           <button
             class="toggle"
-            class:on={ranking?.running}
-            title={ranking?.running
+            class:on={ranking?.running && !ranking.cloud}
+            disabled={ranking?.running && ranking.cloud}
+            title={ranking?.running && !ranking.cloud
               ? "The local model is looking at every group, in the background: click to stop (Shift+R). What it saw so far is kept."
               : "Have the local model look at every group here, in the background, oldest first (Shift+R)"}
             onclick={rankAll}
-          >{ranking?.running ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
-          {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
-          {#if lookError}<span class="failed" title={lookError}>{lookError}</span>{/if}
-          {#if ranking?.failed}
+          >{ranking?.running && !ranking.cloud ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
+          {#if ranking?.failed && !ranking.cloud}
             <span class="unseen" title="Photos Look at all could not look at: they have no thumbnail or preview yet (it makes none), or could not be read. Their groups are still decided by sharpness; Look on a group makes what is missing. events.log in the catalog's folder says why of each.">{ranking.failed.toLocaleString()} failed</span>
           {/if}
           {#if unseen}
             <span class="unseen" title="The local model could not look at every photo of this group (no picture of it could be read): its view of the others does not count until it has seen them all. events.log in the catalog's folder says why.">{unseen}</span>
           {/if}
         {/if}
+        <button
+          class="toggle"
+          disabled={asking || askingAll || !view || !current || view.photos.length < 2}
+          title="Ask AI (Claude or Gemini, as Settings › AI say) to compare this group's frames: it puts them in order and says in a few words what sets each apart: an expression, a gesture, the framing (a). One call, at most 16 frames, which are sent to Anthropic or Google and leave this computer.{view?.verdict ? ' This group has an answer: asking again is another call.' : ''}"
+          onclick={askThis}
+        >{asking ? "Asking…" : view && current && view.verdict ? "Ask again" : "Ask AI"}</button>
+        <button
+          class="toggle"
+          class:on={ranking?.running && ranking.cloud}
+          disabled={counting || (ranking?.running && !ranking.cloud)}
+          title={ranking?.running && ranking.cloud
+            ? "AI is being asked about every group, in the background: click to stop (Shift+A). The answers so far are kept."
+            : "Ask AI about every group here not asked about yet, in the background: says first how many calls that is, and what it costs (Shift+A)"}
+          onclick={askAll}
+        >{ranking?.running && ranking.cloud ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : counting ? "Counting…" : "Ask about all…"}</button>
+        {#if ranking?.failed && ranking.cloud}
+          <span class="unseen" title="Groups that got no answer: a photo with no image to send, an answer cut off or declined. They are not asked about again in this run; events.log in the catalog's folder says why of each.">{ranking.failed.toLocaleString()} failed</span>
+        {/if}
+        {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
+        {#if lookError}<span class="failed" title={lookError}>{lookError}</span>{/if}
       </span>
       <label class="rest" title={restTitle}>
         The rest:
@@ -383,6 +499,29 @@
     </span>
   </div>
 
+  {#if askPlan}
+    {@const p = askPlan}
+    <div class="ask" role="alertdialog" aria-label="Ask AI about every group">
+      {#if p.unable}
+        <span>AI cannot be asked as Settings › AI are: {p.unable}</span>
+        <button onclick={() => { askPlan = null; onsettings(); }}>Settings › AI…</button>
+      {:else if !p.groups}
+        <span>Every group here has been asked about already{p.skipped ? ` (${p.skipped.toLocaleString()})` : ""}.</span>
+      {:else}
+        <span>
+          Ask {p.via} ({p.model}) about {p.groups.toLocaleString()} group{p.groups === 1 ? "" : "s"}: {p.groups.toLocaleString()} call{p.groups === 1 ? "" : "s"}{p.workers > 1 && p.groups > 1 ? `, ${Math.min(p.workers, p.groups)} at a time` : ""},
+          {askCost(p)}.
+          <strong>{p.photos.toLocaleString()} photos are sent to {askRecipient(p.via)} and leave this computer</strong>
+          ({p.via === "Gemini" ? "on numbered sheets, one a group" : "previews, up to 1024 px"}).
+          {#if p.skipped}{p.skipped.toLocaleString()} asked about already are left out.{/if}
+          It runs in the background and can be stopped; answers are kept as they come.
+        </span>
+        <button class="primary" onclick={askAllGo}>Ask (Enter)</button>
+      {/if}
+      <button onclick={() => (askPlan = null)}>{askReady ? "Cancel (Esc)" : "Close (Esc)"}</button>
+    </div>
+  {/if}
+
   {#if view && shown.length}
     {#key view.id}
       <Compare
@@ -393,7 +532,7 @@
         {message}
         {failed}
         embedded
-        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · r look · 0–5 - + * Delete edit · z zoom · Esc"
+        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · r look · a ask AI · 0–5 - + * Delete edit · z zoom · Esc"
         onkeyfirst={onkey}
         {badge}
         {onclose}
@@ -440,6 +579,23 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: #111;
+  }
+  /* Over the photos, under the bar: the rows stay the bar, the photos, the strip. */
+  .ask {
+    position: absolute;
+    top: 44px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: min(900px, 90vw);
+    padding: 10px 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgb(0 0 0 / 50%);
   }
   .bar {
     display: flex;

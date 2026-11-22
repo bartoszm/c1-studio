@@ -817,6 +817,39 @@ you have not picked from yet: closed and opened again, it goes on where it was l
   the run after the photo it is on; the group it was in is not counted, and what was
   seen of it is kept. The model is held in memory while this screen is open or a run goes
   on, and let go after.
+- **Ask AI** (`a`) shows the group's frames together to the model *Settings › AI* has
+  chosen (Claude with an API key or on a plan, or Gemini) and asks which to keep. It
+  answers with an order, a reason of a few words per frame (*eyes closed*, *best gesture,
+  slightly soft*) and a line on how clear the choice is; its order is then the
+  suggestion, the reasons are in the captions, and the bar says who suggested. You still
+  choose: Enter keeps the active photo. The frames are sent to Anthropic (Claude) or
+  Google (Gemini) and leave this computer: Claude gets each as an image of its own,
+  1024 px on the long side; Gemini one sheet with the frames numbered. At most 16 frames
+  are sent: of a bigger group the 16 best so far, and the others follow in the order.
+  The button reads *Ask again* where the group has an answer: that is another call.
+- **Ask about all…** (Shift+A) counts the groups not asked about yet and says how many
+  calls and photos that is, that the photos leave this computer and for whom, and what it
+  costs with an API key (nothing more on a plan or with Gemini, which count against their
+  limits). The price is for effort *low*: at *medium* or *high* the model thinks longer,
+  that is billed too, and the question says *or more*. While it is up it takes every key:
+  Enter starts the run, Esc does not, and nothing reaches the photos behind it. Where no
+  model can be asked as *Settings › AI* are (no API key, Claude Code not signed in with a
+  plan, the local model chosen, which compares nothing), it says so instead.
+- The run goes in the background, oldest group first, as many groups at a time as
+  *Settings › AI › At once* says, until it is done or stopped: the button counts
+  the groups, and Shift+A (or a click) stops it. Shift+R does not stop it, and Shift+A
+  does not stop *Look at all*: one run at a time, each with its own key. A group that gets
+  no answer (a photo with no image to send, an answer cut off or declined) is counted
+  (*2 failed* beside the button), passed over and asked about by the next run;
+  `events.log` says why. Three calls in a row with no answer, or an error no group would
+  fare better with (no credit, a limit reached), end the run. *Ask AI* on one group waits
+  while it goes.
+- An answer is kept, and holds for the photos the model saw: with a filter that shows
+  fewer of the group, or after one of them went to the trash or was hidden, the order it
+  gave the others still stands, and the group is not asked about again. It is asked
+  about again once it shows a photo the model never saw (a frame added, a wider filter),
+  unless the model was shown 16 already. Every call counts in the AI tab's totals, one
+  that gave no usable answer too.
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then
@@ -1155,13 +1188,14 @@ opens one. See [CLI.md](CLI.md#photo-folders).
 | ← → Tab (cull) | Previous, next photo of the group |
 | `g` (cull) | Go to the suggested photo |
 | `r`, Shift+R (cull) | Have the local model look at this group; at every group, in the background |
+| `a`, Shift+A (cull) | Ask AI (Claude or Gemini) which frame of this group to keep; of every group, after saying what it takes |
 
 Keys do not act while you type in a field. `?` shows this list in the app.
 
 ## Where things are kept
 
 - The library, the edit queue, the analysis and its lines (`library\analysis.redb`),
-  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups and what the local model saw of photos (`library\cull.redb`), trips and their settings (`library\trips.redb`),
+  hidden photos (`library\hidden.redb`), the trash (`library\bin.redb`), the photos kept of their groups, what the local model saw of photos and what a model said of a group (`library\cull.redb`), trips and their settings (`library\trips.redb`),
   the autosave setting and backups: `%LOCALAPPDATA%\c1studio\<catalog id>\`. AI suggestions
   and calls are in `library\ai.redb` there, the AI settings in `ai.json`. What happened in
   the background and what failed (AI runs, and why a photo was placed nowhere, included) is

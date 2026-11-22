@@ -2,13 +2,16 @@
 //! in order of which to keep, and the pick itself — the photos kept, and what becomes of
 //! the rest — as one step that can be taken back.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, Weak};
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 
 use c1ai::aesthetic::{self, Aesthetic, Prompts};
+use c1ai::claude;
 use c1ai::models::SIGLIP2;
+use c1ai::pick::{self, PickAsk};
 use c1ai::siglip::Embedder;
+use c1ai::{AiError, RunRecord};
 use c1analysis::{Candidate, Judge};
 use c1index::cull::NewView;
 use c1index::{Filter, Library, QueryOptions, Sort};
@@ -16,11 +19,13 @@ use c1model::{ColorLabel, Op, Photo, Removal};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::ai::{AiImage, models_root, pixels, pixels_at_hand};
+use crate::ai::{Access, AiImage, Asker, asker, load_settings, models_root, pixels, pixels_at_hand};
 use crate::{App, Session, is_current, text};
 
 /// The long edge of the picture the local model is given: it squashes it to 224 itself.
 const LOOK_EDGE: u32 = 448;
+/// A run asking about every group ends after this many groups in a row got no answer.
+const ASK_FAILURES: usize = 3;
 
 /// A photo of a group, with what the order goes by.
 #[derive(Serialize)]
@@ -58,6 +63,20 @@ pub(crate) struct CullGroupView {
     /// How many of `photos` the local model has no view of: while there is one, its
     /// views of the others do not count in the order.
     unseen: usize,
+    /// What a model that compared the frames said, if one was asked.
+    verdict: Option<VerdictView>,
+}
+
+/// A model's word on a group, for the bar.
+#[derive(Serialize)]
+pub(crate) struct VerdictView {
+    /// `claude`, `claude-code`, `gemini`.
+    provider: String,
+    model: String,
+    /// How clear the choice is, in its words.
+    note: String,
+    /// How many of the photos shown it was shown.
+    sent: usize,
 }
 
 /// The rows of a group among the photos `filter` selects, oldest first: every frame that
@@ -89,12 +108,19 @@ fn leading(seen: &Aesthetic, views: &[Aesthetic]) -> Option<&'static str> {
 }
 
 fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupView, String> {
-    let rows = group_rows(library, filter, id)?;
+    view_of(library, id, group_rows(library, filter, id)?)
+}
+
+/// [`group_view`] of the group `id` with `rows` as its photos.
+fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView, String> {
     let kept: HashSet<u64> = library.kept_of(&rows).into_iter().collect();
     // Only views scored the way photos are scored now: older ones wait to be scored again.
     let views = library.views(&rows).map_err(text)?;
     let seen =
         |row: u64| views.get(&row).filter(|v| v.version == aesthetic::VERSION).map(|v| Aesthetic::from(v.scores));
+    // A model's answer that still holds for the photos shown: it saw every one of them.
+    let (verdict, places) = library.verdict(&rows).map_err(text)?.unzip();
+    let places = places.unwrap_or_default();
     let classes = library.class_settings();
     let mut photos = Vec::with_capacity(rows.len());
     let mut candidates = Vec::with_capacity(rows.len());
@@ -109,7 +135,7 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
             rating: photo.rating,
             edited: photo.edit.edited,
             aesthetic: seen(row).map(|s| s.overall()),
-            verdict: None,
+            verdict: places.get(&row).cloned(),
         });
         photos.push(CullPhoto {
             row,
@@ -154,6 +180,12 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
         photos,
         judge: ranked.judge,
         model: SIGLIP2.installed(&models_root()),
+        verdict: verdict.map(|v| VerdictView {
+            sent: places.len(),
+            provider: v.provider,
+            model: v.model,
+            note: v.note,
+        }),
     })
 }
 
@@ -190,6 +222,216 @@ pub(crate) async fn cull_groups(app: State<'_, App>, filter: Filter, series: boo
     .map_err(text)?
 }
 
+/// Of a group's `rows` (in the order taken), the `most` that come first in `order` (the
+/// one to keep first), in the order taken: what a model is shown of a group bigger than a
+/// question holds.
+fn best_frames(rows: &[u64], order: &[u64], most: usize) -> Vec<u64> {
+    let best: HashSet<u64> = order.iter().copied().take(most).collect();
+    rows.iter().copied().filter(|row| best.contains(row)).collect()
+}
+
+/// The frames of the group `id` a model is shown, of its `rows` (in the order taken): all
+/// of them, or of a group bigger than a question holds the best by what is known so far.
+/// Only such a group is put in order for it.
+fn frames_to_ask(library: &Library, id: &str, rows: &[u64]) -> Result<Vec<u64>, String> {
+    if rows.len() <= pick::MAX_FRAMES {
+        return Ok(rows.to_vec());
+    }
+    let view = view_of(library, id, rows.to_vec())?;
+    let shown: Vec<u64> = view.photos.iter().map(|p| p.row).collect();
+    Ok(best_frames(&shown, &view.order, pick::MAX_FRAMES))
+}
+
+/// Counts a call about the group `id` with the rest of what the models were asked. One
+/// that cannot be counted is logged: the answer is not lost for it.
+fn count_call(s: &Session, id: &str, record: &RunRecord) {
+    if let Err(e) = s.library.record_ask(id, record) {
+        s.log.event(&format!("Best of: the call about {id} could not be counted: {e:#}"), &[]);
+    }
+}
+
+/// Why a group got no answer.
+#[derive(Debug)]
+enum NoAnswer {
+    /// The group's own trouble (a frame with no image to send): no call was made, and the
+    /// next group may well fare better.
+    Group(String),
+    /// The model's: the call failed, or what it said could not be used.
+    Model(AiError),
+    /// The answer came and could not be kept: nor would the next one be.
+    Store(String),
+}
+
+impl std::fmt::Display for NoAnswer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NoAnswer::Group(why) | NoAnswer::Store(why) => f.write_str(why),
+            NoAnswer::Model(e) => e.fmt(f),
+        }
+    }
+}
+
+/// Asks `asker` which frame of the group `id` to keep, of its `rows` (the photos the
+/// filter selects, in the order taken), and keeps its answer. Claude gets each frame as an
+/// image of its own; Gemini, which takes one file, gets them on one sheet, each loaded no
+/// larger than its cell.
+fn ask_about(s: &Session, asker: &Asker, id: &str, rows: &[u64]) -> Result<(), NoAnswer> {
+    let sent = frames_to_ask(&s.library, id, rows).map_err(NoAnswer::Group)?;
+    if sent.len() < 2 {
+        return Err(NoAnswer::Group("there is one photo here: nothing to compare".into()));
+    }
+    let edge = asker.edge(sent.len());
+    let mut pictures = Vec::with_capacity(sent.len());
+    for &row in &sent {
+        let picture = s
+            .library
+            .photo_id(row)
+            .ok_or_else(|| "a photo of the group is gone".to_owned())
+            .and_then(|id| pixels(s, &id, AiImage::Preview, edge).map_err(|e| format!("{e:#}")))
+            .and_then(|found| found.ok_or_else(|| "a photo of the group has no image to send".to_owned()));
+        pictures.push(picture.map_err(NoAnswer::Group)?);
+    }
+    let ask = PickAsk { frames: sent.len(), series: id.starts_with("series:"), sheet: asker.sheet() };
+    // Counted with the rest of what the models were asked, an answer that could not be
+    // used too: it was paid for all the same.
+    let (answer, record) = match asker.ask(&pick::message(&ask), &pictures) {
+        Ok(answered) => answered,
+        Err(failed) => {
+            if let Some(record) = &failed.record {
+                count_call(s, id, record);
+            }
+            return Err(NoAnswer::Model(failed.error));
+        }
+    };
+    count_call(s, id, &record);
+    let said = pick::read(&answer, sent.len()).map_err(NoAnswer::Model)?;
+    let verdict = c1index::cull::NewVerdict {
+        at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
+        provider: record.provider.clone(),
+        model: record.model.clone(),
+        order: said.order.iter().map(|&i| i as u32).collect(),
+        reasons: said.reasons,
+        note: said.note,
+    };
+    s.library
+        .put_verdict(&sent, verdict)
+        .map_err(|e| NoAnswer::Store(format!("the answer about {id} could not be kept: {e:#}")))
+}
+
+/// Asks a model (Claude or Gemini, as the AI settings say) which frame of one group to
+/// keep, and gives the group in the order it said, with its reasons. Not while every group
+/// is being asked about: the run may be on this one, and both would be paid for.
+#[tauri::command]
+pub(crate) async fn ask_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let run = lock(&JOB.state).read(&s);
+        if run.running && run.cloud {
+            return Err("AI is being asked about every group: stop that first, or wait for it to get here".into());
+        }
+        // Before a picture is loaded: with no key or no sign-in there is nothing to send.
+        let asker = asker(&load_settings(&s), Arc::default(), &pick::system(), pick::schema())?;
+        let rows = group_rows(&s.library, &filter, &id)?;
+        ask_about(&s, &asker, &id, &rows).map_err(text)?;
+        group_view(&s.library, &filter, &id)
+    })
+    .await
+    .map_err(text)?
+}
+
+/// What asking a model about every group would come to.
+#[derive(Serialize)]
+pub(crate) struct AskEstimate {
+    /// Groups not asked about yet (as they are now), and the frames that would be sent.
+    groups: usize,
+    photos: usize,
+    /// Groups left out: asked about already.
+    skipped: usize,
+    /// US dollars at effort `low`, with an API key; nothing on a plan or with Gemini.
+    cost: Option<f64>,
+    plan: bool,
+    /// `Claude`, `Gemini`; `Local` cannot be asked.
+    via: &'static str,
+    model: String,
+    /// How much the model may think (`low`, `medium`, `high`): above `low`, thinking adds
+    /// to what `cost` counts.
+    effort: String,
+    /// Calls made at once.
+    workers: usize,
+    /// Why no model can be asked as the settings are (no key, not signed in, the local model).
+    unable: Option<String>,
+}
+
+/// A group by id, with its rows under the filter, in the order taken.
+type Unasked = (String, Vec<u64>);
+
+/// The groups among the photos `filter` selects that a model's answer does not stand for,
+/// oldest first, and how many it does stand for.
+fn unasked(library: &Library, filter: &Filter, series: bool) -> Result<(Vec<Unasked>, usize), String> {
+    let ids = library.group_ids(filter, series).map_err(text)?;
+    // Every group's rows from one read of the filter's photos, oldest first, as
+    // [`group_rows`] gives them one group at a time: a read per group takes a minute over
+    // a few thousand groups.
+    let all = Filter {
+        duplicates: filter.duplicates || !series,
+        series: filter.series || series,
+        stacked: false,
+        ..filter.clone()
+    };
+    let rows = library.query(&all, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows;
+    let mut members: HashMap<String, Vec<u64>> = HashMap::new();
+    for row in rows {
+        let Some(look) = library.look(row) else { continue };
+        if let Some(id) = if series { look.series } else { look.duplicates } {
+            members.entry(id).or_default().push(row);
+        }
+    }
+    let (ids, rows): (Vec<String>, Vec<Vec<u64>>) = ids
+        .into_iter()
+        .filter_map(|(id, _)| members.remove(&id).filter(|rows| rows.len() > 1).map(|rows| (id, rows)))
+        .unzip();
+    let asked = library.asked(&rows).map_err(text)?;
+    let skipped = asked.iter().filter(|&&asked| asked).count();
+    let todo = ids.into_iter().zip(rows).zip(asked).filter(|(_, asked)| !asked).map(|(group, _)| group).collect();
+    Ok((todo, skipped))
+}
+
+/// What asking about every series (or duplicate group) under `filter` would take, and
+/// whether a model can be asked at all as the settings are.
+#[tauri::command]
+pub(crate) async fn ask_estimate(app: State<'_, App>, filter: Filter, series: bool) -> Result<AskEstimate, String> {
+    let s = app.session()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = load_settings(&s);
+        // The key, the sign-in: said before the question is put, not by its first group.
+        let unable = asker(&settings, Arc::default(), &pick::system(), pick::schema()).err();
+        let (todo, skipped) = unasked(&s.library, &filter, series)?;
+        let photos: usize = todo.iter().map(|(_, rows)| rows.len().min(pick::MAX_FRAMES)).sum();
+        let model = claude::model(&settings.model);
+        let claude = || model.map_or(settings.model.clone(), |m| m.name.to_string());
+        let (via, name, cost) = match settings.access {
+            Access::Local => ("Local", SIGLIP2.name.to_string(), None),
+            Access::Gemini => ("Gemini", settings.gemini_model.clone(), None),
+            Access::Plan => ("Claude", claude(), None),
+            Access::Api => ("Claude", claude(), model.map(|m| claude::estimate_frames(&m, todo.len(), photos))),
+        };
+        Ok(AskEstimate {
+            groups: todo.len(),
+            photos,
+            skipped,
+            cost,
+            plan: settings.access != Access::Api,
+            via,
+            model: name,
+            effort: settings.effort.clone(),
+            workers: settings.workers(),
+            unable,
+        })
+    })
+    .await
+    .map_err(text)?
+}
+
 /// The local model as ranking uses it: the image tower and the sentences photos are held
 /// against.
 struct Ranker {
@@ -202,16 +444,19 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// How far looking at every group has got.
+/// How far looking at every group, or asking about it, has got.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct RankState {
     running: bool,
-    /// Groups looked at, of how many.
+    /// A model is asked to compare each group's frames; else the local model looks at each photo.
+    cloud: bool,
+    /// Groups looked at (or asked about), of how many.
     done: usize,
     total: usize,
-    /// Photos that could not be looked at; `events.log` says why of each.
+    /// Photos that could not be looked at, or groups that got no answer; `events.log`
+    /// says why of each.
     failed: usize,
-    /// The group looked at last: a screen showing that one reads it again.
+    /// The group looked at (or asked about) last: a screen showing that one reads it again.
     group: Option<String>,
     /// Why the last run ended early.
     error: Option<String>,
@@ -226,7 +471,7 @@ struct Held<S> {
 
 impl<S> Held<S> {
     const fn new() -> Self {
-        let state = RankState { running: false, done: 0, total: 0, failed: 0, group: None, error: None };
+        let state = RankState { running: false, cloud: false, done: 0, total: 0, failed: 0, group: None, error: None };
         Held { of: Weak::new(), state }
     }
 
@@ -261,7 +506,8 @@ impl<S> Held<S> {
 ///   `loading` is what a second caller waits on while the first loads.
 struct RankJob {
     running: AtomicBool,
-    stop: AtomicBool,
+    /// Shared, for a model's client to end a call under way by.
+    stop: LazyLock<Arc<AtomicBool>>,
     state: Mutex<Held<Session>>,
     wanted: AtomicBool,
     ranker: Mutex<Option<Arc<Ranker>>>,
@@ -270,7 +516,7 @@ struct RankJob {
 
 static JOB: RankJob = RankJob {
     running: AtomicBool::new(false),
-    stop: AtomicBool::new(false),
+    stop: LazyLock::new(Arc::default),
     state: Mutex::new(Held::new()),
     wanted: AtomicBool::new(false),
     ranker: Mutex::new(None),
@@ -484,6 +730,81 @@ pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) 
     .map_err(text)?
 }
 
+/// Asks about each of `todo` with `ask`, `workers` of them at a time, in order, and tells
+/// `told` of each that was answered (`None`) or not (why). A group with no answer is passed
+/// over. The run ends early, with why, on a failure no other group would fare better with
+/// (no credit, a limit reached, the answers not kept), and when [`ASK_FAILURES`] calls in
+/// a row gave no answer; a group's own trouble, with no call made, is neither. `stopped`
+/// ends it quietly, as does a call stopped under way.
+fn ask_each<T: Sync>(
+    todo: &[T],
+    workers: usize,
+    stopped: &(dyn Fn() -> bool + Sync),
+    ask: &(dyn Fn(&T) -> Result<(), NoAnswer> + Sync),
+    told: &(dyn Fn(&T, Option<&str>) + Sync),
+) -> Result<(), String> {
+    let next = AtomicUsize::new(0);
+    let in_a_row = AtomicUsize::new(0);
+    let ended: Mutex<Option<String>> = Mutex::new(None);
+    let over = || stopped() || lock(&ended).is_some();
+    let end = |why: String| {
+        lock(&ended).get_or_insert(why);
+    };
+    std::thread::scope(|scope| {
+        for _ in 0..workers.clamp(1, todo.len().max(1)) {
+            scope.spawn(|| {
+                while !over() {
+                    let Some(group) = todo.get(next.fetch_add(1, Ordering::SeqCst)) else { break };
+                    match ask(group) {
+                        Ok(()) => {
+                            in_a_row.store(0, Ordering::SeqCst);
+                            told(group, None);
+                        }
+                        Err(NoAnswer::Model(AiError::Stopped)) => break,
+                        Err(NoAnswer::Model(e)) if e.stops_run() => end(e.to_string()),
+                        Err(NoAnswer::Store(why)) => end(why),
+                        Err(NoAnswer::Group(why)) => told(group, Some(&why)),
+                        Err(NoAnswer::Model(e)) => {
+                            let why = e.to_string();
+                            told(group, Some(&why));
+                            if in_a_row.fetch_add(1, Ordering::SeqCst) + 1 >= ASK_FAILURES {
+                                end(format!("{ASK_FAILURES} groups in a row got no answer; the last: {why}"));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    });
+    lock(&ended).take().map_or(Ok(()), Err)
+}
+
+/// Asks a model about every group no answer stands for, oldest first, as many at a time as
+/// the AI settings say photos are described ([`ask_each`] has the rules). The model is
+/// made once, before anything is read: with no key or no sign-in there is no run.
+fn run_asking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
+    let settings = load_settings(s);
+    let asker = asker(&settings, Arc::clone(&JOB.stop), &pick::system(), pick::schema())?;
+    let (todo, _) = unasked(&s.library, filter, series)?;
+    JOB.report(app, s, |state| state.total = todo.len());
+    ask_each(
+        &todo,
+        settings.workers(),
+        &|| JOB.stop.load(Ordering::Relaxed) || !is_current(app, s),
+        &|(id, rows)| ask_about(s, &asker, id, rows),
+        &|(id, _), failed| {
+            if let Some(why) = failed {
+                s.log.event(&format!("Best of: asking which frame of {id} to keep failed: {why}"), &[]);
+            }
+            JOB.report(app, s, |state| {
+                state.done += 1;
+                state.failed += usize::from(failed.is_some());
+                state.group = Some(id.clone());
+            });
+        },
+    )
+}
+
 fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool) -> Result<(), String> {
     // The groups the screen goes through, in its order.
     let groups = s.library.group_ids(filter, series).map_err(text)?;
@@ -511,28 +832,38 @@ fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool)
 /// Has the local model look at every series (or duplicate group) among the photos `filter`
 /// selects, in the background, unless a run is under way. Each group's views are kept as
 /// they come, so a run stopped keeps what it saw. Only pictures there already are looked
-/// at: a photo with no thumbnail or preview yet is counted as failed, not rendered.
+/// at: a photo with no thumbnail or preview yet is counted as failed, not rendered. With
+/// `cloud`, the model the AI settings choose is asked about each group instead, and its
+/// answers are kept as they come.
 #[tauri::command]
-pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool) -> Result<(), String> {
+pub(crate) async fn start_ranking(app: AppHandle, filter: Filter, series: bool, cloud: bool) -> Result<(), String> {
     let s = app.state::<App>().session()?;
     JOB.wanted.store(true, Ordering::SeqCst);
     if JOB.running.swap(true, Ordering::SeqCst) {
-        // This catalog's run: its progress is what the screen shows. One of a catalog
-        // closed since ends after the photo it is on.
-        return if lock(&JOB.state).is_of(&s) {
+        // This catalog's run of the kind asked for: its progress is what the screen shows.
+        // One of a catalog closed since ends after the photo (or the call) it is on.
+        let held = lock(&JOB.state);
+        return if !held.is_of(&s) {
+            Err("A run over another catalog's groups is still ending: try again in a moment".into())
+        } else if held.state.cloud == cloud {
             Ok(())
+        } else if cloud {
+            Err("The local model is looking at every group: stop that first (Shift+R)".into())
         } else {
-            Err("The local model is still looking at another catalog's photos: try again in a moment".into())
+            Err("AI is being asked about every group: stop that first (Shift+A)".into())
         };
     }
     JOB.stop.store(false, Ordering::SeqCst);
-    JOB.report(&app, &s, |state| *state = RankState { running: true, ..RankState::default() });
+    JOB.report(&app, &s, |state| *state = RankState { running: true, cloud, ..RankState::default() });
     std::thread::spawn(move || {
         let ends = Ends;
-        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_ranking(&app, &s, &filter, series)));
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if cloud { run_asking(&app, &s, &filter, series) } else { run_ranking(&app, &s, &filter, series) }
+        }));
         let error = match run {
             Ok(Ok(())) => None,
             Ok(Err(e)) => Some(e),
+            Err(_) if cloud => Some("asking about the groups crashed".to_owned()),
             Err(_) => Some("looking at the photos crashed".to_owned()),
         };
         if let Some(e) = &error {
@@ -789,6 +1120,107 @@ mod tests {
         assert_eq!(leading(&a_hair, &[flat, a_hair]), None);
         let clearly = Aesthetic::from([0.62, 0.5, 0.5, 0.5]);
         assert_eq!(leading(&clearly, &[flat, clearly]), Some("composition"));
+    }
+
+    #[test]
+    fn a_group_too_big_for_a_question_sends_its_best_in_the_order_taken() {
+        let rows = [10, 11, 12, 13, 14];
+        // The order of which to keep: 13 first, 10 last.
+        let order = [13, 11, 14, 12, 10];
+        assert_eq!(best_frames(&rows, &order, 3), [11, 13, 14], "the three best, as they were taken");
+        assert_eq!(best_frames(&rows, &order, 9), rows);
+        assert_eq!(best_frames(&rows, &order, 0), [0u64; 0]);
+    }
+
+    /// Asks about `groups` (each the outcome asking about it has) and gives how the run
+    /// ended, the groups answered and the groups told of as failed.
+    fn asking(groups: &[&str], workers: usize) -> (Result<(), String>, Vec<usize>, Vec<usize>) {
+        let todo: Vec<(usize, &str)> = groups.iter().copied().enumerate().collect();
+        let (answered, failed) = (Mutex::new(Vec::new()), Mutex::new(Vec::new()));
+        let run = ask_each(
+            &todo,
+            workers,
+            &|| false,
+            &|&(_, outcome)| match outcome {
+                "ok" => Ok(()),
+                "no image" => Err(NoAnswer::Group("a photo of the group has no image to send".into())),
+                "cut" => Err(NoAnswer::Model(AiError::Truncated)),
+                "refused" => Err(NoAnswer::Model(AiError::Refused(None))),
+                "no key" => Err(NoAnswer::Model(AiError::NoKey)),
+                "limit" => Err(NoAnswer::Model(AiError::Limit("try again at 5 pm".into()))),
+                "stopped" => Err(NoAnswer::Model(AiError::Stopped)),
+                "disk" => Err(NoAnswer::Store("the answer could not be kept: the disk is full".into())),
+                other => panic!("{other}"),
+            },
+            &|&(i, _), why| lock(if why.is_some() { &failed } else { &answered }).push(i),
+        );
+        let sorted = |list: Mutex<Vec<usize>>| {
+            let mut list = list.into_inner().unwrap();
+            list.sort_unstable();
+            list
+        };
+        (run, sorted(answered), sorted(failed))
+    }
+
+    #[test]
+    fn a_group_with_no_answer_is_counted_and_passed_over() {
+        // A frame with no image, an answer cut off, one declined: the run goes on.
+        let (run, answered, failed) = asking(&["ok", "no image", "cut", "ok", "refused", "no image", "ok"], 1);
+        assert_eq!((run, answered, failed), (Ok(()), vec![0, 3, 6], vec![1, 2, 4, 5]));
+        // Groups with no image to send, however many in a row, do not end it: no call
+        // failed, and asked again they would stop the next run at the same place.
+        let (run, answered, failed) = asking(&["no image", "no image", "no image", "no image", "ok"], 1);
+        assert_eq!((run, answered, failed), (Ok(()), vec![4], vec![0, 1, 2, 3]));
+    }
+
+    #[test]
+    fn three_calls_in_a_row_with_no_answer_end_the_run() {
+        let (run, answered, failed) = asking(&["ok", "cut", "refused", "ok", "cut", "no image", "cut", "cut", "ok"], 1);
+        let why = run.unwrap_err();
+        assert!(why.starts_with("3 groups in a row got no answer") && why.contains("cut off"), "{why}");
+        // The answer between the first two failures started the count again; the group
+        // with no image neither counted nor did.
+        assert_eq!((answered, failed), (vec![0, 3], vec![1, 2, 4, 5, 6, 7]));
+    }
+
+    #[test]
+    fn what_no_other_group_would_fare_better_with_ends_the_run_at_once() {
+        for (fatal, said) in [("no key", "no API key"), ("limit", "usage limit"), ("disk", "disk is full")] {
+            let (run, answered, failed) = asking(&["ok", fatal, "ok"], 1);
+            assert!(run.unwrap_err().contains(said), "{fatal}");
+            assert_eq!((answered, failed), (vec![0], vec![]), "{fatal}: neither answered nor passed over");
+        }
+        // A call stopped under way ends it with no error, and its group is not told of.
+        assert_eq!(asking(&["ok", "stopped", "ok"], 1), (Ok(()), vec![0], vec![]));
+    }
+
+    #[test]
+    fn a_stop_ends_the_run_before_the_next_group_and_several_are_asked_about_at_once() {
+        let stop = AtomicBool::new(false);
+        let asked = AtomicUsize::new(0);
+        let run = ask_each(
+            &[1, 2, 3, 4],
+            1,
+            &|| stop.load(Ordering::SeqCst),
+            &|&group| {
+                asked.fetch_add(1, Ordering::SeqCst);
+                stop.store(group == 2, Ordering::SeqCst);
+                Ok(())
+            },
+            &|_, _| {},
+        );
+        assert_eq!((run, asked.load(Ordering::SeqCst)), (Ok(()), 2));
+
+        // Four at a time: every group once, whoever takes it.
+        let groups = vec!["ok"; 40];
+        let (run, answered, failed) = asking(&groups, 4);
+        assert_eq!((run, answered, failed), (Ok(()), (0..40).collect(), vec![]));
+        // And an end reached by one of them is the run's.
+        let mut groups = vec!["ok"; 40];
+        groups[7] = "limit";
+        let (run, answered, _) = asking(&groups, 4);
+        assert!(run.unwrap_err().contains("usage limit"));
+        assert!(!answered.contains(&7));
     }
 
     #[test]

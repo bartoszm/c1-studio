@@ -2984,6 +2984,8 @@ pub fn run() {
             cull::stop_ranking,
             cull::ranking_state,
             cull::cull_done,
+            cull::ask_group,
+            cull::ask_estimate,
             set_hidden,
             hidden_rows,
             no_preview_count,

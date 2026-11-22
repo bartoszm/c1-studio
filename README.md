@@ -91,8 +91,10 @@ a red coat on a grey street), brightness, clipped highlights, blocked shadows an
 Filter by them (any or all of a card's picks), see why a photo is in each class, and move
 the lines in Settings with a live preview. Duplicates (the same moment shot twice) and
 series (bursts) are found across the library, and **Stack** shows one photo per burst.
-**Best of…** goes through them one group at a time, side by side with a suggestion: Enter
-keeps a photo and trashes, hides or marks the rest, as one step to undo.
+**Best of…** goes through them one group at a time, side by side with a suggestion (by
+sharpness and your ratings; by composition, moment and mood with the local model; or by
+Claude or Gemini comparing the frames): Enter keeps a photo and trashes, hides or marks
+the rest, as one step to undo.
 
 ![Analysis of the search results: colour, light, focus, duplicates and series](docs/media/analysis.jpg)
 
