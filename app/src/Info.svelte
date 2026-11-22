@@ -1,7 +1,7 @@
 <script lang="ts">
   import * as api from "./lib/api";
   import { source } from "./lib/source.svelte";
-  import { COLORS, bytes, camera, lensOf, date, eventText, originLabel, exposure, folderOf, geoText } from "./lib/format";
+  import { COLORS, COLOR_NAMES, bytes, camera, lensOf, date, eventText, originLabel, exposure, folderOf, geoText } from "./lib/format";
   import { resolveGeo } from "./lib/placeHints";
   import { encode as plusCode } from "./lib/pluscode";
   import { AROUND, type Around } from "./lib/around";
@@ -14,7 +14,6 @@
   import { collapse, mergedField, scrollFix } from "./lib/batch";
   import { NEUTRAL, colourLines, colourRule, focusLine, lightLine, monoLine, nameOf, pct, shapeLine } from "./lib/explain";
 
-  const COLOR_TAGS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 
   // Everything the library holds about one photo. Keywords, albums, the folder and the
   // camera are links: following one filters the grid by it. Stars and colours edit.
@@ -457,7 +456,7 @@
     {/if}
   </div>
   <div class="colors" role="group" aria-label="Colour tag">
-    {#each COLOR_TAGS as c}
+    {#each COLOR_NAMES as c}
       <button
         class="dot"
         class:on={color === c}

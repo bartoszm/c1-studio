@@ -4,7 +4,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
+  import { COLORS, COLOR_NAMES, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, byCount, cityWithoutLocation, flatValues, hideRare, pathTree, placeText, placeTree, showsFind, treeSize, usesWithin, type Node } from "./lib/tree";
   import { treeFind, type TreeFind } from "./lib/treeFind.svelte";
@@ -67,6 +67,8 @@
   import Viewer from "./Viewer.svelte";
   import Compare from "./Compare.svelte";
   import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
+  import Cull from "./Cull.svelte";
+  import { afterPick, afterTurn, describePick, firstUnpicked, keeperMark, placeAfter, restAction } from "./lib/cull";
   import WriteDialog from "./WriteDialog.svelte";
 
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
@@ -118,6 +120,9 @@
   let viewing = $state(false);
   /** Photos compared side by side (2 to 4, by row) and the one edits land on. */
   let comparing = $state<{ rows: number[]; active: number } | null>(null);
+  /** Choosing the best of alike photos: the series (or duplicate groups) under `filter` as it
+   *  was when this opened, the one shown, the photo edits land on, and the groups picked from. */
+  let culling = $state<{ series: boolean; groups: string[]; at: number; filter: Filter; row?: number; done: string[] } | null>(null);
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
   let syncFailed = $state<string | null>(null);
@@ -317,7 +322,6 @@
       destroy: () => watch.disconnect(),
     };
   }
-  const MENU_COLORS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
   async function photoContext(i: number, e: MouseEvent) {
     const row = rowAt(i);
     if (row === undefined) return;
@@ -584,13 +588,15 @@
     | { remap: number; request: api.RemapRequest }
     | { collection: number; change: api.CollectionChange }
     | { hidden: number[]; on: boolean }
-    | { binned: number[]; on: boolean };
+    | { binned: number[]; on: boolean }
+    | { cull: api.CullStep; what: string; group: string };
   type Undone =
     | { ops: [number, api.Op][]; what?: string }
     | { request: api.RemapRequest }
     | { change: api.CollectionChange }
     | { hidden: number[]; on: boolean }
-    | { binned: number[]; on: boolean };
+    | { binned: number[]; on: boolean }
+    | { cull: api.CullStep; what: string; group: string };
   let undoStack: Done[] = [];
   let redoStack: Undone[] = [];
 
@@ -699,11 +705,10 @@
   const marksOf = (r: api.QueryResult) => new Map(r.marks.map(([at, stars, label]) => [at, [stars, label] as [number, number]]));
   /** Stars and colour tags drawn on the tiles. */
   let tileMarks = $state(!readFlag("tileMarksOff"));
-  const TILE_COLORS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
   function markAt(i: number): { stars: number; color: string | null; tag: string | null } | null {
     const m = markPages.get(Math.floor(i / PAGE))?.get(i % PAGE);
     if (!m) return null;
-    const tag = m[1] ? TILE_COLORS[m[1] - 1].toLowerCase() : null;
+    const tag = m[1] ? COLOR_NAMES[m[1] - 1].toLowerCase() : null;
     return { stars: m[0], color: tag && COLORS[tag], tag };
   }
   let loading = new Map<number, Promise<void>>();
@@ -1160,6 +1165,7 @@
   /** The photos an edit applies to: the photo active in a comparison, else the picked
    *  ones, else the focused one. */
   function targets(): number[] {
+    if (culling) return culling.row === undefined ? [] : [culling.row];
     if (comparing) return [comparing.rows[comparing.active]];
     if (picked.size) return [...picked];
     const row = selected === null ? mapRow ?? undefined : focusRow;
@@ -1310,7 +1316,7 @@
 
   /** Copy… from `from` (the photo right-clicked), else the active or focused photo. */
   async function openCopy(from?: number) {
-    const row = from ?? (comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow);
+    const row = from ?? (culling ? culling.row : comparing ? comparing.rows[comparing.active] : selected === null ? undefined : focusRow);
     if (row === undefined) return;
     copying = await api.photo(row);
   }
@@ -1318,7 +1324,7 @@
   async function openSync() {
     const row = selected === null ? undefined : focusRow;
     // Comparing, edits reach the active photo alone: there is no rest to copy into.
-    if (comparing || row === undefined || picked.size < 2) return;
+    if (comparing || culling || row === undefined || picked.size < 2) return;
     const from = await api.photo(row);
     if (from) syncing = { from, row };
   }
@@ -1528,6 +1534,14 @@
     // An undo can empty the filter as the edit did: it follows the photos back.
     const done = "ops" in last ? rowsOf(last.ops) : undefined;
     try {
+      if ("cull" in last) {
+        const back: Undone = { cull: await api.cullRevert(last.cull), what: last.what, group: last.group };
+        redoStack.push(back);
+        editError = null;
+        await cullTurned(last.group, false);
+        note(`Undone: ${last.what}`, redoOf(back));
+        return;
+      }
       if ("hidden" in last) {
         await api.setHidden(last.hidden, !last.on);
         redoStack.push(last);
@@ -1572,6 +1586,14 @@
     if (!last) return;
     const done = "ops" in last ? rowsOf(last.ops) : undefined;
     try {
+      if ("cull" in last) {
+        const again: Done = { cull: await api.cullRevert(last.cull), what: last.what, group: last.group };
+        undoStack.push(again);
+        editError = null;
+        await cullTurned(last.group, true);
+        note(`Redone: ${last.what}`, undoOf(again));
+        return;
+      }
       if ("hidden" in last) {
         await api.setHidden(last.hidden, last.on);
         undoStack.push(last);
@@ -2248,6 +2270,115 @@
     if (left) note(`Comparing ${COMPARE_MAX} of ${picked.size.toLocaleString()} picked: the focused one and the first picked`);
   }
 
+  /** `b` or *Best of…*: the series (or the duplicate groups) among the photos shown, one at
+   *  a time, to keep the best of each. `series` not said: the kind gone through last, or the
+   *  other when there are none of it. `start`: the group to begin at; not said, the first
+   *  with no pick yet. */
+  let cullAsked = 0;
+  /** Picks were made while the grid was covered: it is read again when the choosing closes. */
+  let cullStale = false;
+  async function openCull(series?: boolean, start?: string) {
+    const mine = ++cullAsked;
+    const f = compiled($state.snapshot(filter));
+    try {
+      let kind = series ?? readChoice("cullKind", ["series", "duplicates"] as const, "series") === "series";
+      let list = await api.cullGroups(f, kind);
+      if (!list.length && series === undefined) {
+        const other = await api.cullGroups(f, !kind);
+        if (other.length) [kind, list] = [!kind, other];
+      }
+      if (mine !== cullAsked) return;
+      const ids = list.map((g) => g.id);
+      if (!ids.length && !culling) return note("No series or duplicates among these photos (the Analysis tab finds them once the photos are measured)");
+      viewing = false;
+      comparing = null;
+      const at = start === undefined ? firstUnpicked(list) : Math.max(0, ids.indexOf(start));
+      culling = { series: kind, groups: ids, at, filter: f, done: list.filter((g) => g.picked).map((g) => g.id) };
+      try { localStorage.setItem("cullKind", kind ? "series" : "duplicates"); } catch { /* not remembered */ }
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+  /** Keeps `keep` of a group and deals with `rest` as Settings › Culling say, as one step
+   *  to undo, then shows the next group. */
+  async function cullKeep(group: string, keep: number[], rest: number[]) {
+    if (busy) return;
+    const action = restAction(settings.cull, status?.removes);
+    await working("keeping…", async () => {
+      try {
+        const step = await api.cullApply(keep, rest, action, keeperMark(settings.cull));
+        const what = describePick(keep.length, rest.length, action, step);
+        const entry: Done = { cull: step, what, group };
+        undoStack.push(entry);
+        redoStack = [];
+        editError = null;
+        const c = culling;
+        if (!c) {
+          await binChanged();
+          return note(what, undoOf(entry));
+        }
+        const last = c.groups.indexOf(group) === c.groups.length - 1;
+        // The next group is shown at once, or the one gone to meanwhile is left alone. The
+        // grid under this is read when the choosing closes, not after every pick.
+        const next = afterPick(c, group);
+        const moved = next.at !== c.at;
+        c.done = next.done;
+        c.at = next.at;
+        // The group left need not be read again; one that stays, or a variant that went to
+        // the trash with its image without being in the group, has to be.
+        cullChanged(!moved || step.binned.some((row) => !rest.includes(row)));
+        note(last ? `${what}. That was the last group` : what, undoOf(entry));
+      } catch (e) {
+        editError = String(e);
+      }
+    });
+  }
+  /** A pick changed photos while the grid is covered: the grid waits for the choosing to
+   *  close. `reread`: the group shown is among what changed. */
+  function cullChanged(reread: boolean) {
+    cullStale = true;
+    if (reread) version++;
+    api.status().then((s) => (status = s)).catch(() => {});
+  }
+  /** A pick from `group` taken back, or made again (`picked`): the group is shown again, and
+   *  marked as it is. With the choosing closed, the grid follows as after any edit. */
+  async function cullTurned(group: string, picked: boolean) {
+    const c = culling;
+    if (!c) return binChanged();
+    const next = afterTurn(c, group, picked);
+    c.at = next.at;
+    c.done = next.done;
+    cullChanged(true);
+  }
+  /** The group shown has no photos left: the groups were worked out again since they were
+   *  listed (a sync, new measures, other class settings) and are named otherwise, or its
+   *  photos went. They are listed again, and the one `row` is in now is shown; without it,
+   *  the one at the same place. */
+  async function cullRegrouped(row?: number) {
+    const c = culling;
+    if (!c) return;
+    const mine = ++cullAsked;
+    try {
+      const list = await api.cullGroups($state.snapshot(c.filter) as Filter, c.series);
+      const look = row === undefined ? null : await api.look(row);
+      if (mine !== cullAsked || culling !== c) return;
+      const ids = list.map((g) => g.id);
+      const picked = list.filter((g) => g.picked).map((g) => g.id);
+      c.groups = ids;
+      c.at = placeAfter(ids, (c.series ? look?.series : look?.duplicates)?.[0], c.at);
+      c.done = [...new Set([...c.done.filter((g) => ids.includes(g)), ...picked])];
+    } catch (e) {
+      editError = String(e);
+    }
+  }
+  /** Leaves the choosing: the grid shows what the picks left. */
+  function closeCull() {
+    culling = null;
+    if (!cullStale) return;
+    cullStale = false;
+    binChanged();
+  }
+
   /** The History tab shown or not; hidden, it is left, and a pick from it goes. */
   function showsHistory(on: boolean) {
     historyOn = on;
@@ -2348,6 +2479,18 @@
       e.preventDefault();
       return;
     }
+    /** A comparison or the choosing of a group's best covers the grid. */
+    const covered = !!comparing || !!culling;
+    // Choosing the best of a group: the edits and Delete reach the photo active there.
+    if (culling) {
+      if (e.key === "Delete" && !e.altKey && !e.shiftKey) {
+        if (deleteAction({ ctrl: true, album: false, inBin, removes: status?.removes }) === "bin") trashRows(targets());
+        e.preventDefault();
+        return;
+      }
+      if (e.key === "Backspace" || e.key === "Escape" || e.key === "Enter" || e.key === "i") return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") return;
+    }
     // Comparing: the edits and Delete reach the photo active; the picks and the grid wait.
     if (comparing) {
       const action = e.key === "Delete" && !e.altKey && !e.shiftKey ? deleteAction({ ctrl: e.ctrlKey || e.metaKey, album: !!shownAlbum, inBin, removes: status?.removes }) : "none";
@@ -2372,13 +2515,13 @@
         trashRows(deleting());
       else if (key === "z" && !e.shiftKey) undo();
       else if (key === "y" || (key === "z" && e.shiftKey)) redo();
-      else if (key === "a" && !viewing && !comparing) {
+      else if (key === "a" && !viewing && !covered) {
         if (e.shiftKey) pickFocused();
         else pickAll();
       }
-      else if (key === "i" && !viewing && !comparing) invertPick();
+      else if (key === "i" && !viewing && !covered) invertPick();
       else if (key === "k") focusKeywordInput();
-      else if (key === "f" && !viewing && !comparing) {
+      else if (key === "f" && !viewing && !covered) {
         const box = document.getElementById("search") as HTMLInputElement | null;
         box?.focus();
         box?.select();
@@ -2387,14 +2530,14 @@
       else if (key === "v" && e.shiftKey) { if (clipboard) pasting = targets(); }
       else if (key === "v") pasteClip();
       else if (key === "s" && e.shiftKey) openSync();
-      else if ((key === "=" || key === "+") && !viewing && !comparing) grid?.step(true);
-      else if (key === "-" && !viewing && !comparing) grid?.step(false);
-      else if (key === "0" && !viewing && !comparing) tiles = DEFAULT_TILES;
+      else if ((key === "=" || key === "+") && !viewing && !covered) grid?.step(true);
+      else if (key === "-" && !viewing && !covered) grid?.step(false);
+      else if (key === "0" && !viewing && !covered) tiles = DEFAULT_TILES;
       else return;
       e.preventDefault();
       return;
     }
-    if (e.altKey && !ctrl && !comparing && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    if (e.altKey && !ctrl && !covered && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
       travel(e.key === "ArrowLeft");
       e.preventDefault();
       return;
@@ -2408,7 +2551,7 @@
       tagRows(targets(), color);
     }
     else if (e.key === "i") showInfo = !showInfo;
-    else if (key === "t" && !e.repeat && !viewing && !comparing) aroundFocused(e.shiftKey);
+    else if (key === "t" && !e.repeat && !viewing && !covered) aroundFocused(e.shiftKey);
     else if (e.key === "h" && !e.repeat) toggleHidden();
     else if ((e.key === "Delete" || e.key === "Backspace") && shownAlbum && !viewing && !inBin) {
       const album = shownAlbum;
@@ -2418,8 +2561,9 @@
       // In the viewer that is the photo shown, not the picked ones: it counts them.
       trashRows(deleting());
     }
-    else if (viewing || comparing) return; // the viewer and the comparison have their own keys
+    else if (viewing || covered) return; // the viewer, the comparison and the culling have their own keys
     else if (key === "c" && !e.repeat) openCompare();
+    else if (key === "b" && !e.repeat) openCull();
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
@@ -3013,6 +3157,11 @@
         title="Show one photo per image when it has several variants: of those that match, the lowest-numbered. The number on a photo says how many variants its image has; click it, or press V, to see them all."
         onclick={toggleCollapse}
       >Variants</button>
+      <button
+        class="toggle cull-open"
+        title="Choose the best of each series or duplicate group among the photos shown: one group at a time, side by side, with a suggestion; Enter keeps a photo and deals with the rest as Settings › Culling say (b)"
+        onclick={() => openCull()}
+      >Best of…</button>
       <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
         <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
         <input
@@ -3409,6 +3558,7 @@
       ontoggle={toggleList}
       onflag={toggleFlag}
       ongroup={showGroup}
+      oncull={(series) => openCull(series)}
       onshow={() => showTab("photos")}
       onstack={toggleStack}
       onclasses={() => { version++; analysed++; refresh(true); }}
@@ -3499,7 +3649,7 @@
   </Grid>
   </div>
 
-  {#if showInfo && !viewing && !comparing}{@render details()}{/if}
+  {#if showInfo && !viewing && !comparing && !culling}{@render details()}{/if}
 
   <footer>
     {#if status}
@@ -3803,7 +3953,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
       <button role="menuitem" title="No rating (0)" onclick={act(() => rateRows(rows, 0))}>0</button>
     </div>
     <div class="menu-row" role="group" aria-label="Colour tag">
-      {#each MENU_COLORS as c}
+      {#each COLOR_NAMES as c}
         {@const k = Object.keys(COLOR_KEYS).find((key) => COLOR_KEYS[key] === c)}
         <button role="menuitem" class="dot-item" title="{c}{k ? ` (${k})` : ''}" aria-label={c} onclick={act(() => tagRows(rows, c))}>
           <i class="dot" style:background={COLORS[c.toLowerCase()]}></i>
@@ -3985,6 +4135,28 @@ Pick those among the photos shown, then have ${source.word} build their previews
     onclose={() => (comparing = null)}
     onactive={(i) => { if (comparing) comparing = { ...comparing, active: i }; }}
     onrows={(rows, active) => (comparing = { rows, active })}
+  />
+{/if}
+
+{#if culling}
+  <Cull
+    groups={culling.groups}
+    at={culling.at}
+    series={culling.series}
+    filter={culling.filter}
+    {version}
+    blocked={dialogOpen || menuOpen}
+    busy={!!busy}
+    done={culling.done}
+    removes={status?.removes}
+    message={busy ?? editError ?? editNote}
+    failed={!busy && !!editError}
+    onclose={closeCull}
+    onat={(i) => { if (culling) culling.at = i; }}
+    onstale={cullRegrouped}
+    onseries={(series) => openCull(series)}
+    onactive={(row) => { if (culling) culling.row = row; }}
+    onkeep={cullKeep}
   />
 {/if}
 

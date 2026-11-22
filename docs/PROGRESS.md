@@ -1822,6 +1822,47 @@ cost about 45 ms over tones. Not done: the shown preview still lacks perspective
 corrections (DSCF3468 and untitled-0403 sit differently in the frame), and local
 adjustments. The whole pipeline is written up in `docs/PREVIEW-COLOURS.md`.
 
+### Choosing the best of alike photos (first slice: no model)
+
+The groups were there (duplicates, series, Stack, Compare for four); what was missing was
+going through them and deciding. *Best of…* (`b`) does that: one group at a time, a
+suggestion, Enter keeps and deals with the rest.
+
+- **Ranking: `c1analysis::rank`** (pure; "edited" counts only where some frame is not). A model's verdict on the whole group first
+  (not asked for yet), then a higher rating, then a score: sharpness as a log-ratio to
+  the group's sharpest (8× less scores nothing), 0.5 off a blurry frame when the group has
+  one that is not, up to 0.15 off for clipped tones, 0.1 on for an edited frame. A per-photo
+  aesthetic (not measured yet) is half the score when every frame has one and they
+  differ by 0.04 or more. The order goes by the unclamped score; `close` says the two
+  best are within 0.03.
+- **Picks: `cull.redb`** (`c1index::cull::CullBook`, table `keepers`), kept apart from the
+  store like hidden and bin marks. `Library::set_kept` marks, and `restack` works out
+  again which photos of the groups touched stay on show: the picks when a group has any,
+  else the sharpest not in the trash. Only those groups are walked (and the other groups
+  of their photos, as a photo is stacked away if either of its groups says so); the
+  grouping itself is not run again. `grouping` follows the picks too, so a regroup agrees.
+- **One step: `cull_apply` / `cull_revert`** (app `cull.rs`). A step is the rating and
+  colour ops (one `edit_photos`), the rows binned, hidden and picked. `cull_revert` turns
+  a step round and returns the step that turns it round again, so undo and redo are the
+  same call; the frontend's `Done` gains `{ cull, what, group }`.
+- **Variants.** Capture One trashes whole images, and a duplicate group can hold two
+  variants of one: rest rows whose image a kept photo is a variant of are skipped
+  (`spared`) and said in the footer.
+- **Screen: `Cull.svelte`** wraps `Compare.svelte` rather than copying it. Compare gained
+  `embedded`, `hint`, `onkeyfirst` (Cull's keys come first: the arrows move through the
+  whole group, not only the four panes) and a `badge` snippet for the caption. The logic
+  is in `lib/cull.ts`: which four of a big group are shown (`shownRows`), the keys, the
+  settings and what a pick is called.
+- **Not in**: a per-card button on the Alike tab (a card is one button already); groups
+  picked from are remembered for the session only.
+
+Tests: `rank` (7), `cull` book, `a_pick_stands_for_its_group_when_stacked_until_taken_back`
+(c1index), `spared` (app), `cull.test.ts` (7), and `tools/record/checks/cull.mjs` end to end.
+
+Next slices: the local model's view of each frame (SigLIP 2 embeddings scored against
+prompt pairs, kept in `cull.redb`), then *Ask AI*: the group as one contact sheet to
+Claude or Gemini for an order with a reason per frame.
+
 ### Next
 
 1. Time travel, part 2: the state on a date (counts rewound from the log), photos that
