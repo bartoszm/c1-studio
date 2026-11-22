@@ -822,16 +822,34 @@ you have not picked from yet: closed and opened again, it goes on where it was l
   answers with an order, a reason of a few words per frame (*eyes closed*, *best gesture,
   slightly soft*) and a line on how clear the choice is; its order is then the
   suggestion, the reasons are in the captions, and the bar says who suggested. You still
-  choose: Enter keeps the active photo. Claude is sent each frame as an image of its own,
+  choose: Enter keeps the active photo. The frames are sent to Anthropic (Claude) or
+  Google (Gemini) and leave this computer: Claude gets each as an image of its own,
   1024 px on the long side; Gemini one sheet with the frames numbered. At most 16 frames
   are sent: of a bigger group the 16 best so far, and the others follow in the order.
-  **Ask about all…** (Shift+A) counts the groups not asked about yet and says how many
-  calls and photos that is, and what it costs with an API key (nothing more on a plan or
-  with Gemini, which count against their limits); Enter starts it, Esc does not. It runs
-  in the background, oldest group first, until done or stopped; three groups in a row
-  with no answer, or an error no group would fare better with (no key, a limit reached),
-  end it. An answer is kept until the group's photos change (one trashed, one added), so
-  a group is asked about once. The local model cannot be asked: it compares nothing.
+  The button reads *Ask again* where the group has an answer: that is another call.
+- **Ask about all…** (Shift+A) counts the groups not asked about yet and says how many
+  calls and photos that is, that the photos leave this computer and for whom, and what it
+  costs with an API key (nothing more on a plan or with Gemini, which count against their
+  limits). The price is for effort *low*: at *medium* or *high* the model thinks longer,
+  that is billed too, and the question says *or more*. While it is up it takes every key:
+  Enter starts the run, Esc does not, and nothing reaches the photos behind it. Where no
+  model can be asked as *Settings › AI* are (no API key, Claude Code not signed in with a
+  plan, the local model chosen, which compares nothing), it says so instead.
+- The run goes in the background, oldest group first, as many groups at a time as
+  *Settings › AI › At once* says, until it is done or stopped: the button counts
+  the groups, and Shift+A (or a click) stops it. Shift+R does not stop it, and Shift+A
+  does not stop *Look at all*: one run at a time, each with its own key. A group that gets
+  no answer (a photo with no image to send, an answer cut off or declined) is counted
+  (*2 failed* beside the button), passed over and asked about by the next run;
+  `events.log` says why. Three calls in a row with no answer, or an error no group would
+  fare better with (no credit, a limit reached), end the run. *Ask AI* on one group waits
+  while it goes.
+- An answer is kept, and holds for the photos the model saw: with a filter that shows
+  fewer of the group, or after one of them went to the trash or was hidden, the order it
+  gave the others still stands, and the group is not asked about again. It is asked
+  about again once it shows a photo the model never saw (a frame added, a wider filter),
+  unless the model was shown 16 already. Every call counts in the AI tab's totals, one
+  that gave no usable answer too.
 - ← → (or Tab, or a click) move the active photo; `g` goes back to the suggested one. The
   rating, colour tag, hide and Delete keys act on the active photo.
 - **Enter** (or *Keep*) keeps the active photo and deals with the rest of the group, then

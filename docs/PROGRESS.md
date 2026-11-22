@@ -1914,20 +1914,49 @@ group's frames together and orders them.
   an image block after its number ("Frame 1:"), 1024 px, which shows far more of a face
   than a cell of a sheet; `VisionProvider` is untouched. agy takes one file:
   `Agy::asking(..).ask_image` with `c1image::frames_sheet` (up to 4 × 4 on 2000 px;
-  `scene_sheet` now shares `sheet_of`). The local model is refused with a sentence.
-- **Kept in `cull.redb`** (table `verdicts`) under the group's sorted photo keys, so a
-  group that gains or loses a photo is another group. `Library::verdict` gives each row
-  its place and reason; `rank` already put a verdict first. At most 16 frames go: of a
-  bigger group the 16 best so far, in the order taken.
-- **The run** is `start_ranking(.., cloud: true)`: the same one-at-a-time job and events
-  as the local run, `RankState.cloud` telling them apart. A group with no answer is
-  counted and passed; `stops_run` errors, or three failures in a row, end it. Calls are
-  recorded (`record_call`, under the first frame) so the AI tab's totals count them.
-- **`ask_estimate`** counts the groups not asked about from one read of the filter's
+  `scene_sheet` now shares `sheet_of`), its frames loaded at the cell's size
+  (`frames_cell`). The message's image blocks are built in one place
+  (`c1ai::frames_content`).
+- **Who is asked** is `ai::asker`: an `Asker` (Claude, Claude Code or agy) made once for
+  a run from the same key, sign-in and program checks as `provider` (`api_key`,
+  `plan_program`, `agy_program`), before a picture is loaded. The local model is refused
+  there with a sentence.
+- **Kept in `cull.redb`**: `answers` (number → verdict) and `asked` (photo key → the
+  answer it was last shown for). An answer stands for a group as shown now (`stands`)
+  while it covers two of its photos and the model saw every photo shown, or 16; so a
+  narrower filter, or a frame trashed or hidden, keeps it, and a photo never shown asks
+  again. An answer nothing points to is removed. (First it was kept under all the keys of
+  the group as the filter showed it, table `verdicts`: any other filter paid again. That
+  table is read into the new ones once.) `Library::verdict` gives each row its place and
+  reason, `Library::asked` tells of many groups from one read; `rank` already put a
+  verdict first. At most 16 frames go: of a bigger group the 16 best so far, in the
+  order taken (`best_frames`; only such a group is ranked for it).
+- **The run** is `start_ranking(.., cloud: true)`: the same job and events as the local
+  run, `RankState.cloud` telling them apart, `RankState.group` naming the group answered.
+  `ask_each` asks about `settings.parallel` groups at a time and holds the rules, with a
+  stand-in for the model in its tests: a group's own trouble (`NoAnswer::Group`: no image
+  to send) is counted and passed over; three calls in a row with no answer
+  (`NoAnswer::Model`), a `stops_run` error or an answer that cannot be kept end it.
+- **What is counted.** `ask`, `ask_images` and `ask_image` return `Failed` with the
+  call's record when a call was made and gave nothing to use (declined, cut off, no
+  JSON), as `describe` does; `record_ask` keeps every record under `ask:<group>`, so the
+  AI tab's totals have it whatever becomes of the photos.
+- **`ask_estimate`** counts the groups no answer stands for from one read of the filter's
   photos (a read per group took 86 s over 3,822 groups in a debug build; this takes
   0.3 s) and prices them with `claude::estimate_frames` (950 tokens in and 70 out per
-  frame, 450 in and 250 out per call): about $100 for the fuji copy's 3,822 series
-  (14,226 frames) on Opus, 4 cents for a group of six.
+  frame, 450 in and 250 out per call, as at effort low): about $100 for the fuji copy's
+  3,822 series (14,226 frames) on Opus, 4 cents for a group of six. It also says when no
+  model can be asked (`unable`), and gives no price for a model it has none for.
+- **The question** (*Ask about all…*) takes every key in the capture phase
+  (`askPlanKey`): the app's window listener is added before the screen's and would rate
+  or trash the photo behind it. `runToggle` keeps Shift+A from stopping the local run and
+  Shift+R from stopping a paid one.
+
+Left as it is: a group whose call fails three times in a row at the head of the list
+ends every run at the same place (it stays unasked), until it is asked about by hand or
+picked from; frames of one group are loaded one after another; a single *Ask AI* cannot
+be stopped; there is no notice the first time *Ask AI* is pressed (its tooltip and the
+guide say where the frames go).
 
 Not checked: no call to a model was made from the test instance (it would send photos
 through the stored API key). The requests are covered by unit tests of their shape, and
