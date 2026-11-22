@@ -3,6 +3,7 @@
 
 import type { Color, CullStep, Mark, Removal, Rest } from "./api";
 import { COMPARE_MAX } from "./compare";
+import { COLOR_NAMES } from "./format";
 import { typingIn } from "./keys";
 
 /** What becomes of the photos of a group that are not kept. */
@@ -20,7 +21,6 @@ export type CullSettings = {
   keeperColour: Color;
 };
 
-export const COLOURS: Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
 export const REST_CHOICES: RestChoice[] = ["trash", "hide", "rating", "colour", "nothing"];
 export const KEEPER_CHOICES: KeeperChoice[] = ["nothing", "rating", "colour"];
 
@@ -38,7 +38,7 @@ export function cullSettings(saved: unknown): CullSettings {
   const s = (saved && typeof saved === "object" ? saved : {}) as Partial<Record<keyof CullSettings, unknown>>;
   const d = CULL_DEFAULTS;
   const stars = (v: unknown, fallback: number) => (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 5 ? v : fallback);
-  const colour = (v: unknown, fallback: Color) => (COLOURS.includes(v as Color) ? (v as Color) : fallback);
+  const colour = (v: unknown, fallback: Color) => (COLOR_NAMES.includes(v as Color) ? (v as Color) : fallback);
   return {
     rest: REST_CHOICES.includes(s.rest as RestChoice) ? (s.rest as RestChoice) : d.rest,
     restRating: stars(s.restRating, d.restRating),

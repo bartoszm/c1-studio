@@ -4,7 +4,7 @@
   import { SvelteMap, SvelteSet } from "svelte/reactivity";
   import * as api from "./lib/api";
   import type { Dim, Filter, QueryResult } from "./lib/api";
-  import { COLORS, FIELD_NAMES, HUES, stars } from "./lib/format";
+  import { COLORS, COLOR_NAMES, FIELD_NAMES, HUES, stars } from "./lib/format";
   import { dateTree, weekText } from "./lib/dates";
   import { albumTree, byCount, cityWithoutLocation, flatValues, hideRare, pathTree, placeText, placeTree, showsFind, treeSize, usesWithin, type Node } from "./lib/tree";
   import { treeFind, type TreeFind } from "./lib/treeFind.svelte";
@@ -322,7 +322,6 @@
       destroy: () => watch.disconnect(),
     };
   }
-  const MENU_COLORS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
   async function photoContext(i: number, e: MouseEvent) {
     const row = rowAt(i);
     if (row === undefined) return;
@@ -706,11 +705,10 @@
   const marksOf = (r: api.QueryResult) => new Map(r.marks.map(([at, stars, label]) => [at, [stars, label] as [number, number]]));
   /** Stars and colour tags drawn on the tiles. */
   let tileMarks = $state(!readFlag("tileMarksOff"));
-  const TILE_COLORS: api.Color[] = ["Red", "Orange", "Yellow", "Green", "Blue", "Pink", "Purple"];
   function markAt(i: number): { stars: number; color: string | null; tag: string | null } | null {
     const m = markPages.get(Math.floor(i / PAGE))?.get(i % PAGE);
     if (!m) return null;
-    const tag = m[1] ? TILE_COLORS[m[1] - 1].toLowerCase() : null;
+    const tag = m[1] ? COLOR_NAMES[m[1] - 1].toLowerCase() : null;
     return { stars: m[0], color: tag && COLORS[tag], tag };
   }
   let loading = new Map<number, Promise<void>>();
@@ -3904,7 +3902,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
       <button role="menuitem" title="No rating (0)" onclick={act(() => rateRows(rows, 0))}>0</button>
     </div>
     <div class="menu-row" role="group" aria-label="Colour tag">
-      {#each MENU_COLORS as c}
+      {#each COLOR_NAMES as c}
         {@const k = Object.keys(COLOR_KEYS).find((key) => COLOR_KEYS[key] === c)}
         <button role="menuitem" class="dot-item" title="{c}{k ? ` (${k})` : ''}" aria-label={c} onclick={act(() => tagRows(rows, c))}>
           <i class="dot" style:background={COLORS[c.toLowerCase()]}></i>
