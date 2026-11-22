@@ -2027,13 +2027,12 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), 
     }
     let albums: Vec<CollectionChange> = collections.iter().map(|(_, _, c)| c.clone()).collect();
     let plan = s.source.plan_after(&ok, &albums, &changes).map_err(text)?;
-    let pick = |list: &[Change]| pick_edits(&ready, list);
-    let blocked = blocked_edits(&ready, &plan.conflicts);
+    let Matched { apply, unchanged, blocked } = match_plan(&ready, &plan);
     let out = WritePlan {
         status: s.source.write_status(),
         compatibility: s.source.info().compatibility,
-        apply: pick(&plan.apply),
-        unchanged: pick(&plan.no_ops),
+        apply,
+        unchanged,
         conflicts,
         blocked,
         remaps: remaps.iter().map(|(seq, r)| (*seq, r.label.clone())).collect(),
@@ -2048,34 +2047,45 @@ fn plan_writes(s: &Session) -> Result<(WritePlan, c1model::ApplyPlan, Carried), 
     Ok((out, plan, carried))
 }
 
-/// The queued edits whose change is in `list`, in queue order. Looked up by photo: with
-/// an edit queued for every photo of a large catalog, scanning `list` for each one took
-/// minutes.
-fn pick_edits(ready: &[PendingEdit], list: &[Change]) -> Vec<PendingEdit> {
-    let mut by_photo: HashMap<&PhotoId, Vec<&Change>> = HashMap::new();
-    for change in list {
-        by_photo.entry(&change.photo).or_default().push(change);
-    }
-    ready
-        .iter()
-        .filter(|p| by_photo.get(&p.pending.change.photo).is_some_and(|c| c.contains(&&p.pending.change)))
-        .cloned()
-        .collect()
+/// The queued edits a plan was made from, sorted the way the plan sorted their changes.
+struct Matched {
+    apply: Vec<PendingEdit>,
+    unchanged: Vec<PendingEdit>,
+    /// With why each cannot be written.
+    blocked: Vec<(PendingEdit, String)>,
 }
 
-/// The queued edit each of `conflicts` came from, with why it cannot be written.
-fn blocked_edits(ready: &[PendingEdit], conflicts: &[c1model::Conflict]) -> Vec<(PendingEdit, String)> {
-    let mut by_photo: HashMap<&PhotoId, Vec<&PendingEdit>> = HashMap::new();
-    for p in ready {
-        by_photo.entry(&p.pending.change.photo).or_default().push(p);
+/// Finds the queued edit behind each change of `plan`. The queue is indexed by photo once
+/// and a change is compared only with its own photo's few edits: with an edit queued for
+/// every photo of a large catalog, scanning the queue for each change took minutes.
+/// (Not by the queue key: a keyword op naming several keywords has none.)
+fn match_plan(ready: &[PendingEdit], plan: &c1model::ApplyPlan) -> Matched {
+    let mut by_photo: HashMap<&PhotoId, Vec<usize>> = HashMap::new();
+    for (i, p) in ready.iter().enumerate() {
+        by_photo.entry(&p.pending.change.photo).or_default().push(i);
     }
-    conflicts
-        .iter()
-        .filter_map(|c| {
-            let p = by_photo.get(&c.change.photo)?.iter().find(|p| p.pending.change == c.change)?;
-            Some(((*p).clone(), c.current.clone()))
-        })
-        .collect()
+    // The queued edits holding exactly `change`.
+    let queued = |change: &Change| -> Vec<usize> {
+        let edits = by_photo.get(&change.photo).map(Vec::as_slice).unwrap_or_default();
+        edits.iter().copied().filter(|&i| ready[i].pending.change == *change).collect()
+    };
+    // Queue order, as the dialog lists them.
+    let pick = |list: &[Change]| {
+        let mut taken = vec![false; ready.len()];
+        for i in list.iter().flat_map(queued) {
+            taken[i] = true;
+        }
+        ready.iter().zip(taken).filter(|(_, t)| *t).map(|(p, _)| p.clone()).collect()
+    };
+    Matched {
+        apply: pick(&plan.apply),
+        unchanged: pick(&plan.no_ops),
+        blocked: plan
+            .conflicts
+            .iter()
+            .filter_map(|c| Some((ready[*queued(&c.change).first()?].clone(), c.current.clone())))
+            .collect(),
+    }
 }
 
 #[tauri::command]
@@ -3404,41 +3414,66 @@ mod tests {
         Op::SetRating { base: None, value: Some(value) }
     }
 
-    #[test]
-    fn pick_edits_keeps_queue_order_and_matches_whole_changes() {
-        let ready =
-            vec![queued("1", rating(1)), queued("2", rating(2)), queued("2", Op::SetColor { base: None, value: None })];
-        // Same photo, other value: not the queued change.
-        let list = vec![
-            ready[2].pending.change.clone(),
-            ready[0].pending.change.clone(),
-            queued("2", rating(5)).pending.change,
-        ];
-        let keys: Vec<_> = pick_edits(&ready, &list).into_iter().map(|p| p.key).collect();
-        assert_eq!(keys, vec![ready[0].key.clone(), ready[2].key.clone()]);
+    fn keys(edits: &[PendingEdit]) -> Vec<&str> {
+        edits.iter().map(|p| p.key.as_str()).collect()
     }
 
     #[test]
-    fn blocked_edits_pairs_each_conflict_with_its_edit() {
-        let ready = vec![queued("1", rating(1)), queued("2", rating(2))];
-        let conflicts = vec![
-            c1model::Conflict { change: ready[1].pending.change.clone(), current: "deleted".into() },
-            c1model::Conflict { change: queued("3", rating(3)).pending.change, current: "gone".into() },
+    fn match_plan_keeps_queue_order_and_matches_whole_changes() {
+        let ready = vec![
+            queued("1", rating(1)),
+            queued("2", rating(2)),
+            queued("2", Op::SetColor { base: None, value: None }),
+            queued("3", rating(3)),
         ];
-        let blocked = blocked_edits(&ready, &conflicts);
-        assert_eq!(blocked.len(), 1);
-        assert_eq!((blocked[0].0.key.as_str(), blocked[0].1.as_str()), (ready[1].key.as_str(), "deleted"));
+        let change = |i: usize| ready[i].pending.change.clone();
+        let plan = c1model::ApplyPlan {
+            // Out of queue order, and one change the queue does not hold: same photo, other value.
+            apply: vec![change(2), change(0), queued("2", rating(5)).pending.change],
+            no_ops: vec![change(1)],
+            conflicts: vec![
+                c1model::Conflict { change: change(3), current: "deleted".into() },
+                c1model::Conflict { change: queued("4", rating(4)).pending.change, current: "gone".into() },
+            ],
+            ..Default::default()
+        };
+        let m = match_plan(&ready, &plan);
+        assert_eq!(keys(&m.apply), [&ready[0].key, &ready[2].key]);
+        assert_eq!(keys(&m.unchanged), [&ready[1].key]);
+        assert_eq!(m.blocked.len(), 1);
+        assert_eq!((m.blocked[0].0.key.as_str(), m.blocked[0].1.as_str()), (ready[3].key.as_str(), "deleted"));
     }
 
-    /// An edit for every photo of a 100k catalog (the author on all of them): scanning
-    /// the plan for each edit took minutes, a lookup by photo takes a moment.
+    /// Three edits on each of 40,000 photos (the author, a rating and a colour on all of
+    /// them), planned in reverse: scanning the queue for each change took minutes, this
+    /// must take a moment. The bound is loose enough for a slow debug build.
     #[test]
-    fn pick_edits_handles_an_edit_on_every_photo() {
-        let ready: Vec<_> = (0..100_000).map(|i| queued(&i.to_string(), rating(1))).collect();
-        let list: Vec<_> = ready.iter().map(|p| p.pending.change.clone()).collect();
-        assert_eq!(pick_edits(&ready, &list).len(), ready.len());
-        let conflicts: Vec<_> =
-            list.iter().map(|c| c1model::Conflict { change: c.clone(), current: "x".into() }).collect();
-        assert_eq!(blocked_edits(&ready, &conflicts).len(), ready.len());
+    fn match_plan_handles_edits_on_every_photo() {
+        let ops = |i: usize| {
+            let author = Iptc { creator: Some(format!("author {i}")), ..Default::default() };
+            [
+                rating(1),
+                Op::SetColor { base: None, value: Some(ColorLabel::Red) },
+                Op::SetIptc { base: Iptc::default(), value: author },
+            ]
+        };
+        let ready: Vec<_> = (0..40_000).flat_map(|i| ops(i).map(|op| queued(&i.to_string(), op))).collect();
+        let mut changes: Vec<_> = ready.iter().map(|p| p.pending.change.clone()).collect();
+        changes.reverse();
+        let mut plan = c1model::ApplyPlan::default();
+        for (i, change) in changes.into_iter().enumerate() {
+            match i % 3 {
+                0 => plan.apply.push(change),
+                1 => plan.no_ops.push(change),
+                _ => plan.conflicts.push(c1model::Conflict { change, current: "x".into() }),
+            }
+        }
+        let started = Instant::now();
+        let m = match_plan(&ready, &plan);
+        assert!(started.elapsed() < Duration::from_secs(20), "took {:?}", started.elapsed());
+        assert_eq!((m.apply.len(), m.unchanged.len(), m.blocked.len()), (40_000, 40_000, 40_000));
+        // In queue order, though planned in reverse.
+        let at: HashMap<&str, usize> = ready.iter().enumerate().map(|(i, p)| (p.key.as_str(), i)).collect();
+        assert!(m.apply.windows(2).all(|w| at[w[0].key.as_str()] < at[w[1].key.as_str()]));
     }
 }

@@ -452,12 +452,18 @@ pub fn plan_after_with(
     collections: &[CollectionChange],
     changes: &[Change],
 ) -> ApplyPlan {
-    let mut after = photos.clone();
-    for photo in after.values_mut() {
-        for remap in remaps {
-            remap.apply(&mut photo.keywords);
+    // Copied only when keyword changes alter it: the whole catalog, in a large one.
+    let after = if remaps.is_empty() {
+        std::borrow::Cow::Borrowed(photos)
+    } else {
+        let mut after = photos.clone();
+        for photo in after.values_mut() {
+            for remap in remaps {
+                remap.apply(&mut photo.keywords);
+            }
         }
-    }
+        std::borrow::Cow::Owned(after)
+    };
     let mut albums = albums.to_vec();
     for change in collections {
         change.apply_to(&mut albums);
