@@ -1254,10 +1254,16 @@ async fn hidden_rows(app: State<'_, App>, filter: Filter) -> Result<Vec<u64>, St
 async fn set_binned(app: State<'_, App>, rows: Vec<u64>, binned: bool) -> Result<Vec<u64>, String> {
     let s = app.session()?;
     let whole_assets = s.source.capabilities().removes == Removal::MarksTrashed;
-    tauri::async_runtime::spawn_blocking(move || s.library.set_binned(&rows, binned, whole_assets))
-        .await
-        .map_err(text)?
-        .map_err(|e| format!("{e:#}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = s.library.set_binned(&rows, binned, whole_assets)?;
+        // A photo in the trash stands for no group: another one of its group shows when
+        // stacked, not none of them.
+        s.library.restack(&changed)?;
+        Ok(changed)
+    })
+    .await
+    .map_err(text)?
+    .map_err(|e: anyhow::Error| format!("{e:#}"))
 }
 
 /// What emptying the trash did.
@@ -2930,6 +2936,7 @@ pub fn run() {
             gpx_apply,
             groups,
             cull::cull_group,
+            cull::cull_groups,
             cull::cull_apply,
             cull::cull_revert,
             cull::rank_group,

@@ -5,7 +5,8 @@
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
   import { SESSION_GAP_MAX, sessionGap } from "./lib/around";
-  import { COLOURS, KEEPER_CHOICES, REST_CHOICES, type KeeperChoice, type RestChoice } from "./lib/cull";
+  import { KEEPER_CHOICES, REST_CHOICES, type KeeperChoice, type RestChoice } from "./lib/cull";
+  import { COLOR_NAMES } from "./lib/format";
 
   const REST_WORDS: Record<RestChoice, string> = {
     trash: "go to the trash",
@@ -258,7 +259,7 @@
           </select>
         {:else if settings.cull.rest === "colour"}
           <select bind:value={settings.cull.restColour} aria-label="Colour tag for the photos not kept">
-            {#each COLOURS as c (c)}<option value={c}>{c.toLowerCase()}</option>{/each}
+            {#each COLOR_NAMES as c (c)}<option value={c}>{c.toLowerCase()}</option>{/each}
           </select>
         {/if}
         <small class="muted">
@@ -282,7 +283,7 @@
           </select>
         {:else if settings.cull.keeper === "colour"}
           <select bind:value={settings.cull.keeperColour} aria-label="Colour tag for the photos kept">
-            {#each COLOURS as c (c)}<option value={c}>{c.toLowerCase()}</option>{/each}
+            {#each COLOR_NAMES as c (c)}<option value={c}>{c.toLowerCase()}</option>{/each}
           </select>
         {/if}
         <small class="muted">

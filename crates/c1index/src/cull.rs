@@ -25,9 +25,22 @@ pub struct View {
     /// Size and modification time of the image looked at, as the analysis stamps it: a new
     /// render is looked at again.
     pub stamp: (u64, u64),
-    /// The picture's embedding, for scoring again and for telling how alike two frames are.
+    /// The picture's embedding: what the scores are worked out from again when the way
+    /// of scoring changes, without the model looking a second time.
     pub embedding: Vec<f32>,
-    /// Composition, moment, mood, technical: each 0 to 1.
+    /// One score per axis in the order of `c1ai::aesthetic::AXES`, each 0 to 1.
+    pub scores: [f32; 4],
+}
+
+/// A view as the model made it, of the photo at `row`: [`crate::Library::put_views`] adds
+/// the stamp of the render it is of.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NewView {
+    pub row: u64,
+    /// See [`View::version`].
+    pub version: u32,
+    pub embedding: Vec<f32>,
+    /// See [`View::scores`].
     pub scores: [f32; 4],
 }
 

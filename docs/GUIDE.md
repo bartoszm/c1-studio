@@ -781,7 +781,8 @@ measured yet says so.
 **Best of…** in the header, `b` in the grid, or *Choose the best of each…* on the Alike
 tab goes through the series (or the duplicate groups) among the photos the filter shows,
 oldest first, one group at a time. *Series* and *Duplicates* in its bar switch the kind;
-it opens on the kind used last, or the other when there are none of it.
+it opens on the kind used last, or the other when there are none of it, at the first group
+you have not picked from yet: closed and opened again, it goes on where it was left.
 
 - The group's photos are side by side, as in [Compare](#browsing): the wheel zooms every
   pane together, `z` is 1:1, and two photos can be split, overlaid or blinked. A group of
@@ -791,7 +792,8 @@ it opens on the kind used last, or the other when there are none of it.
   the sharpest, marked down for clipped highlights and shadows, and up a little for a
   frame already edited. A blurry frame never wins over one that is not. The caption says
   why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
-  the two best are too close to call.
+  the two best are too close to call. In a group you picked from before, the photo you
+  kept then is the one suggested (*picked before*), whatever was measured.
 - **Look** (`r`) has the local model look at the group, so composition, moment and mood
   count too; **Look at all** (Shift+R) does every group in the background, oldest first,
   until it is done or stopped (the button counts the groups). It needs the local model
@@ -800,11 +802,21 @@ it opens on the kind used last, or the other when there are none of it.
   sentences (a well or a badly composed photograph; taken at the right moment, or too
   early or late; a strong mood, or dull; sharp, or blurry) and scores it 0 to 100 on each,
   above 50 the better side. Where the frames of a group differ by it, that is half the
-  suggestion and sharpness the other half; the caption names what sets the best frame
-  apart (*best composition*, *best moment*, *best mood*) and lists the four scores. Frames
-  it scores alike are still decided by sharpness. The scores tell the frames of one group
-  apart; they do not rate photos, and say little between different pictures. What the
-  model saw is kept, so a photo is looked at once (again after it is rendered anew).
+  suggestion and sharpness the other half, and the caption lists the four scores. The
+  scores are rough (the model reads a small picture): the caption names one (*best
+  composition*, *best moment*, *best mood*) only where the best frame is at least 5 points
+  above the group's average on it, and says *best picture* otherwise. Frames it scores
+  alike are still decided by sharpness. The scores tell the frames of one group apart;
+  they do not rate photos, and say little between different pictures. What the model saw
+  is kept, so a photo is looked at once (again after it is rendered anew).
+- The model's view counts only once it has seen every photo of the group. *Look at all*
+  looks at the thumbnails and previews there are and makes none: a photo with neither is
+  counted (*3 failed* beside the button) and its group stays decided by sharpness, with
+  *1 photo not looked at* in the bar. *Look* on that group makes what is missing. Why a
+  photo could not be looked at is in `events.log` in the catalog's folder. *Stop* ends
+  the run after the photo it is on; the group it was in is not counted, and what was
+  seen of it is kept. The model is held in memory while this screen is open or a run goes
+  on, and let go after.
 - **Ask AI** (`a`) shows the group's frames together to the model *Settings › AI* has
   chosen (Claude with an API key or on a plan, or Gemini) and asks which to keep. It
   answers with an order, a reason of a few words per frame (*eyes closed*, *best gesture,
@@ -829,13 +841,20 @@ it opens on the kind used last, or the other when there are none of it.
   delivered), hidden, a rating, a colour tag, or nothing. **Settings › Culling** has the
   same choice, which rating or colour, and whether the photos kept get a rating or a tag
   too. The trash is the app's own: nothing is deleted until you empty it.
-- Each pick is one step: Ctrl+Z takes it back whole and shows the group again.
+- Each pick is one step: Ctrl+Z takes it back whole and shows the group again. A pick
+  that cannot be made whole is not made at all.
+- Picking again from a group replaces the earlier pick: the photo kept before is one of
+  the rest now, and Ctrl+Z gives it its pick back.
 - "The rest" are the group's photos the filter shows: a frame the filter leaves out is
   not touched. Where trashing an image takes all its variants (Capture One), a variant of
-  a photo you keep is left alone, and the footer says so.
+  a photo you keep is left alone, and the footer says so; the other variants of an image
+  that goes to the trash go with it, shown in the group or not, and the footer counts
+  them. A source with no trash has the rest hidden.
+- The grid behind is read again when you close the screen, not after every pick.
 
 A photo you keep stands for its group when Stack is on, in place of the sharpest, until
-the pick is undone.
+the pick is undone. A photo moved to the trash stands for no group: with Stack on, the
+sharpest of the others shows in its place.
 
 ## Describing photos with AI
 

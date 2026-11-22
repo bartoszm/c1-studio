@@ -314,9 +314,10 @@ fn text_embeddings(dir: &Path, phrases: &[String], stopped: &dyn Fn() -> bool) -
     Ok(texts)
 }
 
-/// The model's two towers for other uses than keywords: a picture's embedding, and the
-/// embeddings of sentences to hold it against. The image tower is loaded on opening; one
-/// picture at a time goes through it, on several threads of its own.
+/// The model's two towers: a picture's embedding, and the embeddings of sentences to hold
+/// it against. The image tower is loaded on opening; one picture at a time goes through
+/// it, on several threads of its own. The keywords' run ([`Siglip`]) puts its photos
+/// through one of these too.
 pub struct Embedder {
     dir: PathBuf,
     image: Mutex<Session>,
@@ -328,14 +329,22 @@ impl Embedder {
         if !SIGLIP2.installed(root) {
             return Err(AiError::Local("the local model is not downloaded: get it in Settings > AI".into()));
         }
-        let dir = SIGLIP2.dir(root);
+        Self::at(SIGLIP2.dir(root))
+    }
+
+    /// On the model kept in `dir`.
+    fn at(dir: PathBuf) -> Result<Self, AiError> {
         let image = Mutex::new(session(&dir, "visual/model.onnx", threads())?);
         Ok(Embedder { dir, image })
     }
 
     /// The picture's embedding: [`DIM`] numbers, of length 1.
     pub fn image(&self, picture: &image::RgbImage) -> Result<Vec<f32>, AiError> {
-        let input = pixels_of(picture);
+        self.embed(pixels_of(picture))
+    }
+
+    /// The embedding of a picture given as the tower takes it ([`pixels_of`]).
+    fn embed(&self, input: Vec<f32>) -> Result<Vec<f32>, AiError> {
         let side = SIZE as usize;
         let tensor = Tensor::from_array(([1usize, 3, side, side], input)).map_err(local)?;
         let mut session = self.image.lock().unwrap_or_else(|e| e.into_inner());
@@ -358,7 +367,7 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 
 /// The model once loaded: the image tower and every keyword's embedding.
 struct Loaded {
-    image: Session,
+    image: Embedder,
     /// [`DIM`] numbers per name, in the names' order.
     texts: Vec<f32>,
 }
@@ -411,7 +420,7 @@ impl Siglip {
     fn load(&self) -> Result<Loaded, AiError> {
         let phrases: Vec<String> = self.names.iter().map(|n| phrase(n)).collect();
         let texts = text_embeddings(&self.dir, &phrases, &|| self.options.stopped())?;
-        Ok(Loaded { image: session(&self.dir, "visual/model.onnx", threads())?, texts })
+        Ok(Loaded { image: Embedder::at(self.dir.clone())?, texts })
     }
 
     /// Every keyword offered with how likely it goes with the photo, in the names' order.
@@ -424,13 +433,9 @@ impl Siglip {
         if loaded.is_none() {
             *loaded = Some(self.load()?);
         }
-        let model = loaded.as_mut().expect("loaded above");
+        let model = loaded.as_ref().expect("loaded above");
         tell(&photo.progress, Step::Sent { attempt: 1 });
-        let side = SIZE as usize;
-        let tensor = Tensor::from_array(([1usize, 3, side, side], input)).map_err(local)?;
-        let outputs = model.image.run(ort::inputs![tensor]).map_err(local)?;
-        let image = embedding(&outputs)?;
-        drop(outputs);
+        let image = model.image.embed(input)?;
         Ok(self
             .names
             .iter()
