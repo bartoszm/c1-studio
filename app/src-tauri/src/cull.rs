@@ -78,7 +78,7 @@ pub(crate) struct VerdictView {
     model: String,
     /// How clear the choice is, in its words.
     note: String,
-    /// How many of the group's frames it was shown.
+    /// How many of the photos shown it was shown.
     sent: usize,
 }
 
@@ -117,11 +117,9 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
     let views = library.views(&rows).map_err(text)?;
     let seen =
         |row: u64| views.get(&row).filter(|v| v.version == aesthetic::VERSION).map(|v| Aesthetic::from(v.scores));
-    // A model's answer to the question as it is asked now, about these very photos.
-    let (verdict, places) = match library.verdict(&rows).map_err(text)? {
-        Some((verdict, places)) if verdict.version == pick::VERSION => (Some(verdict), places),
-        _ => (None, Default::default()),
-    };
+    // A model's answer that still holds for the photos shown: it saw every one of them.
+    let (verdict, places) = library.verdict(&rows).map_err(text)?.unzip();
+    let places = places.unwrap_or_default();
     let classes = library.class_settings();
     let mut photos = Vec::with_capacity(rows.len());
     let mut candidates = Vec::with_capacity(rows.len());
@@ -182,7 +180,7 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
         judge: ranked.judge,
         model: SIGLIP2.installed(&models_root()),
         verdict: verdict.map(|v| VerdictView {
-            sent: v.sent.len(),
+            sent: places.len(),
             provider: v.provider,
             model: v.model,
             note: v.note,
@@ -244,7 +242,6 @@ fn count_call(s: &Session, id: &str, record: &RunRecord) {
 fn ask_about(s: &Session, filter: &Filter, id: &str, stop: &Arc<AtomicBool>) -> Result<(), AiError> {
     let local = |e: String| AiError::Local(e);
     let view = group_view(&s.library, filter, id).map_err(local)?;
-    let rows: Vec<u64> = view.photos.iter().map(|p| p.row).collect();
     let sent = frames_to_ask(&view);
     if sent.len() < 2 {
         return Err(AiError::Local("there is one photo here: nothing to compare".into()));
@@ -315,17 +312,15 @@ fn ask_about(s: &Session, filter: &Filter, id: &str, stop: &Arc<AtomicBool>) -> 
     };
     count_call(s, id, &record);
     let said = pick::read(&answer, sent.len())?;
-    let verdict = c1index::cull::Verdict {
-        version: pick::VERSION,
+    let verdict = c1index::cull::NewVerdict {
         at: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
         provider: record.provider.clone(),
         model: record.model.clone(),
-        sent: Vec::new(),
         order: said.order.iter().map(|&i| i as u32).collect(),
         reasons: said.reasons,
         note: said.note,
     };
-    s.library.put_verdict(&rows, &sent, verdict).map_err(|e| AiError::Local(format!("{e:#}")))
+    s.library.put_verdict(&sent, verdict).map_err(|e| AiError::Local(format!("{e:#}")))
 }
 
 /// Asks a model (Claude or Gemini, as the AI settings say) which frame of one group to
@@ -382,14 +377,15 @@ fn unasked(s: &Session, filter: &Filter, series: bool) -> Result<(Vec<Unasked>, 
             members.entry(id).or_default().push(row);
         }
     }
-    let mut todo = Vec::new();
-    for group in groups {
-        let Some(rows) = members.remove(&group.id) else { continue };
-        let asked = s.library.verdict(&rows).map_err(text)?.is_some_and(|(v, _)| v.version == pick::VERSION);
-        if !asked && rows.len() > 1 {
-            todo.push((group.id, rows));
-        }
-    }
+    let groups: Vec<Unasked> = groups
+        .into_iter()
+        .filter_map(|group| Some((members.remove(&group.id)?, group.id)))
+        .map(|(r, id)| (id, r))
+        .collect();
+    let rows: Vec<Vec<u64>> = groups.iter().map(|(_, rows)| rows.clone()).collect();
+    let asked = s.library.asked(&rows).map_err(text)?;
+    let todo: Vec<Unasked> =
+        groups.into_iter().zip(asked).filter(|((_, rows), asked)| !asked && rows.len() > 1).map(|(g, _)| g).collect();
     let skipped = total - todo.len();
     Ok((todo, skipped))
 }

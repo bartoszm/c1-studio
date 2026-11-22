@@ -1471,30 +1471,45 @@ fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
 }
 
 #[test]
-fn a_models_verdict_on_a_group_holds_while_the_group_has_the_same_photos() {
+fn a_models_verdict_on_a_group_holds_for_the_photos_it_saw() {
     let (_d, lib, _source) = setup();
-    let (one, two, three) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3));
+    let (one, two, three, four) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3), row_of(&lib, 4));
     assert!(lib.verdict(&[one, two, three]).unwrap().is_none(), "not asked yet");
-    // Shown 2 then 3 of the three (as a group over the most a question holds would be),
-    // the model keeps the second frame shown.
-    let said = c1index::cull::Verdict {
-        version: 1,
+    assert_eq!(lib.asked(&[vec![one, two, three]]).unwrap(), [false]);
+    // Shown 1, 2 and 3, the model keeps the third, then the first.
+    let said = c1index::cull::NewVerdict {
         at: 7,
         provider: "claude".into(),
         model: "m".into(),
-        order: vec![1, 0],
-        reasons: vec!["eyes closed".into(), "the gesture".into()],
+        order: vec![2, 0, 1],
+        reasons: vec!["a step early".into(), "eyes closed".into(), "the gesture".into()],
         note: "clear".into(),
-        ..Default::default()
     };
-    lib.put_verdict(&[one, two, three], &[two, three], said).unwrap();
+    lib.put_verdict(&[one, two, three], said.clone()).unwrap();
     let (verdict, places) = lib.verdict(&[three, one, two]).unwrap().unwrap();
-    assert_eq!((verdict.provider.as_str(), verdict.sent.len(), verdict.note.as_str()), ("claude", 2, "clear"));
+    assert_eq!((verdict.provider.as_str(), verdict.sent.len(), verdict.note.as_str()), ("claude", 3, "clear"));
+    assert_eq!(verdict.version, c1ai::pick::VERSION);
     assert_eq!(places.get(&three), Some(&(0, "the gesture".to_owned())));
-    assert_eq!(places.get(&two), Some(&(1, "eyes closed".to_owned())));
-    assert_eq!(places.get(&one), None, "not shown to the model");
-    // A photo fewer (trashed, say) is another group: asked about again.
-    assert!(lib.verdict(&[two, three]).unwrap().is_none());
+    assert_eq!(places.get(&one), Some(&(1, "a step early".to_owned())));
+    assert_eq!(places.get(&two), Some(&(2, "eyes closed".to_owned())));
+
+    // A filter that shows two of them, or one trashed since: the answer about the two
+    // left is the same one, in the order it gave.
+    let (_, places) = lib.verdict(&[one, two]).unwrap().unwrap();
+    assert_eq!((places.len(), places[&one].0, places[&two].0), (2, 1, 2));
+    // A photo the model never saw (a wider filter, a frame added): asked about again.
+    assert!(lib.verdict(&[one, two, three, four]).unwrap().is_none());
+    assert!(lib.verdict(&[three]).unwrap().is_none(), "one photo is no group");
+    let groups = [vec![one, two, three], vec![two, three], vec![one, two, three, four], vec![four]];
+    assert_eq!(lib.asked(&groups).unwrap(), [true, true, false, false]);
+
+    // It holds over a restart, and an order that names a frame not shown is not kept.
+    let dir = lib.dir().to_owned();
+    drop(lib);
+    let lib = Library::open(&dir).unwrap();
+    assert!(lib.verdict(&[one, two, three]).unwrap().is_some());
+    let wrong = c1index::cull::NewVerdict { order: vec![0, 2], ..said };
+    assert!(lib.put_verdict(&[one, two], wrong).is_err());
 }
 
 #[test]

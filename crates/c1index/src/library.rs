@@ -1008,40 +1008,48 @@ impl Library {
         Ok(records.len())
     }
 
-    /// What a model that compared the frames of the group at `rows` said, if it was asked
-    /// about exactly these photos: the verdict, and per row its place in the model's order
-    /// (0 is the one to keep) with the reason given. A row not shown to it has no place.
+    /// The key of each of `rows` that has one (a photo gone from the library has none).
+    fn keys_of(&self, rows: &[u64]) -> Vec<(u64, String)> {
+        let keys = self.keys.read().unwrap();
+        rows.iter().filter_map(|&row| Some((row, keys.get(row as usize)?.clone()?))).collect()
+    }
+
+    /// What a model that compared frames said that still answers for the group at `rows`
+    /// (its photos as they are shown now), asked the question as it is asked now: the
+    /// verdict, and per row its place in the model's order (0 is the one to keep) with the
+    /// reason given. A row not shown to it has no place. An answer holds for fewer of the
+    /// photos it was about (a narrower filter, one trashed since), not for a photo the
+    /// model never saw: see `stands` in [`crate::cull`].
     pub fn verdict(&self, rows: &[u64]) -> anyhow::Result<Option<(crate::cull::Verdict, crate::cull::Places)>> {
-        let named: Vec<(u64, String)> = {
-            let keys = self.keys.read().unwrap();
-            rows.iter().filter_map(|&row| Some((row, keys.get(row as usize)?.clone()?))).collect()
-        };
-        let group = crate::cull::group_key(&named.iter().map(|(_, key)| key.clone()).collect::<Vec<_>>());
-        let Some(verdict) = self.cull_book.verdict(&group)? else { return Ok(None) };
+        let named = self.keys_of(rows);
+        let keys: Vec<&str> = named.iter().map(|(_, key)| key.as_str()).collect();
+        let Some(verdict) = self.cull_book.verdict(&keys)? else { return Ok(None) };
+        let row_of: HashMap<&str, u64> = named.iter().map(|(row, key)| (key.as_str(), *row)).collect();
         let mut places = HashMap::new();
         for (place, &frame) in verdict.order.iter().enumerate() {
             let Some(key) = verdict.sent.get(frame as usize) else { continue };
-            if let Some((row, _)) = named.iter().find(|(_, k)| k == key) {
-                places.insert(*row, (place, verdict.reasons.get(frame as usize).cloned().unwrap_or_default()));
+            if let Some(&row) = row_of.get(key.as_str()) {
+                places.insert(row, (place, verdict.reasons.get(frame as usize).cloned().unwrap_or_default()));
             }
         }
         Ok(Some((verdict, places)))
     }
 
-    /// Keeps what a model said of the group at `rows`, having been shown `sent` of them in
-    /// that order: `verdict.order` and `verdict.reasons` are by index into `sent`
-    /// (`verdict.sent` is filled in here).
-    pub fn put_verdict(&self, rows: &[u64], sent: &[u64], mut verdict: crate::cull::Verdict) -> anyhow::Result<()> {
-        let (group, shown) = {
-            let keys = self.keys.read().unwrap();
-            let key = |row: &u64| keys.get(*row as usize).and_then(|k| k.clone());
-            let all: Vec<String> = rows.iter().filter_map(key).collect();
-            let shown: Vec<String> = sent.iter().filter_map(key).collect();
-            (crate::cull::group_key(&all), shown)
-        };
+    /// Per group of `groups` (each its rows as they are shown now), whether a model's
+    /// answer stands for it: [`Library::verdict`] of many groups, from one read.
+    pub fn asked(&self, groups: &[Vec<u64>]) -> anyhow::Result<Vec<bool>> {
+        let named: Vec<Vec<(u64, String)>> = groups.iter().map(|rows| self.keys_of(rows)).collect();
+        let keys: Vec<Vec<&str>> = named.iter().map(|g| g.iter().map(|(_, key)| key.as_str()).collect()).collect();
+        self.cull_book.asked(&keys)
+    }
+
+    /// Keeps what a model said, having been shown the photos at `sent` in that order:
+    /// `said.order` and `said.reasons` are by index into `sent`.
+    pub fn put_verdict(&self, sent: &[u64], said: crate::cull::NewVerdict) -> anyhow::Result<()> {
+        let shown: Vec<String> = self.keys_of(sent).into_iter().map(|(_, key)| key).collect();
         anyhow::ensure!(shown.len() == sent.len(), "a photo shown to the model is gone");
-        verdict.sent = shown;
-        self.cull_book.put_verdict(&group, &verdict)
+        anyhow::ensure!(said.order.iter().all(|&i| (i as usize) < sent.len()), "the order names a frame not shown");
+        self.cull_book.put_verdict(&crate::cull::Verdict::new(shown, said))
     }
 
     /// Of these photos, the ones picked as the ones to keep.
