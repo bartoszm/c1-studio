@@ -99,6 +99,77 @@ pub fn run(
     Ok(progress)
 }
 
+/// A photo's render as the analysis measures it: its stamp and its pixels.
+pub type Render = ((u64, u64), c1image::RgbImage);
+
+/// How the photos at `rows` are framed, measured where no framing is kept for their render
+/// now, from the render the analysis measures ([`Thumbs::get`]). A photo not measured yet
+/// (one picked by hand, say) is measured on the way: its analysis is kept too, without
+/// working the groups out again. Returns how many could not be read.
+pub fn frame(
+    library: &Library,
+    source: &dyn PhotoSource,
+    thumbs: &Thumbs,
+    rows: &[u64],
+    threads: usize,
+) -> anyhow::Result<usize> {
+    frame_with(library, rows, threads, &|row| {
+        let id = library.photo_id(row)?;
+        if id.source != source.info().id {
+            return None;
+        }
+        let image = thumbs.get(source, &id).ok()??;
+        let stamp = stamp(&image.path)?;
+        Some((stamp, c1image::load(&image).ok()?))
+    })
+}
+
+/// [`frame`], each photo's render given by `load`.
+pub fn frame_with(
+    library: &Library,
+    rows: &[u64],
+    threads: usize,
+    load: &(dyn Fn(u64) -> Option<Render> + Sync),
+) -> anyhow::Result<usize> {
+    let have = library.framings(rows)?;
+    let todo: Vec<u64> = rows.iter().copied().filter(|row| !have.contains_key(row)).collect();
+    if todo.is_empty() {
+        return Ok(0);
+    }
+    let next = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+    let analyses = Mutex::new(Vec::new());
+    let framings = Mutex::new(Vec::with_capacity(todo.len()));
+    std::thread::scope(|scope| {
+        for _ in 0..threads.clamp(1, todo.len()) {
+            scope.spawn(|| {
+                while let Some(&row) = todo.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let Some((stamp, pixels)) = load(row) else {
+                        failed.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    };
+                    // Not measured, or measured of another render: the framing is stamped
+                    // with the render the analysis has, so that is measured first.
+                    if library.look(row).is_none_or(|look| look.stamp != stamp)
+                        && let Some(id) = library.photo_id(row)
+                    {
+                        analyses.lock().unwrap().push((id.key(), stamp, c1analysis::analyse(&pixels)));
+                    }
+                    framings.lock().unwrap().push((row, c1analysis::framing(&pixels)));
+                }
+            });
+        }
+    });
+    let analyses = analyses.into_inner().unwrap();
+    if !analyses.is_empty() {
+        library.put_analyses(analyses)?;
+    }
+    let framings = framings.into_inner().unwrap();
+    let made = framings.len();
+    let kept = library.put_framings(framings)?;
+    Ok(failed.into_inner() + made - kept)
+}
+
 /// Worker threads that leave a core for everything else.
 pub fn default_threads() -> usize {
     std::thread::available_parallelism().map_or(2, |n| n.get().saturating_sub(1).max(1))

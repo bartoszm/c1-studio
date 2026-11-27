@@ -24,7 +24,7 @@ const K: usize = 5;
 const ITERATIONS: usize = 10;
 
 /// sRGB (0..255) → CIE Lab (D65).
-fn lab(rgb: [u8; 3]) -> [f32; 3] {
+pub(crate) fn lab(rgb: [u8; 3]) -> [f32; 3] {
     let lin = |c: u8| {
         let c = f32::from(c) / 255.0;
         if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }

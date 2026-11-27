@@ -5,14 +5,15 @@
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
   import Compare from "./Compare.svelte";
-  import { REST_CHOICES, askCost, askPlanKey, askRecipient, cullKey, keepers, lookedAt, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, unseenNote, type RestChoice } from "./lib/cull";
+  import { REST_CHOICES, SUGGEST_CHOICES, askCost, askPlanKey, askRecipient, cullKey, keepers, leftOutNote, lookedAt, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, suggestLabel, suggestTitle, suggestedKeep, unseenNote, type RestChoice } from "./lib/cull";
   import { settings } from "./lib/settings.svelte";
 
   // Choosing the best of alike photos: the duplicate groups or series under the filter, one
-  // at a time. The group's photos are compared side by side (four at a time of a big one,
-  // all of them in the strip below), the one to keep is suggested, and Enter keeps the
-  // active photo and deals with the rest as the settings say.
-  let { groups, at, series, filter, version, blocked, busy, done, removes, message, failed, onclose, onat, onstale, onseries, onactive, onkeep, onsettings }: {
+  // at a time, or the photos picked by hand as one group. The group's photos are compared
+  // side by side (four at a time of a big one, all of them in the strip below), the ones to
+  // keep are suggested (the best, and as Settings › Culling say a few more), and Enter keeps
+  // the active photo and the marked ones and deals with the rest as the settings say.
+  let { groups, at, series, selection = false, canSelect = false, filter, version, blocked, busy, done, removes, message, failed, onclose, onat, onstale, onseries, onselection, onactive, onkeep, onsettings }: {
     /** Open Settings › AI, where the local model is downloaded. */
     onsettings: () => void;
     /** The groups' ids, in the order they are gone through. */
@@ -21,6 +22,11 @@
     at: number;
     /** Series (bursts), not duplicate groups. */
     series: boolean;
+    /** The photos picked by hand, as one group, not the groups the analysis found. */
+    selection?: boolean;
+    /** Photos were picked by hand: they can be chosen among (`onselection`). */
+    canSelect?: boolean;
+    onselection?: () => void;
     /** What the grid shows: only a group's photos under it are chosen among. */
     filter: Filter;
     /** Bumped after edits, to read the group again. */
@@ -63,6 +69,8 @@
   let rows = $derived(view?.photos.map((p) => p.row) ?? []);
   let byRow = $derived(new Map(view?.photos.map((p) => [p.row, p]) ?? []));
   let best = $derived(view?.order[0]);
+  /** The photos suggested to keep, the best first. */
+  let suggestion = $derived(view ? suggestedKeep(view, settings.cull.suggest) : []);
   /** Each photo's place in the order of which to keep, from 1. */
   let rank = $derived(new Map(view?.order.map((row, i) => [row, i + 1]) ?? []));
 
@@ -75,9 +83,15 @@
    *  photo and the marks stay. */
   function show(next: api.CullGroup, same: boolean) {
     const now = next.photos.map((p) => p.row);
-    if (!same) marked.clear();
+    if (!same) {
+      // A group shown afresh: the ones suggested are marked to keep, the best active.
+      marked.clear();
+      const keep = suggestedKeep(next, settings.cull.suggest);
+      for (const row of keep.slice(1)) marked.add(row);
+      active = keep[0] ?? next.order[0];
+    }
     for (const row of [...marked]) if (!now.includes(row)) marked.delete(row);
-    if (!same || active === undefined || !now.includes(active)) active = next.order[0];
+    if (active === undefined || !now.includes(active)) active = next.order[0];
     shown = shownRows(now, active, same ? shown : []);
     view = next;
     error = null;
@@ -302,6 +316,17 @@
     active = row;
     shown = shownRows(rows, row, shown);
   }
+  /** Back to the suggestion: the best active, the others suggested marked. */
+  function suggest() {
+    if (!view || !current) return;
+    marked.clear();
+    for (const row of suggestion.slice(1)) marked.add(row);
+    setActive(suggestion[0] ?? best);
+  }
+  function chooseSuggest(choice: (typeof SUGGEST_CHOICES)[number]) {
+    settings.cull.suggest = choice;
+    suggest();
+  }
   function toggleMark(row = active) {
     if (row === undefined) return;
     if (marked.has(row)) marked.delete(row);
@@ -326,9 +351,10 @@
       case "mark": toggleMark(); break;
       case "group": go(action.delta); break;
       case "photo": setActive(stepPhoto(rows, active, action.delta)); break;
-      case "best": setActive(best); break;
-      case "rank": if (action.all) rankAll(); else rankThis(); break;
-      case "ask": if (action.all) askAll(); else askThis(); break;
+      case "best": suggest(); break;
+      // Photos picked by hand are one group: all of them is this one.
+      case "rank": if (action.all && !selection) rankAll(); else rankThis(); break;
+      case "ask": if (action.all && !selection) askAll(); else askThis(); break;
     }
     return true;
   }
@@ -368,7 +394,7 @@
 
   /** How long a group is shown before the next one is read ahead. */
   const AHEAD_MS = 150;
-  const kind = $derived(series ? "series" : "duplicate group");
+  const kind = $derived(selection ? "selection" : series ? "series" : "duplicate group");
   const judged = $derived.by(() => {
     if (!view || best === undefined) return "";
     const p = byRow.get(best);
@@ -379,14 +405,27 @@
       const of = v.sent < view.photos.length ? ` (${v.sent} of the ${view.photos.length} frames)` : "";
       return `${PROVIDERS[v.provider] ?? v.provider} suggests ${p.name}${why}${of}${v.note ? ` · ${v.note}` : ""}`;
     }
-    return view.close ? `Too close to call; ${p.name} by a hair${why}` : `Suggested: ${p.name}${why}`;
+    const more = suggestion.length > 1 ? ` (and ${suggestion.length - 1} more worth keeping)` : "";
+    return view.close ? `Too close to call; ${p.name} by a hair${why}${more}` : `Suggested: ${p.name}${why}${more}`;
   });
   const JUDGES: Record<api.Judge, string> = {
     cloud: "A model was shown these frames together and put them in order; frames it was not shown follow. Your own pick is still yours: Enter keeps the active photo.",
+    composition: "By composition: where the subject sits (on a third, in the middle), whether the edge cuts it, busy edges, a level horizon, with the local model's view of composition once it has looked. Your rating comes first and blurry frames last; sharpness and edits decide between frames composed alike.",
     local: "By the local model's view of each photo, with sharpness and your own marks",
     sharpness: "By sharpness, clipped tones and your own marks (rating, edits)",
   };
   const pct = (v: number) => Math.round(v * 100);
+  /** The parts of a photo's framing, for the title of its composition score. */
+  function framingTitle(f: api.Framing | null): string {
+    const parts = ["How well composed, 0 to 100, next to the others of the group"];
+    if (f) {
+      parts.push(`subject placed ${pct(f.placement)}${f.subject ? "" : " (nothing stands out)"}`);
+      if (f.cut > 0) parts.push(`cut by the edge ${pct(f.cut)}`);
+      parts.push(`busy edges ${pct(f.clutter)}`);
+      if (f.tilt !== null) parts.push(`horizon ${Math.abs(f.tilt) < 0.25 ? "level" : `${Math.abs(f.tilt).toFixed(1)}° off level`}`);
+    }
+    return parts.join(" · ");
+  }
   const restTitle ="What Enter does with the photos of the group you do not keep. More in Settings › Culling.";
 </script>
 
@@ -404,13 +443,17 @@
 
 {#snippet badge(row: number)}
   {@const p = byRow.get(row)}
-  {#if row === best}<span class="badge best" title={p?.reasons.join(", ")}>suggested</span>{/if}
+  {#if row === best}<span class="badge best" title={p?.reasons.join(", ")}>suggested</span>
+  {:else if suggestion.includes(row)}<span class="badge best also" title={p?.reasons.join(", ")}>suggested too</span>{/if}
   {#if marked.has(row)}<span class="badge keep">keep</span>{:else if p?.kept}<span class="badge keep was" title="Picked before as the one to keep">kept</span>{/if}
   {#if p && row !== best && p.reasons.length}<span class="why">{p.reasons.join(", ")}</span>{/if}
+  {#if p && p.composition !== null}
+    <span class="why" title={framingTitle(p.framing)}>composition {pct(p.composition)}</span>
+  {/if}
   {#if p?.aesthetic}
     {@const a = p.aesthetic}
     <span class="why" title="How the local model saw this photo, 0 to 100, above 50 the better side. It tells the frames of a group apart; it is no rating.">
-      composition {pct(a.composition)} · moment {pct(a.moment)} · mood {pct(a.mood)} · technical {pct(a.technical)}
+      model: composition {pct(a.composition)} · moment {pct(a.moment)} · mood {pct(a.mood)} · technical {pct(a.technical)}
     </span>
   {/if}
 {/snippet}
@@ -418,10 +461,18 @@
 <div class="cull">
   <div class="bar">
     <div class="kinds" role="group" aria-label="Kind of group">
-      <button class="toggle" class:on={series} aria-pressed={series} title="Bursts: photos from one camera, seconds apart, looking alike" onclick={() => onseries(true)}>Series</button>
-      <button class="toggle" class:on={!series} aria-pressed={!series} title="The same frame twice: different images taken at the same instant" onclick={() => onseries(false)}>Duplicates</button>
+      <button class="toggle" class:on={!selection && series} aria-pressed={!selection && series} title="Bursts: photos from one camera, seconds apart, looking alike" onclick={() => onseries(true)}>Series</button>
+      <button class="toggle" class:on={!selection && !series} aria-pressed={!selection && !series} title="The same frame twice: different images taken at the same instant" onclick={() => onseries(false)}>Duplicates</button>
+      {#if canSelect || selection}
+        <button class="toggle" class:on={selection} aria-pressed={selection} title="The photos you picked in the grid, as one group" onclick={() => onselection?.()}>Picked</button>
+      {/if}
     </div>
     <span class="where">
+      {#if selection}
+        <strong>Best of {view && current ? view.photos.length.toLocaleString() : ""} picked photo{view && current && view.photos.length === 1 ? "" : "s"}</strong>
+        {#if id !== undefined && done.includes(id)}<span class="done">✓ picked</span>{/if}
+        {#if view && current && view.left_out}<span class="unseen" title="These photos have no thumbnail or preview that could be read: they could not be measured, and are not shown">{leftOutNote(view.left_out)}</span>{/if}
+      {:else}
       <button title="Previous group (↑)" aria-label="Previous group" disabled={at <= 0} onclick={() => go(-1)}>‹</button>
       {#if groups.length}
         <strong>{kind} {(at + 1).toLocaleString()} of {groups.length.toLocaleString()}</strong>
@@ -431,6 +482,7 @@
         <strong>No {series ? "series" : "duplicates"} among these photos</strong>
       {/if}
       <button title="Next group, leaving this one as it is (↓)" aria-label="Next group" disabled={at >= groups.length - 1} onclick={() => go(1)}>›</button>
+      {/if}
     </span>
     {#if view && current}<span class="judge" title={JUDGES[view.judge]}>{judged}</span>{/if}
     <span class="end">
@@ -444,6 +496,7 @@
             title="Have the local model look at this group's photos: composition, moment and mood count beside sharpness, where they tell the frames apart (r)"
             onclick={rankThis}
           >{looking ? "Looking…" : "Look"}</button>
+          {#if !selection}
           <button
             class="toggle"
             class:on={ranking?.running && !ranking.cloud}
@@ -453,6 +506,7 @@
               : "Have the local model look at every group here, in the background, oldest first (Shift+R)"}
             onclick={rankAll}
           >{ranking?.running && !ranking.cloud ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : "Look at all"}</button>
+          {/if}
           {#if ranking?.failed && !ranking.cloud}
             <span class="unseen" title="Photos Look at all could not look at: they have no thumbnail or preview yet (it makes none), or could not be read. Their groups are still decided by sharpness; Look on a group makes what is missing. events.log in the catalog's folder says why of each.">{ranking.failed.toLocaleString()} failed</span>
           {/if}
@@ -466,6 +520,7 @@
           title="Ask AI (Claude or Gemini, as Settings › AI say) to compare this group's frames: it puts them in order and says in a few words what sets each apart: an expression, a gesture, the framing (a). One call, at most 16 frames, which are sent to Anthropic or Google and leave this computer.{view?.verdict ? ' This group has an answer: asking again is another call.' : ''}"
           onclick={askThis}
         >{asking ? "Asking…" : view && current && view.verdict ? "Ask again" : "Ask AI"}</button>
+        {#if !selection}
         <button
           class="toggle"
           class:on={ranking?.running && ranking.cloud}
@@ -475,11 +530,18 @@
             : "Ask AI about every group here not asked about yet, in the background: says first how many calls that is, and what it costs (Shift+A)"}
           onclick={askAll}
         >{ranking?.running && ranking.cloud ? `${ranking.done.toLocaleString()} of ${ranking.total.toLocaleString()} · Stop` : counting ? "Counting…" : "Ask about all…"}</button>
+        {/if}
         {#if ranking?.failed && ranking.cloud}
           <span class="unseen" title="Groups that got no answer: a photo with no image to send, an answer cut off or declined. They are not asked about again in this run; events.log in the catalog's folder says why of each.">{ranking.failed.toLocaleString()} failed</span>
         {/if}
         {#if ranking && !ranking.running && ranking.error}<span class="failed" title={ranking.error}>stopped: {ranking.error}</span>{/if}
         {#if lookError}<span class="failed" title={lookError}>{lookError}</span>{/if}
+      </span>
+      <span class="suggest" role="group" aria-label="How many to suggest keeping" title="How many of each group to suggest keeping: they are marked when the group is shown (g goes back to them). More in Settings › Culling.">
+        Keep:
+        {#each SUGGEST_CHOICES as choice (choice)}
+          <button class="toggle" class:on={settings.cull.suggest === choice} aria-pressed={settings.cull.suggest === choice} title={suggestTitle(choice)} onclick={(e) => { chooseSuggest(choice); e.currentTarget.blur(); }}>{suggestLabel(choice)}</button>
+        {/each}
       </span>
       <label class="rest" title={restTitle}>
         The rest:
@@ -532,7 +594,7 @@
         {message}
         {failed}
         embedded
-        hint="Enter keep · k keep too · ← → photo · ↑ ↓ group · g suggested · r look · a ask AI · 0–5 - + * Delete edit · z zoom · Esc"
+        hint="Enter keep the marked · k keep too · ← → photo · ↑ ↓ group · g back to the suggestion · r look · a ask AI · 0–5 - + * Delete edit · z zoom · Esc"
         onkeyfirst={onkey}
         {badge}
         {onclose}
@@ -544,6 +606,7 @@
     <p class="empty" class:failed={!!error}>
       {#if error}{error}
       {:else if !groups.length}Nothing to choose from here. Try the other kind, or a wider filter.
+      {:else if view && selection}None of the picked photos are left under the filter{view.left_out ? ` (${leftOutNote(view.left_out)})` : ""}.
       {:else if view}None of this group's photos are left under the filter.
       {:else}reading the group…{/if}
     </p>
@@ -564,6 +627,7 @@
           <img src={api.thumbUrl(p.row)} alt="" loading="lazy" decoding="async" draggable="false" />
           <span class="rank" class:best={p.row === best}>{rank.get(p.row) ?? ""}</span>
           {#if marked.has(p.row) || p.kept}<span class="tick" class:was={!marked.has(p.row)}>✓</span>{/if}
+          {#if p.composition !== null}<span class="bar-comp" title="composition {pct(p.composition)}" style="width: {pct(p.composition)}%"></span>{/if}
           <span class="bar-score" style="width: {Math.round(p.score * 100)}%"></span>
         </button>
       {/each}
@@ -615,6 +679,9 @@
   .judge { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; flex: 1 1 200px; }
   .end { display: flex; align-items: center; gap: 10px; margin-left: auto; }
   .rest { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+  .suggest { display: flex; align-items: center; gap: 2px; color: var(--muted); }
+  .suggest .toggle { min-width: 26px; }
+  .where .unseen { color: var(--muted); white-space: nowrap; }
   .model { display: flex; align-items: center; gap: 4px; }
   .model .failed { color: var(--error); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .model .unseen { color: var(--muted); white-space: nowrap; }
@@ -670,10 +737,12 @@
   }
   .tick.was { opacity: 0.6; }
   .bar-score { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--star); }
+  .bar-comp { position: absolute; left: 0; bottom: 3px; height: 2px; background: var(--queued); opacity: 0.85; }
 
   /* What this screen says of a photo in the comparison's caption: its own, styled here. */
   .badge { padding: 0 6px; font-size: 11px; color: #111; border-radius: 3px; }
   .badge.best { background: var(--star); }
+  .badge.best.also { opacity: 0.75; }
   .badge.keep { background: var(--queued); }
   .badge.was { opacity: 0.6; }
   .why { color: var(--muted); font-size: 12px; }

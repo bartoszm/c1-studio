@@ -972,16 +972,7 @@ impl Library {
     /// How the local model saw each of these photos, by row: only views of the render the
     /// analysis measured (a photo rendered again since is looked at again).
     pub fn views(&self, rows: &[u64]) -> anyhow::Result<HashMap<u64, crate::cull::View>> {
-        let named: Vec<(u64, String, (u64, u64))> = {
-            let keys = self.keys.read().unwrap();
-            let seen = self.seen.read().unwrap();
-            rows.iter()
-                .filter_map(|&row| {
-                    let key = keys.get(row as usize)?.as_ref()?;
-                    Some((row, key.clone(), seen.get(key)?.stamp))
-                })
-                .collect()
-        };
+        let named = self.stamped(rows);
         let mut stored = self.cull_book.views(named.iter().map(|(_, key, _)| key.as_str()))?;
         Ok(named
             .into_iter()
@@ -1009,6 +1000,54 @@ impl Library {
                 .collect()
         };
         self.cull_book.put_views(&records)?;
+        Ok(records.len())
+    }
+
+    /// Of `rows`, the measured ones with their key and the stamp of the render measured.
+    fn stamped(&self, rows: &[u64]) -> Vec<(u64, String, (u64, u64))> {
+        let keys = self.keys.read().unwrap();
+        let seen = self.seen.read().unwrap();
+        rows.iter()
+            .filter_map(|&row| {
+                let key = keys.get(row as usize)?.as_ref()?;
+                Some((row, key.clone(), seen.get(key)?.stamp))
+            })
+            .collect()
+    }
+
+    /// How each of these photos is framed, by row: only framings of the render the analysis
+    /// measured, by the way framing is measured now.
+    pub fn framings(&self, rows: &[u64]) -> anyhow::Result<HashMap<u64, c1analysis::Framing>> {
+        let named = self.stamped(rows);
+        let mut stored = self.cull_book.framings(named.iter().map(|(_, key, _)| key.as_str()))?;
+        Ok(named
+            .into_iter()
+            .filter_map(|(row, key, stamp)| {
+                stored
+                    .remove(&key)
+                    .filter(|f| f.stamp == stamp && f.version == c1analysis::FRAMING_VERSION)
+                    .map(|f| (row, f.framing))
+            })
+            .collect())
+    }
+
+    /// Keeps how photos are framed, by row, each stamped with the render the analysis
+    /// measured; a photo not measured is left out. Returns how many were kept.
+    pub fn put_framings(&self, framings: Vec<(u64, c1analysis::Framing)>) -> anyhow::Result<usize> {
+        let records: Vec<(String, crate::cull::Framed)> = {
+            let rows: Vec<u64> = framings.iter().map(|(row, _)| *row).collect();
+            let stamps: HashMap<u64, (String, (u64, u64))> =
+                self.stamped(&rows).into_iter().map(|(row, key, stamp)| (row, (key, stamp))).collect();
+            framings
+                .into_iter()
+                .filter_map(|(row, framing)| {
+                    let (key, stamp) = stamps.get(&row)?;
+                    let framed = crate::cull::Framed { version: c1analysis::FRAMING_VERSION, stamp: *stamp, framing };
+                    Some((key.clone(), framed))
+                })
+                .collect()
+        };
+        self.cull_book.put_framings(&records)?;
         Ok(records.len())
     }
 

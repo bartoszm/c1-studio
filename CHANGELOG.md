@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Best of the photos you picked.** With two photos or more picked in the grid, `b` (or *Best of…*, or *Best of N…* in the right-click menu) chooses among exactly those, as one group: they need not be a burst, nor measured yet (a photo not measured is measured on the way). Keep, the rest, Ctrl+Z, *Look* and *Ask AI* work as for a series; *Picked* beside *Series* and *Duplicates* goes back to them. Keeping from the photos picked is not remembered as the pick of the series they are in. Up to 200 photos.
+- **Composition decides first.** *Best of…* now measures how each photo is framed, from its pixels and with no model: where the subject sits (on a third, in the middle; balanced when it fills the frame), whether the edge of the frame cuts it, busy edges, a tilted horizon. Where the frames of a group are framed differently, that orders them, with the local model's view of composition weighed in once it has looked; your rating still comes first and a blurry frame last, and sharpness, clipping and edits decide between frames composed alike. The caption gives each photo's composition (its parts in the tooltip) and names what tells them apart (*subject cut off*, *tilted horizon*, *best composition*); a second bar in the strip shows it. Measured once per render, in a fraction of a second per photo.
+- **Several photos suggested to keep.** *Keep: 1 · 2 · 3 · Auto* in the *Best of…* bar (and *Settings › Culling › Suggest keeping*) marks the photos to keep when a group is shown. *Auto*, the default, adds to the best up to two more that are as good and are other pictures (framed otherwise, another moment), never a blurry one or one rated lower, so a burst of copies still keeps one. `g` goes back to the suggestion; `k` marks or unmarks as before.
+
 ## 0.11.0 — 2026-11-22
 
 ### New

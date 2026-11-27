@@ -68,7 +68,7 @@
   import Compare from "./Compare.svelte";
   import { COMPARE_MAX, compareRows, removeRow } from "./lib/compare";
   import Cull from "./Cull.svelte";
-  import { afterPick, afterTurn, describePick, firstUnpicked, keeperMark, placeAfter, restAction } from "./lib/cull";
+  import { SELECTION_MAX, afterPick, afterTurn, describePick, firstUnpicked, isSelection, keeperMark, placeAfter, restAction, selectionId } from "./lib/cull";
   import WriteDialog from "./WriteDialog.svelte";
 
   /** Groups counted whatever the sidebar shows: the analysis tab and the Location fill-in need them. */
@@ -121,8 +121,10 @@
   /** Photos compared side by side (2 to 4, by row) and the one edits land on. */
   let comparing = $state<{ rows: number[]; active: number } | null>(null);
   /** Choosing the best of alike photos: the series (or duplicate groups) under `filter` as it
-   *  was when this opened, the one shown, the photo edits land on, and the groups picked from. */
-  let culling = $state<{ series: boolean; groups: string[]; at: number; filter: Filter; row?: number; done: string[] } | null>(null);
+   *  was when this opened, or the photos picked by hand as one group (`selection`), the one
+   *  shown, the photo edits land on, and the groups picked from. `picked`: the photos picked
+   *  when it opened, to go back to from the series. */
+  let culling = $state<{ series: boolean; groups: string[]; at: number; filter: Filter; row?: number; done: string[]; selection?: boolean; picked?: number[] } | null>(null);
   let syncNote = $state("syncing…");
   /** Why reading the source failed, in full: shown in the grid when it is left empty. */
   let syncFailed = $state<string | null>(null);
@@ -2293,11 +2295,27 @@
       viewing = false;
       comparing = null;
       const at = start === undefined ? firstUnpicked(list) : Math.max(0, ids.indexOf(start));
-      culling = { series: kind, groups: ids, at, filter: f, done: list.filter((g) => g.picked).map((g) => g.id) };
+      const chosen = culling?.picked;
+      culling = { series: kind, groups: ids, at, filter: f, done: list.filter((g) => g.picked).map((g) => g.id), picked: chosen };
       try { localStorage.setItem("cullKind", kind ? "series" : "duplicates"); } catch { /* not remembered */ }
     } catch (e) {
       editError = String(e);
     }
+  }
+  /** Choosing the best of the photos at `rows`, picked by hand, as one group. */
+  function openCullPicked(rows: number[]) {
+    if (rows.length < 2) return note("Pick two photos or more to choose the best of them");
+    if (rows.length > SELECTION_MAX) return note(`Best of takes up to ${SELECTION_MAX} photos at once: pick fewer`);
+    ++cullAsked;
+    viewing = false;
+    comparing = null;
+    const series = culling?.series ?? readChoice("cullKind", ["series", "duplicates"] as const, "series") === "series";
+    culling = { series, groups: [selectionId(rows)], at: 0, filter: compiled($state.snapshot(filter)), done: [], selection: true, picked: rows };
+  }
+  /** Best of (`b`): of the photos picked, when two or more are, else of each group. */
+  function openBest() {
+    if (picked.size >= 2) openCullPicked([...picked]);
+    else openCull();
   }
   /** Keeps `keep` of a group and deals with `rest` as Settings › Culling say, as one step
    *  to undo, then shows the next group. */
@@ -2306,7 +2324,8 @@
     const action = restAction(settings.cull, status?.removes);
     await working("keeping…", async () => {
       try {
-        const step = await api.cullApply(keep, rest, action, keeperMark(settings.cull));
+        // Photos picked by hand: the pick is not remembered as their groups'.
+        const step = await api.cullApply(keep, rest, action, keeperMark(settings.cull), !isSelection(group));
         const what = describePick(keep.length, rest.length, action, step);
         const entry: Done = { cull: step, what, group };
         undoStack.push(entry);
@@ -2317,7 +2336,7 @@
           await binChanged();
           return note(what, undoOf(entry));
         }
-        const last = c.groups.indexOf(group) === c.groups.length - 1;
+        const last = c.groups.indexOf(group) === c.groups.length - 1 && !isSelection(group);
         // The next group is shown at once, or the one gone to meanwhile is left alone. The
         // grid under this is read when the choosing closes, not after every pick.
         const next = afterPick(c, group);
@@ -2356,7 +2375,8 @@
    *  the one at the same place. */
   async function cullRegrouped(row?: number) {
     const c = culling;
-    if (!c) return;
+    // Photos picked by hand are no group the analysis names: there is nothing to list again.
+    if (!c || c.selection) return;
     const mine = ++cullAsked;
     try {
       const list = await api.cullGroups($state.snapshot(c.filter) as Filter, c.series);
@@ -2563,7 +2583,7 @@
     }
     else if (viewing || covered) return; // the viewer, the comparison and the culling have their own keys
     else if (key === "c" && !e.repeat) openCompare();
-    else if (key === "b" && !e.repeat) openCull();
+    else if (key === "b" && !e.repeat) openBest();
     else if (e.key === "Escape" && mapOn && mapTile && picked.size <= 1) mapTilePick(null, null);
     else if (e.key === "Escape" && picked.size > 1) {
       picked.clear();
@@ -3159,8 +3179,8 @@
       >Variants</button>
       <button
         class="toggle cull-open"
-        title="Choose the best of each series or duplicate group among the photos shown: one group at a time, side by side, with a suggestion; Enter keeps a photo and deals with the rest as Settings › Culling say (b)"
-        onclick={() => openCull()}
+        title="Choose the best of the picked photos (two or more), or of each series or duplicate group among the photos shown: one group at a time, side by side, with a suggestion; Enter keeps the marked photos and deals with the rest as Settings › Culling say (b)"
+        onclick={openBest}
       >Best of…</button>
       <div class="tiles" title="Tile size: Ctrl+wheel over the grid, Ctrl+plus and Ctrl+minus; Ctrl+0 resets">
         <button aria-label="Smaller tiles" onclick={() => grid?.step(false)}>−</button>
@@ -3994,6 +4014,7 @@ Pick those among the photos shown, then have ${source.word} build their previews
     <button role="menuitem" onclick={act(() => toggleHidden())}>{targetsHidden ? "Show again" : "Hide"}<span class="key">{keysFor(MENU_ITEMS.hide)}</span></button>
     {#if n >= 2}
       <button role="menuitem" onclick={act(() => openCompare())}>Compare {Math.min(n, COMPARE_MAX)}<span class="key">{keysFor(MENU_ITEMS.compare)}</span></button>
+      <button role="menuitem" onclick={act(() => openCullPicked(rows))}>Best of {n}…<span class="key">{keysFor(MENU_ITEMS.bestOf)}</span></button>
     {/if}
     <button role="menuitem" onclick={act(() => openCopy(photoMenu?.row))}>{n === 1 ? "Copy…" : "Copy from this photo…"}<span class="key">{keysFor(MENU_ITEMS.copy)}</span></button>
     {#if clipboard}
@@ -4143,6 +4164,9 @@ Pick those among the photos shown, then have ${source.word} build their previews
     groups={culling.groups}
     at={culling.at}
     series={culling.series}
+    selection={!!culling.selection}
+    canSelect={!!culling.picked && culling.picked.length >= 2}
+    onselection={() => { if (culling?.picked) openCullPicked(culling.picked); }}
     filter={culling.filter}
     {version}
     blocked={dialogOpen || menuOpen}

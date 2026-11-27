@@ -468,7 +468,7 @@ mod tests {
             jpeg
         };
         let program = find().expect("Claude Code");
-        let ask = crate::pick::PickAsk { frames: 2, series: true, sheet: false };
+        let ask = crate::pick::PickAsk { frames: 2, kind: crate::pick::Frames::Burst, sheet: false };
         let cli =
             ClaudeCode::asking(program, Options::default(), &crate::pick::system(), crate::pick::schema()).unwrap();
         let (answer, record) = cli.ask_images(&crate::pick::message(&ask), &[picture(true), picture(false)]).unwrap();

@@ -1,7 +1,7 @@
 // Choosing the best of alike photos, one duplicate group or series at a time: what
 // becomes of the photos not kept, which of a big group are side by side, and the keys.
 
-import type { AskEstimate, Color, CullStep, Mark, RankState, Removal, Rest } from "./api";
+import type { AskEstimate, Color, CullGroup, CullStep, Mark, RankState, Removal, Rest } from "./api";
 import { COMPARE_MAX } from "./compare";
 import { COLOR_NAMES } from "./format";
 import { typingIn } from "./keys";
@@ -10,6 +10,9 @@ import { typingIn } from "./keys";
 export type RestChoice = "trash" | "hide" | "rating" | "colour" | "nothing";
 /** What the photos kept are marked with. */
 export type KeeperChoice = "nothing" | "rating" | "colour";
+/** How many of a group are suggested to keep: the best only, the best two or three, or as
+ *  many as are as good and are other pictures (`auto`). */
+export type SuggestChoice = "best" | "two" | "three" | "auto";
 
 export type CullSettings = {
   rest: RestChoice;
@@ -19,10 +22,12 @@ export type CullSettings = {
   keeper: KeeperChoice;
   keeperRating: number;
   keeperColour: Color;
+  suggest: SuggestChoice;
 };
 
 export const REST_CHOICES: RestChoice[] = ["trash", "hide", "rating", "colour", "nothing"];
 export const KEEPER_CHOICES: KeeperChoice[] = ["nothing", "rating", "colour"];
+export const SUGGEST_CHOICES: SuggestChoice[] = ["best", "two", "three", "auto"];
 
 export const CULL_DEFAULTS: CullSettings = {
   rest: "trash",
@@ -31,6 +36,8 @@ export const CULL_DEFAULTS: CullSettings = {
   keeper: "nothing",
   keeperRating: 5,
   keeperColour: "Green",
+  // Keeping more is the safe side when the rest goes to the trash.
+  suggest: "auto",
 };
 
 /** The settings as saved, with anything missing or unreadable at its default. */
@@ -46,6 +53,7 @@ export function cullSettings(saved: unknown): CullSettings {
     keeper: KEEPER_CHOICES.includes(s.keeper as KeeperChoice) ? (s.keeper as KeeperChoice) : d.keeper,
     keeperRating: stars(s.keeperRating, d.keeperRating),
     keeperColour: colour(s.keeperColour, d.keeperColour),
+    suggest: SUGGEST_CHOICES.includes(s.suggest as SuggestChoice) ? (s.suggest as SuggestChoice) : d.suggest,
   };
 }
 
@@ -75,6 +83,50 @@ export function restLabel(choice: RestChoice, s: CullSettings, removes?: Removal
     case "colour": return `Tag ${s.restColour.toLowerCase()}`;
     case "nothing": return "Leave as they are";
   }
+}
+
+/** What a choice of how many to suggest is called. */
+export function suggestLabel(choice: SuggestChoice): string {
+  switch (choice) {
+    case "best": return "1";
+    case "two": return "2";
+    case "three": return "3";
+    case "auto": return "Auto";
+  }
+}
+
+/** What each choice of how many to suggest does, for its title. */
+export function suggestTitle(choice: SuggestChoice): string {
+  switch (choice) {
+    case "best": return "Suggest keeping the best photo only";
+    case "two": return "Suggest keeping the best two (blurry ones left out)";
+    case "three": return "Suggest keeping the best three (blurry ones left out)";
+    case "auto": return "Suggest keeping the best, and up to two more that are as good and are other pictures (framed otherwise, another moment)";
+  }
+}
+
+/** The photos of a group suggested to keep, the best first: as many as `choice` says, of the
+ *  order. The ones picked before, where some were, whatever the choice: seen again, a group
+ *  suggests what the user chose. */
+export function suggestedKeep(view: Pick<CullGroup, "order" | "suggested" | "photos">, choice: SuggestChoice): number[] {
+  const [best, ...rest] = view.order;
+  if (best === undefined) return [];
+  if (view.photos.some((p) => p.kept) || choice === "auto") return view.suggested.length ? view.suggested.slice() : [best];
+  const count = choice === "best" ? 1 : choice === "two" ? 2 : 3;
+  const blurry = new Set(view.photos.filter((p) => p.focus === "blurry").map((p) => p.row));
+  return [best, ...rest.filter((r) => !blurry.has(r))].slice(0, count);
+}
+
+/** What a group of photos picked by hand is called: their rows, sorted. */
+export const SELECTION = "pick:";
+/** The most photos picked by hand to choose among. */
+export const SELECTION_MAX = 200;
+export const selectionId = (rows: Iterable<number>): string => SELECTION + [...new Set(rows)].sort((a, b) => a - b).join(",");
+export const isSelection = (id: string | undefined): boolean => !!id?.startsWith(SELECTION);
+
+/** What the bar says of photos picked that could not be measured, and are left out. */
+export function leftOutNote(n: number): string {
+  return n > 0 ? `${n.toLocaleString()} photo${n === 1 ? "" : "s"} left out: no picture to measure` : "";
 }
 
 /** The photos kept: the active one and the ones marked, in the group's order. */
