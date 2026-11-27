@@ -75,21 +75,31 @@ pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     let image =
         RgbImage::from_raw(width, height, bytes).ok_or_else(|| decode_err(path, "pixel buffer has the wrong size"))?;
     let mut image = crate::geometry::straighten(crate::rotate(image, r.rotation), r.straighten);
-    let Some(look) = &look else { return Ok(image) };
+    if let Some(look) = &look {
+        take_look(&mut image, look, matching, monochrome);
+    }
+    // Last, on the finished tones: the look cannot carry it (see `LocalContrast`).
+    if matching != Matching::None {
+        crate::clarity::apply(&mut image, r.local_contrast);
+    }
+    Ok(image)
+}
+
+/// Takes `matching` of `look` onto `image`.
+fn take_look(image: &mut RgbImage, look: &Look, matching: Matching, monochrome: bool) {
     match matching {
         Matching::None => {}
-        Matching::Tones => look.apply_tones(&mut image),
+        Matching::Tones => look.apply_tones(image),
         Matching::Colours => {
-            match colour_fit(&image, &look.render) {
-                ColourFit::Table { table, .. } => table.apply(&mut image),
-                _ => look.apply_tones(&mut image),
+            match colour_fit(image, &look.render) {
+                ColourFit::Table { table, .. } => table.apply(image),
+                _ => look.apply_tones(image),
             }
             if monochrome {
-                Look::make_grey(&mut image);
+                Look::make_grey(image);
             }
         }
     }
-    Ok(image)
 }
 
 /// How the colours of a render were matched to a look's.

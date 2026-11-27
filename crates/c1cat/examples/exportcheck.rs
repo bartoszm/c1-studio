@@ -160,6 +160,52 @@ fn colour_only(preview: &RgbImage, export: &RgbImage) -> Option<(f64, Bands)> {
     Some((sum as f64 / (n * 3.0), bands(&p, &e, Some(&a.valid))))
 }
 
+/// Brightness at the 1st, 5th, 25th, 50th, 75th, 95th and 99th percentile, and the mean
+/// chroma (|R−G| + |B−G|): the tone curve and the saturation, blind to sharpness and to
+/// how well two images line up.
+fn spread(image: &RgbImage) -> String {
+    let mut y: Vec<u32> = image
+        .pixels()
+        .map(|p| (54 * u32::from(p.0[0]) + 183 * u32::from(p.0[1]) + 19 * u32::from(p.0[2])) >> 8)
+        .collect();
+    y.sort_unstable();
+    let at = |q: f64| y[((y.len() - 1) as f64 * q) as usize];
+    let chroma =
+        image.pixels().map(|p| f64::from(p.0[0].abs_diff(p.0[1])) + f64::from(p.0[2].abs_diff(p.0[1]))).sum::<f64>()
+            / f64::from(image.width() * image.height()).max(1.0);
+    format!(
+        "{:3} {:3} {:3} {:3} {:3} {:3} {:3}  chroma {chroma:5.1}",
+        at(0.01),
+        at(0.05),
+        at(0.25),
+        at(0.5),
+        at(0.75),
+        at(0.95),
+        at(0.99)
+    )
+}
+
+/// Local contrast at 1024 px wide: the spread (standard deviation, out of 255) of
+/// brightness around its neighbourhood, fine (sigma 0.3% of the width, as Structure
+/// works) and broad (2%, as Clarity does).
+fn detail(image: &RgbImage) -> String {
+    let w = 1024u32;
+    let h = image.height() * w / image.width();
+    let small = image::imageops::resize(image, w, h, image::imageops::FilterType::Triangle);
+    let luma = image::GrayImage::from_fn(w, h, |x, y| {
+        let p = small.get_pixel(x, y).0;
+        image::Luma([((54 * u32::from(p[0]) + 183 * u32::from(p[1]) + 19 * u32::from(p[2])) >> 8) as u8])
+    });
+    let spread = |sigma: f32| {
+        let b = image::imageops::blur(&luma, sigma);
+        let n = f64::from(w * h);
+        let sum: f64 =
+            luma.pixels().zip(b.pixels()).map(|(a, b)| (f64::from(a.0[0]) - f64::from(b.0[0])).powi(2)).sum();
+        (sum / n).sqrt()
+    };
+    format!("detail fine {:5.1} broad {:5.1}", spread(0.003 * w as f32), spread(0.02 * w as f32))
+}
+
 /// How the colour fit goes for `r`: the residual of a table fitted at the thumbnail's
 /// size, or why none is fitted.
 fn fit_report(r: &ImageRef, thumb: &RgbImage) -> anyhow::Result<String> {
@@ -376,6 +422,14 @@ fn main() -> anyhow::Result<()> {
                 }
                 _ => println!("    colour only: could not line up with the export"),
             }
+            println!("    brightness   p1  p5 p25 p50 p75 p95 p99");
+            println!("    export     {}  {}", spread(&export), detail(&export));
+            println!("    thumbnail  {}  {}", spread(&window.crop(&thumb)), detail(&window.crop(&thumb)));
+            println!("    preview    {}  {}", spread(&colours), detail(&colours));
+            println!(
+                "    local contrast: clarity {:.0} structure {:.0}",
+                r.local_contrast.clarity, r.local_contrast.structure
+            );
             sheet(&export, &window.crop(&thumb), &sized(&colours, &export)).save(d.join(format!("{stem}.png")))?;
         }
         scores.push(s);

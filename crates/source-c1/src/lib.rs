@@ -199,6 +199,7 @@ impl PhotoSource for CaptureOne {
                     look: None,
                     straighten: 0.0,
                     crop: self.thumbnail_crop(vpk)?,
+                    local_contrast: Default::default(),
                 }))
             }
             ImageTier::Preview => {
@@ -217,6 +218,7 @@ impl PhotoSource for CaptureOne {
                     look: thumb.is_file().then_some(thumb),
                     straighten: preview.straighten,
                     crop: preview.crop,
+                    local_contrast: preview.local_contrast,
                 }))
             }
             ImageTier::Original => {
@@ -251,6 +253,7 @@ impl PhotoSource for CaptureOne {
                     look: None,
                     straighten: framing.as_ref().map_or(0.0, |f| f.straighten),
                     crop: framing.and_then(|f| f.crop),
+                    local_contrast: Default::default(),
                 }))
             }
         }
