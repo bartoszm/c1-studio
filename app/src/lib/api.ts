@@ -689,9 +689,20 @@ export const groups = (
 export const cullGroups = (filter: Filter, series: boolean) =>
   invoke<{ id: string; picked: boolean }[]>("cull_groups", { filter, series });
 
-/** What the order of a group's photos rests on: a model that compared them, the local
- *  model's view of each, or what was measured alone. */
-export type Judge = "cloud" | "local" | "sharpness";
+/** What the order of a group's photos rests on: a model that compared them, how they are
+ *  composed, the local model's view of each, or what was measured alone. */
+export type Judge = "cloud" | "composition" | "local" | "sharpness";
+/** How a photo is framed, measured from its pixels: each part 0 to 1. `subject`: where what
+ *  stands out sits, across and down, if anything does; `tilt`: degrees off level of a long
+ *  near-level line, if there is one. */
+export type Framing = {
+  score: number;
+  placement: number;
+  subject: [number, number] | null;
+  cut: number;
+  clutter: number;
+  tilt: number | null;
+};
 /** The local model's view of a photo: each 0 to 1, above a half the better side. It tells the
  *  frames of a group apart; it is no rating. */
 export type Aesthetic = { composition: number; moment: number; mood: number; technical: number };
@@ -707,6 +718,11 @@ export type CullPhoto = {
   focus: string;
   /** How the local model saw it, once it has looked. */
   aesthetic: Aesthetic | null;
+  /** How it is framed, once measured. */
+  framing: Framing | null;
+  /** How well composed, 0 to 1, next to the others: its framing, with the local model's view
+   *  once it has looked at them all. Null until every photo of the group is framed. */
+  composition: number | null;
   /** 0 to 1, next to the others of its group. */
   score: number;
   reasons: string[];
@@ -724,6 +740,19 @@ export type CullGroup = {
   model: boolean;
   unseen: number;
   verdict: CullVerdict | null;
+  /** The photos worth keeping, the one to keep first: the best and the few as good that are
+   *  other pictures (or the ones picked before). */
+  suggested: number[];
+  /** The first of `order` for keeping a number asked for: the best, then the others but the
+   *  blurry ones where the best is not. Three at most. */
+  top: number[];
+  /** Photos picked by hand, not a group the analysis found. */
+  selection: boolean;
+  /** Photos asked for that could not be measured, left out. */
+  left_out: number;
+  /** How many of the photos have no framing measured: while there is one, composition does
+   *  not count in the order. */
+  unframed: number;
 };
 /** What a model that compared a group's frames said: who, how clear the choice is in its
  *  words, and how many of the frames it was shown (16 at most). */
@@ -736,9 +765,10 @@ export type Mark = "Nothing" | { Rating: number } | { Color: Color };
  *  image that is kept. */
 export type CullStep = { on: boolean; ops: [number, Op][]; binned: number[]; hidden: number[]; kept: number[]; unkept: number[]; skipped: number[] };
 export const cullGroup = (filter: Filter, id: string) => invoke<CullGroup>("cull_group", { filter, id });
-/** Keeps `keep` and deals with `rest`, as one step. */
-export const cullApply = (keep: number[], rest: number[], action: Rest, mark: Mark) =>
-  invoke<CullStep>("cull_apply", { keep, rest, action, mark });
+/** Keeps `keep` and deals with `rest`, as one step. `remember`: the kept are remembered as
+ *  their group's pick (not for photos picked by hand). */
+export const cullApply = (keep: number[], rest: number[], action: Rest, mark: Mark, remember = true) =>
+  invoke<CullStep>("cull_apply", { keep, rest, action, mark, remember });
 /** Takes a pick back, or makes it again: returns the step that turns it round once more. */
 export const cullRevert = (step: CullStep) => invoke<CullStep>("cull_revert", { step });
 /** Has the local model look at one group's photos; the group in its new order. */

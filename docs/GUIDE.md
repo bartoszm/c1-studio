@@ -61,7 +61,7 @@ opens by itself.
 To open plain photo folders instead of a catalog, see [Photo folders](#photo-folders).
 
 **Versions.** The menu shows which Capture One made the catalog, and whether reading and
-writing are checked for it. Catalogs from Capture One 16.8 are read and written; 16.5
+writing are checked for it. Catalogs from Capture One 16.8 and 16.9 are read and written; 16.5
 catalogs are read only; any other version is tried for reading only, untested. A
 read-only or untested catalog shows a badge in the footer ("read-only · 16.5"); you can
 still edit, and the edits stay queued in the app. When a catalog cannot be read at all,
@@ -784,16 +784,46 @@ oldest first, one group at a time. *Series* and *Duplicates* in its bar switch t
 it opens on the kind used last, or the other when there are none of it, at the first group
 you have not picked from yet: closed and opened again, it goes on where it was left.
 
+**Best of the photos you picked.** With two photos or more picked in the grid (Ctrl+click,
+Shift+click), `b` and *Best of…* choose among exactly those, as one group; so does *Best of
+N…* in the right-click menu. They need not be a burst or alike, and a photo not measured
+yet is measured on the way (one with no picture to read is left out, and the bar says
+so). Everything below works the same, but *Look at all* and *Ask about all…* (there is
+one group), and a pick from the photos you picked is not remembered as the pick of the
+series they are in: a series you picked from keeps its own pick. *Picked* beside *Series*
+and *Duplicates* goes back to them. Up to 200 photos at once.
+
 - The group's photos are side by side, as in [Compare](#browsing): the wheel zooms every
   pane together, `z` is 1:1, and two photos can be split, overlaid or blinked. A group of
   more than four shows four at a time; the strip below has them all, oldest first, each
   with its place in the suggested order.
-- One photo is **suggested** and starts as the active one. A higher rating wins; then
-  the sharpest, marked down for clipped highlights and shadows, and up a little for a
-  frame already edited. A blurry frame never wins over one that is not. The caption says
-  why (*sharpest*, *rated ★★★★*, *edited*, *clipped*, *blurry*), and the bar says when
-  the two best are too close to call. In a group you picked from before, the photo you
-  kept then is the one suggested (*picked before*), whatever was measured.
+- One photo is **suggested** and starts as the active one. A higher rating wins, and a
+  blurry frame never wins over one that is not. Then **composition**: how each photo is
+  framed is measured from its pixels, with no model (where the subject, what stands out by
+  its colour and detail, sits: on a third or in the middle, balanced when it fills the
+  frame; whether the edge of the frame cuts it, less at the bottom, as a portrait is
+  framed; how much busier the edges are than the rest; whether a long near-level line, a
+  horizon, is a degree or a few off). Once the local model has looked at the group, its
+  view of the composition is weighed in. Where the frames are composed differently,
+  that orders them (*Composition* is what the bar's tooltip says the order rests on);
+  frames within a few points of each other are composed alike, and between those the
+  sharpest wins, marked down for clipped highlights and shadows, and up a little for a
+  frame already edited. A group whose frames are all framed alike, a burst from one spot,
+  is decided by sharpness as before. The caption gives each photo's *composition* (0 to
+  100, its parts in the tooltip) and says why (*best composition*, *subject cut off*,
+  *busy edges*, *tilted horizon*, *sharpest*, *rated ★★★★*, *edited*, *clipped*,
+  *blurry*: a fault only where not every frame has it), the strip shows it as a second
+  bar, and the bar says when the two best are too close to call. In a group you picked
+  from before, the photo you kept then is the one suggested (*picked before*), whatever
+  was measured.
+- **Several to keep.** *Keep: 1 · 2 · 3 · Auto* in the bar (also *Settings › Culling ›
+  Suggest keeping*) says how many are suggested; they are marked to keep when a group is
+  shown, and Enter keeps them all. *2* and *3* take the best two or three, leaving out
+  blurry frames, and never the whole group: of two photos one is kept, of three two. *Auto*, the default, takes the best and up to two more that are as good
+  (within a few points of it, the same rating, not blurry) and are other pictures: the
+  subject sits elsewhere in the frame (*worth keeping too: framed otherwise*) or the
+  picture looks different (*another moment*). A burst of near copies keeps one; never
+  more than half a group. `g` goes back to the suggestion, `k` marks or unmarks.
 - **Look** (`r`) has the local model look at the group, so composition, moment and mood
   count too; **Look at all** (Shift+R) does every group in the background, oldest first,
   until it is done or stopped (the button counts the groups). It needs the local model

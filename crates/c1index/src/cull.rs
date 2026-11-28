@@ -46,6 +46,19 @@ pub struct NewView {
     pub scores: [f32; 4],
 }
 
+/// photo key → postcard [`Framed`].
+const FRAMINGS: TableDefinition<&str, &[u8]> = TableDefinition::new("framings");
+
+/// How a photo is framed, measured from its pixels ([`c1analysis::framing`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Framed {
+    /// [`c1analysis::FRAMING_VERSION`] that measured it: another version's is measured again.
+    pub version: u32,
+    /// The render measured, as the analysis stamps it (see [`View::stamp`]).
+    pub stamp: (u64, u64),
+    pub framing: c1analysis::Framing,
+}
+
 /// An answer's number → postcard [`Verdict`].
 const ANSWERS: TableDefinition<u64, &[u8]> = TableDefinition::new("answers");
 /// photo key → the number of the answer the photo was last shown for. An answer is found
@@ -186,6 +199,7 @@ impl CullBook {
         let tx = db.begin_write()?;
         tx.open_table(KEEPERS)?;
         tx.open_table(VIEWS)?;
+        tx.open_table(FRAMINGS)?;
         // Answers an earlier build kept under their group: they were paid for, and are
         // kept under their frames now, oldest first so that a later one wins.
         let mut by_group: Vec<Verdict> = Vec::new();
@@ -258,6 +272,37 @@ impl CullBook {
             let mut table = tx.open_table(VIEWS)?;
             for (key, view) in views {
                 table.insert(key.as_str(), postcard::to_stdvec(view)?.as_slice())?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// How each of these photos measured as framed, by key.
+    pub fn framings<'a>(&self, keys: impl IntoIterator<Item = &'a str>) -> anyhow::Result<HashMap<String, Framed>> {
+        let tx = self.db.begin_read()?;
+        let table = tx.open_table(FRAMINGS)?;
+        let mut out = HashMap::new();
+        for key in keys {
+            // One that no longer reads is measured again.
+            if let Some(bytes) = table.get(key)?
+                && let Ok(framed) = postcard::from_bytes::<Framed>(bytes.value())
+            {
+                out.insert(key.to_owned(), framed);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn put_framings(&self, framings: &[(String, Framed)]) -> anyhow::Result<()> {
+        if framings.is_empty() {
+            return Ok(());
+        }
+        let tx = self.db.begin_write()?;
+        {
+            let mut table = tx.open_table(FRAMINGS)?;
+            for (key, framed) in framings {
+                table.insert(key.as_str(), postcard::to_stdvec(framed)?.as_slice())?;
             }
         }
         tx.commit()?;

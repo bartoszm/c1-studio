@@ -1471,6 +1471,34 @@ fn a_models_view_of_a_photo_lasts_until_the_photo_is_rendered_again() {
 }
 
 #[test]
+fn a_framing_is_kept_only_of_the_render_the_analysis_measured() {
+    let (_d, lib, _source) = setup();
+    let key = |n: u32| lib.photo_id(row_of(&lib, n)).unwrap().key();
+    let (one, two, three) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3));
+    lib.put_analyses(vec![
+        (key(1), (1, 1), look(600, 400, [90; 3], 100.0, 1)),
+        (key(2), (1, 1), look(600, 400, [90; 3], 200.0, 2)),
+    ])
+    .unwrap();
+    let framing = |score| c1analysis::Framing { score, ..c1analysis::Framing::default() };
+    // Photo 2 was measured from another render than the analysis has, and photo 3 is not
+    // measured at all: neither is kept, and the caller hears how many were.
+    let kept =
+        lib.put_framings(vec![(one, (1, 1), framing(0.4)), (two, (9, 9), framing(0.6)), (three, (1, 1), framing(0.8))]);
+    assert_eq!(kept.unwrap(), 1);
+    let framings = lib.framings(&[one, two, three]).unwrap();
+    assert_eq!(framings.keys().copied().collect::<Vec<_>>(), [one]);
+    assert_eq!(framings[&one].score, 0.4);
+    // The analysis measures photo 1 again while its old render is being framed: the framing
+    // of the old render does not pass for one of the new, and the one kept is of the old.
+    lib.put_analyses(vec![(key(1), (2, 2), look(600, 400, [90; 3], 150.0, 1))]).unwrap();
+    assert_eq!(lib.put_framings(vec![(one, (1, 1), framing(0.5))]).unwrap(), 0);
+    assert!(lib.framings(&[one]).unwrap().is_empty());
+    assert_eq!(lib.put_framings(vec![(one, (2, 2), framing(0.7))]).unwrap(), 1);
+    assert_eq!(lib.framings(&[one]).unwrap()[&one].score, 0.7);
+}
+
+#[test]
 fn a_models_verdict_on_a_group_holds_for_the_photos_it_saw() {
     let (_d, lib, _source) = setup();
     let (one, two, three, four) = (row_of(&lib, 1), row_of(&lib, 2), row_of(&lib, 3), row_of(&lib, 4));

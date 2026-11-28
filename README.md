@@ -102,9 +102,10 @@ a red coat on a grey street), brightness, clipped highlights, blocked shadows an
 Filter by them (any or all of a card's picks), see why a photo is in each class, and move
 the lines in Settings with a live preview. Duplicates (the same moment shot twice) and
 series (bursts) are found across the library, and **Stack** shows one photo per burst.
-**Best of…** goes through them one group at a time, side by side with a suggestion (by
-sharpness and your ratings; by composition, moment and mood with the local model; or by
-Claude or Gemini comparing the frames): Enter keeps a photo and trashes, hides or marks
+**Best of…** goes through them one group at a time, or through the photos you picked, side
+by side with the ones to keep suggested (by your ratings, by composition measured from the
+pixels, then sharpness; by moment and mood too with the local model; or by Claude or
+Gemini comparing the frames): Enter keeps the suggested photos and trashes, hides or marks
 the rest, as one step to undo.
 
 ![Analysis of the search results: colour, light, focus, duplicates and series](docs/media/analysis.jpg)
@@ -165,8 +166,8 @@ If C1 Studio saves you time, you can support its development on
 
 ## Status
 
-Developed against a 100,000-photo catalog. Reading is tested on Capture One 16.5 and 16.8
-catalogs; writing on 16.8 only (other versions open read-only). Capture One may change
+Developed against a 100,000-photo catalog. Reading is tested on Capture One 16.5, 16.8
+and 16.9 catalogs; writing on 16.8 and 16.9 (other versions open read-only). Capture One may change
 its catalog format in any release: keep backups, and expect rough edges.
 
 C1 Studio is not affiliated with or endorsed by Capture One.
@@ -187,7 +188,7 @@ publisher: choose *More info* → *Run anyway*. Uninstall from *Settings → App
 The installer asks which kinds of photo source to offer: Capture One catalogs, photo
 folders or both (`/KINDS=capture-one,folders` for a silent install). The first time,
 nothing is open: choose a Capture One catalog (the `.cocatalogdb` file) or photo folders
-from the source menu at the top left. Catalogs from Capture One 16.8 are read and
+from the source menu at the top left. Catalogs from Capture One 16.8 and 16.9 are read and
 written, 16.5 read only; see [docs/GUIDE.md](docs/GUIDE.md).
 
 ### Linux and WSL

@@ -9,10 +9,10 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 use c1ai::aesthetic::{self, Aesthetic, Prompts};
 use c1ai::claude;
 use c1ai::models::SIGLIP2;
-use c1ai::pick::{self, PickAsk};
+use c1ai::pick::{self, Frames, PickAsk};
 use c1ai::siglip::Embedder;
 use c1ai::{AiError, RunRecord};
-use c1analysis::{Candidate, Judge};
+use c1analysis::{Candidate, Framing, Judge};
 use c1index::cull::NewView;
 use c1index::{Filter, Library, QueryOptions, Sort};
 use c1model::{ColorLabel, Op, Photo, Removal};
@@ -41,6 +41,11 @@ pub(crate) struct CullPhoto {
     focus: &'static str,
     /// How the local model saw it, once it has looked.
     aesthetic: Option<Aesthetic>,
+    /// How it is framed, measured from its pixels, once it has been.
+    framing: Option<Framing>,
+    /// How well composed, 0 to 1, next to the others of its group: its framing, with the
+    /// local model's view once it has looked at them all. None until every photo is framed.
+    composition: Option<f32>,
     /// 0 to 1, next to the others of its group.
     score: f32,
     reasons: Vec<String>,
@@ -65,6 +70,19 @@ pub(crate) struct CullGroupView {
     unseen: usize,
     /// What a model that compared the frames said, if one was asked.
     verdict: Option<VerdictView>,
+    /// The photos worth keeping, the one to keep first: it, and the few as good that are
+    /// other pictures. The ones picked before, where some were.
+    suggested: Vec<u64>,
+    /// The first of `order` for keeping a number asked for: the best, then the others but
+    /// the blurry ones where the best is not. Three at most.
+    top: Vec<u64>,
+    /// Photos picked by hand (a selection, not a group the analysis found).
+    selection: bool,
+    /// Of the photos asked for, how many could not be measured and are left out.
+    left_out: usize,
+    /// How many of `photos` have no framing measured (their render could not be read):
+    /// while there is one, composition does not count in the order.
+    unframed: usize,
 }
 
 /// A model's word on a group, for the bar.
@@ -79,11 +97,91 @@ pub(crate) struct VerdictView {
     sent: usize,
 }
 
+/// What a group of photos picked by hand is called: `pick:` and their rows, sorted, with
+/// commas between.
+const SELECTION: &str = "pick:";
+/// The most photos picked by hand to choose among.
+pub(crate) const SELECTION_MAX: usize = 200;
+
+/// The rows of a group of photos picked by hand, sorted; none for a duplicate group or a
+/// series.
+fn selection(id: &str) -> Option<Vec<u64>> {
+    let rows = id.strip_prefix(SELECTION)?;
+    let mut out: Vec<u64> = rows.split(',').filter_map(|r| r.trim().parse().ok()).collect();
+    out.sort_unstable();
+    out.dedup();
+    Some(out)
+}
+
 /// The rows of a group among the photos `filter` selects, oldest first: every frame that
-/// matches, stacked or not.
+/// matches, stacked or not. Of photos picked by hand, those of them the filter shows.
 fn group_rows(library: &Library, filter: &Filter, id: &str) -> Result<Vec<u64>, String> {
-    let narrowed = Filter { group: Some(id.to_owned()), stacked: false, ..filter.clone() };
+    let narrowed = match selection(id) {
+        Some(picked) => {
+            if picked.len() > SELECTION_MAX {
+                return Err(format!("Best of takes up to {SELECTION_MAX} photos at once: pick fewer"));
+            }
+            let rows = match &filter.rows {
+                Some(shown) => picked.into_iter().filter(|r| shown.contains(r)).collect(),
+                None => picked,
+            };
+            Filter { rows: Some(rows), group: None, stacked: false, ..filter.clone() }
+        }
+        None => Filter { group: Some(id.to_owned()), stacked: false, ..filter.clone() },
+    };
     Ok(library.query(&narrowed, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows)
+}
+
+/// Photos whose render could not be read to measure how they are framed, by the photo's
+/// key (its source and its id there, so a photo of another catalog, or one that took its
+/// row after a sync, is not taken for it): a group is got ready each time it is shown (and
+/// read ahead), and these are not tried, and logged, each time. Forgotten when choosing
+/// the best is left ([`cull_done`]), and for a group the local model is asked to look at,
+/// which makes the renders that are missing.
+static UNREADABLE: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+/// The key of each of `rows` that has one (a photo gone from the library has none).
+fn keyed(library: &Library, rows: &[u64]) -> Vec<(u64, String)> {
+    rows.iter().filter_map(|&row| Some((row, library.photo_id(row)?.key()))).collect()
+}
+
+/// The rows of `photos` (each with its key) without the ones `skip` holds.
+fn readable(skip: &HashSet<String>, photos: &[(u64, String)]) -> Vec<u64> {
+    photos.iter().filter(|(_, key)| !skip.contains(key)).map(|(row, _)| *row).collect()
+}
+
+/// `skip` without the `photos`: they are tried again.
+fn forget(skip: &mut HashSet<String>, photos: &[(u64, String)]) {
+    for (_, key) in photos {
+        skip.remove(key);
+    }
+}
+
+/// Gets a group's `rows` ready to be shown: how each is framed is measured where it is not
+/// kept for its render, and a photo not measured yet (one picked by hand) is measured on the
+/// way. A photo that cannot be read is left as it is (the view counts it) and not tried
+/// again until `afresh`.
+fn prepare(s: &Session, rows: &[u64], afresh: bool) {
+    let photos = keyed(&s.library, rows);
+    let rows = {
+        let mut skip = lock(&UNREADABLE);
+        if afresh {
+            forget(&mut skip, &photos);
+        }
+        readable(&skip, &photos)
+    };
+    let threads = c1index::analyse::default_threads();
+    match c1index::analyse::frame(&s.library, s.source.as_ref(), &s.thumbs, &rows, threads) {
+        Ok(failed) if failed.is_empty() => {}
+        Ok(failed) => {
+            let n = failed.len();
+            s.log.event(&format!("Best of: {n} photo(s) could not be read to measure their framing"), &[]);
+            // By the keys read before measuring: the photos that were tried.
+            let failed = photos.into_iter().filter(|(row, _)| failed.contains(row)).map(|(_, key)| key);
+            lock(&UNREADABLE).extend(failed);
+        }
+        Err(e) => s.log.event(&format!("Best of: measuring how photos are framed failed: {e:#}"), &[]),
+    }
 }
 
 /// What ranking calls the frame the model likes best.
@@ -113,7 +211,12 @@ fn group_view(library: &Library, filter: &Filter, id: &str) -> Result<CullGroupV
 
 /// [`group_view`] of the group `id` with `rows` as its photos.
 fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView, String> {
-    let kept: HashSet<u64> = library.kept_of(&rows).into_iter().collect();
+    let chosen = selection(id).is_some();
+    // Picks are made of the groups the analysis finds: photos picked by hand are chosen
+    // among afresh, whichever of them was kept of its own group.
+    let kept: HashSet<u64> = if chosen { HashSet::new() } else { library.kept_of(&rows).into_iter().collect() };
+    let framings = library.framings(&rows).map_err(text)?;
+    let asked = rows.len();
     // Only views scored the way photos are scored now: older ones wait to be scored again.
     let views = library.views(&rows).map_err(text)?;
     let seen =
@@ -128,6 +231,7 @@ fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView,
         let Some(photo) = library.photo(row).map_err(text)? else { continue };
         let Some(look) = library.look(row) else { continue };
         let a = &look.analysis;
+        let framing = framings.get(&row).copied();
         candidates.push(Candidate {
             sharpness: a.sharpness,
             highlights: a.highlights,
@@ -136,6 +240,9 @@ fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView,
             edited: photo.edit.edited,
             aesthetic: seen(row).map(|s| s.overall()),
             verdict: places.get(&row).cloned(),
+            hash: a.hash,
+            framing,
+            seen_composition: seen(row).map(|s| s.composition),
         });
         photos.push(CullPhoto {
             row,
@@ -147,13 +254,17 @@ fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView,
             sharpness: a.sharpness,
             focus: a.focus(&classes),
             aesthetic: seen(row),
+            framing,
+            composition: None,
             score: 0.0,
             reasons: Vec::new(),
         });
     }
+    let left_out = asked - photos.len();
     let ranked = c1analysis::rank(&candidates, &classes);
     for (photo, entry) in photos.iter_mut().zip(ranked.entries) {
         photo.score = entry.score;
+        photo.composition = entry.composition;
         photo.reasons = entry.reasons;
     }
     // The best picture by the model's view is said by what sets it apart, where something does.
@@ -165,6 +276,9 @@ fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView,
         {
             *reason = format!("best {way}");
         }
+        // Measured and seen alike: said once.
+        let mut said = HashSet::new();
+        photo.reasons.retain(|r| said.insert(r.clone()));
     }
     // The user's own choice, made before, outranks any measure.
     let picked: Vec<bool> = photos.iter().map(|p| p.kept).collect();
@@ -172,7 +286,18 @@ fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView,
     for photo in photos.iter_mut().filter(|p| p.kept) {
         photo.reasons.insert(0, PICKED_BEFORE.to_owned());
     }
+    // The photos picked before are what is suggested again, where there are some.
+    let suggested: Vec<u64> = if picked.contains(&true) {
+        order.iter().filter(|&&i| picked[i]).map(|&i| photos[i].row).collect()
+    } else {
+        ranked.suggest.iter().map(|&i| photos[i].row).collect()
+    };
     Ok(CullGroupView {
+        suggested,
+        top: ranked.top.iter().map(|&i| photos[i].row).collect(),
+        selection: chosen,
+        left_out,
+        unframed: photos.iter().filter(|p| p.framing.is_none()).count(),
         id: id.to_owned(),
         close: ranked.close && !picked.contains(&true),
         order: order.iter().map(|&i| photos[i].row).collect(),
@@ -245,8 +370,18 @@ fn frames_to_ask(library: &Library, id: &str, rows: &[u64]) -> Result<Vec<u64>, 
 /// Counts a call about the group `id` with the rest of what the models were asked. One
 /// that cannot be counted is logged: the answer is not lost for it.
 fn count_call(s: &Session, id: &str, record: &RunRecord) {
+    let id = &label(id);
     if let Err(e) = s.library.record_ask(id, record) {
         s.log.event(&format!("Best of: the call about {id} could not be counted: {e:#}"), &[]);
+    }
+}
+
+/// A group as the log names it: photos picked by hand by the first of them and how many,
+/// not every row.
+fn label(id: &str) -> String {
+    match selection(id) {
+        Some(rows) => format!("{SELECTION}{}+{}", rows.first().copied().unwrap_or(0), rows.len()),
+        None => id.to_owned(),
     }
 }
 
@@ -291,7 +426,14 @@ fn ask_about(s: &Session, asker: &Asker, id: &str, rows: &[u64]) -> Result<(), N
             .and_then(|found| found.ok_or_else(|| "a photo of the group has no image to send".to_owned()));
         pictures.push(picture.map_err(NoAnswer::Group)?);
     }
-    let ask = PickAsk { frames: sent.len(), series: id.starts_with("series:"), sheet: asker.sheet() };
+    let kind = if selection(id).is_some() {
+        Frames::Chosen
+    } else if id.starts_with("series:") {
+        Frames::Burst
+    } else {
+        Frames::Twice
+    };
+    let ask = PickAsk { frames: sent.len(), kind, sheet: asker.sheet() };
     // Counted with the rest of what the models were asked, an answer that could not be
     // used too: it was paid for all the same.
     let (answer, record) = match asker.ask(&pick::message(&ask), &pictures) {
@@ -332,6 +474,7 @@ pub(crate) async fn ask_group(app: State<'_, App>, filter: Filter, id: String) -
         // Before a picture is loaded: with no key or no sign-in there is nothing to send.
         let asker = asker(&load_settings(&s), Arc::default(), &pick::system(), pick::schema())?;
         let rows = group_rows(&s.library, &filter, &id)?;
+        prepare(&s, &rows, false);
         ask_about(&s, &asker, &id, &rows).map_err(text)?;
         group_view(&s.library, &filter, &id)
     })
@@ -722,8 +865,11 @@ pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) 
         // One group, asked for by hand: a run stopped before does not stop it.
         let go = AtomicBool::new(false);
         let rows = group_rows(&s.library, &filter, &id)?;
+        prepare(&s, &rows, true);
         let mut eye = ModelEye { s: &s, stop: &go, make: true, ranker: None };
         look_at(&s.library, &rows, &go, &mut eye)?;
+        // The look made the renders that were missing: what could not be framed may be now.
+        prepare(&s, &rows, true);
         group_view(&s.library, &filter, &id)
     })
     .await
@@ -815,6 +961,7 @@ fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool)
             break;
         }
         let rows = group_rows(&s.library, filter, &id)?;
+        prepare(s, &rows, false);
         let looked = look_at(&s.library, &rows, &JOB.stop, &mut eye)?;
         // Stopped in the middle of a group: what was seen of it is kept, but it is not done.
         if looked.stopped {
@@ -897,6 +1044,7 @@ pub(crate) async fn cull_done() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         JOB.wanted.store(false, Ordering::SeqCst);
         JOB.release();
+        lock(&UNREADABLE).clear();
     })
     .await
     .map_err(text)
@@ -907,7 +1055,12 @@ pub(crate) async fn cull_done() -> Result<(), String> {
 #[tauri::command]
 pub(crate) async fn cull_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
     let s = app.session()?;
-    tauri::async_runtime::spawn_blocking(move || group_view(&s.library, &filter, &id)).await.map_err(text)?
+    tauri::async_runtime::spawn_blocking(move || {
+        prepare(&s, &group_rows(&s.library, &filter, &id)?, false);
+        group_view(&s.library, &filter, &id)
+    })
+    .await
+    .map_err(text)?
 }
 
 /// What becomes of the photos of a group that were not kept.
@@ -1000,13 +1153,14 @@ fn apply(
     rest: &[u64],
     action: Rest,
     mark: Mark,
+    remember: bool,
 ) -> Result<CullStep, String> {
     if keep.is_empty() {
         return Err("No photo to keep was named: a pick keeps one at least".into());
     }
     let rest: Vec<u64> = rest.iter().copied().filter(|row| !keep.contains(row)).collect();
     let mut step = CullStep { on: true, ..CullStep::default() };
-    match carry_out(library, removes, keep, &rest, action.at(removes), mark, &mut step) {
+    match carry_out(library, removes, keep, &rest, action.at(removes), mark, remember, &mut step) {
         Ok(()) => Ok(step),
         Err(e) => match revert(library, step) {
             Ok(_) => Err(e),
@@ -1016,6 +1170,7 @@ fn apply(
 }
 
 /// [`apply`], with what it did so far written to `step` as it goes.
+#[allow(clippy::too_many_arguments)]
 fn carry_out(
     library: &Library,
     removes: Removal,
@@ -1023,6 +1178,7 @@ fn carry_out(
     rest: &[u64],
     action: Rest,
     mark: Mark,
+    remember: bool,
     step: &mut CullStep,
 ) -> Result<(), String> {
     let mut all: Vec<u64> = keep.iter().chain(rest).copied().collect();
@@ -1051,7 +1207,12 @@ fn carry_out(
     // The picks, and the groups stacked again, once: also those of the variants that went
     // to the trash with their image.
     all.extend(&step.binned);
-    (step.kept, step.unkept) = library.repick(keep, rest, &all).map_err(err)?;
+    if remember {
+        (step.kept, step.unkept) = library.repick(keep, rest, &all).map_err(err)?;
+    } else {
+        // Photos picked by hand: the picks of the groups they are in stay as they were.
+        library.restack(&all).map_err(err)?;
+    }
     Ok(())
 }
 
@@ -1071,7 +1232,8 @@ fn revert(library: &Library, step: CullStep) -> Result<CullStep, String> {
 }
 
 /// Keeps `keep` of a group and deals with `rest` as `action` says, as one step: the photos
-/// kept are marked (`mark`) and stand for their group when stacked. Returns what
+/// kept are marked (`mark`) and, unless `remember` is false (photos picked by hand), are
+/// remembered as the ones to keep and stand for their group when stacked. Returns what
 /// [`cull_revert`] takes back.
 #[tauri::command]
 pub(crate) async fn cull_apply(
@@ -1080,11 +1242,13 @@ pub(crate) async fn cull_apply(
     rest: Vec<u64>,
     action: Rest,
     mark: Mark,
+    remember: Option<bool>,
 ) -> Result<CullStep, String> {
     let s = app.session()?;
     tauri::async_runtime::spawn_blocking(move || {
         s.touched();
-        apply(&s.library, s.source.capabilities().removes, &keep, &rest, action, mark)
+        let remember = remember.unwrap_or(true);
+        apply(&s.library, s.source.capabilities().removes, &keep, &rest, action, mark, remember)
     })
     .await
     .map_err(text)?
@@ -1464,7 +1628,8 @@ mod tests {
         let before = left(&library, &rows);
         assert_eq!(before, (vec![], vec![], vec![], vec![three], vec![None; 3]), "the sharpest is on show");
 
-        let step = apply(&library, Removal::Files, &[two], &[one, two, three], Rest::Trash, Mark::Rating(5)).unwrap();
+        let step =
+            apply(&library, Removal::Files, &[two], &[one, two, three], Rest::Trash, Mark::Rating(5), true).unwrap();
         assert_eq!((&step.binned, &step.kept, &step.unkept), (&vec![one, three], &vec![two], &vec![]));
         let picked = (vec![one, three], vec![], vec![two], vec![two], vec![None, Some(5), None]);
         assert_eq!(left(&library, &rows), picked, "2 is kept, rated and on show; 2 named in the rest stays");
@@ -1482,17 +1647,18 @@ mod tests {
         let (_dir, library, rows) = burst();
         let [one, two, three, _] = rows;
         // Picked once with the rest left as it is: all three are still there.
-        apply(&library, Removal::Files, &[one], &[two, three], Rest::Nothing, Mark::Nothing).unwrap();
+        apply(&library, Removal::Files, &[one], &[two, three], Rest::Nothing, Mark::Nothing, true).unwrap();
         let first = left(&library, &rows);
         assert_eq!(first, (vec![], vec![], vec![one], vec![one], vec![None; 3]));
 
         // Picked again, another one: the earlier pick is the rest now, and no pick any more.
-        let step = apply(&library, Removal::Files, &[two], &[one, three], Rest::Rating(1), Mark::Nothing).unwrap();
+        let step =
+            apply(&library, Removal::Files, &[two], &[one, three], Rest::Rating(1), Mark::Nothing, true).unwrap();
         assert_eq!((&step.kept, &step.unkept), (&vec![two], &vec![one]));
         assert_eq!(left(&library, &rows), (vec![], vec![], vec![two], vec![two], vec![Some(1), None, Some(1)]));
 
         // To the trash this time, the earlier pick with the rest.
-        let again = apply(&library, Removal::Files, &[three], &[one, two], Rest::Trash, Mark::Nothing).unwrap();
+        let again = apply(&library, Removal::Files, &[three], &[one, two], Rest::Trash, Mark::Nothing, true).unwrap();
         assert_eq!(left(&library, &rows).2, [three], "a photo in the trash is no pick");
         revert(&library, again).unwrap();
         // Taken back, the earlier picks are picks again.
@@ -1508,23 +1674,134 @@ mod tests {
         let [one, two, three, four] = rows;
         let before = left(&library, &rows);
         // Nothing kept: nothing is done, whatever the rest.
-        assert!(apply(&library, Removal::Files, &[], &[one, two, three], Rest::Trash, Mark::Nothing).is_err());
+        assert!(apply(&library, Removal::Files, &[], &[one, two, three], Rest::Trash, Mark::Nothing, true).is_err());
         assert_eq!(left(&library, &rows), before);
 
         // A source that removes nothing: the rest is hidden, not put in a trash it has not got.
-        let step = apply(&library, Removal::None, &[three], &[one, two], Rest::Trash, Mark::Nothing).unwrap();
+        let step = apply(&library, Removal::None, &[three], &[one, two], Rest::Trash, Mark::Nothing, true).unwrap();
         assert_eq!((&step.binned, &step.hidden), (&vec![], &vec![one, two]));
         revert(&library, step).unwrap();
         assert_eq!(left(&library, &rows), before);
 
         // A source that trashes whole images: 4 is a variant of the image kept, and is left;
         // kept the other way round, it goes with its image, shown in the group or not.
-        let step = apply(&library, Removal::MarksTrashed, &[one], &[two, four], Rest::Trash, Mark::Nothing).unwrap();
+        let step =
+            apply(&library, Removal::MarksTrashed, &[one], &[two, four], Rest::Trash, Mark::Nothing, true).unwrap();
         assert_eq!((&step.binned, &step.skipped), (&vec![two], &vec![four]));
         revert(&library, step).unwrap();
-        let step = apply(&library, Removal::MarksTrashed, &[two], &[one, three], Rest::Trash, Mark::Nothing).unwrap();
+        let step =
+            apply(&library, Removal::MarksTrashed, &[two], &[one, three], Rest::Trash, Mark::Nothing, true).unwrap();
         assert_eq!(step.binned, [one, three, four]);
         revert(&library, step).unwrap();
         assert_eq!(left(&library, &rows), before);
+    }
+
+    /// A grey picture with a red square at (`x`, `y`) (shares of the frame): somewhere for
+    /// a subject to sit.
+    fn scene(x: f32, y: f32) -> c1image::RgbImage {
+        let (w, h) = (300u32, 200u32);
+        let mut px = Vec::with_capacity((w * h * 3) as usize);
+        for j in 0..h {
+            for i in 0..w {
+                let inside = (i as f32 / w as f32 - x).abs() < 0.05 && (j as f32 / h as f32 - y).abs() < 0.075;
+                px.extend_from_slice(if inside { &[210, 30, 30] } else { &[128, 128, 128] });
+            }
+        }
+        c1image::RgbImage::from_raw(w, h, px).unwrap()
+    }
+
+    fn picked(rows: &[u64]) -> String {
+        format!("{SELECTION}{}", rows.iter().map(u64::to_string).collect::<Vec<_>>().join(","))
+    }
+
+    #[test]
+    fn a_selection_id_names_its_rows_and_resolves_them_under_the_filter() {
+        assert_eq!(selection("pick:3,1,1, 2"), Some(vec![1, 2, 3]));
+        assert_eq!(selection("series:4"), None);
+        assert_eq!(label("pick:9,4,7"), "pick:4+3");
+        assert_eq!(label("dup:4"), "dup:4");
+        let (_dir, library, rows) = burst();
+        let [one, _, three, four] = rows;
+        let id = picked(&[three, four, one]);
+        // Oldest first: 4 was taken before the burst.
+        assert_eq!(group_rows(&library, &Filter::default(), &id).unwrap(), [four, one, three]);
+        let narrower = Filter { rows: Some(vec![one, three]), ..Filter::default() };
+        assert_eq!(group_rows(&library, &narrower, &id).unwrap(), [one, three]);
+        let many: Vec<u64> = (0..=SELECTION_MAX as u64).collect();
+        assert!(group_rows(&library, &Filter::default(), &picked(&many)).is_err());
+    }
+
+    #[test]
+    fn photos_picked_by_hand_are_chosen_among_afresh_and_leave_the_groups_picks_alone() {
+        let (_dir, library, rows) = burst();
+        let [one, two, three, _] = rows;
+        apply(&library, Removal::Files, &[two], &[one, three], Rest::Nothing, Mark::Nothing, true).unwrap();
+        let id = picked(&[one, two, three]);
+        let view = group_view(&library, &Filter::default(), &id).unwrap();
+        assert!(view.selection);
+        assert!(view.photos.iter().all(|p| !p.kept && !p.reasons.contains(&PICKED_BEFORE.to_owned())));
+        assert_eq!(view.order[0], three, "the sharpest, not the series' pick");
+        assert_eq!(view.suggested[0], three);
+
+        // Kept from the selection: the series keeps its own pick, and it is undone whole.
+        let step =
+            apply(&library, Removal::Files, &[one], &[two, three], Rest::Rating(1), Mark::Nothing, false).unwrap();
+        assert!(step.kept.is_empty() && step.unkept.is_empty());
+        assert_eq!(library.kept_of(&rows), [two]);
+        revert(&library, step).unwrap();
+        assert_eq!(library.kept_of(&rows), [two]);
+        assert_eq!(left(&library, &rows).4, [None; 3]);
+    }
+
+    #[test]
+    fn framing_is_measured_once_per_render_and_a_photo_not_measured_is_measured_too() {
+        let (_dir, library, rows) = burst();
+        let [one, two, three, four] = rows;
+        let calls = AtomicUsize::new(0);
+        let at = [(one, 0.14), (two, 1.0 / 3.0), (three, 0.5), (four, 2.0 / 3.0)];
+        let stamp = AtomicUsize::new(1);
+        let load = |row: u64| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            let x = at.iter().find(|(r, _)| *r == row)?.1;
+            let s = stamp.load(Ordering::SeqCst) as u64;
+            Some(((s, s), scene(x, 0.3)))
+        };
+        assert!(library.look(four).is_none(), "4 is no part of the burst and was never measured");
+        assert_eq!(c1index::analyse::frame_with(&library, &rows, 2, &load).unwrap(), [0u64; 0]);
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(library.look(four).is_some(), "measured on the way");
+        assert_eq!(library.framings(&rows).unwrap().len(), 4);
+        // Kept: nothing is read again.
+        c1index::analyse::frame_with(&library, &rows, 2, &load).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        // Rendered again: measured again.
+        library.put_analyses(vec![(library.photo_id(one).unwrap().key(), (7, 7), look(100.0, 0))]).unwrap();
+        stamp.store(7, Ordering::SeqCst);
+        c1index::analyse::frame_with(&library, &rows, 2, &load).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        // One that cannot be read is counted.
+        library.put_analyses(vec![(library.photo_id(two).unwrap().key(), (8, 8), look(300.0, 0))]).unwrap();
+        assert_eq!(c1index::analyse::frame_with(&library, &rows, 1, &|_| None).unwrap(), [two]);
+        // The view says so: composition does not count while one is not framed.
+        let view = group_view(&library, &Filter::default(), &picked(&[one, two, three])).unwrap();
+        assert_eq!((view.unframed, view.judge), (1, Judge::Sharpness));
+        // Not tried again while it is remembered as unreadable, and again once forgotten.
+        // A photo is remembered by its key: the same row of another catalog is not it.
+        let photos = keyed(&library, &[one, two, three]);
+        let mut skip = HashSet::from([photos[1].1.clone(), format!("another catalog:{two}")]);
+        assert_eq!(readable(&skip, &photos), [one, three]);
+        let elsewhere = [(two, format!("a third catalog:{two}"))];
+        assert_eq!(readable(&skip, &elsewhere), [two]);
+        forget(&mut skip, &keyed(&library, &[two]));
+        assert_eq!(readable(&skip, &photos), [one, two, three]);
+        assert_eq!(skip.len(), 1, "only the group's photos are forgotten");
+        assert_eq!(c1index::analyse::frame_with(&library, &rows, 1, &load).unwrap(), [0u64; 0]);
+
+        // Every photo framed: the order goes by composition, and each has its score.
+        let view = group_view(&library, &Filter::default(), &picked(&[one, three, four])).unwrap();
+        assert!(view.photos.iter().all(|p| p.framing.is_some() && p.composition.is_some()), "{:?}", view.judge);
+        assert_eq!((view.left_out, view.unframed), (0, 0));
+        assert_eq!(view.suggested[0], view.order[0]);
+        assert_eq!(view.top[0], view.order[0]);
     }
 }

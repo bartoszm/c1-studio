@@ -241,13 +241,17 @@ filter when its sharpest does not.
 ## Choose the best of a burst
 
 **Best of…** (or `b`) goes through the series and duplicate groups among the photos shown,
-one at a time. The group's photos are side by side, with the comparison's zoom and modes,
-and one is suggested: a higher rating first, then the sharpest. *Look* has the local model
-weigh composition, moment and mood; *Ask AI* has Claude or Gemini compare the frames and
-say what sets each apart. Enter keeps the active
-photo and deals with the rest (to the trash, hidden, rated or tagged: your choice), then
-shows the next group. Each pick is one Ctrl+Z, and a photo you keep stands for its group
-when Stack is on.
+one at a time, or, with two photos or more picked, chooses among those as one group. The
+group's photos are side by side, with the comparison's zoom and modes, and the ones to
+keep are suggested: a higher rating first, sharp before blurry, then the best composed
+(where the subject sits, an edge cutting it, busy edges, a tilted horizon, measured from
+the pixels), then the sharpest. *Keep: 1 · 2 · 3 · Auto* says how many are suggested;
+*Auto* adds to the best up to two more that are as good and are other pictures. *Look* has
+the local model weigh composition, moment and mood; *Ask AI* has Claude or Gemini compare
+the frames and say what sets each apart. Enter keeps the active photo and the marked ones
+and deals with the rest (to the trash, hidden, rated or tagged: your choice), then shows
+the next group. Each pick is one Ctrl+Z, and a photo you keep stands for its group when
+Stack is on.
 
 [In the guide: Choosing the best of alike photos](GUIDE.md#choosing-the-best-of-alike-photos)
 

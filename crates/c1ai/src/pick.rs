@@ -18,11 +18,21 @@ pub const MAX_FRAMES: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PickAsk {
     pub frames: usize,
-    /// A burst (frames moments apart), not the same moment saved twice.
-    pub series: bool,
+    pub kind: Frames,
     /// The frames are cells of one contact sheet, numbered in their corners; else each is
     /// an image of its own, in order.
     pub sheet: bool,
+}
+
+/// What kind of group the frames are.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Frames {
+    /// A burst: frames moments apart.
+    Burst,
+    /// The same moment saved more than once.
+    Twice,
+    /// Photos the photographer picked to compare, of one moment or not.
+    Chosen,
 }
 
 /// What the model comparing frames is told.
@@ -45,7 +55,13 @@ frame numbers in them."
 
 /// The user message: what the frames are and how they are shown.
 pub fn message(ask: &PickAsk) -> String {
-    let kind = if ask.series { "a burst, in the order taken" } else { "one moment saved more than once" };
+    // A burst and a moment saved twice are asked about as they always were: the answers
+    // kept stand (see [`VERSION`]).
+    let kind = match ask.kind {
+        Frames::Burst => "a burst, in the order taken",
+        Frames::Twice => "one moment saved more than once",
+        Frames::Chosen => "photos the photographer picked to compare, in the order taken; they need not be one moment",
+    };
     let shown = if ask.sheet {
         "They are the cells of the contact sheet, each numbered in its top left corner."
     } else {
@@ -136,11 +152,16 @@ mod tests {
 
     #[test]
     fn the_message_says_what_the_frames_are_and_how_they_are_shown() {
-        let burst = message(&PickAsk { frames: 5, series: true, sheet: true });
+        let burst = message(&PickAsk { frames: 5, kind: Frames::Burst, sheet: true });
         assert!(burst.starts_with("5 frames of a burst"));
         assert!(burst.contains("contact sheet"));
-        let twice = message(&PickAsk { frames: 2, series: false, sheet: false });
+        let twice = message(&PickAsk { frames: 2, kind: Frames::Twice, sheet: false });
         assert!(twice.contains("saved more than once") && twice.contains("first image is frame 1"));
+        let chosen = message(&PickAsk { frames: 4, kind: Frames::Chosen, sheet: false });
+        assert!(
+            chosen.starts_with("4 frames of photos the photographer picked")
+                && chosen.contains("need not be one moment")
+        );
     }
 
     #[test]

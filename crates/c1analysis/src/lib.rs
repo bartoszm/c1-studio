@@ -8,6 +8,7 @@
 //! background.
 
 mod colour;
+mod framing;
 mod groups;
 mod rank;
 
@@ -16,8 +17,9 @@ use image::{GrayImage, RgbImage};
 use serde::{Deserialize, Serialize};
 
 pub use colour::{HUES, MONO, MONO_SPREAD, NEUTRAL, name_of, stats_from_palette};
+pub use framing::{BUSY_EDGES, CUT_OFF, FRAMING_VERSION, Framing, TILTED, WELL_PLACED, framing};
 pub use groups::{DUPLICATE_MAX, Groups, Taken, distance, group};
-pub use rank::{Candidate, Entry, Judge, Ranked, rank};
+pub use rank::{ANOTHER_MOMENT, BEST_COMPOSITION, Candidate, Entry, FRAMED_OTHERWISE, Judge, Ranked, rank};
 
 /// Bumped when what [`analyse`] measures changes: stored results of another version are
 /// measured again. 2: per colour, its share of the pixels and its biggest patch. 3: the

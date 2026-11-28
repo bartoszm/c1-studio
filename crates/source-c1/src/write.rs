@@ -19,7 +19,8 @@ use c1model::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-use crate::catalog::{self, EXPECTED_ZVERSION, db_err};
+use crate::catalog::{self, db_err};
+use crate::compat;
 use crate::extract::blank;
 use crate::{albums, config, keywords, process};
 
@@ -59,8 +60,8 @@ fn structure(catalog: &Path) -> Result<()> {
         return Err(SourceError::Schema(format!("journal mode is {mode:?}, expected \"delete\"")));
     }
     let zversion = catalog::zversion(&con)?;
-    if zversion != EXPECTED_ZVERSION {
-        return Err(SourceError::Schema(format!("ZVERSION is {zversion}, expected {EXPECTED_ZVERSION}")));
+    if !compat::writes(zversion) {
+        return Err(SourceError::Schema(format!("ZVERSION is {zversion}, expected {}", compat::written_schemas())));
     }
     Ok(())
 }
@@ -648,8 +649,11 @@ pub(crate) fn restore(catalog: &Path, dir: &Path, keep: usize, name: &str) -> Re
         return Err(SourceError::Other(format!("the backup is damaged: {check}")));
     }
     let zversion = catalog::zversion(&from)?;
-    if zversion != EXPECTED_ZVERSION {
-        return Err(SourceError::Schema(format!("the backup's ZVERSION is {zversion}, expected {EXPECTED_ZVERSION}")));
+    if !compat::writes(zversion) {
+        return Err(SourceError::Schema(format!(
+            "the backup's ZVERSION is {zversion}, expected {}",
+            compat::written_schemas()
+        )));
     }
     drop(from);
     let when = chosen.created.get(..16).unwrap_or(&chosen.created).replace('T', " ");

@@ -5,7 +5,7 @@
   import { defaultSections, move } from "./lib/sections";
   import { settings } from "./lib/settings.svelte";
   import { SESSION_GAP_MAX, sessionGap } from "./lib/around";
-  import { KEEPER_CHOICES, REST_CHOICES, type KeeperChoice, type RestChoice } from "./lib/cull";
+  import { KEEPER_CHOICES, REST_CHOICES, SUGGEST_CHOICES, type KeeperChoice, type RestChoice, type SuggestChoice } from "./lib/cull";
   import { COLOR_NAMES } from "./lib/format";
 
   const REST_WORDS: Record<RestChoice, string> = {
@@ -19,6 +19,12 @@
     nothing: "stay as they are",
     rating: "get the rating",
     colour: "get the colour tag",
+  };
+  const SUGGEST_WORDS: Record<SuggestChoice, string> = {
+    best: "the best only",
+    two: "the best two",
+    three: "the best three",
+    auto: "as many as are as good (up to three)",
   };
   import ClassSettings from "./ClassSettings.svelte";
   import AiProviderSettings from "./AiProviderSettings.svelte";
@@ -245,6 +251,21 @@
       group at a time. Enter keeps the active photo, and the ones marked with <kbd>k</kbd>; this is what happens to the others
       of the group, and to the ones kept. Every pick is one step to undo.
     </p>
+    <div class="option">
+      <span>
+        Suggest keeping
+        <select bind:value={settings.cull.suggest} aria-label="How many of a group to suggest keeping">
+          {#each SUGGEST_CHOICES as choice (choice)}
+            <option value={choice}>{SUGGEST_WORDS[choice]}</option>
+          {/each}
+        </select>
+        <small class="muted">
+          The photos suggested are marked to keep when a group is shown; <kbd>k</kbd> marks or unmarks one, <kbd>g</kbd> goes back
+          to the suggestion. <em>As many as are as good</em> adds up to two to the best where they are other pictures (framed
+          otherwise, another moment), never a blurry one or one rated lower.
+        </small>
+      </span>
+    </div>
     <div class="option">
       <span>
         The photos not kept
