@@ -140,7 +140,8 @@ def preflight(catalog: Path, *, write: bool, force: bool = False) -> GuardReport
     if info["version_supported"]:
         report.add("catalog_version", "ok", f"ZVERSION={info['zversion']}")
     else:
-        detail = f"ZVERSION={info['zversion']}, expected {config.EXPECTED_ZVERSION}"
+        supported = " or ".join(str(v) for v in config.SUPPORTED_ZVERSIONS)
+        detail = f"ZVERSION={info['zversion']}, expected {supported}"
         if write and not force:
             report.add("catalog_version", "fail", detail)
             raise Refused(

@@ -785,8 +785,13 @@ fn start_analysis(app: &AppHandle) {
         });
         let last = s.analysis.lock().unwrap().clone();
         report(AnalysisState { running: false, ..last });
-        if let Err(e) = &result {
-            s.log.event(&format!("Measuring photos failed: {e:#}"), &[]);
+        match &result {
+            Ok(done) if done.unframed > 0 => {
+                let n = done.unframed;
+                s.log.event(&format!("Measuring photos: the framing of {n} photo(s) was not kept"), &[]);
+            }
+            Ok(_) => {}
+            Err(e) => s.log.event(&format!("Measuring photos failed: {e:#}"), &[]),
         }
         if is_current(&handle, &s) {
             if let Err(e) = result {

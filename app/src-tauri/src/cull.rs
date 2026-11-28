@@ -132,21 +132,29 @@ fn group_rows(library: &Library, filter: &Filter, id: &str) -> Result<Vec<u64>, 
     Ok(library.query(&narrowed, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows)
 }
 
-/// Photos whose render could not be read to measure how they are framed, by library and
-/// row: a group is got ready each time it is shown (and read ahead), and these are not
-/// tried, and logged, each time. Forgotten when choosing the best is left
-/// ([`cull_done`]), and for a group the local model is asked to look at, which makes the
-/// renders that are missing.
-static UNREADABLE: LazyLock<Mutex<HashSet<(usize, u64)>>> = LazyLock::new(Mutex::default);
+/// Photos whose render could not be read to measure how they are framed, by the photo's
+/// key (its source and its id there, so a photo of another catalog, or one that took its
+/// row after a sync, is not taken for it): a group is got ready each time it is shown (and
+/// read ahead), and these are not tried, and logged, each time. Forgotten when choosing
+/// the best is left ([`cull_done`]), and for a group the local model is asked to look at,
+/// which makes the renders that are missing.
+static UNREADABLE: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
 
-/// What tells one open library from another in [`UNREADABLE`].
-fn library_id(s: &Session) -> usize {
-    std::ptr::from_ref(&s.library) as usize
+/// The key of each of `rows` that has one (a photo gone from the library has none).
+fn keyed(library: &Library, rows: &[u64]) -> Vec<(u64, String)> {
+    rows.iter().filter_map(|&row| Some((row, library.photo_id(row)?.key()))).collect()
 }
 
-/// `rows` without the ones `skip` holds for the library `of`.
-fn readable(skip: &HashSet<(usize, u64)>, of: usize, rows: &[u64]) -> Vec<u64> {
-    rows.iter().copied().filter(|&row| !skip.contains(&(of, row))).collect()
+/// The rows of `photos` (each with its key) without the ones `skip` holds.
+fn readable(skip: &HashSet<String>, photos: &[(u64, String)]) -> Vec<u64> {
+    photos.iter().filter(|(_, key)| !skip.contains(key)).map(|(row, _)| *row).collect()
+}
+
+/// `skip` without the `photos`: they are tried again.
+fn forget(skip: &mut HashSet<String>, photos: &[(u64, String)]) {
+    for (_, key) in photos {
+        skip.remove(key);
+    }
 }
 
 /// Gets a group's `rows` ready to be shown: how each is framed is measured where it is not
@@ -154,13 +162,13 @@ fn readable(skip: &HashSet<(usize, u64)>, of: usize, rows: &[u64]) -> Vec<u64> {
 /// way. A photo that cannot be read is left as it is (the view counts it) and not tried
 /// again until `afresh`.
 fn prepare(s: &Session, rows: &[u64], afresh: bool) {
-    let of = library_id(s);
+    let photos = keyed(&s.library, rows);
     let rows = {
         let mut skip = lock(&UNREADABLE);
         if afresh {
-            skip.retain(|(library, row)| *library != of || !rows.contains(row));
+            forget(&mut skip, &photos);
         }
-        readable(&skip, of, rows)
+        readable(&skip, &photos)
     };
     let threads = c1index::analyse::default_threads();
     match c1index::analyse::frame(&s.library, s.source.as_ref(), &s.thumbs, &rows, threads) {
@@ -168,7 +176,9 @@ fn prepare(s: &Session, rows: &[u64], afresh: bool) {
         Ok(failed) => {
             let n = failed.len();
             s.log.event(&format!("Best of: {n} photo(s) could not be read to measure their framing"), &[]);
-            lock(&UNREADABLE).extend(failed.into_iter().map(|row| (of, row)));
+            // By the keys read before measuring: the photos that were tried.
+            let failed = photos.into_iter().filter(|(row, _)| failed.contains(row)).map(|(_, key)| key);
+            lock(&UNREADABLE).extend(failed);
         }
         Err(e) => s.log.event(&format!("Best of: measuring how photos are framed failed: {e:#}"), &[]),
     }
@@ -1776,10 +1786,15 @@ mod tests {
         let view = group_view(&library, &Filter::default(), &picked(&[one, two, three])).unwrap();
         assert_eq!((view.unframed, view.judge), (1, Judge::Sharpness));
         // Not tried again while it is remembered as unreadable, and again once forgotten.
-        let mut skip = HashSet::from([(1, two), (2, one)]);
-        assert_eq!(readable(&skip, 1, &[one, two, three]), [one, three]);
-        skip.retain(|(library, row)| *library != 1 || ![two].contains(row));
-        assert_eq!(readable(&skip, 1, &[one, two, three]), [one, two, three]);
+        // A photo is remembered by its key: the same row of another catalog is not it.
+        let photos = keyed(&library, &[one, two, three]);
+        let mut skip = HashSet::from([photos[1].1.clone(), format!("another catalog:{two}")]);
+        assert_eq!(readable(&skip, &photos), [one, three]);
+        let elsewhere = [(two, format!("a third catalog:{two}"))];
+        assert_eq!(readable(&skip, &elsewhere), [two]);
+        forget(&mut skip, &keyed(&library, &[two]));
+        assert_eq!(readable(&skip, &photos), [one, two, three]);
+        assert_eq!(skip.len(), 1, "only the group's photos are forgotten");
         assert_eq!(c1index::analyse::frame_with(&library, &rows, 1, &load).unwrap(), [0u64; 0]);
 
         // Every photo framed: the order goes by composition, and each has its score.
