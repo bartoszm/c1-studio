@@ -5,7 +5,7 @@
   import * as api from "./lib/api";
   import type { Filter } from "./lib/api";
   import Compare from "./Compare.svelte";
-  import { REST_CHOICES, SUGGEST_CHOICES, askCost, askPlanKey, askRecipient, cullKey, keepers, leftOutNote, lookedAt, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, suggestLabel, suggestTitle, suggestedKeep, unseenNote, type RestChoice } from "./lib/cull";
+  import { REST_CHOICES, SUGGEST_CHOICES, askCost, askPlanKey, askRecipient, cullKey, keepers, leftOutNote, lookedAt, restLabel, restOf, runToggle, shownRows, stepGroup, stepPhoto, suggestLabel, suggestTitle, suggestedKeep, unframedNote, unseenNote, type RestChoice } from "./lib/cull";
   import { settings } from "./lib/settings.svelte";
 
   // Choosing the best of alike photos: the duplicate groups or series under the filter, one
@@ -159,6 +159,7 @@
   let lookedGroup = $state<string | undefined>(undefined);
   /** The photos of the group shown it could not look at, in words. */
   let unseen = $derived(view && current ? unseenNote(view.unseen, view.photos.length, lookedGroup === view.id) : "");
+  let unframed = $derived(view && current ? unframedNote(view.unframed, view.photos.length) : "");
   async function rankThis() {
     const group = id;
     if (looking || !view || group === undefined) return;
@@ -513,6 +514,9 @@
           {#if unseen}
             <span class="unseen" title="The local model could not look at every photo of this group (no picture of it could be read): its view of the others does not count until it has seen them all. events.log in the catalog's folder says why.">{unseen}</span>
           {/if}
+        {/if}
+        {#if unframed}
+          <span class="unseen" title="How these photos are framed could not be measured (no thumbnail or preview of them could be read), so composition does not count for this group: it is decided by sharpness. Look on the group makes what is missing.">{unframed}</span>
         {/if}
         <button
           class="toggle"

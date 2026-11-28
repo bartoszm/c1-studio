@@ -99,22 +99,23 @@ export function suggestLabel(choice: SuggestChoice): string {
 export function suggestTitle(choice: SuggestChoice): string {
   switch (choice) {
     case "best": return "Suggest keeping the best photo only";
-    case "two": return "Suggest keeping the best two (blurry ones left out)";
-    case "three": return "Suggest keeping the best three (blurry ones left out)";
+    case "two": return "Suggest keeping the best two (blurry ones left out, and never the whole group)";
+    case "three": return "Suggest keeping the best three (blurry ones left out, and never the whole group)";
     case "auto": return "Suggest keeping the best, and up to two more that are as good and are other pictures (framed otherwise, another moment)";
   }
 }
 
-/** The photos of a group suggested to keep, the best first: as many as `choice` says, of the
- *  order. The ones picked before, where some were, whatever the choice: seen again, a group
- *  suggests what the user chose. */
-export function suggestedKeep(view: Pick<CullGroup, "order" | "suggested" | "photos">, choice: SuggestChoice): number[] {
-  const [best, ...rest] = view.order;
+/** The photos of a group suggested to keep, the best first: as many as `choice` says of the
+ *  top of the order (the ranking leaves blurry ones out of it), but never the whole group:
+ *  one at least is left to go, or there was nothing to choose. The ones picked before, where
+ *  some were, whatever the choice: seen again, a group suggests what the user chose. */
+export function suggestedKeep(view: Pick<CullGroup, "order" | "suggested" | "top" | "photos">, choice: SuggestChoice): number[] {
+  const best = view.order[0];
   if (best === undefined) return [];
   if (view.photos.some((p) => p.kept) || choice === "auto") return view.suggested.length ? view.suggested.slice() : [best];
   const count = choice === "best" ? 1 : choice === "two" ? 2 : 3;
-  const blurry = new Set(view.photos.filter((p) => p.focus === "blurry").map((p) => p.row));
-  return [best, ...rest.filter((r) => !blurry.has(r))].slice(0, count);
+  const most = Math.max(1, Math.min(count, view.order.length - 1));
+  return view.top.length ? view.top.slice(0, most) : [best];
 }
 
 /** What a group of photos picked by hand is called: their rows, sorted. */
@@ -123,6 +124,13 @@ export const SELECTION = "pick:";
 export const SELECTION_MAX = 200;
 export const selectionId = (rows: Iterable<number>): string => SELECTION + [...new Set(rows)].sort((a, b) => a - b).join(",");
 export const isSelection = (id: string | undefined): boolean => !!id?.startsWith(SELECTION);
+
+/** What the bar says of the `unframed` photos of a group, whose framing could not be
+ *  measured: nothing of a single photo, which is not put in order. */
+export function unframedNote(unframed: number, photos: number): string {
+  if (unframed <= 0 || photos < 2) return "";
+  return `composition not counted: ${unframed.toLocaleString()} photo${unframed === 1 ? "" : "s"} could not be read`;
+}
 
 /** What the bar says of photos picked that could not be measured, and are left out. */
 export function leftOutNote(n: number): string {

@@ -743,10 +743,16 @@ export type CullGroup = {
   /** The photos worth keeping, the one to keep first: the best and the few as good that are
    *  other pictures (or the ones picked before). */
   suggested: number[];
+  /** The first of `order` for keeping a number asked for: the best, then the others but the
+   *  blurry ones where the best is not. Three at most. */
+  top: number[];
   /** Photos picked by hand, not a group the analysis found. */
   selection: boolean;
   /** Photos asked for that could not be measured, left out. */
   left_out: number;
+  /** How many of the photos have no framing measured: while there is one, composition does
+   *  not count in the order. */
+  unframed: number;
 };
 /** What a model that compared a group's frames said: who, how clear the choice is in its
  *  words, and how many of the frames it was shown (16 at most). */

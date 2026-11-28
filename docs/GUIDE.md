@@ -61,7 +61,7 @@ opens by itself.
 To open plain photo folders instead of a catalog, see [Photo folders](#photo-folders).
 
 **Versions.** The menu shows which Capture One made the catalog, and whether reading and
-writing are checked for it. Catalogs from Capture One 16.8 are read and written; 16.5
+writing are checked for it. Catalogs from Capture One 16.8 and 16.9 are read and written; 16.5
 catalogs are read only; any other version is tried for reading only, untested. A
 read-only or untested catalog shows a badge in the footer ("read-only · 16.5"); you can
 still edit, and the edits stay queued in the app. When a catalog cannot be read at all,
@@ -819,7 +819,7 @@ and *Duplicates* goes back to them. Up to 200 photos at once.
 - **Several to keep.** *Keep: 1 · 2 · 3 · Auto* in the bar (also *Settings › Culling ›
   Suggest keeping*) says how many are suggested; they are marked to keep when a group is
   shown, and Enter keeps them all. *2* and *3* take the best two or three, leaving out
-  blurry frames. *Auto*, the default, takes the best and up to two more that are as good
+  blurry frames, and never the whole group: of two photos one is kept, of three two. *Auto*, the default, takes the best and up to two more that are as good
   (within a few points of it, the same rating, not blurry) and are other pictures: the
   subject sits elsewhere in the frame (*worth keeping too: framed otherwise*) or the
   picture looks different (*another moment*). A burst of near copies keeps one; never

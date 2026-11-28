@@ -73,10 +73,16 @@ pub(crate) struct CullGroupView {
     /// The photos worth keeping, the one to keep first: it, and the few as good that are
     /// other pictures. The ones picked before, where some were.
     suggested: Vec<u64>,
+    /// The first of `order` for keeping a number asked for: the best, then the others but
+    /// the blurry ones where the best is not. Three at most.
+    top: Vec<u64>,
     /// Photos picked by hand (a selection, not a group the analysis found).
     selection: bool,
     /// Of the photos asked for, how many could not be measured and are left out.
     left_out: usize,
+    /// How many of `photos` have no framing measured (their render could not be read):
+    /// while there is one, composition does not count in the order.
+    unframed: usize,
 }
 
 /// A model's word on a group, for the bar.
@@ -126,15 +132,43 @@ fn group_rows(library: &Library, filter: &Filter, id: &str) -> Result<Vec<u64>, 
     Ok(library.query(&narrowed, &QueryOptions { sort: Sort::Date, ..QueryOptions::default() }).map_err(text)?.rows)
 }
 
+/// Photos whose render could not be read to measure how they are framed, by library and
+/// row: a group is got ready each time it is shown (and read ahead), and these are not
+/// tried, and logged, each time. Forgotten when choosing the best is left
+/// ([`cull_done`]), and for a group the local model is asked to look at, which makes the
+/// renders that are missing.
+static UNREADABLE: LazyLock<Mutex<HashSet<(usize, u64)>>> = LazyLock::new(Mutex::default);
+
+/// What tells one open library from another in [`UNREADABLE`].
+fn library_id(s: &Session) -> usize {
+    std::ptr::from_ref(&s.library) as usize
+}
+
+/// `rows` without the ones `skip` holds for the library `of`.
+fn readable(skip: &HashSet<(usize, u64)>, of: usize, rows: &[u64]) -> Vec<u64> {
+    rows.iter().copied().filter(|&row| !skip.contains(&(of, row))).collect()
+}
+
 /// Gets a group's `rows` ready to be shown: how each is framed is measured where it is not
 /// kept for its render, and a photo not measured yet (one picked by hand) is measured on the
-/// way. A photo that cannot be read is left as it is: the view counts it.
-fn prepare(s: &Session, rows: &[u64]) {
+/// way. A photo that cannot be read is left as it is (the view counts it) and not tried
+/// again until `afresh`.
+fn prepare(s: &Session, rows: &[u64], afresh: bool) {
+    let of = library_id(s);
+    let rows = {
+        let mut skip = lock(&UNREADABLE);
+        if afresh {
+            skip.retain(|(library, row)| *library != of || !rows.contains(row));
+        }
+        readable(&skip, of, rows)
+    };
     let threads = c1index::analyse::default_threads();
-    match c1index::analyse::frame(&s.library, s.source.as_ref(), &s.thumbs, rows, threads) {
-        Ok(0) => {}
+    match c1index::analyse::frame(&s.library, s.source.as_ref(), &s.thumbs, &rows, threads) {
+        Ok(failed) if failed.is_empty() => {}
         Ok(failed) => {
-            s.log.event(&format!("Best of: {failed} photo(s) could not be read to measure their framing"), &[])
+            let n = failed.len();
+            s.log.event(&format!("Best of: {n} photo(s) could not be read to measure their framing"), &[]);
+            lock(&UNREADABLE).extend(failed.into_iter().map(|row| (of, row)));
         }
         Err(e) => s.log.event(&format!("Best of: measuring how photos are framed failed: {e:#}"), &[]),
     }
@@ -250,8 +284,10 @@ fn view_of(library: &Library, id: &str, rows: Vec<u64>) -> Result<CullGroupView,
     };
     Ok(CullGroupView {
         suggested,
+        top: ranked.top.iter().map(|&i| photos[i].row).collect(),
         selection: chosen,
         left_out,
+        unframed: photos.iter().filter(|p| p.framing.is_none()).count(),
         id: id.to_owned(),
         close: ranked.close && !picked.contains(&true),
         order: order.iter().map(|&i| photos[i].row).collect(),
@@ -428,7 +464,7 @@ pub(crate) async fn ask_group(app: State<'_, App>, filter: Filter, id: String) -
         // Before a picture is loaded: with no key or no sign-in there is nothing to send.
         let asker = asker(&load_settings(&s), Arc::default(), &pick::system(), pick::schema())?;
         let rows = group_rows(&s.library, &filter, &id)?;
-        prepare(&s, &rows);
+        prepare(&s, &rows, false);
         ask_about(&s, &asker, &id, &rows).map_err(text)?;
         group_view(&s.library, &filter, &id)
     })
@@ -819,9 +855,11 @@ pub(crate) async fn rank_group(app: State<'_, App>, filter: Filter, id: String) 
         // One group, asked for by hand: a run stopped before does not stop it.
         let go = AtomicBool::new(false);
         let rows = group_rows(&s.library, &filter, &id)?;
-        prepare(&s, &rows);
+        prepare(&s, &rows, true);
         let mut eye = ModelEye { s: &s, stop: &go, make: true, ranker: None };
         look_at(&s.library, &rows, &go, &mut eye)?;
+        // The look made the renders that were missing: what could not be framed may be now.
+        prepare(&s, &rows, true);
         group_view(&s.library, &filter, &id)
     })
     .await
@@ -913,7 +951,7 @@ fn run_ranking(app: &AppHandle, s: &Arc<Session>, filter: &Filter, series: bool)
             break;
         }
         let rows = group_rows(&s.library, filter, &id)?;
-        prepare(s, &rows);
+        prepare(s, &rows, false);
         let looked = look_at(&s.library, &rows, &JOB.stop, &mut eye)?;
         // Stopped in the middle of a group: what was seen of it is kept, but it is not done.
         if looked.stopped {
@@ -996,6 +1034,7 @@ pub(crate) async fn cull_done() -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(|| {
         JOB.wanted.store(false, Ordering::SeqCst);
         JOB.release();
+        lock(&UNREADABLE).clear();
     })
     .await
     .map_err(text)
@@ -1007,7 +1046,7 @@ pub(crate) async fn cull_done() -> Result<(), String> {
 pub(crate) async fn cull_group(app: State<'_, App>, filter: Filter, id: String) -> Result<CullGroupView, String> {
     let s = app.session()?;
     tauri::async_runtime::spawn_blocking(move || {
-        prepare(&s, &group_rows(&s.library, &filter, &id)?);
+        prepare(&s, &group_rows(&s.library, &filter, &id)?, false);
         group_view(&s.library, &filter, &id)
     })
     .await
@@ -1718,7 +1757,7 @@ mod tests {
             Some(((s, s), scene(x, 0.3)))
         };
         assert!(library.look(four).is_none(), "4 is no part of the burst and was never measured");
-        assert_eq!(c1index::analyse::frame_with(&library, &rows, 2, &load).unwrap(), 0);
+        assert_eq!(c1index::analyse::frame_with(&library, &rows, 2, &load).unwrap(), [0u64; 0]);
         assert_eq!(calls.load(Ordering::SeqCst), 4);
         assert!(library.look(four).is_some(), "measured on the way");
         assert_eq!(library.framings(&rows).unwrap().len(), 4);
@@ -1732,12 +1771,22 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 5);
         // One that cannot be read is counted.
         library.put_analyses(vec![(library.photo_id(two).unwrap().key(), (8, 8), look(300.0, 0))]).unwrap();
-        assert_eq!(c1index::analyse::frame_with(&library, &rows, 1, &|_| None).unwrap(), 1);
+        assert_eq!(c1index::analyse::frame_with(&library, &rows, 1, &|_| None).unwrap(), [two]);
+        // The view says so: composition does not count while one is not framed.
+        let view = group_view(&library, &Filter::default(), &picked(&[one, two, three])).unwrap();
+        assert_eq!((view.unframed, view.judge), (1, Judge::Sharpness));
+        // Not tried again while it is remembered as unreadable, and again once forgotten.
+        let mut skip = HashSet::from([(1, two), (2, one)]);
+        assert_eq!(readable(&skip, 1, &[one, two, three]), [one, three]);
+        skip.retain(|(library, row)| *library != 1 || ![two].contains(row));
+        assert_eq!(readable(&skip, 1, &[one, two, three]), [one, two, three]);
+        assert_eq!(c1index::analyse::frame_with(&library, &rows, 1, &load).unwrap(), [0u64; 0]);
 
         // Every photo framed: the order goes by composition, and each has its score.
         let view = group_view(&library, &Filter::default(), &picked(&[one, three, four])).unwrap();
         assert!(view.photos.iter().all(|p| p.framing.is_some() && p.composition.is_some()), "{:?}", view.judge);
-        assert_eq!(view.left_out, 0);
+        assert_eq!((view.left_out, view.unframed), (0, 0));
         assert_eq!(view.suggested[0], view.order[0]);
+        assert_eq!(view.top[0], view.order[0]);
     }
 }

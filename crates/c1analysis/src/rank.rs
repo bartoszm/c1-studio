@@ -108,6 +108,9 @@ pub struct Ranked {
     /// The frames worth keeping, best first: the best, and the few as good as it that are
     /// different pictures.
     pub suggest: Vec<usize>,
+    /// The first of the order, for keeping a number asked for: the best, then the others
+    /// but the blurry ones where the best is not. [`SUGGEST_MAX`] at most.
+    pub top: Vec<usize>,
 }
 
 /// Each frame's composition, where every one was measured: its framing, weighed with the
@@ -183,9 +186,6 @@ pub fn rank(candidates: &[Candidate], s: &ClassSettings) -> Ranked {
         let mut reasons = Vec::new();
         let ratio = ((c.sharpness.max(0.0) + 1.0) / (best_sharp + 1.0)).ln() / SHARPNESS_SPAN.ln();
         let mut score = (1.0 + ratio).clamp(0.0, 1.0);
-        if lone_best && tier[i] == 0 && !blurry(i) {
-            reasons.push(BEST_COMPOSITION.to_owned());
-        }
         reasons.extend(noted[i].iter().filter(|note| telling(note)).map(|note| (*note).to_owned()));
         if by_looks {
             let look = (c.aesthetic.unwrap_or(low) - low) / (high - low);
@@ -241,6 +241,17 @@ pub fn rank(candidates: &[Candidate], s: &ClassSettings) -> Ranked {
         && blurry(order[0]) == blurry(order[1])
         && tier[order[0]] == tier[order[1]]
         && scores[order[0]] - scores[order[1]] < CLOSE;
+    // Said of the frame that leads because of it: not where a model's word or a rating
+    // put another first.
+    if let Some(&first) = order.first()
+        && lone_best
+        && !judged
+        && tier[first] == 0
+        && !blurry(first)
+    {
+        let after = entries[first].reasons.iter().take_while(|r| r.starts_with("rated ")).count();
+        entries[first].reasons.insert(after, BEST_COMPOSITION.to_owned());
+    }
     let judge = if judged {
         Judge::Cloud
     } else if by_composition {
@@ -259,7 +270,9 @@ pub fn rank(candidates: &[Candidate], s: &ClassSettings) -> Ranked {
             entries[i].reasons.push(why.to_owned());
         }
     }
-    Ranked { order, judge, close, entries, suggest }
+    let top =
+        order.iter().copied().filter(|&i| i == order[0] || blurry(order[0]) || !blurry(i)).take(SUGGEST_MAX).collect();
+    Ranked { order, judge, close, entries, suggest, top }
 }
 
 /// Whether the subject of `b` sits elsewhere in the frame than that of `a`.
@@ -445,9 +458,32 @@ mod tests {
         let rated = Candidate { rating: Some(3), ..framed(4000.0, 0.3) };
         let r = rank(&[framed(4000.0, 0.9), rated], &d());
         assert_eq!(r.order, [1, 0]);
+        // The better composed frame does not lead: neither is said to be the best composed.
+        assert!(r.entries.iter().all(|e| !e.reasons.contains(&BEST_COMPOSITION.to_owned())), "{:?}", r.entries);
         let told = Candidate { verdict: Some((0, "the look".into())), ..framed(4000.0, 0.3) };
         let r = rank(&[framed(4000.0, 0.9), told], &d());
         assert_eq!((r.order[0], r.judge), (1, Judge::Cloud));
+        assert!(r.entries.iter().all(|e| !e.reasons.contains(&BEST_COMPOSITION.to_owned())), "{:?}", r.entries);
+        // Rated and the best composed: both are said, the rating first.
+        let both = Candidate { rating: Some(3), ..framed(4000.0, 0.9) };
+        let r = rank(&[framed(4000.0, 0.3), both], &d());
+        assert_eq!(r.entries[1].reasons[..2], ["rated ★★★", BEST_COMPOSITION]);
+    }
+
+    #[test]
+    fn the_top_of_the_order_leaves_blurry_frames_out_where_the_best_is_not() {
+        let s = d();
+        let sharp = |times: f32| frame(s.blurry_below * times);
+        let r = rank(&[sharp(8.0), sharp(0.9), sharp(6.0), sharp(4.0), sharp(2.0)], &s);
+        assert_eq!(r.top, [0, 2, 3]);
+        // Every frame blurry: none is marked down, and they are taken as they come.
+        let r = rank(&[frame(10.0), frame(20.0)], &s);
+        assert_eq!(r.top, [1, 0]);
+        // A blurry frame a rating put first leads, and the others follow.
+        let rated = Candidate { rating: Some(4), ..frame(s.blurry_below * 0.9) };
+        let r = rank(&[frame(4000.0), rated], &s);
+        assert_eq!(r.top, [1, 0]);
+        assert!(rank(&[], &s).top.is_empty());
     }
 
     #[test]

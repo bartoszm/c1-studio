@@ -142,10 +142,8 @@ impl Grid {
     /// Divided by its 99th percentile and kept to 0..1: a few extreme values do not
     /// flatten the rest. All 0 for a grid with nothing in it.
     fn normalised(mut self) -> Grid {
-        let mut sorted = self.v.clone();
-        sorted.sort_by(f32::total_cmp);
-        let top = sorted.get(((sorted.len().max(1) - 1) as f32 * 0.99) as usize).copied().unwrap_or(0.0);
-        let top = if top > 1e-6 { top } else { sorted.last().copied().unwrap_or(0.0) };
+        let top = nth(&self.v, ((self.v.len().max(1) - 1) as f32 * 0.99) as usize);
+        let top = if top > 1e-6 { top } else { self.v.iter().copied().fold(0.0, f32::max) };
         for v in &mut self.v {
             *v = if top > 1e-6 { (*v / top).clamp(0.0, 1.0) } else { 0.0 };
         }
@@ -169,12 +167,23 @@ impl Grid {
     }
 }
 
+/// The value at place `at` of `values` put in order (the last, past the end); 0 of none.
+fn nth(values: &[f32], at: usize) -> f32 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let mut v = values.to_vec();
+    let at = at.min(v.len() - 1);
+    *v.select_nth_unstable_by(at, f32::total_cmp).1
+}
+
 /// Sobel gradients of `gray`, 0 along its border.
 fn sobel(gray: &GrayImage) -> (Grid, Grid) {
     let (w, h) = (gray.width() as usize, gray.height() as usize);
     let mut gx = vec![0.0; w * h];
     let mut gy = vec![0.0; w * h];
-    let px = |x: usize, y: usize| f32::from(gray.get_pixel(x as u32, y as u32).0[0]);
+    let raw = gray.as_raw();
+    let px = |x: usize, y: usize| f32::from(raw[y * w + x]);
     for y in 1..h.saturating_sub(1) {
         for x in 1..w.saturating_sub(1) {
             let (a, b, c) = (px(x - 1, y - 1), px(x, y - 1), px(x + 1, y - 1));
@@ -353,17 +362,16 @@ fn placement(c: [f32; 2], area: f32) -> f32 {
     (1.0 - fill) * placed + fill * balance
 }
 
-/// Degrees off level of the longest near-level line in `gray`, if one spans enough of it:
-/// a Hough transform over ±[`LINES_WITHIN`]°, of the strong edges running near level.
-fn tilt(gx: &Grid, gy: &Grid) -> Option<f32> {
+/// Degrees off level of the longest near-level line, if one spans enough of the picture: a
+/// Hough transform over ±[`LINES_WITHIN`]°, of the strong edges (by the gradients `gx` and
+/// `gy`, and their `magnitude`) running near level.
+fn tilt(gx: &Grid, gy: &Grid, magnitude: &Grid) -> Option<f32> {
     let (w, h) = (gx.w, gx.h);
     if w < 8 || h < 8 {
         return None;
     }
-    let magnitude: Vec<f32> = gx.v.iter().zip(&gy.v).map(|(x, y)| (x * x + y * y).sqrt()).collect();
-    let mut sorted = magnitude.clone();
-    sorted.sort_by(f32::total_cmp);
-    let strong = sorted[(sorted.len() - 1) * 9 / 10].max(80.0);
+    let magnitude = &magnitude.v;
+    let strong = nth(magnitude, (magnitude.len() - 1) * 9 / 10).max(80.0);
     const STEP: f32 = 0.25;
     let steps = (2.0 * LINES_WITHIN / STEP) as usize + 1;
     let angles: Vec<(f32, f32, f32)> = (0..steps)
@@ -429,7 +437,7 @@ pub fn framing(image: &RgbImage) -> Framing {
     let s_mean = s.mean();
     let salience_ratio = if s_mean < 1e-6 { 0.0 } else { s.band_mean(BAND) / s_mean };
     let clutter = ((0.5 * detail_ratio + 0.5 * salience_ratio - 1.0) / 0.6).clamp(0.0, 1.0);
-    let mut out = Framing { score: 0.0, placement, subject: centre, cut, clutter, tilt: tilt(&gx, &gy) };
+    let mut out = Framing { score: 0.0, placement, subject: centre, cut, clutter, tilt: tilt(&gx, &gy, &magnitude) };
     out.score = (0.55 * placement + 0.45 * (1.0 - clutter) - 0.35 * cut - 0.30 * out.tilt_cost()).clamp(0.0, 1.0);
     out
 }

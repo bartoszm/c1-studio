@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {
   CULL_DEFAULTS, afterPick, afterTurn, askCost, askPlanKey, askRecipient, cullKey, cullSettings, describePick, firstUnpicked, keeperMark, keepers,
   isSelection, leftOutNote, lookedAt, placeAfter, restAction, restLabel, restOf, runToggle, selectionId, shownRows, stepGroup, stepPhoto,
-  suggestedKeep, unseenNote,
+  suggestedKeep, unframedNote, unseenNote,
 } from "../src/lib/cull";
 
 test("the photos suggested to keep follow the choice, and the ones picked before win", () => {
@@ -11,6 +11,8 @@ test("the photos suggested to keep follow the choice, and the ones picked before
   const view = {
     order: [3, 1, 4, 2],
     suggested: [3, 4],
+    // As the ranking gives it: the blurry one is no part of it.
+    top: [3, 1, 2],
     photos: [photo(1), photo(2), photo(3), photo(4, "blurry")],
   };
   assert.deepEqual(suggestedKeep(view, "best"), [3]);
@@ -21,7 +23,18 @@ test("the photos suggested to keep follow the choice, and the ones picked before
   // What was picked before is what the group suggests, whatever the choice.
   const picked = { ...view, suggested: [2], photos: [photo(1), photo(2, "sharp", true), photo(3), photo(4)] };
   assert.deepEqual(suggestedKeep(picked, "three"), [2]);
-  assert.deepEqual(suggestedKeep({ order: [], suggested: [], photos: [] }, "auto"), []);
+  assert.deepEqual(suggestedKeep({ order: [], suggested: [], top: [], photos: [] }, "auto"), []);
+  // Never the whole group: of two one is kept, of three two at most.
+  const pair = { order: [2, 1], suggested: [2], top: [2, 1], photos: [photo(1), photo(2)] };
+  assert.deepEqual(suggestedKeep(pair, "two"), [2]);
+  assert.deepEqual(suggestedKeep(pair, "three"), [2]);
+  const trio = { order: [2, 1, 3], suggested: [2], top: [2, 1, 3], photos: [photo(1), photo(2), photo(3)] };
+  assert.deepEqual(suggestedKeep(trio, "two"), [2, 1]);
+  assert.deepEqual(suggestedKeep(trio, "three"), [2, 1]);
+  assert.deepEqual(suggestedKeep({ ...trio, order: [2], top: [2], photos: [photo(2)] }, "three"), [2]);
+  assert.equal(unframedNote(0, 4), "");
+  assert.equal(unframedNote(1, 1), "");
+  assert.equal(unframedNote(2, 5), "composition not counted: 2 photos could not be read");
   assert.deepEqual(suggestedKeep({ ...view, suggested: [] }, "auto"), [3]);
   assert.equal(cullSettings({ suggest: "many" }).suggest, "auto");
   assert.equal(cullSettings({ suggest: "two" }).suggest, "two");
