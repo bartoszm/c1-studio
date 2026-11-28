@@ -13,7 +13,7 @@ Every commit runs these in order and stops at the first failure.
 
 1. **Journal mode** must be `delete`. Anything else means a different Capture One version
    or an operation in progress. Never bypassable.
-2. **Catalog version** must be `ZVERSION=160800`. A different value means column meanings
+2. **Catalog version** must be `ZVERSION=160800` (Capture One 16.8) or `160906` (16.9). A different value means column meanings
    may have shifted; `--force` overrides.
 3. **No rollback journal.** A non-empty `<catalog>-journal` means another process is
    mid-transaction. Never bypassable.

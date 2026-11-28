@@ -53,7 +53,7 @@ def schema_info(con: sqlite3.Connection) -> dict:
         "author": row["ZAUTHOR"] if row else None,
         "journal_mode": con.execute("PRAGMA journal_mode").fetchone()[0],
     }
-    info["version_supported"] = info["zversion"] == config.EXPECTED_ZVERSION
+    info["version_supported"] = info["zversion"] in config.SUPPORTED_ZVERSIONS
     return info
 
 

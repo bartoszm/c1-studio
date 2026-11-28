@@ -166,8 +166,8 @@ If C1 Studio saves you time, you can support its development on
 
 ## Status
 
-Developed against a 100,000-photo catalog. Reading is tested on Capture One 16.5 and 16.8
-catalogs; writing on 16.8 only (other versions open read-only). Capture One may change
+Developed against a 100,000-photo catalog. Reading is tested on Capture One 16.5, 16.8
+and 16.9 catalogs; writing on 16.8 and 16.9 (other versions open read-only). Capture One may change
 its catalog format in any release: keep backups, and expect rough edges.
 
 C1 Studio is not affiliated with or endorsed by Capture One.
@@ -188,7 +188,7 @@ publisher: choose *More info* → *Run anyway*. Uninstall from *Settings → App
 The installer asks which kinds of photo source to offer: Capture One catalogs, photo
 folders or both (`/KINDS=capture-one,folders` for a silent install). The first time,
 nothing is open: choose a Capture One catalog (the `.cocatalogdb` file) or photo folders
-from the source menu at the top left. Catalogs from Capture One 16.8 are read and
+from the source menu at the top left. Catalogs from Capture One 16.8 and 16.9 are read and
 written, 16.5 read only; see [docs/GUIDE.md](docs/GUIDE.md).
 
 ### Linux and WSL

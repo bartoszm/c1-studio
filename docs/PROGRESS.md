@@ -662,7 +662,7 @@ in `<data dir>/settings.json`) writes the queue by itself.
   the oldest says what made it. `source-c1/src/compat.rs` turns that into "Capture One
   16.5.5 Pro (Windows), catalog schema 1650 (created with 16.4.5)", re-read on each
   full read since a newer Capture One upgrades a catalog in place.
-- **What is checked:** schema 160800 (16.8) read and written; 1650 (16.5, the
+- **What is checked:** schemas 160906 (16.9) and 160800 (16.8) read and written; 1650 (16.5, the
   `other` catalog) read, writing off. Any other schema is tried for reading and
   marked untested, writing off. 1650 lacks `ZRETOUCHINGLAYER`: a missing table now
   means no retouching layers.

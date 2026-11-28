@@ -10,8 +10,10 @@ from pathlib import Path
 
 VERSION = "0.1.0"
 
-# The catalog schema this tool was written against (ZVERSIONINFO.ZVERSION).
+# The catalog schema this tool was written against (ZVERSIONINFO.ZVERSION), and the ones
+# its writes are checked for: 16.9 (160906) only adds a table and columns it does not use.
 EXPECTED_ZVERSION = 160800
+SUPPORTED_ZVERSIONS = (160800, 160906)
 
 # Capture One's colour tag order. Index 0 means "no tag".
 COLOR_NAMES = ["none", "red", "orange", "yellow", "green", "blue", "pink", "purple"]
