@@ -5,6 +5,7 @@
 //! `legacy/c1cat-py/skills/capture-one-catalog/references/schema.md` documents every
 //! schema fact relied on here; each one was verified against a real catalog.
 
+mod adapter;
 mod albums;
 mod catalog;
 mod compat;
@@ -29,7 +30,8 @@ use c1model::{
 
 pub use catalog::EXPECTED_ZVERSION;
 pub use config::{catalog_id, data_dir, find_catalog};
-pub use extract::{Extract, extract};
+pub use extract::Extract;
+use extract::extract;
 pub use provider::CaptureOneProvider;
 pub use write::Backup;
 
@@ -168,7 +170,8 @@ impl PhotoSource for CaptureOne {
             let con = catalog::open_copy(copy.path())?;
             let version = compat::read_version(&con)?;
             *self.version.lock().unwrap() = version.clone();
-            extract(&con, self.catalog_dir(), &self.id).map_err(|e| compat::read_failed(&version, &e))?
+            let adapter = adapter::choose(version.schema).adapter;
+            extract(&con, adapter, self.catalog_dir(), &self.id).map_err(|e| compat::read_failed(&version, &e))?
         };
         drop(copy);
 

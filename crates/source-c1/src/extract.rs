@@ -13,6 +13,7 @@ use c1model::{
 };
 use rusqlite::Connection;
 
+use crate::adapter::Adapter;
 use crate::catalog::db_err;
 use crate::config;
 use crate::smart;
@@ -52,10 +53,16 @@ SELECT v.Z_PK, v.ZINDEX, v.ZISMODIFIED,
   LEFT JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
 ";
 
-pub fn extract(con: &Connection, catalog_dir: &Path, source: &SourceId) -> Result<Extract> {
+/// Reads a catalog the way `adapter` reads its schema.
+pub(crate) fn extract(
+    con: &Connection,
+    adapter: &dyn Adapter,
+    catalog_dir: &Path,
+    source: &SourceId,
+) -> Result<Extract> {
     let collections = load_collections(con)?;
     let membership = load_membership(con)?;
-    let layers = load_layers(con)?;
+    let layers = load_layers(con, adapter)?;
     let photos = load_variants(con, catalog_dir, source, &membership, &layers)?;
     let keywords = load_keywords(con, &photos)?;
     Ok(Extract { photos, collections, keywords })
@@ -91,7 +98,7 @@ struct Layers {
     retouch: HashMap<i64, u32>,
 }
 
-fn load_layers(con: &Connection) -> Result<Layers> {
+fn load_layers(con: &Connection, adapter: &dyn Adapter) -> Result<Layers> {
     let mut layers = Layers::default();
     let mut stmt =
         con.prepare("SELECT ZVARIANT, Z_ENT, ZNAME FROM ZVARIANTLAYER WHERE Z_ENT IN (?1, ?2)").map_err(db_err)?;
@@ -106,23 +113,8 @@ fn load_layers(con: &Connection) -> Result<Layers> {
             *layers.local.entry(variant).or_default() += 1;
         }
     }
-    // Catalogs from before Capture One 16.x (schema 1650) have no retouching layers.
-    if !has_table(con, "ZRETOUCHINGLAYER")? {
-        return Ok(layers);
-    }
-    let mut stmt = con.prepare("SELECT ZVARIANT FROM ZRETOUCHINGLAYER").map_err(db_err)?;
-    let mut rows = stmt.query([]).map_err(db_err)?;
-    while let Some(r) = rows.next().map_err(db_err)? {
-        *layers.retouch.entry(r.get(0).map_err(db_err)?).or_default() += 1;
-    }
+    layers.retouch = adapter.retouching_layers(con)?;
     Ok(layers)
-}
-
-fn has_table(con: &Connection, name: &str) -> Result<bool> {
-    con.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)", [name], |r| {
-        r.get(0)
-    })
-    .map_err(db_err)
 }
 
 fn load_membership(con: &Connection) -> Result<HashMap<i64, Vec<CollectionId>>> {
