@@ -130,8 +130,16 @@ and adds it to all three channels, so greys stay grey. A change towards white or
 eases off over the last 15% of the range, so highlights do not clip.
 
 The gains (0.35 for Clarity, 0.6 for Structure at a setting of 100) were fitted to the
-exports below by the *detail* measure of `exportcheck`. The method (`ZCLARITYMETHOD`:
-Natural, Punch, Neutral, Classic) is not told apart.
+colour exports below by the *detail* measure of `exportcheck`. A black-and-white photo
+takes half of that: Capture One's black-and-white exports show about half the local
+contrast the same settings give a colour photo. The method (`ZCLARITYMETHOD`: Natural,
+Punch, Neutral, Classic) is not told apart; every photo measured has the same one.
+
+The step runs before straightening when the photo is straightened, so that the black
+corners straightening leaves do not count as picture (they would leave a bright band
+inside the crop). The colour table is still fitted on a straightened copy, which is
+framed like the thumbnail, and applied to the unstraightened render: it works pixel by
+pixel, so the order does not change its colours.
 
 ## What it cannot do
 
@@ -248,6 +256,41 @@ pixels, which favours the softer image, so it is no measure of local contrast.
 The black-and-white untitled-0066-2 gets too much: its blacks reach 8 (export 0, before
 11), but its brightest 1% sit 20 levels above the export's. One black-and-white
 export is too few to fit it apart from the colour ones.
+
+#### Black and white at half strength (2026-11-28)
+
+Fourteen more black-and-white exports (Fujifilm RAF and Ricoh DNG; eleven with Clarity
+and Structure, three without) settled it. At full strength the black-and-white previews
+came out crisper than the export at both sizes on 9 of the 12 with the settings; the
+colour ones did not. Fitting the two gains to each group by *detail* (root mean square of
+the log ratio to the export, fine and broad together): colour 0.40 / 0.68 (error 0.053,
+against 0.056 for the gains above), black and white 0 / 0.38 (0.058, against 0.100).
+Half the colour gains, 0.18 / 0.30, gives 0.059, about as good, so a black-and-white
+photo takes half. Detail, fine and broad, export / none / full / half:
+
+| export | Clarity, Structure | fine | broad |
+|---|---|---|---|
+| DSCF0953_1 | 19, 40 | 12.6 / 11.8 / 14.4 / 13.1 | 31.7 / 30.7 / 33.8 / 32.2 |
+| DSCF3017_1 | 19, 40 | 10.0 / 9.3 / 11.4 / 10.3 | 29.7 / 28.1 / 30.7 / 29.4 |
+| DSCF3991_1 | 19, 40 | 21.8 / 19.9 / 24.8 / 22.3 | 40.1 / 38.3 / 43.6 / 40.9 |
+| DSCF8261 | 19, 40 | 16.2 / 15.4 / 19.0 / 17.2 | 35.2 / 33.9 / 38.0 / 35.9 |
+| DSCF8274 | 19, 40 | 15.4 / 14.8 / 18.2 / 16.4 | 37.0 / 36.6 / 40.4 / 38.5 |
+| R0009111 | 10, 30 | 25.9 / 22.8 / 26.0 / 24.4 | 48.7 / 46.5 / 49.7 / 48.1 |
+| R0014781 | 19, 40 | 14.9 / 13.6 / 16.4 / 15.0 | 33.5 / 29.6 / 32.6 / 31.1 |
+| R0014921 | 19, 40 | 9.1 / 9.7 / 11.6 / 10.7 | 28.3 / 27.8 / 29.9 / 28.8 |
+| R0015630 | 10, 30 | 14.0 / 11.7 / 13.4 / 12.5 | 28.1 / 25.7 / 27.3 / 26.5 |
+| R0016303 | 10, 30 | 16.1 / 15.1 / 16.9 / 16.0 | 37.2 / 36.1 / 37.8 / 36.9 |
+| R0016335 | 10, 30 | 18.5 / 15.3 / 17.6 / 16.4 | 36.6 / 33.9 / 36.3 / 35.0 |
+| untitled-0066-2 | 31, 57 | 17.5 / 14.2 / 19.3 / 16.8 | 27.5 / 26.2 / 31.8 / 29.0 |
+
+The three without the settings (DSCF3925_1, DSCF5952, DSCF9374) match the export within
+0.2 either way, so the rest of the pipeline leaves the local contrast alone.
+untitled-0066-2's brightest 1% now sit 8 levels above the export's, not 20. The
+Ricoh ones at 10 / 30 are now a little soft (1–2 levels); the Fujifilm ones, which are
+most of the catalog, were the most over. Several Ricoh DNGs keep a tone error the
+thumbnail does not have (R0014781: shadows 16 levels too bright, highlights 11 too
+dark): they have a second layer with its own Clarity and Structure, likely local
+adjustments, which a table cannot carry (see below).
 
 On 120 random photos from the fuji catalog, `lookcheck` (held-out halves, median, out of
 255):

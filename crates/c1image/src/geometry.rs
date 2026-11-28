@@ -9,8 +9,13 @@ const NEGLIGIBLE: f32 = 0.01;
 
 /// Turned clockwise by `degrees` about the centre, on a canvas grown to hold the whole
 /// picture; the corners it uncovers are black. Bilinear.
+/// Whether straightening by `degrees` changes the picture at all.
+pub fn is_turned(degrees: f32) -> bool {
+    degrees.is_finite() && degrees.abs() >= NEGLIGIBLE
+}
+
 pub fn straighten(image: RgbImage, degrees: f32) -> RgbImage {
-    if degrees.abs() < NEGLIGIBLE || !degrees.is_finite() {
+    if !is_turned(degrees) {
         return image;
     }
     let (sin, cos) = degrees.to_radians().sin_cos();

@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use c1model::ImageRef;
+use c1model::{ImageRef, LocalContrast};
 use jxl_oxide::JxlImage;
 use jxl_oxide::color::{EnumColourEncoding, RenderingIntent, TransferFunction};
 
@@ -74,24 +74,43 @@ pub fn render_preview(r: &ImageRef, matching: Matching) -> Result<RgbImage> {
     let bytes = rgb.iter().map(|&v| lut[((v * scale).clamp(0.0, 1.0) * last + 0.5) as usize]).collect();
     let image =
         RgbImage::from_raw(width, height, bytes).ok_or_else(|| decode_err(path, "pixel buffer has the wrong size"))?;
-    let mut image = crate::geometry::straighten(crate::rotate(image, r.rotation), r.straighten);
+    let turned = crate::rotate(image, r.rotation);
+    // Local contrast goes last, on the finished tones: the look cannot carry it (see
+    // `LocalContrast`).
+    let contrast = match matching {
+        Matching::None => LocalContrast::default(),
+        _ if monochrome => crate::clarity::in_black_and_white(r.local_contrast),
+        _ => r.local_contrast,
+    };
+    if contrast.is_none() || !crate::geometry::is_turned(r.straighten) {
+        let mut image = crate::geometry::straighten(turned, r.straighten);
+        if let Some(look) = &look {
+            take_look(&mut image, None, look, matching, monochrome);
+        }
+        crate::clarity::apply(&mut image, contrast);
+        return Ok(image);
+    }
+    // Straightening leaves black corners, which a blur would take for picture: a bright
+    // band inside the crop. So the tones are fitted on a straightened copy, framed like
+    // the look, and the local contrast added before straightening.
+    let mut image = turned;
     if let Some(look) = &look {
-        take_look(&mut image, look, matching, monochrome);
+        let framed = crate::geometry::straighten(image.clone(), r.straighten);
+        take_look(&mut image, Some(&framed), look, matching, monochrome);
     }
-    // Last, on the finished tones: the look cannot carry it (see `LocalContrast`).
-    if matching != Matching::None {
-        crate::clarity::apply(&mut image, r.local_contrast);
-    }
-    Ok(image)
+    crate::clarity::apply(&mut image, contrast);
+    Ok(crate::geometry::straighten(image, r.straighten))
 }
 
-/// Takes `matching` of `look` onto `image`.
-fn take_look(image: &mut RgbImage, look: &Look, matching: Matching, monochrome: bool) {
+/// Takes `matching` of `look` onto `image`, the colour table fitted on `framed` (the same
+/// picture framed like the look) when given, else on `image` itself. Every step works
+/// pixel by pixel, so it can be fitted on one framing and applied to another.
+fn take_look(image: &mut RgbImage, framed: Option<&RgbImage>, look: &Look, matching: Matching, monochrome: bool) {
     match matching {
         Matching::None => {}
         Matching::Tones => look.apply_tones(image),
         Matching::Colours => {
-            match colour_fit(image, &look.render) {
+            match colour_fit(framed.unwrap_or(image), &look.render) {
                 ColourFit::Table { table, .. } => table.apply(image),
                 _ => look.apply_tones(image),
             }

@@ -11,11 +11,22 @@ use crate::RgbImage;
 const CLARITY_SIGMA: f32 = 0.02;
 const STRUCTURE_SIGMA: f32 = 0.003;
 
-/// How much of the detail a setting of 100 adds. Fitted to Capture One exports of seven
-/// photos (`docs/PREVIEW-COLOURS.md`): the preview's local contrast at both sizes comes
-/// within about one level (out of 255) of the export's.
+/// How much of the detail a setting of 100 adds to a colour photo. Fitted to Capture One
+/// exports of six colour photos (`docs/PREVIEW-COLOURS.md`): the preview's local contrast
+/// at both sizes comes within about one level (out of 255) of the export's.
 const CLARITY_GAIN: f32 = 0.35;
 const STRUCTURE_GAIN: f32 = 0.6;
+
+/// The share of those a black-and-white photo takes. Capture One's exports of twelve
+/// black-and-white photos (Fujifilm and Ricoh, Clarity 10–31, Structure 30–57) show about
+/// half the local contrast the same settings add to colour: at full strength their
+/// previews came out too crisp at both sizes, at half they come within a few percent.
+const MONOCHROME_SHARE: f32 = 0.5;
+
+/// What `contrast` adds to a black-and-white photo (see `MONOCHROME_SHARE`).
+pub fn in_black_and_white(contrast: LocalContrast) -> LocalContrast {
+    LocalContrast { clarity: contrast.clarity * MONOCHROME_SHARE, structure: contrast.structure * MONOCHROME_SHARE }
+}
 
 /// A change towards white or black is in full until it is this close (out of 1) to the
 /// end, then eases off to nothing there, so highlights do not clip.
