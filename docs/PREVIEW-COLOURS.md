@@ -42,7 +42,9 @@ the `.cot`'s look.
    3. **Fit a colour table** (`lut.rs`, see below) to the pixel pairs.
    4. **Apply the table** to the full-size render. A black-and-white look is greyed
       afterwards; the table learns the black-and-white channel mix too.
-7. **Crop** (`ZCROP`), by `c1image::frame`.
+7. **Local contrast** (`clarity.rs`): Capture One's Clarity and Structure, read from the
+   combined layer (`ZCLARITY`, `ZCLARITYSTRUCTURE`). See below.
+8. **Crop** (`ZCROP`), by `c1image::frame`.
 
 The table is applied to the unwarped full-size render. Lining up only decides which
 pixels are paired; it does not move anything in the picture that is shown.
@@ -114,12 +116,37 @@ only.
 The decision for one photo is `c1image::colour_fit(render, thumbnail)`. It returns a
 `ColourFit`: `Table { table, shift }`, `ShapesDiffer` or `NoFit { residual }`.
 
+### Local contrast (`clarity.rs`)
+
+Clarity and Structure raise the contrast between neighbouring areas, not across the
+tonal range. Capture One applies them at full size; the 450 px thumbnail hardly shows
+them, and a colour table, which maps each colour to one colour everywhere, cannot carry
+them. Without this step a preview of a photo with strong Structure looks flat beside
+Capture One's export: blacks lifted, highlights dull, fine texture soft.
+
+For each setting the step takes the brightness minus its Gaussian-blurred neighbourhood
+(sigma 2% of the long side for Clarity, 0.3% for Structure), scales it by the setting,
+and adds it to all three channels, so greys stay grey. A change towards white or black
+eases off over the last 15% of the range, so highlights do not clip.
+
+The gains (0.35 for Clarity, 0.6 for Structure at a setting of 100) were fitted to the
+colour exports below by the *detail* measure of `exportcheck`. A black-and-white photo
+takes half of that: Capture One's black-and-white exports show about half the local
+contrast the same settings give a colour photo. The method (`ZCLARITYMETHOD`: Natural,
+Punch, Neutral, Classic) is not told apart; every photo measured has the same one.
+
+The step runs before straightening when the photo is straightened, so that the black
+corners straightening leaves do not count as picture (they would leave a bright band
+inside the crop). The colour table is still fitted on a straightened copy, which is
+framed like the thumbnail, and applied to the unstraightened render: it works pixel by
+pixel, so the order does not change its colours.
+
 ## What it cannot do
 
-- **Local adjustments**: masks, gradients, radial filters, vignetting, and clarity or
-  structure (local contrast). A table maps each colour to one colour across the whole
-  frame, so it learns an average of these. Detail finer than the 450 px thumbnail is
-  not carried over either.
+- **Local adjustments**: masks, gradients, radial filters and vignetting. A table maps
+  each colour to one colour across the whole frame, so it learns an average of these.
+  Clarity and Structure are added back (see above), but only as the global settings;
+  ones painted on a layer are not.
 - **A stale thumbnail.** If Capture One has not re-rendered the `.cot` since the last
   edit, the preview takes the older look. Browsing the photo in Capture One refreshes it.
 - **Framing**: the shown preview is not warped. Perspective (`ZGEOMETRYKEYSTONE*`) and
@@ -156,7 +183,10 @@ With `--dump` it also prints, for each export:
 - *colour only*: the preview lined up with the export, so that framing does not count,
   with the mean signed error per channel in the export's shadows, midtones and
   highlights;
-- the same for the thumbnail, as the bar to reach.
+- the same for the thumbnail, as the bar to reach;
+- *brightness*: the 1st to 99th percentiles of brightness and the mean chroma of the
+  export, the thumbnail and the preview, which blur and framing do not move;
+- *detail*: the local contrast, fine and broad, at 1024 px wide.
 
 It also writes a 2×2 sheet per export: the export, the thumbnail, the preview, and their
 difference ×4.
@@ -200,6 +230,67 @@ highlights 15–115 too dark. After, the bias is within about ±6 on all but two
   looks local (shadows +6); C1's own thumbnail is +5 there too.
 - untitled-0219-2 has deep shadows +15–18 in green and blue, on 5% of the frame (the
   thumbnail +7).
+
+#### With local contrast (2026-11-27)
+
+The bias left above was mostly not colour. Brightness percentiles showed the preview
+following Capture One's thumbnail closely, and both flatter than the export on the
+photos with strong Structure: R0015727 (Clarity 20, Structure 51) and untitled-0066-2
+(31, 57). The others have 28 and 15. With local contrast added (*detail*, standard
+deviation of brightness around its neighbourhood, out of 255):
+
+| export | fine: export / before / after | broad: export / before / after | colour only before → after |
+|---|---|---|---|
+| DSCF3468 | 16.2 / 13.2 / 15.2 | 33.0 / 30.5 / 33.5 | 10.0 → 10.2 |
+| DSCF7077_1 | 7.6 / 7.1 / 8.0 | 18.1 / 18.1 / 19.6 | 1.4 → 1.5 |
+| R0015727 | 21.4 / 17.3 / 21.5 | 38.5 / 34.6 / 39.0 | 11.8 → 11.5 |
+| untitled-0066-2 | 17.5 / 14.3 / 19.5 | 27.5 / 26.3 / 32.1 | 5.4 → 5.7 |
+| untitled-0219-2 | 11.7 / 9.1 / 10.5 | 28.6 / 23.7 / 26.4 | 7.6 → 7.6 |
+| untitled-0268-2 | 15.0 / 13.1 / 14.9 | 35.1 / 33.0 / 36.1 | 4.8 → 4.7 |
+| untitled-0403 | 26.3 / 22.0 / 25.4 | 47.2 / 43.5 / 48.3 | 9.7 → 10.0 |
+
+The signed bias shrank with it: highlights that were 3–6 levels too dark are within ±3.5
+on all colour exports, and R0015727's within ±1.5. *Colour only* barely moves: it pairs
+pixels, which favours the softer image, so it is no measure of local contrast.
+
+The black-and-white untitled-0066-2 gets too much: its blacks reach 8 (export 0, before
+11), but its brightest 1% sit 20 levels above the export's. One black-and-white
+export is too few to fit it apart from the colour ones.
+
+#### Black and white at half strength (2026-11-28)
+
+Fourteen more black-and-white exports (Fujifilm RAF and Ricoh DNG; eleven with Clarity
+and Structure, three without) settled it. At full strength the black-and-white previews
+came out crisper than the export at both sizes on 9 of the 12 with the settings; the
+colour ones did not. Fitting the two gains to each group by *detail* (root mean square of
+the log ratio to the export, fine and broad together): colour 0.40 / 0.68 (error 0.053,
+against 0.056 for the gains above), black and white 0 / 0.38 (0.058, against 0.100).
+Half the colour gains, 0.18 / 0.30, gives 0.059, about as good, so a black-and-white
+photo takes half. Detail, fine and broad, export / none / full / half:
+
+| export | Clarity, Structure | fine | broad |
+|---|---|---|---|
+| DSCF0953_1 | 19, 40 | 12.6 / 11.8 / 14.4 / 13.1 | 31.7 / 30.7 / 33.8 / 32.2 |
+| DSCF3017_1 | 19, 40 | 10.0 / 9.3 / 11.4 / 10.3 | 29.7 / 28.1 / 30.7 / 29.4 |
+| DSCF3991_1 | 19, 40 | 21.8 / 19.9 / 24.8 / 22.3 | 40.1 / 38.3 / 43.6 / 40.9 |
+| DSCF8261 | 19, 40 | 16.2 / 15.4 / 19.0 / 17.2 | 35.2 / 33.9 / 38.0 / 35.9 |
+| DSCF8274 | 19, 40 | 15.4 / 14.8 / 18.2 / 16.4 | 37.0 / 36.6 / 40.4 / 38.5 |
+| R0009111 | 10, 30 | 25.9 / 22.8 / 26.0 / 24.4 | 48.7 / 46.5 / 49.7 / 48.1 |
+| R0014781 | 19, 40 | 14.9 / 13.6 / 16.4 / 15.0 | 33.5 / 29.6 / 32.6 / 31.1 |
+| R0014921 | 19, 40 | 9.1 / 9.7 / 11.6 / 10.7 | 28.3 / 27.8 / 29.9 / 28.8 |
+| R0015630 | 10, 30 | 14.0 / 11.7 / 13.4 / 12.5 | 28.1 / 25.7 / 27.3 / 26.5 |
+| R0016303 | 10, 30 | 16.1 / 15.1 / 16.9 / 16.0 | 37.2 / 36.1 / 37.8 / 36.9 |
+| R0016335 | 10, 30 | 18.5 / 15.3 / 17.6 / 16.4 | 36.6 / 33.9 / 36.3 / 35.0 |
+| untitled-0066-2 | 31, 57 | 17.5 / 14.2 / 19.3 / 16.8 | 27.5 / 26.2 / 31.8 / 29.0 |
+
+The three without the settings (DSCF3925_1, DSCF5952, DSCF9374) match the export within
+0.2 either way, so the rest of the pipeline leaves the local contrast alone.
+untitled-0066-2's brightest 1% now sit 8 levels above the export's, not 20. The
+Ricoh ones at 10 / 30 are now a little soft (1–2 levels); the Fujifilm ones, which are
+most of the catalog, were the most over. Several Ricoh DNGs keep a tone error the
+thumbnail does not have (R0014781: shadows 16 levels too bright, highlights 11 too
+dark): they have a second layer with its own Clarity and Structure, likely local
+adjustments, which a table cannot carry (see below).
 
 On 120 random photos from the fuji catalog, `lookcheck` (held-out halves, median, out of
 255):

@@ -13,6 +13,7 @@
 //!   conversion, so no edits show beyond the turn and crop.
 
 mod align;
+mod clarity;
 mod geometry;
 mod jxl;
 mod look;
@@ -28,6 +29,7 @@ use image::imageops::FilterType;
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
 pub use align::{Aligned, align};
+pub use clarity::apply as add_local_contrast;
 pub use geometry::{crop, straighten};
 pub use image::RgbImage;
 pub use jxl::{ColourFit, Matching, colour_fit, decode_linear, jxl_size, render_preview};
@@ -164,6 +166,7 @@ mod tests {
             look: None,
             straighten: 0.0,
             crop: None,
+            local_contrast: Default::default(),
         }
     }
 

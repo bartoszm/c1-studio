@@ -204,6 +204,25 @@ pub struct ImageRef {
     /// The part of the turned and straightened picture to show.
     #[serde(default)]
     pub crop: Option<Crop>,
+    /// Local contrast to add, as the source's develop settings give it.
+    #[serde(default)]
+    pub local_contrast: LocalContrast,
+}
+
+/// Contrast between neighbouring areas rather than across the whole tonal range:
+/// Capture One's Clarity (broad, a few percent of the picture) and Structure (fine
+/// detail), each from −100 to 100. It is applied at full size, so a small render of
+/// the edits (a thumbnail) hardly shows it and colours matched from one cannot carry it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct LocalContrast {
+    pub clarity: f32,
+    pub structure: f32,
+}
+
+impl LocalContrast {
+    pub fn is_none(&self) -> bool {
+        self.clarity == 0.0 && self.structure == 0.0
+    }
 }
 
 /// A crop, in the displayed orientation: the offset of its centre from the picture's

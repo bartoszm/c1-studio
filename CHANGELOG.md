@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Flat previews of photos with Clarity or Structure,** black and white most of all: blacks lifted, highlights dull and texture soft beside Capture One's own export. Capture One applies both at full size, where its thumbnail, which the preview takes its colours from, hardly shows them. The preview now adds them itself from the photo's settings. On seven exports from Capture One the preview's local contrast came to within about one level of the export's (out of 255), where it was 2–4 short; the two photos with the strongest Structure were the flattest before. Black-and-white photos take half the strength, as Capture One's own black-and-white exports show (21 exports in all), and a straightened photo gets no bright band along the edge of its crop. How it works: [docs/PREVIEW-COLOURS.md](docs/PREVIEW-COLOURS.md).
+
 ## 0.11.0 — 2026-11-22
 
 ### New
