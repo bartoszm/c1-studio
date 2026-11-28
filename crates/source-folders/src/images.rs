@@ -115,6 +115,7 @@ fn jpeg_ref(path: PathBuf) -> ImageRef {
         look: None,
         straighten: 0.0,
         crop: None,
+        local_contrast: Default::default(),
     }
 }
 

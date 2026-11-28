@@ -542,6 +542,7 @@ mod tests {
                 look: None,
                 straighten: 0.0,
                 crop: None,
+                local_contrast: Default::default(),
             }))
         }
         fn missing_previews(&self) -> crate::source::Result<Vec<PhotoId>> {

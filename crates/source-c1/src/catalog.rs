@@ -177,6 +177,7 @@ pub(crate) struct PreviewSource {
     /// Clockwise degrees beyond `rotation`.
     pub straighten: f32,
     pub crop: Option<c1model::Crop>,
+    pub local_contrast: c1model::LocalContrast,
 }
 
 /// Where the variant's `.cop` preview should be, and how to render it.
@@ -200,7 +201,7 @@ pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option
     con.query_row(
         "SELECT i.ZSIDECARPATH, c.ZROTATION, c.ZBWENABLED, c.ZFILMCURVE,
                 c.ZWHITEBALANCE, a.ZWHITEBALANCE, d.ZWHITEBALANCE,
-                c.ZCROP, i.ZWIDTH, i.ZHEIGHT
+                c.ZCROP, i.ZWIDTH, i.ZHEIGHT, c.ZCLARITY, c.ZCLARITYSTRUCTURE
            FROM ZVARIANT v
            JOIN ZIMAGE i             ON i.Z_PK = v.ZIMAGE
            LEFT JOIN ZVARIANTLAYER c ON c.Z_PK = v.ZCOMBINEDSETTINGS
@@ -229,7 +230,11 @@ pub(crate) fn preview_source(con: &Connection, variant_pk: i64) -> Result<Option
                 .and_then(|c| config::display_crop(&c, width, height, degrees))
                 .or_else(|| config::straightened_crop(width, height, degrees));
             let straighten = config::straightening(degrees);
-            Ok(PreviewSource { sidecar, white_balance, rotation, monochrome, straighten, crop })
+            let local_contrast = c1model::LocalContrast {
+                clarity: r.get::<_, Option<f64>>(10)?.unwrap_or(0.0) as f32,
+                structure: r.get::<_, Option<f64>>(11)?.unwrap_or(0.0) as f32,
+            };
+            Ok(PreviewSource { sidecar, white_balance, rotation, monochrome, straighten, crop, local_contrast })
         },
     )
     .optional()
