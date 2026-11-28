@@ -665,14 +665,20 @@ in `<data dir>/settings.json`) writes the queue by itself.
 - **What is checked:** schemas 160906 (16.9) and 160800 (16.8) read and written; 1650 (16.5, the
   `other` catalog) read, writing off. Any other schema is tried for reading and
   marked untested, writing off. 1650 lacks `ZRETOUCHINGLAYER`.
-- **Adapters** (`source-c1/src/adapter.rs`): what differs between schemas sits behind
-  the `Adapter` trait, and the adapter is chosen by the schema number. One adapter lists
+- **Adapters** (`source-c1/src/adapter.rs`): what differs in reading between schemas sits
+  behind the `Adapter` trait, and the adapter is chosen by the schema number. One adapter lists
   every schema it was checked against (16.8 and 16.9 share one; 16.5 has its own, which
   reads no retouching layers). Each method's default is the newest schema's way, so an
   adapter overrides only what differs. A schema no adapter lists is read with the
-  adapter of the nearest older one, untested, and not written. A new Capture One
-  version is a line in an adapter's list when nothing used differs (after
-  `tools/difftest` on such a catalog), a new adapter when something does.
+  adapter of the nearest older one, untested, and not written; its retouching layers
+  are read by looking for the table in the catalog itself, since the adapter is then a
+  guess. A new Capture One version is a line in an adapter's list when nothing used
+  differs (after `tools/difftest` on such a catalog), a new adapter when something does.
+  Writes are only switched on or off per adapter today (`compat::check_writes`, asked
+  by `write.rs` for the catalog and for a backup to restore). The entity numbers
+  (`Z_ENT`: `ENT_KEYWORD` and `ENT_COMBINED` in `keywords.rs`, literals in `albums.rs`
+  and `extract.rs`) are outside the adapter: they are the same in every schema written
+  (16.8 and 16.9), and become adapter methods when a schema changes them.
 - **`Compatibility`** (c1model, in `SourceInfo`): format, read and write support
   (`Tested`/`Untested`/`Off`) and a note, so any provider can say the same.
 - **In the app:** a footer badge ("read-only · 16.5", "untested version · 15.3") with the

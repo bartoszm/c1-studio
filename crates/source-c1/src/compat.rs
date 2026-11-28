@@ -10,7 +10,7 @@ use c1model::source::Result;
 use c1model::{Compatibility, SourceError, Support};
 use rusqlite::Connection;
 
-use crate::adapter;
+use crate::{adapter, catalog};
 
 /// A catalog's version history, as `ZVERSIONINFO` keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,18 +69,36 @@ fn listed(items: &[String]) -> String {
 /// The versions the app knows, for messages: "16.9 (schema 160906), 16.8 (schema 160800)
 /// and 16.5 (schema 1650)".
 fn known_list() -> String {
-    listed(&adapter::versions().iter().map(|v| format!("{} (schema {})", v.capture_one, v.schema)).collect::<Vec<_>>())
-}
-
-/// Whether writes were checked against catalogs of `schema`.
-pub(crate) fn writes(schema: i64) -> bool {
-    adapter::choose(schema).write() == Support::Tested
+    listed(&adapter::versions().map(|v| format!("{} (schema {})", v.capture_one, v.schema)).collect::<Vec<_>>())
 }
 
 /// The schemas writes were checked against, for messages: "160906 or 160800".
-pub(crate) fn written_schemas() -> String {
-    let items: Vec<String> = adapter::written().iter().map(|v| v.schema.to_string()).collect();
+fn written_schemas() -> String {
+    let items: Vec<String> = adapter::written().map(|v| v.schema.to_string()).collect();
     items.join(" or ")
+}
+
+/// What a write is about to rely on, for [`check_writes`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Checked {
+    /// The catalog that is written.
+    Catalog,
+    /// A backup that is restored over it.
+    Backup,
+}
+
+/// Refuses a catalog or a backup of a schema writes were not checked against, with its
+/// schema and those that are written as the error.
+pub(crate) fn check_writes(con: &Connection, what: Checked) -> Result<()> {
+    let zversion = catalog::zversion(con)?;
+    if adapter::choose(zversion).write() == Support::Tested {
+        return Ok(());
+    }
+    let whose = match what {
+        Checked::Catalog => "ZVERSION",
+        Checked::Backup => "the backup's ZVERSION",
+    };
+    Err(SourceError::Schema(format!("{whose} is {zversion}, expected {}", written_schemas())))
 }
 
 pub(crate) fn assess(version: &CatalogVersion) -> Compatibility {
@@ -89,7 +107,7 @@ pub(crate) fn assess(version: &CatalogVersion) -> Compatibility {
     if let Some(first) = version.created_by.as_deref().filter(|f| Some(*f) != version.saved_by.as_deref()) {
         format.push_str(&format!(" (created with {})", app_name(first)));
     }
-    let writes = listed(&adapter::written().iter().map(|v| v.capture_one.to_owned()).collect::<Vec<_>>());
+    let writes = listed(&adapter::written().map(|v| v.capture_one.to_owned()).collect::<Vec<_>>());
     let chosen = adapter::choose(version.schema);
     let note = match chosen.exact {
         Some(_) if chosen.write() == Support::Tested => None,
@@ -98,7 +116,7 @@ pub(crate) fn assess(version: &CatalogVersion) -> Compatibility {
             v.capture_one
         )),
         None => {
-            let newest = adapter::versions().first().map_or(0, |v| v.schema);
+            let newest = adapter::versions().next().map_or(0, |v| v.schema);
             let when = if version.schema > newest { "newer than" } else { "not one of" };
             Some(format!(
                 "This catalog's version is {when} those the app was checked against ({}). It is read the way \
@@ -143,29 +161,27 @@ mod tests {
     }
 
     #[test]
-    fn known_versions_and_others() {
+    fn what_is_said_of_known_versions_and_of_others() {
+        // Which schemas are read and written is the adapters' to say (`adapter.rs`): here,
+        // how it is worded.
         let newest = assess(&version(160906, "16.9.0.3894 Pro Win", "12.0.2.13 ProF Win"));
-        assert_eq!((newest.read, newest.write, newest.note), (Support::Tested, Support::Tested, None));
+        assert_eq!(newest.note, None);
         assert!(
             newest.format.starts_with("Capture One 16.9.0 Pro (Windows), catalog schema 160906"),
             "{}",
             newest.format
         );
-        assert!(writes(160906) && writes(160800) && !writes(1650) && !writes(170000));
-        assert_eq!(written_schemas(), "160906 or 160800");
         let now = assess(&version(160800, "16.8.6.3784 Pro Win", "12.0.2.13 ProF Win"));
-        assert_eq!((now.read, now.write, now.note), (Support::Tested, Support::Tested, None));
+        assert_eq!(now.note, None);
         assert_eq!(
             now.format,
             "Capture One 16.8.6 Pro (Windows), catalog schema 160800 (created with Capture One 12.0.2 Pro for Fujifilm (Windows))"
         );
         let older = assess(&version(1650, "16.5.5.2701 Pro Win", "16.5.5.2701 Pro Win"));
-        assert_eq!((older.read, older.write), (Support::Tested, Support::Off));
         assert_eq!(older.format, "Capture One 16.5.5 Pro (Windows), catalog schema 1650");
         let note = older.note.unwrap();
         assert!(note.contains("Writing is off") && note.contains("only for 16.9 and 16.8 catalogs"), "{note}");
         let unknown = assess(&version(1531, "15.3.1.17 Pro Win", "15.3.1.17 Pro Win"));
-        assert_eq!((unknown.read, unknown.write), (Support::Untested, Support::Off));
         let note = unknown.note.unwrap();
         assert!(note.contains("not one of") && note.contains("the way Capture One 16.5 catalogs are"), "{note}");
         let note = assess(&version(170000, "17.0.0.1 Pro Win", "x")).note.unwrap();
@@ -180,5 +196,35 @@ mod tests {
             failed.to_string().contains("16.9 (schema 160906), 16.8 (schema 160800) and 16.5 (schema 1650)"),
             "{failed}"
         );
+    }
+
+    #[test]
+    fn assess_passes_on_what_the_adapter_says() {
+        for schema in [160906, 160800, 1650, 1531, 160700, 170000] {
+            let (compat, chosen) = (assess(&version(schema, "x", "x")), adapter::choose(schema));
+            assert_eq!((compat.read, compat.write), (chosen.read(), chosen.write()), "{schema}");
+        }
+    }
+
+    #[test]
+    fn a_write_is_refused_with_the_schema_and_those_written() {
+        let con = Connection::open_in_memory().unwrap();
+        con.execute_batch(
+            "CREATE TABLE ZVERSIONINFO (Z_PK INTEGER PRIMARY KEY, ZVERSION INTEGER);
+             INSERT INTO ZVERSIONINFO (ZVERSION) VALUES (1650);",
+        )
+        .unwrap();
+        let refusal = |what| check_writes(&con, what).unwrap_err();
+        assert!(matches!(refusal(Checked::Catalog), SourceError::Schema(_)));
+        assert!(refusal(Checked::Catalog).to_string().ends_with("ZVERSION is 1650, expected 160906 or 160800"));
+        assert!(!refusal(Checked::Catalog).to_string().contains("backup"));
+        assert!(
+            refusal(Checked::Backup).to_string().ends_with("the backup's ZVERSION is 1650, expected 160906 or 160800")
+        );
+        // The newest row is the catalog now: a newer Capture One upgraded it.
+        con.execute("INSERT INTO ZVERSIONINFO (ZVERSION) VALUES (160800)", []).unwrap();
+        assert!(check_writes(&con, Checked::Catalog).is_ok() && check_writes(&con, Checked::Backup).is_ok());
+        con.execute("INSERT INTO ZVERSIONINFO (ZVERSION) VALUES (170000)", []).unwrap();
+        assert!(refusal(Checked::Catalog).to_string().ends_with("ZVERSION is 170000, expected 160906 or 160800"));
     }
 }

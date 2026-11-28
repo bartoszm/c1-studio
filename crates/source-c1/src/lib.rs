@@ -28,7 +28,6 @@ use c1model::{
     SourceInfo, Wording, WriteStatus,
 };
 
-pub use catalog::EXPECTED_ZVERSION;
 pub use config::{catalog_id, data_dir, find_catalog};
 pub use extract::Extract;
 use extract::extract;
@@ -170,8 +169,8 @@ impl PhotoSource for CaptureOne {
             let con = catalog::open_copy(copy.path())?;
             let version = compat::read_version(&con)?;
             *self.version.lock().unwrap() = version.clone();
-            let adapter = adapter::choose(version.schema).adapter;
-            extract(&con, adapter, self.catalog_dir(), &self.id).map_err(|e| compat::read_failed(&version, &e))?
+            let chosen = adapter::choose(version.schema);
+            extract(&con, &chosen, self.catalog_dir(), &self.id).map_err(|e| compat::read_failed(&version, &e))?
         };
         drop(copy);
 
@@ -455,6 +454,54 @@ mod tests {
         let compat = source.info().compatibility;
         assert_eq!((compat.read, compat.write), (c1model::Support::Tested, c1model::Support::Off));
         assert!(compat.format.contains("schema 1650"), "{}", compat.format);
+    }
+
+    /// The retouching layers each photo is read with, from a fixture changed by `sql`.
+    fn retouch_layers_after(sql: &str) -> Option<(Vec<u32>, c1model::Compatibility)> {
+        let dir = tempfile::tempdir().unwrap();
+        let catalog = dir.path().join("c.cocatalogdb");
+        let con = write::tests::fixture(&catalog)?;
+        con.execute_batch(sql).unwrap();
+        drop(con);
+        let source = CaptureOne::open(&catalog, dir.path().join("work")).unwrap();
+        let mut layers = Vec::new();
+        source
+            .snapshot(None, &mut |e| {
+                if let SourceEvent::Upsert(photo) = e {
+                    layers.push(photo.edit.retouch_layers);
+                }
+                Ok(())
+            })
+            .unwrap();
+        layers.sort_unstable();
+        Some((layers, source.info().compatibility))
+    }
+
+    const RETOUCH: &str =
+        "INSERT INTO ZRETOUCHINGLAYER (Z_ENT, ZVARIANT) SELECT 1, Z_PK FROM ZVARIANT ORDER BY Z_PK LIMIT 2;
+         INSERT INTO ZRETOUCHINGLAYER (Z_ENT, ZVARIANT) SELECT 1, MIN(Z_PK) FROM ZVARIANT;";
+
+    #[test]
+    fn a_catalog_of_an_unlisted_schema_reads_the_retouching_layers_it_has() {
+        // Between 16.5 and 16.8, with the table: counted, though the adapter of 16.5 reads none.
+        let sql = format!("{RETOUCH} UPDATE ZVERSIONINFO SET ZVERSION = 160700");
+        let Some((layers, compat)) = retouch_layers_after(&sql) else { return };
+        assert_eq!(layers, [0, 0, 0, 1, 2]);
+        assert_eq!((compat.read, compat.write), (c1model::Support::Untested, c1model::Support::Off));
+        // Newer than all, without the table: read, with none.
+        let (layers, compat) =
+            retouch_layers_after("DROP TABLE ZRETOUCHINGLAYER; UPDATE ZVERSIONINFO SET ZVERSION = 170000").unwrap();
+        assert_eq!(layers, [0, 0, 0, 0, 0]);
+        assert_eq!((compat.read, compat.write), (c1model::Support::Untested, c1model::Support::Off));
+    }
+
+    #[test]
+    fn a_catalog_of_a_listed_schema_reads_retouching_layers_the_adapters_way() {
+        let Some((layers, _)) = retouch_layers_after(RETOUCH) else { return };
+        assert_eq!(layers, [0, 0, 0, 1, 2]);
+        // 16.5 has no such table: one that is there is not read.
+        let sql = format!("{RETOUCH} UPDATE ZVERSIONINFO SET ZVERSION = 1650");
+        assert_eq!(retouch_layers_after(&sql).unwrap().0, [0, 0, 0, 0, 0]);
     }
 
     #[test]
