@@ -22,6 +22,9 @@ pub struct Progress {
     pub total: usize,
     /// Photos whose render could not be read.
     pub failed: usize,
+    /// Photos measured whose framing was not kept: their render was measured again
+    /// meanwhile, or they left the library.
+    pub unframed: usize,
     pub millis: u128,
 }
 
@@ -98,11 +101,12 @@ pub fn run(
         // The render is read once for both: choosing the best of a group finds the framing kept.
         let (measured, failed) = each(chunk, threads, |(row, key, image, stamp)| {
             let pixels = c1image::load(image).ok()?;
-            Some(((key.clone(), *stamp, c1analysis::analyse(&pixels)), (*row, c1analysis::framing(&pixels))))
+            Some(((key.clone(), *stamp, c1analysis::analyse(&pixels)), (*row, *stamp, c1analysis::framing(&pixels))))
         });
         let (analyses, framings): (Vec<_>, Vec<_>) = measured.into_iter().unzip();
+        let framed = framings.len();
         library.put_analyses(analyses)?;
-        library.put_framings(framings)?;
+        progress.unframed += framed - library.put_framings(framings)?;
         progress.done += chunk.len();
         progress.failed += failed;
         progress.millis = started.elapsed().as_millis();
@@ -148,20 +152,21 @@ pub fn frame_with(
     }
     let (measured, _) = each(&todo, threads, |&row| {
         let (stamp, pixels) = load(row)?;
-        // Not measured, or measured of another render: the framing is stamped with the
+        // Not measured, or measured of another render: a framing is kept only of the
         // render the analysis has, so that is measured first.
         let analysis = library
             .look(row)
             .is_none_or(|look| look.stamp != stamp)
             .then(|| library.photo_id(row).map(|id| (id.key(), stamp, c1analysis::analyse(&pixels))))
             .flatten();
-        Some((analysis, (row, c1analysis::framing(&pixels))))
+        Some((analysis, (row, stamp, c1analysis::framing(&pixels))))
     });
     let (analyses, framings): (Vec<_>, Vec<_>) = measured.into_iter().unzip();
     let analyses: Vec<_> = analyses.into_iter().flatten().collect();
     if !analyses.is_empty() {
         library.put_analyses(analyses)?;
     }
+    // How many were kept is not asked: the rows left without a framing are read below.
     library.put_framings(framings)?;
     // One with no render to read, or measured again meanwhile.
     let have = library.framings(&todo)?;

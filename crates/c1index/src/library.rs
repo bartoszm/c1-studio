@@ -1031,19 +1031,21 @@ impl Library {
             .collect())
     }
 
-    /// Keeps how photos are framed, by row, each stamped with the render the analysis
-    /// measured; a photo not measured is left out. Returns how many were kept.
-    pub fn put_framings(&self, framings: Vec<(u64, c1analysis::Framing)>) -> anyhow::Result<usize> {
+    /// Keeps how photos are framed, by row, each with the stamp of the render it was
+    /// measured from. Only a framing of the render the analysis measured is kept: one of a
+    /// photo not measured, or measured from another render since, is left out. Returns how
+    /// many were kept, so the caller can tell.
+    pub fn put_framings(&self, framings: Vec<(u64, (u64, u64), c1analysis::Framing)>) -> anyhow::Result<usize> {
         let records: Vec<(String, crate::cull::Framed)> = {
-            let rows: Vec<u64> = framings.iter().map(|(row, _)| *row).collect();
+            let rows: Vec<u64> = framings.iter().map(|(row, ..)| *row).collect();
             let stamps: HashMap<u64, (String, (u64, u64))> =
                 self.stamped(&rows).into_iter().map(|(row, key, stamp)| (row, (key, stamp))).collect();
             framings
                 .into_iter()
-                .filter_map(|(row, framing)| {
-                    let (key, stamp) = stamps.get(&row)?;
-                    let framed = crate::cull::Framed { version: c1analysis::FRAMING_VERSION, stamp: *stamp, framing };
-                    Some((key.clone(), framed))
+                .filter_map(|(row, stamp, framing)| {
+                    let (key, now) = stamps.get(&row)?;
+                    let framed = crate::cull::Framed { version: c1analysis::FRAMING_VERSION, stamp, framing };
+                    (*now == stamp).then(|| (key.clone(), framed))
                 })
                 .collect()
         };

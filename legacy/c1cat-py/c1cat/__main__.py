@@ -60,7 +60,8 @@ def cmd_status(args, ctx) -> int:
 
     say(f"Catalog   {catalog}")
     say(f"          {render.size(stat.st_size)}   modified {render.when(stat.st_mtime, '%Y-%m-%d %H:%M:%S')}")
-    version_note = "supported" if info["version_supported"] else f"UNTESTED (expected {config.EXPECTED_ZVERSION})"
+    supported = " or ".join(str(v) for v in config.SUPPORTED_ZVERSIONS)
+    version_note = "supported" if info["version_supported"] else f"UNTESTED (expected {supported})"
     say(f"Version   ZVERSION={info['zversion']} ({info['author']})   journal={info['journal_mode']}   {version_note}")
     say(f"C1        {process['status']} - {process['detail']}")
     freshness = "fresh" if state["fresh"] else ("stale" if state["exists"] else "not built")
