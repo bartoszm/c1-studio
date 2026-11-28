@@ -9,6 +9,10 @@
 - **Several photos suggested to keep.** *Keep: 1 · 2 · 3 · Auto* in the *Best of…* bar (and *Settings › Culling › Suggest keeping*) marks the photos to keep when a group is shown. *Auto*, the default, adds to the best up to two more that are as good and are other pictures (framed otherwise, another moment), never a blurry one or one rated lower, so a burst of copies still keeps one. `g` goes back to the suggestion; `k` marks or unmarks as before. *2* and *3* never mark the whole of a group: one photo at least is left to go.
 - **Capture One 16.9 catalogs** are read and written. 16.9 upgrades a catalog when it opens it (schema 160906: a table of faces, and new columns for skin retouching); the app showed such a catalog as an untested version, with writing off.
 
+### Fixed
+
+- **Flat previews of photos with Clarity or Structure,** black and white most of all: blacks lifted, highlights dull and texture soft beside Capture One's own export. Capture One applies both at full size, where its thumbnail, which the preview takes its colours from, hardly shows them. The preview now adds them itself from the photo's settings. On seven exports from Capture One the preview's local contrast came to within about one level of the export's (out of 255), where it was 2–4 short; the two photos with the strongest Structure were the flattest before. Black-and-white photos take half the strength, as Capture One's own black-and-white exports show (21 exports in all), and a straightened photo gets no bright band along the edge of its crop. How it works: [docs/PREVIEW-COLOURS.md](docs/PREVIEW-COLOURS.md).
+
 ## 0.11.0 — 2026-11-22
 
 ### New
