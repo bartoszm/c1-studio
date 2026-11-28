@@ -59,11 +59,7 @@ fn structure(catalog: &Path) -> Result<()> {
     if !mode.eq_ignore_ascii_case("delete") {
         return Err(SourceError::Schema(format!("journal mode is {mode:?}, expected \"delete\"")));
     }
-    let zversion = catalog::zversion(&con)?;
-    if !compat::writes(zversion) {
-        return Err(SourceError::Schema(format!("ZVERSION is {zversion}, expected {}", compat::written_schemas())));
-    }
-    Ok(())
+    compat::check_writes(&con, compat::Checked::Catalog)
 }
 
 /// Refuses unless [`status`] says ready, with the reason as the error.
@@ -648,13 +644,7 @@ pub(crate) fn restore(catalog: &Path, dir: &Path, keep: usize, name: &str) -> Re
     if check != "ok" {
         return Err(SourceError::Other(format!("the backup is damaged: {check}")));
     }
-    let zversion = catalog::zversion(&from)?;
-    if !compat::writes(zversion) {
-        return Err(SourceError::Schema(format!(
-            "the backup's ZVERSION is {zversion}, expected {}",
-            compat::written_schemas()
-        )));
-    }
+    compat::check_writes(&from, compat::Checked::Backup)?;
     drop(from);
     let when = chosen.created.get(..16).unwrap_or(&chosen.created).replace('T', " ");
     let before =

@@ -17,10 +17,6 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 
 use crate::config;
 
-/// The newest schema this code was verified against (`ZVERSIONINFO.ZVERSION`, Capture One
-/// 16.9). The others, and what is done with each, are in [`crate::compat`].
-pub const EXPECTED_ZVERSION: i64 = 160906;
-
 pub(crate) fn db_err(e: rusqlite::Error) -> SourceError {
     SourceError::Other(format!("catalog: {e}"))
 }
